@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <exception>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -98,6 +99,10 @@ typedef struct csp_tag_chanop {
  * more efficient. */
 int csp_alt   (csp_chanop const * waitops, int count, int nowait);
 int csp_prialt(csp_chanop const * waitops, int count, int nowait);
+
+/* Block the current microthread until the given deadline (nanoseconds since
+ * steady_clock epoch). */
+void csp_sleep_until(int64_t deadline_ns);
 
 /* Don't call these. */
 int csp__internal__init(void* stack, int stacksize);

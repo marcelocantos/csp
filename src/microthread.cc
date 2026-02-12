@@ -10,9 +10,11 @@
 #include <exception>
 #include <iostream>
 #include <map>
+#include <queue>
 #include <stdexcept>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <stdlib.h>
@@ -39,6 +41,19 @@ static Logger g_os_threads("__os_threads__");
 static std::function<void()> g_scheduler = []{
     while (csp_run()) { }
 };
+
+namespace {
+
+    struct TimerEntry {
+        std::chrono::steady_clock::time_point deadline;
+        csp::detail::Microthread * thread;
+        bool operator>(TimerEntry const & o) const { return deadline > o.deadline; }
+    };
+
+    // Min-heap: earliest deadline on top.
+    std::priority_queue<TimerEntry, std::vector<TimerEntry>, std::greater<TimerEntry>> g_timer_heap;
+
+}
 
 namespace csp {
 
@@ -244,14 +259,34 @@ int csp_spawn(void (*start_f)(void *), void * data) {
     }
 }
 
+void csp_sleep_until(int64_t deadline_ns) {
+    using namespace std::chrono;
+    auto deadline = steady_clock::time_point(nanoseconds(deadline_ns));
+    g_timer_heap.push({deadline, g_self});
+    do_switch(Status::detach);
+}
+
 int csp_run() {
+    // Fire expired timers — reschedule their microthreads.
+    {
+        auto now = std::chrono::steady_clock::now();
+        while (!g_timer_heap.empty() && g_timer_heap.top().deadline <= now) {
+            auto mt = g_timer_heap.top().thread;
+            g_timer_heap.pop();
+            mt->schedule();
+        }
+    }
+
     if (g_busy == g_self) {
         g_busy = g_busy->next_;                                         CSP_LOG(g_busyq, "skipped %s: [%s]", getstatus(g_self), qdescr(g_busy).c_str());
     }
     if (g_busy != g_self) {
         g_busy->run();
+    } else if (!g_timer_heap.empty()) {
+        // All microthreads blocked, but timers pending — sleep until next deadline.
+        std::this_thread::sleep_until(g_timer_heap.top().deadline);
     }
-    return g_busy->next_ != g_busy;
+    return g_busy->next_ != g_busy || !g_timer_heap.empty();
 }
 
 void csp_yield() {

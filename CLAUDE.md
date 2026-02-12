@@ -23,6 +23,9 @@ All code lives in `namespace csp`. Key modules:
   `channel`, `writer`, `reader`, `alt`/`prialt`, `action` RAII class.
 - **include/csp/internal/** — Internal headers (microthread_internal.h,
   mt_log.h) and vendored utilities (on_scope_exit.h, function.h).
+- **include/csp/timer.h** — Timer primitives: `sleep`, `sleep_until`,
+  `after` (one-shot), `tick` (periodic). Timers are channels; composable
+  with `alt`/`prialt` for timeout patterns.
 - **Stream combinators** — Header-only: buffer, map, where, tee, fanout,
   chain, quantize, latch, killswitch, enumerate, count, sink, blackhole,
   deaf, mute, rpc.
