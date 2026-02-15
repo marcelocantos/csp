@@ -175,49 +175,16 @@ namespace {
 
         explicit operator bool() { return endpts_[wr].refcount.load() > 0 && endpts_[rd].refcount.load() > 0; }
 
-        // TODO: Make this less ugly and faster.
         static int alt(csp_chanop const * chanops, int count, bool nowait) {
             if (count == 1) {
                 return prialt(chanops, count, nowait);
             }
-            csp_chanop fixed[8];
-            std::vector<csp_chanop> variable;
-            csp_chanop * buffer = fixed;
-            if (count <= 8) {
-                std::copy(chanops, chanops + count, buffer);
-            } else {
-                variable = {chanops, chanops + count};
-                buffer = &variable.front();
-            }
-
-            std::random_device rdev;
-            std::mt19937 rng(rdev());
-            std::shuffle(buffer, buffer + count, rng);
-
-            int i = prialt(buffer, count, nowait);
-            if (i > 0) {
-                auto signalled = chan(buffer[i - 1]);
-                for (int j = 0; j < count; ++j) {
-                    if (chan(chanops[j]) == signalled) {            CSP_LOG(g_verboselog, "alt() -> %d", j + 1);
-                        if (((uintptr_t)chanops[j].waiter & csp_endpt_flag) == rd) {
-                            const_cast<void * &>(chanops[j].message) = buffer[i - 1].message;
-                        }
-                        return j + 1;
-                    }
-                }
-            } else if (i < 0) {
-                auto signalled = chan(buffer[-i - 1]);
-                for (int j = 0; j < count; ++j) {
-                    if (chan(chanops[j]) == signalled) {            CSP_LOG(g_verboselog, "alt() -> %d", -(j + 1));
-                        return -(j + 1);
-                    }
-                }
-            }
-            assert(!i);
-            return 0;
+            thread_local std::mt19937 rng{std::random_device{}()};
+            int offset = std::uniform_int_distribution<int>(0, count - 1)(rng);
+            return prialt(chanops, count, nowait, offset);
         }
 
-        static int prialt(csp_chanop const * chanops, int count, bool nowait) {
+        static int prialt(csp_chanop const * chanops, int count, bool nowait, int offset = 0) {
             /* */                                                   CSP_LOG(g_verboselog, "prialt%s(..., %d)", nowait ? "<nowait>" : "", count);
 
             // Collect unique channels, sorted by id for lock ordering.
@@ -248,9 +215,10 @@ namespace {
 
             lock_all();
 
-            // Phase 1: Scan for ready peer (priority order).
+            // Phase 1: Scan for ready peer (priority order, rotated by offset).
             bool all_null = true;
-            for (int i = 0 ; i < count ; ++i) {
+            for (int k = 0 ; k < count ; ++k) {
+                int i = (offset + k) % count;
                 auto const & chop = chanops[i];
                 if (Channel * ch = chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter;
