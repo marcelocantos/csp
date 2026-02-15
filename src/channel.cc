@@ -18,6 +18,7 @@
 #include <map>
 #include <mutex>
 #include <numeric>
+#include <random>
 #include <stdexcept>
 #include <sstream>
 #include <string>
