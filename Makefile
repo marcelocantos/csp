@@ -42,7 +42,8 @@ LIB_SRCS := src/microthread.cc \
             src/microthread_globals.cpp \
             src/channel.cc \
             src/mt_log.cc \
-            src/runtime.cpp
+            src/runtime.cpp \
+            src/stack_analysis_arm64.cc
 
 TEST_SRCS  := test/main.cc $(wildcard test/*.test.cc)
 BENCH_SRCS := $(wildcard bench/*.bench.cc)
