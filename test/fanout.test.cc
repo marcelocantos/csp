@@ -89,7 +89,6 @@ TEST_CASE("Fanout - Complex") {
 }
 
 TEST_CASE("Fanout - Waves") {
-    // TODO: Test fanout losing all its readers, then acquiring more readers.
     RunStats stats;
 
     writer<writer<int>> new_out;
