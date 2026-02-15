@@ -31,6 +31,9 @@ namespace csp {
         void bind_processor(Processor * p) {
             tl_proc_ = p;
             g_self = &p->main;
+#if CSP_TSAN
+            p->main.tsan_fiber_ = __tsan_get_current_fiber();
+#endif
         }
 
     }

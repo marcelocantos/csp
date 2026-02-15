@@ -1,12 +1,28 @@
 # CSP — C++ microthreading with typed channels
-# Usage: make          (build + run tests)
-#        make build    (compile only)
-#        make clean    (remove artifacts)
+# Usage: make                              (build + run tests)
+#        make build                        (compile only)
+#        make clean                        (remove artifacts)
+#        make SANITIZE=address,undefined   (ASan + UBSan)
+#        make SANITIZE=thread              (TSan)
+
+# Comma helper for $(subst) in BUILDDIR.
+, := ,
 
 BUILDDIR := build
-
 CXX      := c++ -std=c++17 -stdlib=libc++
 CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter
+LDFLAGS  := -L/opt/homebrew/lib
+LDLIBS   := -lboost_context
+
+# --- Sanitizer support ---
+# Each sanitizer mode gets its own build directory so you can switch
+# without cleaning.  ASan + UBSan and TSan are mutually exclusive.
+
+ifneq ($(SANITIZE),)
+CXXFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+LDFLAGS  += -fsanitize=$(SANITIZE)
+BUILDDIR := build-$(subst $(,),-,$(SANITIZE))
+endif
 
 INCLUDES := -Iinclude \
             -Ithird_party \
@@ -29,9 +45,6 @@ TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 
 ALL_OBJS := $(LIB_OBJS) $(TEST_OBJS)
 TARGET   := $(BUILDDIR)/csp_tests
-
-LDFLAGS  := -L/opt/homebrew/lib
-LDLIBS   := -lboost_context
 
 # --- Rules ---
 
@@ -60,4 +73,4 @@ $(BUILDDIR)/test/%.o: test/%.cc
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -Itest -c -o $@ $<
 
 clean:
-	rm -rf $(BUILDDIR)
+	rm -rf build build-*

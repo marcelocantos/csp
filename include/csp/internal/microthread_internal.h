@@ -8,6 +8,18 @@
 #include <cstdlib>
 #include <cstddef>
 
+// TSan fiber annotations: tell TSan about user-mode context switches
+// so it can correctly track happens-before across microthread switches.
+#if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
+#define CSP_TSAN 1
+extern "C" {
+    void *__tsan_get_current_fiber(void);
+    void *__tsan_create_fiber(unsigned flags);
+    void __tsan_destroy_fiber(void *fiber);
+    void __tsan_switch_to_fiber(void *fiber, unsigned flags);
+}
+#endif
+
 using namespace csp;
 
 namespace csp {
@@ -62,6 +74,10 @@ namespace csp {
             bool in_global_ = false;  // true while in the global run queue
             std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
             std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
+
+#if CSP_TSAN
+            void* tsan_fiber_ = nullptr;  // TSan fiber handle for this microthread
+#endif
         };
 
         inline

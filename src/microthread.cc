@@ -105,6 +105,9 @@ namespace csp {
             auto ctx = mt.ctx_.load(std::memory_order_acquire);
             current_p().save_ctx = &self->ctx_;
             current_p().save_mt = self;
+#if CSP_TSAN
+            __tsan_switch_to_fiber(mt.tsan_fiber_, 0);
+#endif
             auto t = jump_fcontext(ctx, (void *)data);
             // Release-store our caller's saved SP so that any thread
             // that later acquire-loads ctx_ will also see the register
@@ -249,6 +252,9 @@ namespace csp {
             auto killyou = reinterpret_cast<Microthread *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
                                                                         CSP_LOG(g_log, "jump_fcontext() → %s (%s)", killme ? getstatus(killme) : "-", getstatus(busy));
             if (killyou) {                                              CSP_LOG(g_log, "kill %s (stk = %p)", getstatus(killyou), killyou->stk_);
+#if CSP_TSAN
+                if (killyou->tsan_fiber_) __tsan_destroy_fiber(killyou->tsan_fiber_);
+#endif
                 auto stk = killyou->stk_;
                 killyou->~Microthread();
                 delete [] stk;
@@ -328,6 +334,9 @@ static void start(transfer_t t) {
     // dying microthread that exited and chained into us via run(exit).
     // Clean it up before running our own function.
     if (auto* killyou = reinterpret_cast<Microthread*>(killyou_val)) {
+#if CSP_TSAN
+        if (killyou->tsan_fiber_) __tsan_destroy_fiber(killyou->tsan_fiber_);
+#endif
         auto stk = killyou->stk_;
         killyou->~Microthread();
         delete [] stk;
@@ -356,6 +365,9 @@ int csp_spawn(void (*start_f)(void *), void * data) {
         assert(((uintptr_t)mt % 16) == 0); // Must be 16-byte aligned.
         auto ctx = make_fcontext(mt, (char *)mt - (char *)stk, start);
         new (mt) Microthread(ctx, stk);
+#if CSP_TSAN
+        mt->tsan_fiber_ = __tsan_create_fiber(0);
+#endif
 
         StartData const start_data = {start_f, data, *mt, *g_self};     CSP_LOG(g_log, "starting %s (stk = %p)", getstatus(mt), stk);
                                                                         if (g_spawnlog) { CSP_LOG(g_spawnlog, "spawning %s", getstatus(mt)); Logger::dump_stack(); }

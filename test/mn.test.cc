@@ -1,4 +1,5 @@
 #include "testutil.h"
+#include "testscale.h"
 
 #include <doctest/doctest.h>
 
@@ -237,7 +238,7 @@ TEST_CASE("MN Volume - SpawnExit 1M") {
     csp::init_runtime(4);
 
     std::atomic<int> count{0};
-    constexpr int N = 1'000'000;
+    constexpr int N = 1'000'000 / SCALE_HEAVY;
 
     for (int i = 0; i < N; ++i) {
         csp::spawn([&] {
@@ -254,7 +255,7 @@ TEST_CASE("MN Volume - SpawnExit 1M") {
 TEST_CASE("MN Volume - ChannelPairs 10K") {
     csp::init_runtime(4);
 
-    constexpr int N = 10'000;
+    constexpr int N = 10'000 / SCALE_MEDIUM;
     std::atomic<int64_t> total{0};
 
     for (int i = 0; i < N; ++i) {
@@ -277,8 +278,8 @@ TEST_CASE("MN Volume - ChannelPairs 10K") {
 TEST_CASE("MN Volume - ChannelPipeline") {
     csp::init_runtime(4);
 
-    constexpr int STAGES = 100;
-    constexpr int MSGS = 1000;
+    constexpr int STAGES = 100 / SCALE_LIGHT;
+    constexpr int MSGS = 1000 / SCALE_MEDIUM;
 
     // Build a pipeline: source → stage[0] → stage[1] → ... → stage[N-1] → sink
     // Each stage increments the value by 1.
@@ -319,8 +320,8 @@ TEST_CASE("MN Volume - ChannelPipeline") {
 TEST_CASE("MN Volume - FanOutFanIn") {
     csp::init_runtime(4);
 
-    constexpr int WORKERS = 50;
-    constexpr int MSGS = 10'000;
+    constexpr int WORKERS = 50 / SCALE_LIGHT;
+    constexpr int MSGS = 10'000 / SCALE_MEDIUM;
 
     csp::channel<int> work_ch;
     csp::channel<int64_t> result_ch;
@@ -364,7 +365,7 @@ TEST_CASE("MN Volume - FanOutFanIn") {
 TEST_CASE("MN Volume - ManyChannelMessages") {
     csp::init_runtime(4);
 
-    constexpr int N = 1'000'000;
+    constexpr int N = 1'000'000 / SCALE_HEAVY;
     csp::channel<int> ch;
 
     csp::spawn([w = ++ch] {
@@ -389,7 +390,7 @@ TEST_CASE("MN Volume - ManyChannelMessages") {
 TEST_CASE("MN Volume - SpawnWithYield") {
     csp::init_runtime(4);
 
-    constexpr int N = 100'000;
+    constexpr int N = 100'000 / SCALE_HEAVY;
     std::atomic<int> count{0};
 
     for (int i = 0; i < N; ++i) {
@@ -408,8 +409,8 @@ TEST_CASE("MN Volume - SpawnWithYield") {
 TEST_CASE("MN Volume - DaisyChain") {
     csp::init_runtime(4);
 
-    constexpr int CHAIN_LEN = 1000;
-    constexpr int MSGS = 100;
+    constexpr int CHAIN_LEN = 1000 / SCALE_MEDIUM;
+    constexpr int MSGS = 100 / SCALE_LIGHT;
 
     csp::channel<int> head;
     auto tail = --head;
@@ -447,7 +448,7 @@ TEST_CASE("MN Volume - DaisyChain") {
 TEST_CASE("MN Volume - AltSelectStress") {
     csp::init_runtime(4);
 
-    constexpr int N = 1000;
+    constexpr int N = 1000 / SCALE_MEDIUM;
     std::atomic<int> total{0};
 
     for (int i = 0; i < N; ++i) {
@@ -487,9 +488,9 @@ TEST_CASE("MN Volume - AltSelectStress") {
 TEST_CASE("MN Volume - ProducerConsumer") {
     csp::init_runtime(4);
 
-    constexpr int PRODUCERS = 20;
-    constexpr int CONSUMERS = 20;
-    constexpr int MSGS_PER_PRODUCER = 5000;
+    constexpr int PRODUCERS = 20 / SCALE_LIGHT;
+    constexpr int CONSUMERS = 20 / SCALE_LIGHT;
+    constexpr int MSGS_PER_PRODUCER = 5000 / SCALE_MEDIUM;
 
     csp::channel<int> ch;
 
@@ -525,8 +526,8 @@ TEST_CASE("MN Volume - ProducerConsumer") {
 TEST_CASE("MN Stress - Lifecycle") {
     // Exercises the shutdown condvar race (bug #8) and global queue
     // re-init (bug #5) across many rapid init/shutdown cycles.
-    constexpr int CYCLES = 100;
-    constexpr int SPAWNS = 500;
+    constexpr int CYCLES = 100 / SCALE_MEDIUM;
+    constexpr int SPAWNS = 500 / SCALE_LIGHT;
 
     for (int cycle = 0; cycle < CYCLES; ++cycle) {
         csp::init_runtime(4);
@@ -542,8 +543,8 @@ TEST_CASE("MN Stress - Lifecycle") {
 TEST_CASE("MN Stress - ChannelPairs") {
     // Exercises the suspending_/wake_pending_ TOCTOU drain (bug #7)
     // across many cycles with many short-lived channel rendezvous pairs.
-    constexpr int CYCLES = 20;
-    constexpr int PAIRS = 2000;
+    constexpr int CYCLES = 20 / SCALE_MEDIUM;
+    constexpr int PAIRS = 2000 / SCALE_MEDIUM;
 
     for (int cycle = 0; cycle < CYCLES; ++cycle) {
         csp::init_runtime(4);
@@ -566,10 +567,10 @@ TEST_CASE("MN Stress - ChannelPairs") {
 TEST_CASE("MN Stress - ProducerConsumer") {
     // Exercises multi-writer/multi-reader channel rendezvous with
     // repeated init/shutdown to surface cross-P scheduling races.
-    constexpr int CYCLES = 20;
-    constexpr int PRODUCERS = 10;
-    constexpr int CONSUMERS = 10;
-    constexpr int MSGS_PER_PRODUCER = 1000;
+    constexpr int CYCLES = 20 / SCALE_MEDIUM;
+    constexpr int PRODUCERS = 10 / SCALE_LIGHT;
+    constexpr int CONSUMERS = 10 / SCALE_LIGHT;
+    constexpr int MSGS_PER_PRODUCER = 1000 / SCALE_MEDIUM;
 
     for (int cycle = 0; cycle < CYCLES; ++cycle) {
         csp::init_runtime(4);
@@ -599,7 +600,7 @@ TEST_CASE("MN Volume - SpawnDuringExecution") {
 
     // Each microthread spawns one child before exiting.
     // Starting from 1, this creates a tree of 2^DEPTH - 1 microthreads.
-    constexpr int DEPTH = 17;  // 131071 microthreads
+    constexpr int DEPTH = (CSP_TEST_SANITIZER ? 12 : 17);  // 131071 or 8191 microthreads
     std::atomic<int> count{0};
 
     std::function<void(int)> go = [&](int depth) {

@@ -1,4 +1,5 @@
 #include "testutil.h"
+#include "testscale.h"
 
 #include <csp/timer.h>
 
@@ -61,12 +62,15 @@ TEST_CASE("Timer - Tick") {
 
     bool ok = true;
 
+    auto interval = CSP_TEST_SANITIZER ? 50ms : 10ms;
+    auto threshold = CSP_TEST_SANITIZER ? 40ms : 8ms;
+
     stats.spawn([&]{
-        auto ticker = csp::tick(10ms);
+        auto ticker = csp::tick(interval);
         clock::time_point prev = clock::now();
         for (int i = 0; i < 3; ++i) {
             auto tp = ticker.read();
-            if (tp - prev < 8ms) ok = false;
+            if (tp - prev < threshold) ok = false;
             prev = tp;
         }
     });

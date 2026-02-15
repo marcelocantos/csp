@@ -1,11 +1,12 @@
 #include "testutil.h"
+#include "testscale.h"
 
 using namespace csp;
 
 static Logger g_log("Channel.Test");
 
 TEST_CASE("Volume - Megaloop") {
-    constexpr int n_loops = 1000000;
+    constexpr int n_loops = 1000000 / SCALE_HEAVY;
 
     channel<int> in, out;
     auto ch = spawn_filter<int>([](auto && r, auto && w) {
@@ -22,8 +23,8 @@ TEST_CASE("Volume - Megaloop") {
 }
 
 TEST_CASE("Volume - DaisyChain") {
-    constexpr int n_threads = 100;
-    constexpr int n_loops = 10000;
+    constexpr int n_threads = 100 / SCALE_LIGHT;
+    constexpr int n_loops = 10000 / SCALE_MEDIUM;
 
     channel<int> ch;
     auto tail = --ch;
@@ -43,7 +44,7 @@ TEST_CASE("Volume - DaisyChain") {
 }
 
 TEST_CASE("Volume - RapidChannelLifecycle") {
-    constexpr int N = 10000;
+    constexpr int N = 10000 / SCALE_MEDIUM;
 
     int before_w = csp__internal__channel_count(0);
     int before_r = csp__internal__channel_count(1);
@@ -57,7 +58,7 @@ TEST_CASE("Volume - RapidChannelLifecycle") {
 }
 
 TEST_CASE("Volume - ManyMicrothreads") {
-    constexpr int N = 2000;
+    constexpr int N = 2000 / SCALE_LIGHT;
     int completed = 0;
 
     for (int i = 0; i < N; ++i) {
@@ -72,7 +73,7 @@ TEST_CASE("Volume - ManyMicrothreads") {
 }
 
 TEST_CASE("Volume - ManyChannelPairs") {
-    constexpr int N = 500;
+    constexpr int N = 500 / SCALE_LIGHT;
     int total = 0;
 
     for (int i = 0; i < N; ++i) {
