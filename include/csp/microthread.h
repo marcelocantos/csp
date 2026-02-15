@@ -156,26 +156,6 @@ namespace csp
         using std::runtime_error::runtime_error;
     };
 
-    // TODO: Make this work again.
-    template <typename T>
-    inline
-    bool tracer_test(T const &, T const &) { return false; }
-
-    template <typename T>
-    class tracer {
-    public:
-        static const T& set(const T& t) { return t_ = t; }
-        static bool test(const T& t) { return tracer_test(t, t_); }
-
-    private:
-        static T t_;
-    };
-
-    template <typename T>
-    T tracer<T>::t_;
-
-    namespace { Logger tracer_log("tracer"); }
-
     // Surrogate for empty-message channels.
     // - Boost took none.
     // - cpplinq squatted on empty.
