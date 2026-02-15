@@ -395,7 +395,11 @@ int csp_spawn(void (*start_f)(void *), void * data) {
         }
 
         return 1;
-    } catch (...) { // TODO: Report the error somehow.
+    } catch (std::exception const & e) {
+        CSP_LOG(g_log, "csp_spawn failed: %s", e.what());
+        return 0;
+    } catch (...) {
+        CSP_LOG(g_log, "csp_spawn failed: unknown exception");
         return 0;
     }
 }

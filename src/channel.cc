@@ -379,7 +379,11 @@ int csp_chan(csp_writer * w, csp_reader * r, void (* tx)(void * src, void * dst)
         *w = ch->as_writer();
         *r = ch->as_reader();
         return int(true);
-    } catch (...) { } // TODO: Report the error somehow.
+    } catch (std::exception const & e) {
+        CSP_LOG(g_chlog, "csp_chan failed: %s", e.what());
+    } catch (...) {
+        CSP_LOG(g_chlog, "csp_chan failed: unknown exception");
+    }
     return int(false);
 }
 
