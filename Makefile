@@ -1,6 +1,7 @@
 # CSP — C++ microthreading with typed channels
 # Usage: make                              (build + run tests)
 #        make build                        (compile only)
+#        make bench                        (build + run benchmarks)
 #        make clean                        (remove artifacts)
 #        make SANITIZE=address,undefined   (ASan + UBSan)
 #        make SANITIZE=thread              (TSan)
@@ -43,27 +44,36 @@ LIB_SRCS := src/microthread.cc \
             src/mt_log.cc \
             src/runtime.cpp
 
-TEST_SRCS := test/main.cc $(wildcard test/*.test.cc)
+TEST_SRCS  := test/main.cc $(wildcard test/*.test.cc)
+BENCH_SRCS := $(wildcard bench/*.bench.cc)
 
 # --- Objects ---
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
+BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
 
-ALL_OBJS := $(LIB_OBJS) $(TEST_OBJS)
+ALL_OBJS := $(LIB_OBJS) $(TEST_OBJS) $(BENCH_OBJS)
 ALL_DEPS := $(ALL_OBJS:.o=.d)
-TARGET   := $(BUILDDIR)/csp_tests
+TARGET       := $(BUILDDIR)/csp_tests
+BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build clean
+.PHONY: test build bench clean
 
 test: $(TARGET)
 	./$(TARGET)
 
 build: $(TARGET)
 
-$(TARGET): $(ALL_OBJS)
+bench: $(BENCH_TARGET)
+	./$(BENCH_TARGET)
+
+$(TARGET): $(LIB_OBJS) $(TEST_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(BENCH_TARGET): $(LIB_OBJS) $(BENCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # Library sources
@@ -79,6 +89,11 @@ $(BUILDDIR)/src/%.o: src/%.cpp
 $(BUILDDIR)/test/%.o: test/%.cc
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -Itest -c -o $@ $<
+
+# Benchmark sources
+$(BUILDDIR)/bench/%.o: bench/%.cc
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
 
 clean:
 	rm -rf build build-*
