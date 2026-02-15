@@ -15,7 +15,6 @@
 #include <exception>
 #include <functional>
 #include <iostream>
-#include <map>
 #include <mutex>
 #include <numeric>
 #include <random>
@@ -35,8 +34,6 @@ static Logger g_msglog    ("channel/msg");
 static Logger g_debug     ("channel/debug");
 static Logger g_sequence  ("microthread/sequence");
 
-static std::mutex g_chdescrs_mu;
-static std::map<void *, std::string> g_chdescrs;
 
 struct Counters {
     std::atomic<int> refs{0};
@@ -135,6 +132,7 @@ namespace {
         }
         csp_writer as_writer() { return reinterpret_cast<csp_writer>(this); }
         csp_reader as_reader() { return reinterpret_cast<csp_reader>((uintptr_t)this | 1); }
+        void set_descr(char const * d) { descr_ = d; }
 
         void addref(int endpt) {                                    CSP_LOG(g_verboselog, "%s[%zu:%zu]->addref(%c)", describe(this), endpts_[0].refcount.load() + (endpt == 0), endpts_[1].refcount.load() + (endpt == 1), "wr"[endpt]);
             ++counterses()[endpt].refs;
@@ -143,32 +141,39 @@ namespace {
         void release(int endpt) {                                   CSP_LOG(g_verboselog, "%s[%zu:%zu]->release(%c)", describe(this), endpts_[0].refcount.load() - (endpt == 0), endpts_[1].refcount.load() - (endpt == 1), "wr"[endpt]);
             ++counterses()[endpt].derefs;
             if (endpts_[endpt].refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                std::lock_guard<std::mutex> lock(mu_);
-                --counterses()[endpt].active;
-                auto & ep = endpts_[1 - endpt];
-                if (ep.refcount.load(std::memory_order_acquire) > 0) {
-                    // Wake waiters via CAS. Don't remove from queues —
-                    // woken threads clean up their own registrations.
-                    for (auto const & cw : ep.waiters) {            CSP_LOG(g_verboselog, "%s: wake(%s) count=%zu", describe(this), getstatus(cw.thread), ep.waiters.count());
-                        uint32_t expected = Microthread::ALT_WAITING;
-                        if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
-                            int idx = int(cw.chanop - cw.thread->chanops_ + 1);
-                            cw.thread->signal_ = -idx;
-                            cw.thread->schedule();
+                {
+                    std::lock_guard<std::mutex> lock(mu_);
+                    --counterses()[endpt].active;
+                    auto & ep = endpts_[1 - endpt];
+                    if (ep.refcount.load(std::memory_order_acquire) > 0) {
+                        // Wake waiters via CAS. Don't remove from queues —
+                        // woken threads clean up their own registrations.
+                        for (auto const & cw : ep.waiters) {        CSP_LOG(g_verboselog, "%s: wake(%s) count=%zu", describe(this), getstatus(cw.thread), ep.waiters.count());
+                            uint32_t expected = Microthread::ALT_WAITING;
+                            if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
+                                int idx = int(cw.chanop - cw.thread->chanops_ + 1);
+                                cw.thread->signal_ = -idx;
+                                cw.thread->schedule();
+                            }
                         }
-                    }
 
-                    for (auto const & cv : ep.vultures) {
-                        uint32_t expected = Microthread::ALT_WAITING;
-                        if (cv.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
-                            int idx = int(cv.chanop - cv.thread->chanops_ + 1);
-                            cv.thread->signal_ = -idx;
-                            cv.thread->schedule();
+                        for (auto const & cv : ep.vultures) {
+                            uint32_t expected = Microthread::ALT_WAITING;
+                            if (cv.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
+                                int idx = int(cv.chanop - cv.thread->chanops_ + 1);
+                                cv.thread->signal_ = -idx;
+                                cv.thread->schedule();
+                            }
                         }
+                        // Don't clear — woken threads clean up their own registrations.
                     }
-                    // Don't clear — woken threads clean up their own registrations.
-                } else {
-                    //delete this;
+                }
+                // Both endpoint sides decrement alive_. The last one
+                // (fetch_sub returns 1) deletes. This avoids a race
+                // when both endpoints reach refcount 0 concurrently
+                // on different OS threads.
+                if (alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    delete this;
                 }
             }
         }
@@ -321,6 +326,8 @@ namespace {
         Channel * delegate_ = this;
 
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
+        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%lu", id_); return std::string(b); }();
+        std::atomic<int> alive_{2};  // one per endpoint side; last to 0 deletes
         std::mutex mu_;
         struct EndPoint {
             std::atomic<size_t> refcount{1};
@@ -351,21 +358,11 @@ namespace {
         friend char const * describe(void *);
     };
 
-    // This is horribly inefficient, but, since it is only ever invoked from
-    // logging calls (Please keep it that way!), it shouldn't matter.
     char const * describe(void * ch) {
-        std::lock_guard<std::mutex> lock(g_chdescrs_mu);
-        auto i = g_chdescrs.find(ch);
-        if (i == g_chdescrs.end()) {
-            char buf[25];
-            if (ch) {
-                snprintf(buf, sizeof(buf), "▸%lu", ((Channel *)(~(~(uintptr_t)ch | 15)))->id_);
-            } else {
-                snprintf(buf, sizeof(buf), "▸Ø");
-            }
-            i = g_chdescrs.emplace(ch, buf).first;
+        if (Channel * c = chan(ch)) {
+            return c->descr_.c_str();
         }
-        return i->second.c_str();
+        return "▸Ø";
     }
 
 }
@@ -389,8 +386,9 @@ int csp_chan(csp_writer * w, csp_reader * r, void (* tx)(void * src, void * dst)
 void csp_chdescr(void * ch, char const * descr) {
     static bool enabled = false;
     if (enabled || (enabled = g_chlog || g_lifespan || g_msglog || g_sleeplog)) {
-        std::lock_guard<std::mutex> lock(g_chdescrs_mu);
-        g_chdescrs[(void*)((uintptr_t)ch & ~14)] = descr;
+        if (Channel * c = chan(ch)) {
+            c->set_descr(descr);
+        }
     }
 }
 
