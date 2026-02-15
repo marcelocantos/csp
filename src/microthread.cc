@@ -277,6 +277,11 @@ namespace csp {
             Microthread* target;
             {
                 std::lock_guard<std::mutex> lk(current_p().run_mu);
+                // Update running to the active MT so steal_work skips it.
+                // (local_next sets running for the initial pick; chained
+                // do_switch calls keep it current as execution moves
+                // between microthreads.)
+                current_p().running = g_self;
                 auto& busy = current_p().busy;
                 if (busy == g_self) {
                     busy = busy->next_;

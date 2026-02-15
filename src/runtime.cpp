@@ -96,6 +96,11 @@ namespace csp {
                     continue;
                 }
 
+                // Try stealing from another processor's local queue.
+                if (steal_work(p)) {
+                    continue;
+                }
+
                 // Park: wait for work or shutdown.
                 {
                     std::unique_lock<std::mutex> lk(park_mu);
@@ -131,7 +136,10 @@ namespace csp {
         Microthread* Runtime::local_next(Processor& p) {
             std::lock_guard<std::mutex> lk(p.run_mu);
             auto& busy = p.busy;
-            if (!busy) return nullptr;
+            if (!busy) {
+                p.running = nullptr;
+                return nullptr;
+            }
 
             // Skip past g_self (the sentinel/main) to find real work.
             auto* candidate = busy;
@@ -139,8 +147,11 @@ namespace csp {
                 candidate = candidate->next_;
             }
             if (candidate == g_self || candidate == &p.main) {
+                p.running = nullptr;
                 return nullptr;
             }
+            // Mark this MT as claimed so steal_work on other Ps skips it.
+            p.running = candidate;
             return candidate;
         }
 
@@ -179,22 +190,34 @@ namespace csp {
                 Microthread* stolen = nullptr;
                 {
                     std::lock_guard<std::mutex> lk(victim.run_mu);
+
+                    // Try to acquire global_mu without blocking to avoid
+                    // deadlock (take_from_global holds global_mu then
+                    // acquires run_mu via schedule_local).
+                    std::unique_lock<std::mutex> glk(global_mu, std::try_to_lock);
+                    if (!glk) continue;
+
                     if (!victim.busy) continue;
 
                     auto* candidate = victim.busy->prev_;
-                    if (!candidate || candidate == &victim.main || candidate == victim.busy) {
+                    if (!candidate || candidate == &victim.main
+                        || candidate == victim.busy
+                        || candidate == victim.running) {
                         continue;
                     }
 
+                    // Delink from victim's DLL and push to global
+                    // atomically (both locks held) so schedule() cannot
+                    // see the MT with next_==null / in_global_==false.
                     candidate->prev_->next_ = candidate->next_;
                     candidate->next_->prev_ = candidate->prev_;
                     candidate->next_ = nullptr;
                     candidate->prev_ = nullptr;
+                    push_to_global(candidate);
                     stolen = candidate;
                 }
-                // victim.run_mu released — safe to schedule on thief.
                 if (stolen) {
-                    stolen->schedule();
+                    unpark_one();
                     return true;
                 }
             }

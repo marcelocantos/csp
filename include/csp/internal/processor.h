@@ -28,6 +28,7 @@ namespace csp {
                                 std::greater<TimerEntry>> timer_heap;
 
             std::mutex run_mu;                // Protects the busy queue DLL
+            Microthread* running = nullptr;   // MT claimed by local_next (steal-safe)
             std::atomic<bool> parked{false};  // Is this P's worker thread parked?
 
             int id;
