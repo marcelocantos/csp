@@ -18,7 +18,8 @@ LIB_SRCS := src/microthread.cc \
             src/microthread_globals.cpp \
             src/channel.cc \
             src/ringbuffer.cc \
-            src/mt_log.cc
+            src/mt_log.cc \
+            src/runtime.cpp
 
 TEST_SRCS := test/main.cc $(wildcard test/*.test.cc)
 

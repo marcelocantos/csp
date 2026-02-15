@@ -146,6 +146,11 @@ namespace csp
     void set_scheduler(std::function<void()> f);
     void schedule();
 
+    // Initialize the M:N runtime with the given number of processors (0 = auto).
+    // If never called, auto-initializes with 1 processor (single-threaded).
+    void init_runtime(int num_procs = 0);
+    void shutdown_runtime();
+
     class microthread_error : public std::runtime_error {
     public:
         using std::runtime_error::runtime_error;

@@ -4,11 +4,9 @@
 #include <csp/microthread.h>
 #include <csp/fcontext.h>
 
-#include <condition_variable>
+#include <atomic>
 #include <cstdlib>
 #include <cstddef>
-#include <mutex>
-#include <thread>
 
 using namespace csp;
 
@@ -20,8 +18,7 @@ namespace csp {
 
         struct Microthread;
 
-        extern Microthread * g_self;
-        extern Microthread * g_busy;
+        extern thread_local Microthread * g_self;
 
         void do_switch(Status status = Status::sleep);
 
@@ -32,22 +29,16 @@ namespace csp {
 
             Microthread * prev_;
             Microthread * next_;
-            fcontext_t ctx_;
+            std::atomic<fcontext_t> ctx_;
             StackSlot * stk_;
             char status_[32];
             csp_chanop const * chanops_;
             int n_chanops_, signal_;
 
             size_t id_ = []{
-                static size_t next_ = 0;
+                static std::atomic<size_t> next_{0};
                 return next_++;
             }();
-
-            std::thread os_thread_;
-            bool run_ = false;
-            intptr_t data_;
-            std::condition_variable switch_;
-            std::mutex mutex_;
 
             Microthread(fcontext_t ctx, StackSlot * stk);
             Microthread();
@@ -60,27 +51,17 @@ namespace csp {
             }
 
             void schedule(bool make_current = false);
+            void schedule_local(bool make_current = false);
             void deschedule();
 
             void run(Status status = Status::sleep);
 
-            void notify(intptr_t data) {
-                std::lock_guard<std::mutex> lk(mutex_);
-                run_ = true;
-                data_ = data;
-                switch_.notify_one();
-            }
+            enum AltState : uint32_t { ALT_IDLE, ALT_WAITING, ALT_CLAIMED };
+            std::atomic<uint32_t> alt_state{ALT_IDLE};
 
-            intptr_t wait() {
-                std::unique_lock<std::mutex> lk(mutex_);
-                while (!run_) {
-                    switch_.wait(lk);
-                }
-                run_ = false;
-                return data_;
-            }
-
-            void unwait(csp_chanop const * signalled, bool ready);
+            bool in_global_ = false;  // true while in the global run queue
+            std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
+            std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
         };
 
         inline
