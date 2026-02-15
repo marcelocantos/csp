@@ -24,6 +24,13 @@ LDFLAGS  += -fsanitize=$(SANITIZE)
 BUILDDIR := build-$(subst $(,),-,$(SANITIZE))
 endif
 
+# --- Auto-dependencies ---
+# -MMD generates .d files alongside .o files listing header deps.
+# -MP adds phony targets for each header, preventing errors when
+# headers are deleted/renamed.
+
+DEPFLAGS = -MMD -MP
+
 INCLUDES := -Iinclude \
             -Ithird_party \
             -I/opt/homebrew/include
@@ -44,6 +51,7 @@ LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 
 ALL_OBJS := $(LIB_OBJS) $(TEST_OBJS)
+ALL_DEPS := $(ALL_OBJS:.o=.d)
 TARGET   := $(BUILDDIR)/csp_tests
 
 # --- Rules ---
@@ -61,16 +69,19 @@ $(TARGET): $(ALL_OBJS)
 # Library sources
 $(BUILDDIR)/src/%.o: src/%.cc
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
 
 $(BUILDDIR)/src/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
 
 # Test sources
 $(BUILDDIR)/test/%.o: test/%.cc
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -Itest -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -Itest -c -o $@ $<
 
 clean:
 	rm -rf build build-*
+
+# Pull in generated dependency files (silently ignored on first build).
+-include $(ALL_DEPS)
