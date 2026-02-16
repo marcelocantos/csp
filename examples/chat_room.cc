@@ -32,9 +32,9 @@ int main() {
 
         // Helper to add a user
         auto add_user = [&](const char* name) {
-            chan<std::string> ch;
-            new_sub << std::move(ch.w);  // register this user's writer with fanout
-            spawn([name, r = std::move(ch.r)]{
+            auto [w, r] = chan<std::string>{};
+            new_sub << std::move(w);  // register this user's writer with fanout
+            spawn([name, r = std::move(r)]{
                 for (std::string msg; r >> msg;) {
                     printf("  [%s] %s\n", name, msg.c_str());
                 }

@@ -62,9 +62,9 @@ namespace csp {
     template <typename... Args, typename Rep>
     auto rpc_client(writer<std::pair<std::tuple<Args...>, writer<Rep>>> req) {
         return [req = std::move(req)](auto && t) {
-            chan<Rep> rep;
-            if (req << std::make_pair(std::forward<std::decay_t<decltype(t)>>(t), std::move(rep.w))) {
-                return rep.r.read();
+            auto [w, r] = chan<Rep>{};
+            if (req << std::make_pair(std::forward<std::decay_t<decltype(t)>>(t), std::move(w))) {
+                return r.read();
             }
             throw std::runtime_error("rpc dead");
         };

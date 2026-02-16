@@ -22,12 +22,12 @@ int main() {
         printf("RPC calculator service:\n");
 
         // RPC channel pair
-        chan<std::tuple<char, double, double>> req;
-        chan<double> rep;
+        auto [req_w, req_r] = chan<std::tuple<char, double, double>>{};
+        auto [rep_w, rep_r] = chan<double>{};
 
         // Server: evaluate arithmetic operations
         spawn(rpc_server<char, double, double>(
-            std::move(req.r), std::move(rep.w),
+            std::move(req_r), std::move(rep_w),
             [](char op, double a, double b) -> double {
                 switch (op) {
                 case '+': return a + b;
@@ -40,9 +40,9 @@ int main() {
         ));
 
         // Each client needs its own rpc_client (move-only endpoints).
-        auto calc1 = rpc_client<char, double, double>(req.w.copy(), rep.r.copy());
-        auto calc2 = rpc_client<char, double, double>(req.w.copy(), rep.r.copy());
-        auto calc3 = rpc_client<char, double, double>(std::move(req.w), std::move(rep.r));
+        auto calc1 = rpc_client<char, double, double>(req_w.copy(), rep_r.copy());
+        auto calc2 = rpc_client<char, double, double>(req_w.copy(), rep_r.copy());
+        auto calc3 = rpc_client<char, double, double>(std::move(req_w), std::move(rep_r));
 
         // Multiple concurrent clients
         spawn([calc = std::move(calc1)]() mutable {

@@ -31,8 +31,7 @@ int main() {
         }
 
         // Spawn philosophers
-        chan<> done;
-        writer<> done_w = done.w.copy();
+        auto [done_w, done_r] = chan<>{};
         for (int i = 0; i < N; ++i) {
             spawn([i, left = forks[i].r.copy(), right = forks[(i + 1) % N].r.copy(),
                    done_w = done_w.copy()]{
@@ -62,7 +61,7 @@ int main() {
         done_w = {};  // release our ref
 
         // Wait for all philosophers to finish
-        done.r >> nullptr;
+        done_r >> nullptr;
     });
 
     schedule();

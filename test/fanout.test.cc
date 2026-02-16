@@ -11,14 +11,14 @@ TEST_CASE("Fanout - Simple") {
     RunStats stats;
 
     CSP_LOG(g_log, "new_out{}");
-    chan<writer<int>> new_out;
+    auto [new_out_w, new_out_r] = chan<writer<int>>{};
     CSP_LOG(g_log, "spawn_fanout");
-    auto new_in = spawn_fanout(std::move(new_out.r));
+    auto new_in = spawn_fanout(std::move(new_out_r));
     CSP_LOG(g_log, "out{}");
-    chan<int> out;
+    auto [out_w, out_r] = chan<int>{};
 
-    CSP_LOG(g_log, "new_out << std::move(out.w)");
-    CHECK(bool(new_out.w << std::move(out.w)));
+    CSP_LOG(g_log, "new_out << std::move(out_w)");
+    CHECK(bool(new_out_w << std::move(out_w)));
 
     CSP_LOG(g_log, "in{}");
     writer<int> in;
@@ -32,8 +32,8 @@ TEST_CASE("Fanout - Simple") {
     CSP_LOG(g_log, "in = {}");
     in = {};
 
-    CSP_LOG(g_log, "out.r.read()");
-    CHECK_EQ(42, out.r.read());
+    CSP_LOG(g_log, "out_r.read()");
+    CHECK_EQ(42, out_r.read());
 
     CSP_LOG(g_log, "EOT");
 }
@@ -41,18 +41,18 @@ TEST_CASE("Fanout - Simple") {
 TEST_CASE("Fanout - Complex") {
     RunStats stats;
 
-    chan<writer<int>> new_out;
+    auto [new_out_w, new_out_r] = chan<writer<int>>{};
 
-    auto new_in = spawn_fanout(std::move(new_out.r));
+    auto new_in = spawn_fanout(std::move(new_out_r));
 
     struct {
         chan<int> ch;
         int result = 0;
     } receiverses[2][5];
 
-    auto setup = [&](auto & receivers) {
+    auto setup = [&](auto & now, auto & receivers) {
         for (auto & s : receivers) {
-            CHECK(bool(new_out.w << std::move(s.ch.w)));
+            CHECK(bool(now << std::move(s.ch.w)));
             stats.spawn([&, down = std::move(s.ch.r), result = &s.result]{
                 int n;
                 while (down >> n) {
@@ -63,7 +63,7 @@ TEST_CASE("Fanout - Complex") {
     };
 
     // Start with 5 receivers to receive 1..5; grow to 10 receiving 6..10.
-    setup(receiverses[0]);
+    setup(new_out_w, receiverses[0]);
 
     writer<int> in;
     CHECK(bool(new_in >> in));
@@ -72,7 +72,7 @@ TEST_CASE("Fanout - Complex") {
     stats.spawn(count(in.copy(), 1, 6));
     schedule();
 
-    setup(receiverses[1]);
+    setup(new_out_w, receiverses[1]);
     stats.spawn(count(std::move(in), 6, 11));
 
     schedule();
@@ -89,19 +89,19 @@ TEST_CASE("Fanout - Complex") {
 TEST_CASE("Fanout - Waves") {
     RunStats stats;
 
-    chan<writer<int>> new_out;
+    auto [new_out_w, new_out_r] = chan<writer<int>>{};
     chan<> keepalive;
 
-    auto new_in = spawn_fanout(std::move(new_out.r));
+    auto new_in = spawn_fanout(std::move(new_out_r));
 
     struct {
         chan<int> ch;
         int result = 0;
     } receiverses[2][1];
 
-    auto setup = [&](auto & receivers) {
+    auto setup = [&](auto & now, auto & receivers) {
         for (auto & s : receivers) {
-            CHECK(bool(new_out.w << std::move(s.ch.w)));
+            CHECK(bool(now << std::move(s.ch.w)));
             stats.spawn([&, down = std::move(s.ch.r), result = &s.result, keepalive = keepalive.w.copy()]{
                 csp_descr("R%d", &s - std::begin(receivers));
                 int n;
@@ -117,7 +117,7 @@ TEST_CASE("Fanout - Waves") {
 
     // Start with 5 receivers to receive 1..5; grow to 10 receiving 6..10.
     CSP_LOG(g_log, "wave 1");
-    setup(receiverses[0]);
+    setup(new_out_w, receiverses[0]);
 
     CHECK(bool(new_in >> in));
 
@@ -130,7 +130,7 @@ TEST_CASE("Fanout - Waves") {
     CHECK_FALSE(~in);
 
     CSP_LOG(g_log, "wave 2");
-    setup(receiverses[1]);
+    setup(new_out_w, receiverses[1]);
 
     CHECK(bool(new_in >> in));
 
@@ -152,19 +152,19 @@ TEST_CASE("Fanout - Waves") {
 TEST_CASE("Fanout - Chain") {
     RunStats stats;
 
-    chan<writer<int>> new_out;
+    auto [new_out_w, new_out_r] = chan<writer<int>>{};
 
-    auto new_in = spawn_fanout(std::move(new_out.r));
+    auto new_in = spawn_fanout(std::move(new_out_r));
 
     constexpr int m = 2, n = 1;
     int total = 0;
 
     for (int i = 0; i < m; ++i) {
-        chan<writer<int>> new_out2;
-        stats.spawn(fanout(std::move(new_out2.r), new_out.w.copy()));
+        auto [new_out2_w, new_out2_r] = chan<writer<int>>{};
+        stats.spawn(fanout(std::move(new_out2_r), new_out_w.copy()));
 
         for (int j = 0; j < n; ++j) {
-            new_out2.w << spawn_consumer<int>([&](auto r) {
+            new_out2_w << spawn_consumer<int>([&](auto r) {
                 csp_descr("fanout");
                 BRAC_SCOPE(g_log, "FanoutChain::λ", "%d, %d", i, j);
 
@@ -175,7 +175,7 @@ TEST_CASE("Fanout - Chain") {
             });
         }
     }
-    new_out.w = {};
+    new_out_w = {};
 
     writer<int> in;
     new_in >> in;

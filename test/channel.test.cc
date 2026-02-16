@@ -60,13 +60,13 @@ TEST_CASE("Channel - ThreadRefCounts") {
 }
 
 TEST_CASE("Channel - OneShot") {
-    chan<int> ch;
+    auto [w, r] = chan<int>{};
     int result = 0;
 
-    spawn([o = ch.w.copy()]{
+    spawn([o = w.copy()]{
         o << 42;
     });
-    spawn([i = ch.r.copy(), &result]{
+    spawn([i = r.copy(), &result]{
         i >> result;
     });
 
@@ -77,13 +77,13 @@ TEST_CASE("Channel - OneShot") {
 
 // Repeat OneShot to exercise a SEGFAULT bug.
 TEST_CASE("Channel - OneShotAgain") {
-    chan<int> ch;
+    auto [w, r] = chan<int>{};
     int result = 0;
 
-    spawn([o = ch.w.copy()]{
+    spawn([o = w.copy()]{
         o << 42;
     });
-    spawn([i = ch.r.copy(), &result]{
+    spawn([i = r.copy(), &result]{
         i >> result;
     });
 
@@ -95,13 +95,13 @@ TEST_CASE("Channel - OneShotAgain") {
 TEST_CASE("Channel - OneShotStats") {
     RunStats stats;
 
-    chan<int> ch;
+    auto [w, r] = chan<int>{};
     int result = 0;
 
-    stats.spawn([o = ch.w.copy()]{
+    stats.spawn([o = w.copy()]{
         o << 42;
     });
-    stats.spawn([i = ch.r.copy(), &result]{
+    stats.spawn([i = r.copy(), &result]{
         i >> result;
     });
 
@@ -190,21 +190,21 @@ TEST_CASE("Channel - ReaderGone") {
 TEST_CASE("Channel - NWriters") {
     RunStats stats;
 
-    chan<int> ch;
+    auto [w, r] = chan<int>{};
 
     std::vector<int> total;
 
     for (int n = 1; n <= 2; ++n) {
-        stats.spawn([out = ch.w.copy(), n]{
+        stats.spawn([out = w.copy(), n]{
             CSP_LOG(g_log, "producer[%d]", n);
             out << n;
         });
     }
-    ch.w = {};
+    w = {};
 
     csp::schedule();
 
-    stats.spawn([out = std::move(ch.r), &total] {
+    stats.spawn([out = std::move(r), &total] {
         CSP_LOG(g_log, "consumer");
         for (auto n : out) {
             total.push_back(n);
@@ -220,21 +220,21 @@ TEST_CASE("Channel - NWriters") {
 TEST_CASE("Channel - NReaders") {
     RunStats stats;
 
-    chan<int> ch;
+    auto [w, r] = chan<int>{};
 
     int total = 0;
 
     for (int i = 0; i < 10; ++i) {
-        stats.spawn([in = ch.r.copy(), &total, i]{
+        stats.spawn([in = r.copy(), &total, i]{
             total += in.read();
         });
     }
 
-    ch.r = {};
+    r = {};
 
     csp::schedule();
 
-    stats.spawn([out = ch.w.copy()]{
+    stats.spawn([out = w.copy()]{
         for (int n = 1; out << n; n *= 2) { }
     });
 
@@ -255,11 +255,13 @@ static auto rpc(writer<Req> req, reader<Rep> rep) {
 TEST_CASE("Channel - AltIn") {
     RunStats stats;
 
-    chan<int> up0, up1, down;
+    auto [up0_w, up0_r] = chan<int>{};
+    auto [up1_w, up1_r] = chan<int>{};
+    auto [down_w, down_r] = chan<int>{};
 
     int sent = 0, received = 0;;
 
-    stats.spawn([in0 = std::move(up0.r), in1 = std::move(up1.r), out = std::move(down.w), &sent]{
+    stats.spawn([in0 = std::move(up0_r), in1 = std::move(up1_r), out = std::move(down_w), &sent]{
         int n;
         for (int i = 0; i < 2; ++i) {
             alt(in0 >> n, in1 >> n);
@@ -268,7 +270,7 @@ TEST_CASE("Channel - AltIn") {
         }
     });
 
-    stats.spawn([out0 = std::move(up0.w), out1 = std::move(up1.w), in = std::move(down.r), &received]() mutable {
+    stats.spawn([out0 = std::move(up0_w), out1 = std::move(up1_w), in = std::move(down_r), &received]() mutable {
         CHECK_EQ(11, rpc(std::move(out0), in.copy())(11));
         ++received;
 
@@ -285,11 +287,13 @@ TEST_CASE("Channel - AltIn") {
 TEST_CASE("Channel - AltDead") {
     RunStats stats;
 
-    chan<int> up, down, die;
+    auto [up_w, up_r] = chan<int>{};
+    auto [down_w, down_r] = chan<int>{};
+    auto [die_w, die_r] = chan<int>{};
 
     int reqs = 0, reps = 0;
 
-    stats.spawn([in = std::move(up.r), out = std::move(down.w), die = std::move(die.r), &reqs]{
+    stats.spawn([in = std::move(up_r), out = std::move(down_w), die = std::move(die_r), &reqs]{
         for (;;) {
             int n;
             switch (alt(in >> n, ~die)) {
@@ -303,9 +307,9 @@ TEST_CASE("Channel - AltDead") {
         }
     });
 
-    auto kill = std::move(die.w);
+    auto kill = std::move(die_w);
 
-    stats.spawn([out = std::move(up.w), in = std::move(down.r), &kill, &reps]() mutable {
+    stats.spawn([out = std::move(up_w), in = std::move(down_r), &kill, &reps]() mutable {
         auto echo = rpc(out.copy(), in.copy());
 
         for (int i = 1; i <= 10; ++i) {
@@ -328,17 +332,18 @@ TEST_CASE("Channel - AltDead") {
 TEST_CASE("Channel - AltNull") {
     RunStats stats;
 
-    chan<int> up, down;
+    auto [up_w, up_r] = chan<int>{};
+    auto [down_w, down_r] = chan<int>{};
 
-    stats.spawn([in = up.r.copy()]{
+    stats.spawn([in = up_r.copy()]{
         CHECK_EQ(42, in.read());
     });
 
-    stats.spawn([out = down.w.copy()]{
+    stats.spawn([out = down_w.copy()]{
         out << 11;
     });
 
-    stats.spawn([up = up.w.copy(), down = down.r.copy()]{
+    stats.spawn([up = up_w.copy(), down = down_r.copy()]{
         int n;
         std::vector<chan_op<int>> actions;
         actions.push_back(up << 42);
@@ -365,8 +370,8 @@ TEST_CASE("Channel - AltNull") {
 TEST_CASE("Channel - Range") {
     RunStats stats;
 
-    chan<int> ch;
-    stats.spawn([out = std::move(ch.w)]{
+    auto [w, r] = chan<int>{};
+    stats.spawn([out = std::move(w)]{
         for (int n = 1; n <= 10; ++n) {
             out << n;
         }
@@ -374,7 +379,6 @@ TEST_CASE("Channel - Range") {
 
     int total = 0;
 
-    auto r = std::move(ch.r);
     for (auto n : r) {
         total += n;
     }
@@ -418,13 +422,13 @@ TEST_CASE("Channel - ActionBig") {
     };
     Big big2 = big, big3 = {};
 
-    chan<Big> chanb;
+    auto [chanb_w, chanb_r] = chan<Big>{};
     std::vector<csp::chan_op<Big>> a;
-    a.push_back(chanb.w.copy() << big);
+    a.push_back(chanb_w.copy() << big);
     big = {};
 
-    stats.spawn([&]{
-        chanb.r.copy() >> big3;
+    stats.spawn([r = chanb_r.copy(), &big3]{
+        r >> big3;
     });
 
     CHECK_EQ(1, csp::alt(a));
@@ -522,18 +526,18 @@ TEST_CASE("Channel - FeedbackLoop") {
         buf.w.copy() << 0;
     }
 
-    chan<int> inner;
+    auto [inner_w, inner_r] = chan<int>{};
     reader<int> out;
 
     // minus
-    spawn([sub = std::move(buf.r), out = std::move(inner.w)] {
+    spawn([sub = std::move(buf.r), out = std::move(inner_w)] {
         auto in = spawn_count_forever(0);
         for (int a = 0, b = 0; in >> a && sub >> b && out << (a - b);) {
             CSP_LOG(g_log, "a = %d, b = %d", a, b);
         }
     });
 
-    spawn(tee(std::move(inner.r), ++out, std::move(buf.w)));
+    spawn(tee(std::move(inner_r), ++out, std::move(buf.w)));
 
     for (int i = 0; i < 100; i += cadence) {
         for (int j = 0; j < cadence; ++j) REQUIRE_EQ(i + j, out.read());

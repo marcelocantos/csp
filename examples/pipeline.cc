@@ -40,13 +40,13 @@ int main() {
         auto buffered = spawn_buffer<int>(std::move(filtered), 4);
 
         // tee: tap the stream to print what flows through
-        chan<int> tap;
-        spawn([r = std::move(tap.r)]{
+        auto [tap_w, tap_r] = chan<int>{};
+        spawn([r = std::move(tap_r)]{
             printf("  [tap] ");
             for (int n; r >> n;) printf("%d ", n);
             printf("\n");
         });
-        auto teed = spawn_producer<int>([buffered = std::move(buffered), tap = std::move(tap.w)](writer<int> out) mutable {
+        auto teed = spawn_producer<int>([buffered = std::move(buffered), tap = std::move(tap_w)](writer<int> out) mutable {
             tee(std::move(buffered), std::move(out), std::move(tap))();
         });
 

@@ -45,21 +45,19 @@ TEST_CASE("MN - MultipleThreads") {
 TEST_CASE("MN - CrossThreadChannel") {
     csp::init_runtime(2);
 
-    csp::chan<int> ch;
+    auto [w, r] = csp::chan<int>{};
     std::atomic<std::thread::id> writer_tid{};
     std::atomic<std::thread::id> reader_tid{};
 
-    csp::spawn([&] {
+    csp::spawn([&writer_tid, w = std::move(w)] {
         writer_tid.store(std::this_thread::get_id(), std::memory_order_relaxed);
-        auto w = std::move(ch.w);
         for (int i = 0; i < 10; ++i) {
             w << i;
         }
     });
 
-    csp::spawn([&] {
+    csp::spawn([&reader_tid, r = std::move(r)] {
         reader_tid.store(std::this_thread::get_id(), std::memory_order_relaxed);
-        auto r = std::move(ch.r);
         int sum = 0;
         for (int v; r >> v;) {
             sum += v;
@@ -175,17 +173,17 @@ TEST_CASE("MN - ConcurrentTimersAndChannels") {
 
     csp::init_runtime(4);
 
-    csp::chan<int> ch;
+    auto [w, r] = csp::chan<int>{};
     std::atomic<int> result{0};
 
     // Writer sleeps then sends.
-    csp::spawn([w = std::move(ch.w)] {
+    csp::spawn([w = std::move(w)] {
         csp::sleep(15ms);
         w << 42;
     });
 
     // Reader uses alt with a generous timeout — should get the value.
-    csp::spawn([&, r = std::move(ch.r)] {
+    csp::spawn([&, r = std::move(r)] {
         auto timeout = csp::after(200ms);
         int val = 0;
         int which = csp::alt(r >> val, timeout >> csp::poke);
@@ -209,13 +207,13 @@ TEST_CASE("MN - StressChannels") {
     std::atomic<int> total{0};
 
     for (int p = 0; p < NUM_PAIRS; ++p) {
-        csp::chan<int> ch;
-        csp::spawn([w = std::move(ch.w)] {
+        auto [w, r] = csp::chan<int>{};
+        csp::spawn([w = std::move(w)] {
             for (int i = 0; i < MSGS_PER_PAIR; ++i) {
                 w << i;
             }
         });
-        csp::spawn([r = std::move(ch.r), &total] {
+        csp::spawn([r = std::move(r), &total] {
             for (int v; r >> v;) {
                 total.fetch_add(v, std::memory_order_relaxed);
             }
@@ -259,9 +257,9 @@ TEST_CASE("MN Volume - ChannelPairs 10K") {
     std::atomic<int64_t> total{0};
 
     for (int i = 0; i < N; ++i) {
-        csp::chan<int> ch;
-        csp::spawn([w = std::move(ch.w), i] { w << i; });
-        csp::spawn([r = std::move(ch.r), &total] {
+        auto [w, r] = csp::chan<int>{};
+        csp::spawn([w = std::move(w), i] { w << i; });
+        csp::spawn([r = std::move(r), &total] {
             int v;
             if (r >> v) total.fetch_add(v, std::memory_order_relaxed);
         });
@@ -366,16 +364,16 @@ TEST_CASE("MN Volume - ManyChannelMessages") {
     csp::init_runtime(4);
 
     constexpr int N = 1'000'000 / SCALE_HEAVY;
-    csp::chan<int> ch;
+    auto [w, r] = csp::chan<int>{};
 
-    csp::spawn([w = std::move(ch.w)] {
+    csp::spawn([w = std::move(w)] {
         for (int i = 0; i < N; ++i) {
             w << 1;
         }
     });
 
     std::atomic<int> total{0};
-    csp::spawn([&total, r = std::move(ch.r)] {
+    csp::spawn([&total, r = std::move(r)] {
         for (int v; r >> v;) {
             total.fetch_add(v, std::memory_order_relaxed);
         }
@@ -452,15 +450,16 @@ TEST_CASE("MN Volume - AltSelectStress") {
     std::atomic<int> total{0};
 
     for (int i = 0; i < N; ++i) {
-        csp::chan<int> a, b;
+        auto [a_w, a_r] = csp::chan<int>{};
+        auto [b_w, b_r] = csp::chan<int>{};
 
         // Writer to channel a.
-        csp::spawn([w = std::move(a.w), i] { w << i; });
+        csp::spawn([w = std::move(a_w), i] { w << i; });
         // Writer to channel b.
-        csp::spawn([w = std::move(b.w), i] { w << i * 10; });
+        csp::spawn([w = std::move(b_w), i] { w << i * 10; });
 
         // Reader uses alt to pick whichever is ready first.
-        csp::spawn([&total, ra = std::move(a.r), rb = std::move(b.r)] {
+        csp::spawn([&total, ra = std::move(a_r), rb = std::move(b_r)] {
             int va = 0, vb = 0;
             int which = csp::alt(ra >> va, rb >> vb);
             if (which == 1) total.fetch_add(va, std::memory_order_relaxed);
@@ -550,9 +549,9 @@ TEST_CASE("MN Stress - ChannelPairs") {
         csp::init_runtime(4);
         std::atomic<int64_t> total{0};
         for (int i = 0; i < PAIRS; ++i) {
-            csp::chan<int> ch;
-            csp::spawn([w = std::move(ch.w), i] { w << i; });
-            csp::spawn([r = std::move(ch.r), &total] {
+            auto [w, r] = csp::chan<int>{};
+            csp::spawn([w = std::move(w), i] { w << i; });
+            csp::spawn([r = std::move(r), &total] {
                 int v;
                 if (r >> v) total.fetch_add(v, std::memory_order_relaxed);
             });

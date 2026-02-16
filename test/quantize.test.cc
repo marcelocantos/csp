@@ -29,8 +29,8 @@ TEST_CASE("Quantize - Complex") {
 
     int sent = 0, delivered = 0, undelivered = 0;
 
-    chan<int> source;
-    stats.spawn([loops, w = std::move(source.w), &sent]{
+    auto [source_w, source_r] = chan<int>{};
+    stats.spawn([loops, w = std::move(source_w), &sent]{
         constexpr int delta = 23;
         for (int i = 0; i < loops * (7 + 13 + 11) && w << delta; i += delta) {
             CSP_LOG(g_log, "  \033[31mi=%3d δ=%d\033[0m", i, delta);
@@ -40,12 +40,12 @@ TEST_CASE("Quantize - Complex") {
 
     std::vector<int> qdata = {7, 13, 11};
 
-    chan<int> quanta;
+    auto [quanta_w, quanta_r] = chan<int>{};
     reader<int> residue;
-    stats.spawn(enumerate(std::vector<int>{qdata}, std::move(quanta.w), true));
+    stats.spawn(enumerate(std::vector<int>{qdata}, std::move(quanta_w), true));
 
     reader<int> sink;
-    stats.spawn(quantize(std::move(source.r), std::move(quanta.r), ++sink, ++residue));
+    stats.spawn(quantize(std::move(source_r), std::move(quanta_r), ++sink, ++residue));
 
     stats.spawn([loops, &qdata, &delivered, sink = std::move(sink)]{
         for (int i = 0; i < loops; ++i) {
@@ -75,8 +75,8 @@ TEST_CASE("Quantize - Uniform") {
 
     int sent = 0, delivered = 0, undelivered = 0;
 
-    chan<int> source;
-    stats.spawn([w = std::move(source.w), &sent]{
+    auto [source_w, source_r] = chan<int>{};
+    stats.spawn([w = std::move(source_w), &sent]{
         constexpr int delta = 23;
         for (int i = 0; i < 13 * 7 && w << delta; i += delta) {
             sent += delta;
@@ -87,7 +87,7 @@ TEST_CASE("Quantize - Uniform") {
 
     reader<int> sink;
     reader<int> residue;
-    stats.spawn(quantize(std::move(source.r), quantum, ++sink, ++residue));
+    stats.spawn(quantize(std::move(source_r), quantum, ++sink, ++residue));
 
     stats.spawn([sink = std::move(sink), quantum, &delivered]{
         for (int n; sink >> n;) {

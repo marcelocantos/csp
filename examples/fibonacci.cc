@@ -18,10 +18,10 @@ int main() {
     spawn([]{
         constexpr int N = 40;
 
-        chan<int64_t> fibs;
-        spawn([out = std::move(fibs.w)]{
+        auto [w, r] = chan<int64_t>{};
+        spawn([w = std::move(w)]{
             int64_t a = 0, b = 1;
-            while (out << a) {
+            while (w << a) {
                 int64_t next = a + b;
                 a = b;
                 b = next;
@@ -30,7 +30,7 @@ int main() {
 
         printf("First %d Fibonacci numbers:\n  ", N);
         int count = 0;
-        for (int64_t n : fibs.r) {
+        for (int64_t n : r) {
             printf("%lld ", n);
             if (++count >= N) break;
         }

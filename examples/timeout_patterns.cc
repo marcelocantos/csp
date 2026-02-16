@@ -26,15 +26,15 @@ int main() {
         printf("Pattern 1: Operation timeout\n");
         {
             // Simulate a slow service
-            chan<int> service;
-            spawn([w = std::move(service.w)]{
+            auto [w, r] = chan<int>{};
+            spawn([w = std::move(w)]{
                 csp::sleep(200ms);  // takes 200ms
                 w << 42;
             });
 
             // Wait up to 100ms
             auto deadline = after(100ms);
-            switch (prialt(service.r >> nullptr, deadline >> nullptr)) {
+            switch (prialt(r >> nullptr, deadline >> nullptr)) {
             case 1:
                 printf("  Got result (this shouldn't happen)\n");
                 break;
@@ -47,8 +47,8 @@ int main() {
         // --- Pattern 2: Periodic heartbeat ---
         printf("\nPattern 2: Periodic heartbeat\n");
         {
-            chan<int> work;
-            spawn([w = std::move(work.w)]{
+            auto [w, r] = chan<int>{};
+            spawn([w = std::move(w)]{
                 for (int i = 1; i <= 5; ++i) {
                     csp::sleep(30ms);
                     if (!(w << i)) return;
@@ -61,7 +61,7 @@ int main() {
             for (;;) {
                 int n;
                 clock::time_point t;
-                switch (alt(work.r >> n, heartbeat >> t)) {
+                switch (alt(r >> n, heartbeat >> t)) {
                 case 1:
                     printf("  Work item: %d\n", n);
                     work_count++;
@@ -90,9 +90,9 @@ int main() {
             // Kill the pipeline after 100ms.
             // Killswitch watches for the keepalive writer to die,
             // so we spawn a thread that holds it alive then releases.
-            chan<> keepalive;
-            spawn([w = std::move(keepalive.w)]{ csp::sleep(100ms); });
-            auto guarded = spawn_killswitch<int>(std::move(source), std::move(keepalive.r));
+            auto [kw, kr] = chan<>{};
+            spawn([w = std::move(kw)]{ csp::sleep(100ms); });
+            auto guarded = spawn_killswitch<int>(std::move(source), std::move(kr));
 
             int count = 0;
             for (int n; guarded >> n;) {

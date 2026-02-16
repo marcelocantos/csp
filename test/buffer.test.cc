@@ -45,25 +45,26 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
     int sent = 0;
     int received = 0;
 
-    chan<> send, recv;
+    auto [send_w, send_r] = chan<>{};
+    auto [recv_w, recv_r] = chan<>{};
 
     auto buf = spawn_buffer<int>();
 
-    stats.spawn([trigger = std::move(send.r), out = std::move(buf.w), &sent]{
+    stats.spawn([trigger = std::move(send_r), out = std::move(buf.w), &sent]{
         for (int i = 0; trigger >> poke; ++i) {
             out << i;
             sent += 1;
         }
     });
 
-    stats.spawn([trigger = std::move(recv.r), in = std::move(buf.r), &received]{
+    stats.spawn([trigger = std::move(recv_r), in = std::move(buf.r), &received]{
         for (int i = 0; trigger >> poke; ++i) {
             CHECK_EQ(i, in.read());
             received += 1;
         }
     });
 
-    stats.spawn([send = std::move(send.w), recv = std::move(recv.w), &sent, &received] {
+    stats.spawn([send = std::move(send_w), recv = std::move(recv_w), &sent, &received] {
         auto fire = [&](auto && trigger, size_t n) {
             while (n--) {
                 trigger << poke;

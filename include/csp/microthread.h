@@ -538,9 +538,9 @@ namespace csp
 
     template <typename T>
     void make_channel(writer<T> & w, reader<T> & r) {
-        chan<T> ch;
-        w = std::move(ch.w);
-        r = std::move(ch.r);
+        auto [cw, cr] = chan<T>{};
+        w = std::move(cw);
+        r = std::move(cr);
     }
 
     // Make a channel for a writer&, returning the matching reader.
@@ -549,9 +549,9 @@ namespace csp
         if (w) {
             throw microthread_error("writer already attached channel");
         }
-        chan<T> ch;
-        w = std::move(ch.w);
-        return std::move(ch.r);
+        auto [cw, cr] = chan<T>{};
+        w = std::move(cw);
+        return std::move(cr);
     }
 
     // Make a channel for a reader&, returning the matching writer.
@@ -560,9 +560,9 @@ namespace csp
         if (r) {
             throw microthread_error("reader already attached to channel");
         }
-        chan<T> ch;
-        r = std::move(ch.r);
-        return std::move(ch.w);
+        auto [cw, cr] = chan<T>{};
+        r = std::move(cr);
+        return std::move(cw);
     }
 
     extern writer<std::exception_ptr> global_exception_handler;
@@ -647,11 +647,12 @@ namespace csp
 
     template <typename T, typename F>
     chan<T> spawn_filter(F && f) {
-        chan<T> in, out;
-        spawn([f = std::move(f), r = std::move(in.r), w = std::move(out.w)]() mutable {
+        auto [in_w, in_r] = chan<T>{};
+        auto [out_w, out_r] = chan<T>{};
+        spawn([f = std::move(f), r = std::move(in_r), w = std::move(out_w)]() mutable {
             f(std::move(r), std::move(w));
         });
-        return {std::move(in.w), std::move(out.r)};
+        return {std::move(in_w), std::move(out_r)};
     }
 
     // Range over a producer µthread; propagate exceptions therefrom.

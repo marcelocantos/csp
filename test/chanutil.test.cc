@@ -79,14 +79,14 @@ TEST_CASE("ChanUtil - Deaf") {
     RunStats stats;
 
     auto w = spawn_deaf<int>();
-    chan<> give_up;
+    auto [give_up_w, give_up_r] = chan<>{};
 
-    stats.spawn([w = std::move(w), give_up = std::move(give_up.r)]{
+    stats.spawn([w = std::move(w), give_up = std::move(give_up_r)]{
         CHECK_EQ(-2, prialt(w << 42, ~give_up));
     });
 
     while (csp_run()) { }
-    give_up.w = {};
+    give_up_w = {};
     while (csp_run()) { }
 }
 
@@ -110,13 +110,13 @@ TEST_CASE("ChanUtil - Enumerate") {
 TEST_CASE("ChanUtil - KillSwitch") {
     RunStats stats;
 
-    chan<> keepalive;
-    auto killswitch = spawn_killswitch<int>(std::move(keepalive.r));
+    auto [keepalive_w, keepalive_r] = chan<>{};
+    auto killswitch = spawn_killswitch<int>(std::move(keepalive_r));
 
     CHECK(bool(killswitch.w.copy() << 42));
     CHECK_EQ(42, killswitch.r.copy().read());
 
-    keepalive.w = {};
+    keepalive_w = {};
     CHECK_FALSE((killswitch.w.copy() << 21));
     int _;
     CHECK_FALSE((killswitch.r.copy() >> _));
@@ -167,11 +167,11 @@ TEST_CASE("ChanUtil - Map") {
 TEST_CASE("ChanUtil - MapStrToLen") {
     RunStats stats;
 
-    chan<std::string> words;
-    chan<size_t> lengths;
-    spawn(map(std::move(words.r), std::move(lengths.w), [](auto && s) { return s.length(); }));
+    auto [words_w, words_r] = chan<std::string>{};
+    auto [lengths_w, lengths_r] = chan<size_t>{};
+    spawn(map(std::move(words_r), std::move(lengths_w), [](auto && s) { return s.length(); }));
 
-    stats.spawn([out = std::move(words.w)]{
+    stats.spawn([out = std::move(words_w)]{
         std::string message[] = {"The", "rain", "in", "spain", "falls", "mainly", "on", "the", "plain"};
         for (auto const & word : message) {
             out << word;
@@ -179,7 +179,7 @@ TEST_CASE("ChanUtil - MapStrToLen") {
     });
 
     for (size_t i : {3, 4, 2, 5, 5, 6, 2, 3, 5}) {
-        CHECK_EQ(i, lengths.r.read());
+        CHECK_EQ(i, lengths_r.read());
     }
 
     while (csp_run()) { }
@@ -189,15 +189,15 @@ TEST_CASE("ChanUtil - Mute") {
     RunStats stats;
 
     auto r = spawn_mute<int>();
-    chan<> give_up;
+    auto [give_up_w, give_up_r] = chan<>{};
 
-    stats.spawn([r = r.copy(), give_up = std::move(give_up.r)]{
+    stats.spawn([r = r.copy(), give_up = std::move(give_up_r)]{
         int n;
         CHECK_GT(0, prialt(r >> n, ~give_up));
     });
 
     while (csp_run()) { }
-    give_up.w = {};
+    give_up_w = {};
     while (csp_run()) { }
 }
 
