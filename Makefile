@@ -5,6 +5,8 @@
 #        make clean                        (remove artifacts)
 #        make SANITIZE=address,undefined   (ASan + UBSan)
 #        make SANITIZE=thread              (TSan)
+#        make examples                    (build examples)
+#        make run-examples                (build + run examples)
 
 # Comma helper for $(subst) in BUILDDIR.
 , := ,
@@ -45,14 +47,17 @@ LIB_SRCS := src/microthread.cc \
             src/runtime.cpp \
             src/stack_analysis_arm64.cc
 
-TEST_SRCS  := test/main.cc $(wildcard test/*.test.cc)
-BENCH_SRCS := $(wildcard bench/*.bench.cc)
+TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
+BENCH_SRCS   := $(wildcard bench/*.bench.cc)
+EXAMPLE_SRCS := $(wildcard examples/*.cc)
 
 # --- Objects ---
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
+
+EXAMPLE_BINS := $(patsubst examples/%.cc,$(BUILDDIR)/examples/%,$(EXAMPLE_SRCS))
 
 ALL_OBJS := $(LIB_OBJS) $(TEST_OBJS) $(BENCH_OBJS)
 ALL_DEPS := $(ALL_OBJS:.o=.d)
@@ -61,7 +66,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench clean
+.PHONY: test build bench examples run-examples clean
 
 test: $(TARGET)
 	./$(TARGET)
@@ -95,6 +100,21 @@ $(BUILDDIR)/test/%.o: test/%.cc
 $(BUILDDIR)/bench/%.o: bench/%.cc
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
+
+# --- Examples ---
+
+examples: $(EXAMPLE_BINS)
+
+run-examples: $(EXAMPLE_BINS)
+	@for bin in $(EXAMPLE_BINS); do \
+		echo "=== $$(basename $$bin) ==="; \
+		./$$bin; \
+		echo; \
+	done
+
+$(BUILDDIR)/examples/%: examples/%.cc $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(LDLIBS)
 
 clean:
 	rm -rf build build-*
