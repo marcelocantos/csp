@@ -65,7 +65,7 @@ typedef struct csp_tag_reader { char can_wait; } * csp_reader;
 /* Create a channel, populating the i/o-let parameters. The copy function
  * is used to copy csp_write's src parameter into a temporary slot.
  * Return non-zero iff success. */
-int csp_chan(csp_writer * w, csp_reader * r, void (* tx)(void * src, void * dst));
+int csp_chan(csp_writer * w, csp_reader * r);
 
 /* Add and release refcount on writers and readers. */
 csp_writer csp_writer_addref (csp_writer w);
@@ -97,8 +97,25 @@ typedef struct csp_tag_chanop {
  * If several waitops are ready at the same time, alt chooses randomly
  * and is thus fairer, whereas prialt chooses the lowest index and is
  * more efficient. */
-int csp_alt   (csp_chanop const * waitops, int count, int nowait);
-int csp_prialt(csp_chanop const * waitops, int count, int nowait);
+/* Two-phase prialt: separates match-finding from data transfer.
+ *
+ * Phase 1 (begin): Finds a matching peer and returns with channel
+ * locks held. The caller inspects src/dst to perform a typed transfer.
+ * Phase 2 (end): Releases locks and schedules the peer.
+ *
+ * If no match is found (sleep/wake path or nowait), begin returns with
+ * src=dst=NULL and end is a no-op. */
+typedef struct csp_alt_match {
+    int result;
+    void * src;
+    void * dst;
+    /* Internal state — do not access directly. */
+    char opaque_[128] __attribute__((aligned(8)));
+} csp_alt_match;
+
+void csp_prialt_begin(csp_alt_match * out, csp_chanop const * chanops, int count, int nowait);
+void csp_alt_begin   (csp_alt_match * out, csp_chanop const * chanops, int count, int nowait);
+void csp_alt_end     (csp_alt_match * m);
 
 /* Block the current microthread until the given deadline (nanoseconds since
  * steady_clock epoch). */
@@ -168,27 +185,35 @@ namespace csp
     class action {
     public:
         using cleanup_f = void (*)(void *);
+        using transfer_f = void (*)(void *, void *);
 
         action() = default;
         action(action && a)
             : chanop_(a.chanop_)
+            , transfer_(a.transfer_)
             , cleanup_(a.cleanup_)
             , active_{a.active_ = false}
         {
             a.chanop_ = {nullptr, nullptr};
+            a.transfer_ = nullptr;
             a.cleanup_ = nullptr;
         }
         action(action const &) = delete;
 
-        action(csp_chanop c, cleanup_f cleanup)
+        action(csp_chanop c, transfer_f transfer, cleanup_f cleanup)
             : chanop_(c)
+            , transfer_(transfer)
             , cleanup_(cleanup)
         {
         }
 
+
         ~action() {
             if (active_) {
-                csp_prialt(&chanop_, 1, false);
+                csp_alt_match m;
+                csp_prialt_begin(&m, &chanop_, 1, false);
+                do_transfer(m);
+                csp_alt_end(&m);
             }
             if (cleanup_) {
                 cleanup_(chanop_.message);
@@ -197,9 +222,11 @@ namespace csp
 
         action & operator=(action && a) {
             chanop_ = a.chanop_;
+            transfer_ = a.transfer_;
             cleanup_ = a.cleanup_;
             active_ = a.active_ = false;
             a.chanop_ = {nullptr, nullptr};
+            a.transfer_ = nullptr;
             a.cleanup_ = nullptr;
             return *this;
         }
@@ -207,16 +234,29 @@ namespace csp
 
         explicit operator bool() const {
             active_ = false;
-            return csp_prialt(&chanop_, 1, false) > 0;
+            csp_alt_match m;
+            csp_prialt_begin(&m, &chanop_, 1, false);
+            do_transfer(m);
+            csp_alt_end(&m);
+            return m.result > 0;
         }
 
         csp_chanop chanop() const { return chanop_; }
 
         bool empty() const { return !chanop_.waiter; }
 
+        void do_transfer(csp_alt_match & m) const {
+            if (m.src && m.dst && transfer_) {
+                transfer_(m.src, m.dst);
+            }
+        }
+
+        void disarm() const { active_ = false; }
+
     private:
         csp_chanop chanop_ = {nullptr, nullptr};
-        cleanup_f cleanup_;
+        transfer_f transfer_ = nullptr;
+        cleanup_f cleanup_ = nullptr;
         mutable bool active_ = true;
     };
 
@@ -253,21 +293,6 @@ namespace csp
     namespace detail {
 
         template <typename T>
-        action writer_action(csp_writer w, T const & t, std::enable_if_t<is_tunnelable_via_ptr<T>::value> * = nullptr) {
-            union {
-                void * p;
-                T t;
-            } u;
-            u.t = t;
-            return {csp_chanop{csp_wait(w), u.p}, nullptr};
-        }
-
-        template <typename T>
-        action writer_action(csp_writer w, T const & t, std::enable_if_t<!is_tunnelable_via_ptr<T>::value> * = nullptr) {
-            return {csp_chanop{csp_wait(w), new T(t)}, [](void * p) { delete (T *)(p); }};
-        }
-
-        template <typename T>
         void tx_message_(void * src, void * dst, std::enable_if_t<!is_tunnelable_via_ptr<T>::value> * = nullptr) {
             T * p = static_cast<T *>(src);
             *static_cast<T *>(dst) = std::move(*p);
@@ -288,7 +313,115 @@ namespace csp
             tx_message_<T>(src, dst);
         }
 
+        template <typename T> struct is_chan_op : std::false_type {};
+
+        // Compile-time dispatch: call transfer on the op at runtime index idx.
+        template <int I>
+        inline void transfer_at(int, void *, void *) {}
+
+        template <int I, typename Op, typename... Ops>
+        inline void transfer_at(int idx, void * src, void * dst, Op && op, Ops &&... ops) {
+            if (idx == I) {
+                std::decay_t<Op>::transfer(src, dst);
+            } else {
+                transfer_at<I + 1>(idx, src, dst, std::forward<Ops>(ops)...);
+            }
+        }
+
     }
+
+    template <typename T>
+    class chan_op {
+    public:
+        // Write operation (copy).
+        chan_op(csp_writer w, T const & t)
+            : chanop_{csp_wait(w), new T(t)}, owns_buf_(true) {}
+
+        // Write operation (move).
+        chan_op(csp_writer w, T && t)
+            : chanop_{csp_wait(w), new T(std::move(t))}, owns_buf_(true) {}
+
+        // Read operation.
+        template <typename U, typename = std::enable_if_t<std::is_convertible<T, U>::value>>
+        chan_op(csp_reader r, U & dest)
+            : chanop_{csp_wait(r), &dest} {}
+
+        // Raw-pointer read (for ring buffer slots and nullptr discard).
+        chan_op(csp_reader r, void * dest)
+            : chanop_{csp_wait(r), dest} {}
+
+        // Dead-endpoint operation.
+        explicit chan_op(csp_chanop op) : chanop_(op) {}
+
+        chan_op(chan_op const &) = delete;
+        chan_op(chan_op && o)
+            : chanop_(o.chanop_), owns_buf_(o.owns_buf_), active_(o.active_)
+        {
+            o.chanop_ = {nullptr, nullptr};
+            o.owns_buf_ = false;
+            o.active_ = false;
+        }
+
+        ~chan_op() {
+            if (active_) {
+                csp_alt_match m;
+                csp_prialt_begin(&m, &chanop_, 1, false);
+                if (m.src && m.dst)
+                    *static_cast<T *>(m.dst) = std::move(*static_cast<T *>(m.src));
+                csp_alt_end(&m);
+            }
+            if (owns_buf_) delete static_cast<T *>(chanop_.message);
+        }
+
+        chan_op & operator=(chan_op const &) = delete;
+        chan_op & operator=(chan_op && o) {
+            chanop_ = o.chanop_;
+            owns_buf_ = o.owns_buf_;
+            active_ = o.active_;
+            o.chanop_ = {nullptr, nullptr};
+            o.owns_buf_ = false;
+            o.active_ = false;
+            return *this;
+        }
+
+        explicit operator bool() const {
+            active_ = false;
+            csp_alt_match m;
+            csp_prialt_begin(&m, &chanop_, 1, false);
+            if (m.src && m.dst)
+                *static_cast<T *>(m.dst) = std::move(*static_cast<T *>(m.src));
+            csp_alt_end(&m);
+            return m.result > 0;
+        }
+
+        // Implicit conversion to action (for dynamic-vector path).
+        operator action() && {
+            action a{chanop_, &detail::tx_message<T>,
+                     owns_buf_ ? static_cast<action::cleanup_f>(
+                         [](void * p) { delete static_cast<T *>(p); }) : nullptr};
+            chanop_ = {nullptr, nullptr};
+            owns_buf_ = false;
+            active_ = false;
+            return a;
+        }
+
+        static void transfer(void * src, void * dst) {
+            *static_cast<T *>(dst) = std::move(*static_cast<T *>(src));
+        }
+
+        void disarm() const { active_ = false; }
+        csp_chanop chanop() const { return chanop_; }
+
+    private:
+        csp_chanop chanop_ = {nullptr, nullptr};
+        bool owns_buf_ = false;
+        mutable bool active_ = true;
+    };
+
+    namespace detail {
+        template <typename T> struct is_chan_op<chan_op<T>> : std::true_type {};
+    }
+
 
     template <typename T = poke_t>
     class writer {
@@ -329,13 +462,11 @@ namespace csp
 
         void descr(const char* d) const { csp_chdescr(w_, d); }
 
-        action operator<<(T const & t) const { return detail::writer_action(w_, t); }
-        action operator<<(T && t) const {
-            return {csp_chanop{csp_wait(w_), new T(std::move(t))}, [](void * p) { delete (T *)(p); }};
-        }
+        chan_op<T> operator<<(T const & t) const { return {w_, t}; }
+        chan_op<T> operator<<(T && t) const { return {w_, std::move(t)}; }
 
-        action operator~() const {
-            return {csp_chanop{csp_wait_dead(w_), nullptr}, nullptr};
+        chan_op<T> operator~() const {
+            return chan_op<T>(csp_chanop{csp_wait_dead(w_), nullptr});
         }
 
         csp_writer internal_writer() const { return w_; }
@@ -390,13 +521,12 @@ namespace csp
         void descr(const char* d) { csp_chdescr(r_, d); }
 
         template <typename U>
-        std::enable_if_t<std::is_convertible<T, U>::value, action>
+        std::enable_if_t<std::is_convertible<T, U>::value, chan_op<T>>
         operator>>(U & u) const {
-            return {{csp_wait(r_), &u}, nullptr};
+            return {r_, u};
         }
-        action operator>>(void * dest) const {
-            reader<T> r = *this;
-            return {{csp_wait(r_), dest}, nullptr};
+        chan_op<T> operator>>(void * dest) const {
+            return {r_, dest};
         }
 
         // Connect two channels directly.
@@ -446,8 +576,8 @@ namespace csp
         iterator begin() const { return {*this}; }
         iterator end() const { return {{}}; }
 
-        action operator~() const {
-            return {csp_chanop{csp_wait_dead(r_), nullptr}, nullptr};
+        chan_op<T> operator~() const {
+            return chan_op<T>(csp_chanop{csp_wait_dead(r_), nullptr});
         }
 
         csp_reader internal_reader() const { return r_; }
@@ -474,7 +604,7 @@ namespace csp
         channel() {
             csp_writer w;
             csp_reader r;
-            if (csp_chan(&w, &r, &detail::tx_message<T>) == 0) {
+            if (csp_chan(&w, &r) == 0) {
                 throw microthread_error("channel creation failed");
             }
             w_.assign(w);
@@ -733,9 +863,10 @@ namespace csp
 
     namespace detail {
 
-        using csp_alt_f = int(csp_chanop const * waiter, int count, int nowait);
+        using csp_alt_begin_f = void(csp_alt_match *, csp_chanop const *, int, int);
 
-        template <detail::csp_alt_f baf>
+        // Action-based multi-alt: two-phase protocol with per-action transfer.
+        template <csp_alt_begin_f * begin_f>
         inline
         int alt(action const * io, size_t n) {
             std::vector<csp_chanop> chanops;
@@ -743,14 +874,41 @@ namespace csp
             for (size_t i = 0; i < n; ++i) {
                 chanops.push_back(io[i].chanop());
             }
-            return baf(chanops.data(), (int)chanops.size(), 0);
+            csp_alt_match m;
+            begin_f(&m, chanops.data(), (int)chanops.size(), 0);
+            if (m.src && m.dst) {
+                int idx = (m.result > 0 ? m.result : -m.result) - 1;
+                io[idx].do_transfer(m);
+            }
+            csp_alt_end(&m);
+            return m.result;
+        }
+
+        // Typed multi-alt: compile-time dispatch, no function pointers.
+        template <csp_alt_begin_f * begin_f, typename... Ops>
+        inline
+        std::enable_if_t<(is_chan_op<std::decay_t<Ops>>::value && ...), int>
+        typed_alt(Ops &&... ops) {
+            constexpr size_t N = sizeof...(Ops);
+            csp_chanop chanops[N] = {ops.chanop()...};
+            csp_alt_match m;
+            begin_f(&m, chanops, N, false);
+            if (m.src && m.dst) {
+                int idx = (m.result > 0 ? m.result : -m.result) - 1;
+                transfer_at<0>(idx, m.src, m.dst, ops...);
+            }
+            csp_alt_end(&m);
+            (ops.disarm(), ...);
+            return m.result;
         }
 
     }
 
+    // --- action-based overloads ---
+
     inline
     int alt(action const * io, size_t n) {
-        return detail::alt<csp_alt>(io, n);
+        return detail::alt<&csp_alt_begin>(io, n);
     }
 
     template <int N>
@@ -775,7 +933,7 @@ namespace csp
 
     inline
     int prialt(action const * io, size_t n) {
-        return detail::alt<csp_prialt>(io, n);
+        return detail::alt<&csp_prialt_begin>(io, n);
     }
 
     template <int N>
@@ -796,6 +954,22 @@ namespace csp
         action actions[n] = {std::move(a)};
         detail::insert_actions(actions + 1, std::forward<Actions>(aa)...);
         return prialt(actions, n);
+    }
+
+    // --- typed chan_op overloads (zero function pointers) ---
+
+    template <typename... Ops>
+    inline
+    std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
+    alt(Ops &&... ops) {
+        return detail::typed_alt<&csp_alt_begin>(std::forward<Ops>(ops)...);
+    }
+
+    template <typename... Ops>
+    inline
+    std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
+    prialt(Ops &&... ops) {
+        return detail::typed_alt<&csp_prialt_begin>(std::forward<Ops>(ops)...);
     }
 
     // Dead channel to assist non-blocking waits.

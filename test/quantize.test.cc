@@ -60,9 +60,7 @@ TEST_CASE("Quantize - Complex") {
                 CHECK_EQ(n, v);
             }
         }
-        int dummy;
-        INFO(dummy);
-        CHECK_FALSE((sink >> dummy));
+        CHECK_FALSE((sink >> nullptr));
     });
 
     CHECK(bool(residue >> undelivered));

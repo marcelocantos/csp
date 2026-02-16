@@ -603,14 +603,14 @@ TEST_CASE("MN Volume - SpawnDuringExecution") {
     constexpr int DEPTH = (CSP_TEST_SANITIZER ? 12 : 17);  // 131071 or 8191 microthreads
     std::atomic<int> count{0};
 
-    std::function<void(int)> go = [&](int depth) {
+    auto go = [&](auto & self, int depth) -> void {
         count.fetch_add(1, std::memory_order_relaxed);
         if (depth > 0) {
-            csp::spawn([&, depth] { go(depth - 1); });
-            csp::spawn([&, depth] { go(depth - 1); });
+            csp::spawn([&, depth] { self(self, depth - 1); });
+            csp::spawn([&, depth] { self(self, depth - 1); });
         }
     };
-    csp::spawn([&] { go(DEPTH); });
+    csp::spawn([&] { go(go, DEPTH); });
 
     csp::schedule();
 

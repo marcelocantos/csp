@@ -84,7 +84,7 @@ private:
 template <typename F>
 void RunStats::spawn(F && f) {
     ++pending_;
-    csp::spawn([f = std::move(f), this]{
+    csp::spawn([f = std::move(f), this] mutable {
         RunScope scope(*this);
         f();
     });

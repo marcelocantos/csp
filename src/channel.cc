@@ -98,7 +98,7 @@ namespace {
 
     class Channel {
     public:
-        Channel(void (* tx)(void * src, void * dst)) : tx_(tx) {
+        Channel() {
             static_assert(offsetof(Channel,delegate_) == 0, "delegate_ must be at the start for chan() to work");
             // Must be 16-byte aligned.
             assert(((uintptr_t)this % 16) == 0);
@@ -160,16 +160,29 @@ namespace {
 
         explicit operator bool() { return endpts_[wr].refcount.load() > 0 && endpts_[rd].refcount.load() > 0; }
 
-        static int alt(csp_chanop const * chanops, int count, bool nowait) {
-            if (count == 1) {
-                return prialt(chanops, count, nowait);
-            }
-            thread_local std::mt19937 rng{std::random_device{}()};
-            int offset = std::uniform_int_distribution<int>(0, count - 1)(rng);
-            return prialt(chanops, count, nowait, offset);
-        }
+        // Internal state stored in csp_alt_match::opaque_.
+        struct match_internal {
+            Channel* fixed_sorted[8];
+            Channel** sorted;       // points to fixed_sorted or heap_alloc
+            Channel** heap_alloc;   // non-null if heap-allocated
+            int n_sorted;
+            Microthread* peer;
+            bool needs_unlock;
+            bool use_run;           // single-P writer: unlock then run
+        };
+        static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
 
-        static int prialt(csp_chanop const * chanops, int count, bool nowait, int offset = 0) {
+        static void prialt_begin_impl(csp_alt_match * out, csp_chanop const * chanops, int count, bool nowait, int offset = 0) {
+            auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
+            mi->heap_alloc = nullptr;
+            mi->peer = nullptr;
+            mi->needs_unlock = false;
+            mi->use_run = false;
+            out->src = nullptr;
+            out->dst = nullptr;
+
+            out->result = 0;
+
             // Collect unique channels, sorted by id for lock ordering.
             Channel* fixed_chans[8];
             std::vector<Channel*> variable_chans;
@@ -193,8 +206,19 @@ namespace {
                       [](Channel * a, Channel * b) { return a->id_ < b->id_; });
             n_sorted = int(std::unique(sorted, sorted + n_sorted) - sorted);
 
-            auto lock_all = [&]{ for (int i = 0; i < n_sorted; ++i) sorted[i]->mu_.lock(); };
-            auto unlock_all = [&]{ for (int i = 0; i < n_sorted; ++i) sorted[i]->mu_.unlock(); };
+            // Copy sorted channels into persistent storage.
+            if (n_sorted <= 8) {
+                memcpy(mi->fixed_sorted, sorted, n_sorted * sizeof(Channel*));
+                mi->sorted = mi->fixed_sorted;
+            } else {
+                mi->heap_alloc = new Channel*[n_sorted];
+                memcpy(mi->heap_alloc, sorted, n_sorted * sizeof(Channel*));
+                mi->sorted = mi->heap_alloc;
+            }
+            mi->n_sorted = n_sorted;
+
+            auto lock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.lock(); };
+            auto unlock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock(); };
 
             lock_all();
 
@@ -209,7 +233,8 @@ namespace {
 
                     if (!*ch) {
                         unlock_all();
-                        return -(i + 1);
+                        out->result = -(i + 1);
+                        return;
                     }
 
                     auto & them = ch->endpts_[1 - endpt].waiters;
@@ -219,25 +244,23 @@ namespace {
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_ + 1);
                                 cw.thread->signal_ = idx;
+
+                                // Set up match: src is always writer's
+                                // buffer, dst is always reader's buffer.
                                 if (endpt == wr) {
-                                    if (auto dst = const_cast<void *>(cw.chanop->message)) {
-                                        ch->tx_(chop.message, dst);
-                                    }
-                                    if (Runtime::instance().procs.size() > 1) {
-                                        cw.thread->schedule();
-                                        unlock_all();
-                                    } else {
-                                        unlock_all();
-                                        cw.thread->run(Status::run);
-                                    }
+                                    out->src = chop.message;
+                                    out->dst = const_cast<void *>(cw.chanop->message);
+                                    mi->use_run = (Runtime::instance().procs.size() <= 1);
                                 } else {
-                                    if (auto dst = const_cast<void *>(chop.message)) {
-                                        ch->tx_(cw.chanop->message, dst);
-                                    }
-                                    cw.thread->schedule();
-                                    unlock_all();
+                                    out->src = cw.chanop->message;
+                                    out->dst = const_cast<void *>(chop.message);
                                 }
-                                return i + 1;
+
+                    
+                                out->result = i + 1;
+                                mi->peer = cw.thread;
+                                mi->needs_unlock = true;
+                                return;  // locks held
                             }
                         }
                     }
@@ -247,7 +270,7 @@ namespace {
 
             if (all_null || nowait) {
                 unlock_all();
-                return 0;
+                return;
             }
 
             // Phase 2: Register on all channels and sleep.
@@ -286,11 +309,28 @@ namespace {
             unlock_all();
 
             g_self->alt_state.store(Microthread::ALT_IDLE, std::memory_order_release);
-            auto result = g_self->signal_;
+            out->result = g_self->signal_;
             g_self->chanops_ = nullptr;
             g_self->n_chanops_ = 0;
-            return result;
+            // src/dst/peer remain null — transfer was done by the waker.
         }
+
+        static void alt_end_impl(csp_alt_match * m) {
+            auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
+            if (mi->needs_unlock) {
+                if (mi->use_run) {
+                    // Single-P writer path: unlock first, then context-switch
+                    // to peer (runs until it yields, then returns here).
+                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
+                    mi->peer->run(Status::run);
+                } else {
+                    if (mi->peer) mi->peer->schedule();
+                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
+                }
+            }
+            delete[] mi->heap_alloc;
+        }
+
 
     private:
         using Waiters = detail::RingBuffer<ChanopWaiter>;
@@ -326,7 +366,6 @@ namespace {
                 }
             }
         } endpts_[2];
-        void (* tx_)(void * src, void * dst);
 
         friend char const * describe(void *);
     };
@@ -346,9 +385,9 @@ int csp__internal__channel_count(int endpt) {
     return c.active - 1; // Exclude skip and global_exception_handler from the reader count.
 }
 
-int csp_chan(csp_writer * w, csp_reader * r, void (* tx)(void * src, void * dst)) {
+int csp_chan(csp_writer * w, csp_reader * r) {
     try {
-        auto ch = new Channel{tx};
+        auto ch = new Channel{};
         *w = ch->as_writer();
         *r = ch->as_reader();
         return int(true);
@@ -377,10 +416,19 @@ void        csp_writer_release(csp_writer w) { if (w) chan(w)->release(wr); }
 csp_reader csp_reader_addref (csp_reader r) { if (r) chan(r)->addref(rd); return r; }
 void        csp_reader_release(csp_reader r) { if (r) chan(r)->release(rd); }
 
-int csp_alt(csp_chanop const * chanops, int count, int nowait) {
-    return Channel::alt(chanops, count, bool(nowait));
+void csp_prialt_begin(csp_alt_match * out, csp_chanop const * chanops, int count, int nowait) {
+    Channel::prialt_begin_impl(out, chanops, count, bool(nowait));
 }
 
-int csp_prialt(csp_chanop const * chanops, int count, int nowait) {
-    return Channel::prialt(chanops, count, bool(nowait));
+void csp_alt_begin(csp_alt_match * out, csp_chanop const * chanops, int count, int nowait) {
+    int offset = 0;
+    if (count > 1) {
+        thread_local std::mt19937 rng{std::random_device{}()};
+        offset = std::uniform_int_distribution<int>(0, count - 1)(rng);
+    }
+    Channel::prialt_begin_impl(out, chanops, count, bool(nowait), offset);
+}
+
+void csp_alt_end(csp_alt_match * m) {
+    Channel::alt_end_impl(m);
 }

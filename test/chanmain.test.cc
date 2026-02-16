@@ -48,12 +48,12 @@ TEST_CASE("ChanMain - Read") {
 }
 
 auto worker = [](auto && o, auto && i) {
-    return [o = std::make_shared<writer<int>>(std::move(o)), i = std::move(i)]{
+    return [o = std::move(o), i = std::move(i)] mutable {
         for (int n = 1; n <= 5; ++n) {
-            CHECK(bool(*o << n));
+            CHECK(bool(o << n));
         }
 
-        *o = {};
+        o = {};
 
         int result = 0;
         int n;
