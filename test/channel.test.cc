@@ -340,7 +340,10 @@ TEST_CASE("Channel - AltNull") {
 
     stats.spawn([up = +up, down = -down]{
         int n;
-        auto actions = action_list(up << 42, action(), down >> n);
+        std::vector<chan_op<int>> actions;
+        actions.push_back(up << 42);
+        actions.emplace_back();
+        actions.push_back(down >> n);
         for (int i = 0; i < 2; ++i) {
             auto a = alt(actions);
             CHECK_NE(a, 2);
@@ -398,7 +401,7 @@ TEST_CASE("Channel - SpawnRange") {
     CHECK_EQ(15, total);
 }
 
-// Test action objects that send larger-than-pointer message.
+// Test chan_op objects that send larger-than-pointer message.
 TEST_CASE("Channel - ActionBig") {
     RunStats stats;
 
@@ -415,7 +418,8 @@ TEST_CASE("Channel - ActionBig") {
     Big big2 = big, big3 = {};
 
     channel<Big> chanb;
-    auto a = csp::action_list(+chanb << big);
+    std::vector<csp::chan_op<Big>> a;
+    a.push_back(+chanb << big);
     big = {};
 
     stats.spawn([&]{
@@ -811,7 +815,7 @@ TEST_CASE("Channel - AltManyChannels") {
     while (csp_run()) { }
 
     int n = -1;
-    std::vector<action> actions;
+    std::vector<chan_op<int>> actions;
     for (int i = 0; i < N; ++i) {
         actions.push_back(rs[i] >> n);
     }

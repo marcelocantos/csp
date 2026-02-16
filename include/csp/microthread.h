@@ -182,136 +182,9 @@ namespace csp
         explicit operator bool() const { return false; }
     } poke;
 
-    class action {
-    public:
-        using cleanup_f = void (*)(void *);
-        using transfer_f = void (*)(void *, void *);
-
-        action() = default;
-        action(action && a)
-            : chanop_(a.chanop_)
-            , transfer_(a.transfer_)
-            , cleanup_(a.cleanup_)
-            , active_{a.active_ = false}
-        {
-            a.chanop_ = {nullptr, nullptr};
-            a.transfer_ = nullptr;
-            a.cleanup_ = nullptr;
-        }
-        action(action const &) = delete;
-
-        action(csp_chanop c, transfer_f transfer, cleanup_f cleanup)
-            : chanop_(c)
-            , transfer_(transfer)
-            , cleanup_(cleanup)
-        {
-        }
-
-
-        ~action() {
-            if (active_) {
-                csp_alt_match m;
-                csp_prialt_begin(&m, &chanop_, 1, false);
-                do_transfer(m);
-                csp_alt_end(&m);
-            }
-            if (cleanup_) {
-                cleanup_(chanop_.message);
-            }
-        }
-
-        action & operator=(action && a) {
-            chanop_ = a.chanop_;
-            transfer_ = a.transfer_;
-            cleanup_ = a.cleanup_;
-            active_ = a.active_ = false;
-            a.chanop_ = {nullptr, nullptr};
-            a.transfer_ = nullptr;
-            a.cleanup_ = nullptr;
-            return *this;
-        }
-        action & operator=(action const &) = delete;
-
-        explicit operator bool() const {
-            active_ = false;
-            csp_alt_match m;
-            csp_prialt_begin(&m, &chanop_, 1, false);
-            do_transfer(m);
-            csp_alt_end(&m);
-            return m.result > 0;
-        }
-
-        csp_chanop chanop() const { return chanop_; }
-
-        bool empty() const { return !chanop_.waiter; }
-
-        void do_transfer(csp_alt_match & m) const {
-            if (m.src && m.dst && transfer_) {
-                transfer_(m.src, m.dst);
-            }
-        }
-
-        void disarm() const { active_ = false; }
-
-    private:
-        csp_chanop chanop_ = {nullptr, nullptr};
-        transfer_f transfer_ = nullptr;
-        cleanup_f cleanup_ = nullptr;
-        mutable bool active_ = true;
-    };
-
-    namespace detail {
-
-        template <typename I>
-        inline
-        void insert_actions(I) { }
-
-        template <typename I, typename... Actions>
-        inline
-        void insert_actions(I i, action && a, Actions &&... aa) {
-            *i = std::move(a);
-            insert_actions(++i, std::forward<Actions>(aa)...);
-        }
-
-    }
-
-    template <typename... Actions>
-    auto action_list(Actions &&... aa) {
-        std::vector<action> actions;
-        actions.reserve(sizeof...(aa));
-        detail::insert_actions(back_inserter(actions), std::forward<Actions>(aa)...);
-        return actions;
-    }
-
     template <typename T> class channel;
 
-    template <typename T>
-    struct is_tunnelable_via_ptr {
-        static const bool value = false; //std::is_pod<T>::value && sizeof(T) <= sizeof(void *);
-    };
-
     namespace detail {
-
-        template <typename T>
-        void tx_message_(void * src, void * dst, std::enable_if_t<!is_tunnelable_via_ptr<T>::value> * = nullptr) {
-            T * p = static_cast<T *>(src);
-            *static_cast<T *>(dst) = std::move(*p);
-        }
-
-        template <typename T>
-        void tx_message_(void * src, void * dst, std::enable_if_t<is_tunnelable_via_ptr<T>::value> * = nullptr) {
-            union {
-                void * p;
-                T t;
-            } u;
-            u.p = src;
-            *static_cast<T *>(dst) = std::move(u.t);
-        }
-
-        template <typename T>
-        void tx_message(void * src, void * dst) {
-            tx_message_<T>(src, dst);
-        }
 
         template <typename T> struct is_chan_op : std::false_type {};
 
@@ -333,6 +206,9 @@ namespace csp
     template <typename T>
     class chan_op {
     public:
+        // Empty/inactive operation (placeholder in vectors).
+        chan_op() : active_(false) {}
+
         // Write operation (copy).
         chan_op(csp_writer w, T const & t)
             : chanop_{csp_wait(w), new T(t)}, owns_buf_(true) {}
@@ -375,6 +251,7 @@ namespace csp
 
         chan_op & operator=(chan_op const &) = delete;
         chan_op & operator=(chan_op && o) {
+            if (owns_buf_) delete static_cast<T *>(chanop_.message);
             chanop_ = o.chanop_;
             owns_buf_ = o.owns_buf_;
             active_ = o.active_;
@@ -392,17 +269,6 @@ namespace csp
                 *static_cast<T *>(m.dst) = std::move(*static_cast<T *>(m.src));
             csp_alt_end(&m);
             return m.result > 0;
-        }
-
-        // Implicit conversion to action (for dynamic-vector path).
-        operator action() && {
-            action a{chanop_, &detail::tx_message<T>,
-                     owns_buf_ ? static_cast<action::cleanup_f>(
-                         [](void * p) { delete static_cast<T *>(p); }) : nullptr};
-            chanop_ = {nullptr, nullptr};
-            owns_buf_ = false;
-            active_ = false;
-            return a;
         }
 
         static void transfer(void * src, void * dst) {
@@ -865,26 +731,7 @@ namespace csp
 
         using csp_alt_begin_f = void(csp_alt_match *, csp_chanop const *, int, int);
 
-        // Action-based multi-alt: two-phase protocol with per-action transfer.
-        template <csp_alt_begin_f * begin_f>
-        inline
-        int alt(action const * io, size_t n) {
-            std::vector<csp_chanop> chanops;
-            chanops.reserve(n);
-            for (size_t i = 0; i < n; ++i) {
-                chanops.push_back(io[i].chanop());
-            }
-            csp_alt_match m;
-            begin_f(&m, chanops.data(), (int)chanops.size(), 0);
-            if (m.src && m.dst) {
-                int idx = (m.result > 0 ? m.result : -m.result) - 1;
-                io[idx].do_transfer(m);
-            }
-            csp_alt_end(&m);
-            return m.result;
-        }
-
-        // Typed multi-alt: compile-time dispatch, no function pointers.
+        // Typed variadic alt: compile-time dispatch, no function pointers.
         template <csp_alt_begin_f * begin_f, typename... Ops>
         inline
         std::enable_if_t<(is_chan_op<std::decay_t<Ops>>::value && ...), int>
@@ -902,61 +749,33 @@ namespace csp
             return m.result;
         }
 
+        // Typed vector alt: all operations share type T, transfer is inline.
+        //
+        // Dynamic-count alt where every operation is on the same channel
+        // type T.  This is not a limitation in practice: dynamic-count alt
+        // arises when fan-out/fan-in targets a runtime-determined set of
+        // channels, and those channels are always the same type.  When
+        // different channel types appear in a single alt, the count is
+        // known at compile time and the variadic overload handles it with
+        // per-index type dispatch.
+        template <csp_alt_begin_f * begin_f, typename T>
+        inline
+        int typed_alt_vec(std::vector<chan_op<T>> const & ops) {
+            std::vector<csp_chanop> chanops;
+            chanops.reserve(ops.size());
+            for (auto & op : ops) chanops.push_back(op.chanop());
+            csp_alt_match m;
+            begin_f(&m, chanops.data(), (int)chanops.size(), 0);
+            if (m.src && m.dst)
+                chan_op<T>::transfer(m.src, m.dst);
+            csp_alt_end(&m);
+            for (auto & op : ops) op.disarm();
+            return m.result;
+        }
+
     }
 
-    // --- action-based overloads ---
-
-    inline
-    int alt(action const * io, size_t n) {
-        return detail::alt<&csp_alt_begin>(io, n);
-    }
-
-    template <int N>
-    inline
-    int alt(action const (& io)[N]) {
-        return alt(io, N);
-    }
-
-    inline
-    int alt(std::vector<action> const & actions) {
-        return alt(&actions.front(), actions.size());
-    }
-
-    template <typename... Actions>
-    inline
-    int alt(action && a, Actions &&... aa) {
-        constexpr size_t n = 1 + sizeof...(aa);
-        action actions[n] = {std::move(a)};
-        detail::insert_actions(actions + 1, std::forward<Actions>(aa)...);
-        return alt(actions, n);
-    }
-
-    inline
-    int prialt(action const * io, size_t n) {
-        return detail::alt<&csp_prialt_begin>(io, n);
-    }
-
-    template <int N>
-    inline
-    int prialt(action const (& io)[N]) {
-        return prialt(io, N);
-    }
-
-    inline
-    int prialt(std::vector<action> const & actions) {
-        return prialt(actions.data(), actions.size());
-    }
-
-    template <typename... Actions>
-    inline
-    int prialt(action && a, Actions &&... aa) {
-        constexpr size_t n = 1 + sizeof...(aa);
-        action actions[n] = {std::move(a)};
-        detail::insert_actions(actions + 1, std::forward<Actions>(aa)...);
-        return prialt(actions, n);
-    }
-
-    // --- typed chan_op overloads (zero function pointers) ---
+    // --- variadic overloads (compile-time type dispatch) ---
 
     template <typename... Ops>
     inline
@@ -970,6 +789,20 @@ namespace csp
     std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
     prialt(Ops &&... ops) {
         return detail::typed_alt<&csp_prialt_begin>(std::forward<Ops>(ops)...);
+    }
+
+    // --- vector overloads (single type T, inline transfer) ---
+
+    template <typename T>
+    inline
+    int alt(std::vector<chan_op<T>> const & ops) {
+        return detail::typed_alt_vec<&csp_alt_begin>(ops);
+    }
+
+    template <typename T>
+    inline
+    int prialt(std::vector<chan_op<T>> const & ops) {
+        return detail::typed_alt_vec<&csp_prialt_begin>(ops);
     }
 
     // Dead channel to assist non-blocking waits.

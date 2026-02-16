@@ -3,8 +3,6 @@
 
 #include <csp/microthread.h>
 
-#include <csp/internal/on_scope_exit.h>
-
 namespace csp {
 
     namespace chan {
@@ -22,6 +20,12 @@ namespace csp {
         //         channels. Input channels die when output count
         //         reaches zero.
         //
+        // The inner loop uses a raw csp_chanop vector because the
+        // operations span two channel types (channel<writer<T>> for
+        // the control plane, channel<T> for the data plane).  The
+        // transfer is dispatched inline by slot index — no function
+        // pointer, no BLR — because each slot's type is fixed at
+        // compile time.
         template <typename T>
         auto fanout(reader<writer<T>> new_out, writer<writer<T>> new_in) {
             return [=]{
@@ -36,24 +40,47 @@ namespace csp {
                     CSP_LOG(log, "first new_out");
 
                     reader<T> in;
-                    auto actions = action_list(new_in << ++in, action{}, new_out >> out, ~out);
+                    writer<T> in_val = ++in;  // slot 0 write buffer
+                    T t{};                     // slot 1 read buffer
+                    writer<T> out_val;         // slot 2 read buffer
+
+                    // Slot layout (indices are 1-based in prialt results):
+                    //   0: new_in << in_val   (writer<T> transfer)
+                    //   1: in >> t             (T transfer) — initially empty
+                    //   2: new_out >> out_val  (writer<T> transfer)
+                    //   3+: ~outs[i]           (death watches, no transfer)
+                    std::vector<csp_chanop> chanops;
+                    chanops.push_back({csp_wait(new_in.internal_writer()), &in_val});
+                    chanops.push_back({nullptr, nullptr});
+                    chanops.push_back({csp_wait(new_out.internal_reader()), &out_val});
+                    chanops.push_back({csp_wait_dead(out.internal_writer()), nullptr});
 
                     std::vector<writer<T>> outs{std::move(out)};
 
                     auto drop = [&](size_t i) {
                         outs[i] = std::move(outs.back());
                         outs.pop_back();
-                        actions[3 + i] = std::move(actions.back());
-                        actions.pop_back();
+                        chanops[3 + i] = chanops.back();
+                        chanops.pop_back();
                     };
 
-                    T t;
                     while (!outs.empty()) {
-                        switch (auto i = prialt(actions)) {
+                        csp_alt_match m;
+                        csp_prialt_begin(&m, chanops.data(), chanops.size(), 0);
+                        if (m.src && m.dst) {
+                            int idx = (m.result > 0 ? m.result : -m.result) - 1;
+                            if (idx == 0 || idx == 2)
+                                *static_cast<writer<T>*>(m.dst) = std::move(*static_cast<writer<T>*>(m.src));
+                            else if (idx == 1)
+                                *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
+                        }
+                        csp_alt_end(&m);
+
+                        switch (m.result) {
                         case 1:
                             CSP_LOG(log, "new_in");
-                            actions[0] = {};
-                            actions[1] = in >> t;
+                            chanops[0] = {nullptr, nullptr};
+                            chanops[1] = {csp_wait(in.internal_reader()), &t};
                             break;
                         case -1:
                             CSP_LOG(log, "~new_in");
@@ -72,23 +99,25 @@ namespace csp {
                         case -2:
                             CSP_LOG(log, "~in");
                             in = {};
-                            actions[0] = new_in << ++in;
-                            actions[1] = {};
+                            in_val = ++in;
+                            chanops[0] = {csp_wait(new_in.internal_writer()), &in_val};
+                            chanops[1] = {nullptr, nullptr};
                             break;
                         case 3:  // new_out
                             CSP_LOG(log, "new_out");
-                            actions.push_back(~out);
-                            outs.push_back(std::move(out));
+                            chanops.push_back({csp_wait_dead(out_val.internal_writer()), nullptr});
+                            outs.push_back(std::move(out_val));
                             break;
                         case -3:
                             CSP_LOG(log, "~new_out");
                             // No more new outs.
-                            actions[2] = {};
+                            chanops[2] = {nullptr, nullptr};
                             break;
-                        default:  // ~outs
-                            i = -4 - i;
+                        default: {  // ~outs
+                            auto i = -4 - m.result;
                             CSP_LOG(log, "~outs[%d]", i);
                             drop(i);
+                        }
                         }
                     }
                 }
