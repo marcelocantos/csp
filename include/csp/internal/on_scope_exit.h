@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__internal__on_scope_exit_h
-#define INCLUDED__csp__internal__on_scope_exit_h
+#pragma once
 
 #include <cstdlib>
 #include <functional>
@@ -59,5 +58,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__internal__on_scope_exit_h

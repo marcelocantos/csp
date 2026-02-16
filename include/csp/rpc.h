@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__rpc_h
-#define INCLUDED__csp__rpc_h
+#pragma once
 
 #include <csp/microthread.h>
 
@@ -81,5 +80,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__rpc_h

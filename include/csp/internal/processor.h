@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__internal__processor_h
-#define INCLUDED__csp__internal__processor_h
+#pragma once
 
 #include <csp/internal/microthread_internal.h>
 
@@ -50,5 +49,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__internal__processor_h

@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__test__testutil_h
-#define INCLUDED__csp__test__testutil_h
+#pragma once
 
 #include <doctest/doctest.h>
 
@@ -89,5 +88,3 @@ void RunStats::spawn(F && f) {
         f();
     });
 }
-
-#endif // INCLUDED__csp__test__testutil_h

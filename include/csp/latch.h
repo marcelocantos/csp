@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__latch_h
-#define INCLUDED__csp__latch_h
+#pragma once
 
 #include "mute.h"
 
@@ -45,4 +44,3 @@ namespace csp {
         }
 
 }
-#endif // INCLUDED__csp__latch_h

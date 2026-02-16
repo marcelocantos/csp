@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__map_h
-#define INCLUDED__csp__map_h
+#pragma once
 
 #include <csp/microthread.h>
 
@@ -38,5 +37,3 @@ namespace csp {
         }
 
 }
-
-#endif // INCLUDED__csp__map_h

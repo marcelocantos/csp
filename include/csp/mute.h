@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__mute_h
-#define INCLUDED__csp__mute_h
+#pragma once
 
 #include <csp/microthread.h>
 
@@ -22,5 +21,3 @@ namespace csp {
         }
 
 }
-
-#endif // INCLUDED__csp__mute_h

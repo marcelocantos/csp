@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__microthread_h
-#define INCLUDED__csp__microthread_h
+#pragma once
 
 #include <csp/internal/mt_log.h>
 
@@ -808,5 +807,3 @@ namespace std {
 }
 
 #endif /* __cplusplus */
-
-#endif // INCLUDED__csp__microthread_h

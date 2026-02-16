@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__microthread_internal_h
-#define INCLUDED__csp__microthread_internal_h
+#pragma once
 
 #include <csp/microthread.h>
 #include <csp/fcontext.h>
@@ -98,5 +97,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__microthread_internal_h

@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__mt_log_h
-#define INCLUDED__csp__mt_log_h
+#pragma once
 
 #include <cstdarg>
 #include <string>
@@ -78,5 +77,3 @@ namespace csp {
 #define BRAC_SCOPE_( logger, file, line, func, fmt, ...) BRAC_SCOPE__(logger, file, line, func, fmt, ##__VA_ARGS__)
 #define BRAC_SCOPE__(logger, file, line, func, fmt, ...) \
     LogScope csp__logScope__##line(logger, CSP__DETAIL__SOURCE_ROOT, file, line, func, fmt, func, ##__VA_ARGS__);
-
-#endif // INCLUDED__csp__mt_log_h

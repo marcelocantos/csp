@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__test__testscale_h
-#define INCLUDED__csp__test__testscale_h
+#pragma once
 
 // Scale factor for test iteration counts under sanitizers.
 // Sanitizers add significant overhead (5-15x), so we reduce iteration
@@ -22,5 +21,3 @@ constexpr int SCALE_HEAVY = 1;
 constexpr int SCALE_MEDIUM = 1;
 constexpr int SCALE_LIGHT = 1;
 #endif
-
-#endif // INCLUDED__csp__test__testscale_h

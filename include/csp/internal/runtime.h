@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__internal__runtime_h
-#define INCLUDED__csp__internal__runtime_h
+#pragma once
 
 #include <csp/internal/processor.h>
 
@@ -56,5 +55,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__internal__runtime_h

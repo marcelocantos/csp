@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__ringbuffer_h
-#define INCLUDED__csp__ringbuffer_h
+#pragma once
 
 #include <cassert>
 #include <cstddef>
@@ -216,5 +215,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__ringbuffer_h

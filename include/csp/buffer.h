@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__buffer_h
-#define INCLUDED__csp__buffer_h
+#pragma once
 
 #include <csp/microthread.h>
 #include "ringbuffer.h"
@@ -78,5 +77,3 @@ namespace csp {
         }
 
 }
-
-#endif // INCLUDED__csp__buffer_h

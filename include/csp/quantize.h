@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__quantize_h
-#define INCLUDED__csp__quantize_h
+#pragma once
 
 #include <csp/microthread.h>
 #include <csp/internal/on_scope_exit.h>
@@ -135,5 +134,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__quantize_h

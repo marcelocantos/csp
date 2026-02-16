@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__fanout_h
-#define INCLUDED__csp__fanout_h
+#pragma once
 
 #include <csp/microthread.h>
 
@@ -138,5 +137,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__fanout_h

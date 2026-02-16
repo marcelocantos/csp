@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__internal__function_h
-#define INCLUDED__csp__internal__function_h
+#pragma once
 
 #include <functional>
 #include <type_traits>
@@ -53,5 +52,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__internal__function_h

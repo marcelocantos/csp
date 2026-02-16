@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__stack_analysis_h
-#define INCLUDED__csp__stack_analysis_h
+#pragma once
 
 #include <cstddef>
 
@@ -34,5 +33,3 @@ stack_analysis analyze_stack_depth_cached(
     stack_analysis_options opts = {});
 
 } // namespace csp
-
-#endif

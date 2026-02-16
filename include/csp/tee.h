@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__tee_h
-#define INCLUDED__csp__tee_h
+#pragma once
 
 #include <csp/microthread.h>
 
@@ -39,5 +38,3 @@ namespace csp {
         }
 
 }
-
-#endif // INCLUDED__csp__tee_h

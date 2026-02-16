@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__fcontext_h
-#define INCLUDED__csp__fcontext_h
+#pragma once
 
 #include <boost/context/detail/fcontext.hpp>
 
@@ -12,5 +11,3 @@ namespace csp {
     using boost::context::detail::make_fcontext;
 
 }
-
-#endif // INCLUDED__csp__fcontext_h

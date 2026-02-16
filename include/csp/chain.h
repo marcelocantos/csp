@@ -1,5 +1,4 @@
-#ifndef INCLUDED__csp__chain_h
-#define INCLUDED__csp__chain_h
+#pragma once
 
 #include <csp/microthread.h>
 
@@ -41,5 +40,3 @@ namespace csp {
     }
 
 }
-
-#endif // INCLUDED__csp__chain_h
