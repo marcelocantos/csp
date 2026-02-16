@@ -14,25 +14,15 @@
 #include <deque>
 #include <exception>
 #include <functional>
-#include <iostream>
 #include <mutex>
 #include <numeric>
 #include <random>
 #include <stdexcept>
-#include <sstream>
 #include <string>
-#include <unordered_set>
+
 
 using namespace csp;
 using namespace csp::detail;
-
-static Logger g_lifespan  ("channel/lifespan");
-static Logger g_chlog     ("channel/basic");
-static Logger g_verboselog("channel/verbose");
-static Logger g_sleeplog  ("channel/sleep");
-static Logger g_msglog    ("channel/msg");
-static Logger g_debug     ("channel/debug");
-static Logger g_sequence  ("microthread/sequence");
 
 
 struct Counters {
@@ -62,16 +52,6 @@ namespace {
 
 }
 
-namespace std {
-
-    template <>
-    struct hash<ChanopWaiter> {
-        size_t operator()(ChanopWaiter const & cw) const {
-            return size_t(9018121390601033611UL) * hash<void const *>{}(cw.chanop) + hash<void const *>{}(cw.thread);
-        }
-    };
-
-}
 
 namespace {
 
@@ -118,7 +98,7 @@ namespace {
 
     class Channel {
     public:
-        Channel(void (* tx)(void * src, void * dst)) : tx_(tx) {     CSP_LOG(g_verboselog, "new (%s[%zu:%zu]) Channel", describe(this), endpts_[0].refcount.load(), endpts_[1].refcount.load());
+        Channel(void (* tx)(void * src, void * dst)) : tx_(tx) {
             static_assert(offsetof(Channel,delegate_) == 0, "delegate_ must be at the start for chan() to work");
             // Must be 16-byte aligned.
             assert(((uintptr_t)this % 16) == 0);
@@ -128,17 +108,17 @@ namespace {
             ++counterses()[wr].active;
             ++counterses()[rd].active;
         }
-        ~Channel() {                                                CSP_LOG(g_verboselog, "%s[%zu:%zu]->~Channel", describe(this), endpts_[0].refcount.load(), endpts_[1].refcount.load());
+        ~Channel() {
         }
         csp_writer as_writer() { return reinterpret_cast<csp_writer>(this); }
         csp_reader as_reader() { return reinterpret_cast<csp_reader>((uintptr_t)this | 1); }
         void set_descr(char const * d) { descr_ = d; }
 
-        void addref(int endpt) {                                    CSP_LOG(g_verboselog, "%s[%zu:%zu]->addref(%c)", describe(this), endpts_[0].refcount.load() + (endpt == 0), endpts_[1].refcount.load() + (endpt == 1), "wr"[endpt]);
+        void addref(int endpt) {
             ++counterses()[endpt].refs;
             endpts_[endpt].refcount.fetch_add(1, std::memory_order_relaxed);
         }
-        void release(int endpt) {                                   CSP_LOG(g_verboselog, "%s[%zu:%zu]->release(%c)", describe(this), endpts_[0].refcount.load() - (endpt == 0), endpts_[1].refcount.load() - (endpt == 1), "wr"[endpt]);
+        void release(int endpt) {
             ++counterses()[endpt].derefs;
             if (endpts_[endpt].refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 {
@@ -148,7 +128,7 @@ namespace {
                     if (ep.refcount.load(std::memory_order_acquire) > 0) {
                         // Wake waiters via CAS. Don't remove from queues —
                         // woken threads clean up their own registrations.
-                        for (auto const & cw : ep.waiters) {        CSP_LOG(g_verboselog, "%s: wake(%s) count=%zu", describe(this), getstatus(cw.thread), ep.waiters.count());
+                        for (auto const & cw : ep.waiters) {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_ + 1);
@@ -190,8 +170,6 @@ namespace {
         }
 
         static int prialt(csp_chanop const * chanops, int count, bool nowait, int offset = 0) {
-            /* */                                                   CSP_LOG(g_verboselog, "prialt%s(..., %d)", nowait ? "<nowait>" : "", count);
-
             // Collect unique channels, sorted by id for lock ordering.
             Channel* fixed_chans[8];
             std::vector<Channel*> variable_chans;
@@ -241,8 +219,7 @@ namespace {
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_ + 1);
                                 cw.thread->signal_ = idx;
-                                if (endpt == wr) {                          CSP_LOG(g_verboselog, "PUSH %p[%p] -%p-> %p[%p]", ch, &chop.message, chop.message, cw.thread, &cw.chanop->message);
-                                    ;                                       if (g_sequence) { std::cerr << g_self->id_ << " -> " << cw.thread->id_ << " : " << describe(ch) << "\n"; }
+                                if (endpt == wr) {
                                     if (auto dst = const_cast<void *>(cw.chanop->message)) {
                                         ch->tx_(chop.message, dst);
                                     }
@@ -253,8 +230,7 @@ namespace {
                                         unlock_all();
                                         cw.thread->run(Status::run);
                                     }
-                                } else {                                    CSP_LOG(g_verboselog, "PULL %p[%p] -%p-> %p[%p]", cw.thread, &cw.chanop->message, cw.chanop->message, ch, &chop.message);
-                                    ;                                       if (g_sequence) { std::cerr << g_self->id_ << " <- " << cw.thread->id_ << " : " << describe(ch) << "\n"; }
+                                } else {
                                     if (auto dst = const_cast<void *>(chop.message)) {
                                         ch->tx_(cw.chanop->message, dst);
                                     }
@@ -269,7 +245,7 @@ namespace {
                 }
             }
 
-            if (all_null || nowait) {                               CSP_LOG(g_verboselog, "prialt() -> %d", 0);
+            if (all_null || nowait) {
                 unlock_all();
                 return 0;
             }
@@ -286,7 +262,6 @@ namespace {
 
             g_self->chanops_ = chanops;
             g_self->n_chanops_ = count;
-            /* */                                                   CSP_LOG(g_sleeplog, "prialt() sleep");
             // Mark suspending_ before unlock_all so that schedule()
             // (called by a waker on another thread) will set
             // wake_pending_ instead of pushing to the global queue.
@@ -298,7 +273,6 @@ namespace {
             unlock_all();
             do_switch(Status::detach);
             g_self->suspending_.store(false, std::memory_order_release);
-                                                                    CSP_LOG(g_sleeplog, "prialt() awoken -> %d", g_self->signal_);
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all();
@@ -320,7 +294,7 @@ namespace {
 
     private:
         using Waiters = detail::RingBuffer<ChanopWaiter>;
-        using Vultures = std::unordered_set<ChanopWaiter>;
+        using Vultures = detail::RingBuffer<ChanopWaiter>;
 
         // Anticipate channel fusing capability.
         Channel * delegate_ = this;
@@ -334,7 +308,7 @@ namespace {
             Waiters waiters;
             Vultures vultures;
 
-            void wait(csp_chanop const * chop) {                   CSP_LOG(g_verboselog, "wait(%s)", describe(chop->waiter));
+            void wait(csp_chanop const * chop) {
                 auto flags = (uintptr_t)chop->waiter;
                 if (flags & csp_ready_flag) {
                     waiters.emplace(chop, g_self);
@@ -344,12 +318,11 @@ namespace {
             }
 
             void remove(csp_chanop const * chop, Microthread * t) {
-                                                                    CSP_LOG(g_verboselog, "remove(%s, %s)", describe(chop->waiter), getstatus(t));
                 auto flags = (uintptr_t)chop->waiter;
                 if (flags & csp_ready_flag) {
                     waiters.remove({chop, t});
                 } else {
-                    vultures.erase({chop, t});
+                    vultures.remove({chop, t});
                 }
             }
         } endpts_[2];
@@ -380,19 +353,14 @@ int csp_chan(csp_writer * w, csp_reader * r, void (* tx)(void * src, void * dst)
         *r = ch->as_reader();
         return int(true);
     } catch (std::exception const & e) {
-        CSP_LOG(g_chlog, "csp_chan failed: %s", e.what());
     } catch (...) {
-        CSP_LOG(g_chlog, "csp_chan failed: unknown exception");
     }
     return int(false);
 }
 
 void csp_chdescr(void * ch, char const * descr) {
-    static bool enabled = false;
-    if (enabled || (enabled = g_chlog || g_lifespan || g_msglog || g_sleeplog)) {
-        if (Channel * c = chan(ch)) {
-            c->set_descr(descr);
-        }
+    if (Channel * c = chan(ch)) {
+        c->set_descr(descr);
     }
 }
 

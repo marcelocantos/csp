@@ -1,4 +1,5 @@
 #include <csp/internal/runtime.h>
+#include <csp/stack_analysis.h>
 
 #include <pthread.h>
 
@@ -6,13 +7,8 @@
 #include <chrono>
 #include <cstdarg>
 #include <cstring>
-#include <deque>
 #include <exception>
-#include <iostream>
-#include <map>
 #include <stdexcept>
-#include <sstream>
-#include <string>
 #include <thread>
 
 #include <stdlib.h>
@@ -24,18 +20,11 @@ extern "C" {
 
 }
 
-static Logger g_log     ("microthread/-");
-static Logger g_tmp     ("tmp/-");
-static Logger g_inout   ("microthread/inout");
-static Logger g_busyq   ("microthread/busyq");
-static Logger g_current ("microthread/current");
-static Logger g_stacklog("microthread/stack");
-static Logger g_spawnlog("microthread/spawn-stack");
-static Logger g_sequence("microthread/sequence");
 
 static std::function<void()> g_scheduler = []{
     while (csp_run()) { }
 };
+
 
 namespace csp {
 
@@ -44,19 +33,6 @@ namespace csp {
         struct alignas(16) align_16 {
             char c[16];
         };
-
-        static std::string qdescr(Microthread const * mt) {
-            std::ostringstream oss;
-            if (mt) {
-                oss << getstatus(mt);
-                for (auto c = mt; (c = c->next_) != mt;) {
-                    oss << " → " << getstatus(c);
-                }
-            } else {
-                oss << "∎";
-            }
-            return oss.str();
-        }
 
         static void vstatus(Microthread * mt, char const * msg, va_list args) {
             char * buf = mt->status_;
@@ -96,8 +72,7 @@ namespace csp {
         }
 
         static intptr_t switch_to(Microthread & mt, intptr_t data) {
-            auto self = g_self;                                         if (g_stacklog) { CSP_LOG(g_stacklog, "switching"); Logger::dump_stack(); }
-            ;                                                           if (g_sequence) { std::cerr << "deactivate " << g_self->id_ << "\n"; std::cerr << "activate " << mt.id_ << "\n"; }
+            auto self = g_self;
             // Acquire-load ctx_ to synchronize with the release-store
             // that saved the target's context on a (possibly different)
             // OS thread.  This ensures the saved register data on the
@@ -114,9 +89,7 @@ namespace csp {
             // data that jump_fcontext wrote to the caller's stack.
             current_p().save_ctx->store(t.fctx, std::memory_order_release);
             drain_suspended(current_p().save_mt);
-            auto result = (intptr_t)t.data;
-                                                                        CSP_LOG(g_current, "---- SWITCHED ----", getstatus(g_self));
-            return result;
+            return (intptr_t)t.data;
         }
 
         Microthread::Microthread(fcontext_t ctx, StackSlot * stk) : ctx_(ctx), stk_(stk) {
@@ -130,7 +103,7 @@ namespace csp {
         }
 
         void Microthread::schedule_local(bool make_current) {
-            std::lock_guard<std::mutex> lk(current_p().run_mu);         CSP_LOG(g_busyq, "schedule_local %s [%s]", getstatus(this), qdescr(current_p().busy).c_str());
+            std::lock_guard<std::mutex> lk(current_p().run_mu);
             if (next_) {
                 return;
             }
@@ -144,7 +117,7 @@ namespace csp {
                 }
             } else {
                 busy = next_ = prev_ = this;
-            }                                                           CSP_LOG(g_busyq, "  busy = [%s]", qdescr(busy).c_str());
+            }
         }
 
         void Microthread::schedule(bool make_current) {
@@ -155,7 +128,7 @@ namespace csp {
             // is about to park.
             if (rt.procs.size() > 1) {
                 {
-                    std::lock_guard<std::mutex> lk(rt.global_mu);       CSP_LOG(g_busyq, "schedule %s -> global", getstatus(this));
+                    std::lock_guard<std::mutex> lk(rt.global_mu);
                     if (in_global_) {
                         return;
                     }
@@ -177,7 +150,7 @@ namespace csp {
         }
 
         void Microthread::deschedule() {
-            std::lock_guard<std::mutex> lk(current_p().run_mu);         CSP_LOG(g_busyq, "deschedule %s", getstatus(this));
+            std::lock_guard<std::mutex> lk(current_p().run_mu);
             assert(next_);
             auto& busy = current_p().busy;
             if (busy == this && (busy = next_) == this) {
@@ -189,10 +162,9 @@ namespace csp {
             prev_ = nullptr;
         }
 
-        void Microthread::run(Status status) {                          CSP_LOG(g_inout, "/=== ENTER %s->Microthread::run(%s, %lu) ===", getstatus(g_self), getstatus(this), status);
+        void Microthread::run(Status status) {
             auto& p = current_p();
             auto& busy = p.busy;
-            ;                                                           CSP_LOG(g_busyq, "run [%s]", qdescr(busy).c_str());
             assert(this != g_self);
             auto self = g_self;
 
@@ -205,7 +177,7 @@ namespace csp {
                     break;
                 case Status::sleep:
                     if (g_self == busy) {
-                        busy = busy->next_;                             CSP_LOG(g_busyq, "sleeping: [%s]", qdescr(busy).c_str());
+                        busy = busy->next_;
                     }
                     break;
                 case Status::detach:
@@ -248,10 +220,8 @@ namespace csp {
             }
 
             auto killme = status == Status::exit ? g_self : nullptr;
-                                                                        CSP_LOG(g_inout, "Switch to %s", getstatus(this));
             auto killyou = reinterpret_cast<Microthread *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
-                                                                        CSP_LOG(g_log, "jump_fcontext() → %s (%s)", killme ? getstatus(killme) : "-", getstatus(busy));
-            if (killyou) {                                              CSP_LOG(g_log, "kill %s (stk = %p)", getstatus(killyou), killyou->stk_);
+            if (killyou) {
 #if CSP_TSAN
                 if (killyou->tsan_fiber_) __tsan_destroy_fiber(killyou->tsan_fiber_);
 #endif
@@ -265,8 +235,7 @@ namespace csp {
                     { std::lock_guard<std::mutex> lk(rt.park_mu); }
                     rt.park_cv.notify_all();
                 }
-            }                                                           CSP_LOG(g_busyq, "Busy queue: [%s]", qdescr(busy).c_str());
-                                                                        CSP_LOG(g_inout, "=== EXIT Microthread::run ===/");
+            }
 
             if (!killme) {
                 g_self = self;
@@ -330,8 +299,8 @@ static void start(transfer_t t) {
     auto start_f = sd.start_f;
     auto data = sd.data;
     auto * self = &sd.self;
-    g_self = self;                                                         CSP_LOG(g_inout, "/=== ENTER ===");
-    auto killyou_val = switch_to(sd.caller, 0);                          CSP_LOG(g_inout, " --- RUNNING ---");
+    g_self = self;
+    auto killyou_val = switch_to(sd.caller, 0);
     // After warmup switch, sd may be invalid. Use local copies only.
     g_self = self;
 
@@ -354,17 +323,44 @@ static void start(transfer_t t) {
 
     try {
         start_f(data);
-    } catch (std::exception const & e) {                                CSP_GRIPE(g_log, "Uncaught exception: %s", e.what());
-    } catch (...) {                                                     CSP_GRIPE(g_log, "Uncaught exception of unknown type");
-    }                                                                   CSP_LOG(g_inout, " === EXIT ===/");
+    } catch (std::exception const & e) {
+    } catch (...) {
+    }
     do_switch(Status::exit);
 };
 
 int csp_spawn(void (*start_f)(void *), void * data) {
     (void)current_p(); // Ensure g_self is bound before use.
     try {
-        ;                                                               if (g_sequence) { static std::once_flag once; std::call_once(once, [] { std::cerr << "activate " << g_self->id_ << "\n"; }); }
-        constexpr size_t S = Microthread::stack_size / 16;
+        // Analyze stack depth to right-size the allocation.
+        // Disabled under sanitizers: instrumented code has shadow-memory
+        // checking branches that cause the walker to explode.
+        size_t S = Microthread::stack_size / 16; // default: full 32KB
+#if !defined(__SANITIZE_ADDRESS__) && !defined(__SANITIZE_THREAD__) && \
+    !(defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+        {
+            csp::stack_analysis_options spawn_opts;
+            spawn_opts.max_instructions = 10000;
+            spawn_opts.max_call_depth = 16;
+            auto fn_ptr = reinterpret_cast<const void*>(start_f);
+            csp::stack_analysis analysis;
+            if (!g_self->stk_) {
+                // System thread (8MB stack): run full analysis directly.
+                analysis = csp::analyze_stack_depth(fn_ptr, data, spawn_opts);
+            } else {
+                // Microthread: cache-only lookup (the analyzer itself
+                // needs deep stack space, so we can't run it here).
+                analysis = csp::analyze_stack_depth_cached(
+                    fn_ptr, data, spawn_opts);
+            }
+            if (analysis.is_exact) {
+                size_t stack_bytes = analysis.max_depth + 4096;
+                stack_bytes = std::max(stack_bytes, size_t{8192});
+                stack_bytes = std::min(stack_bytes, Microthread::stack_size);
+                S = (stack_bytes + 15) / 16;
+            }
+        }
+#endif
         auto stk = new Microthread::StackSlot[S];
         auto mt = (Microthread *)(stk + S) - 1;
         assert(((uintptr_t)mt % 16) == 0); // Must be 16-byte aligned.
@@ -374,11 +370,10 @@ int csp_spawn(void (*start_f)(void *), void * data) {
         mt->tsan_fiber_ = __tsan_create_fiber(0);
 #endif
 
-        StartData const start_data = {start_f, data, *mt, *g_self};     CSP_LOG(g_log, "starting %s (stk = %p)", getstatus(mt), stk);
-                                                                        if (g_spawnlog) { CSP_LOG(g_spawnlog, "spawning %s", getstatus(mt)); Logger::dump_stack(); }
+        StartData const start_data = {start_f, data, *mt, *g_self};
         auto self = g_self;
         switch_to(*mt, reinterpret_cast<intptr_t>(&start_data));
-        g_self = self;                                                  CSP_LOG(g_log, "started %s", getstatus(mt));
+        g_self = self;
 
         auto& rt = Runtime::instance();
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
@@ -395,16 +390,14 @@ int csp_spawn(void (*start_f)(void *), void * data) {
         } else {
             // Single-P mode: run the microthread on the main thread
             // (original behavior — run until it yields).
-            mt->run(Status::run);                                       CSP_LOG(g_log, "warmed up %s", getstatus(mt));
+            mt->run(Status::run);
             rt.unpark_one();
         }
 
         return 1;
     } catch (std::exception const & e) {
-        CSP_LOG(g_log, "csp_spawn failed: %s", e.what());
         return 0;
     } catch (...) {
-        CSP_LOG(g_log, "csp_spawn failed: unknown exception");
         return 0;
     }
 }
@@ -438,7 +431,7 @@ int csp_run() {
         std::lock_guard<std::mutex> lk(p.run_mu);
         auto& busy = p.busy;
         if (busy == g_self) {
-            busy = busy->next_;                                         CSP_LOG(g_busyq, "skipped %s: [%s]", getstatus(g_self), qdescr(busy).c_str());
+            busy = busy->next_;
         }
         if (busy != g_self) {
             target = busy;

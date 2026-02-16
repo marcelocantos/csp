@@ -6,15 +6,192 @@
 #include <cassert>
 #include <cstdint>
 #include <cstring>
-#include <memory>
-#include <mutex>
-#include <set>
-#include <unordered_map>
+#include <atomic>
+#include <deque>
 #include <vector>
 
 namespace csp {
 
 namespace {
+
+// --- Inline containers (no BLR instructions) ---
+//
+// std::unordered_map and std::set generate BLR (indirect call) instructions
+// for hash dispatch and allocator calls.  When the stack analyzer walks
+// through its own code (bootstrapping), those BLRs make every result
+// inexact.  These replacements compile to pure inline arithmetic.
+
+// Open-addressing hash map keyed by const void*.
+template <typename V>
+class ptr_map {
+    struct slot {
+        const void* key;
+        V value;
+        bool occupied;
+    };
+    slot* data_;
+    size_t cap_;
+    size_t count_;
+
+    static size_t hash(const void* p) {
+        return reinterpret_cast<uintptr_t>(p) * 0x9E3779B97F4A7C15ULL;
+    }
+
+    void grow() {
+        size_t old_cap = cap_;
+        auto* old = data_;
+        cap_ *= 2;
+        data_ = new slot[cap_]();
+        count_ = 0;
+        for (size_t i = 0; i < old_cap; i++) {
+            if (old[i].occupied) {
+                size_t j = hash(old[i].key) & (cap_ - 1);
+                while (data_[j].occupied) j = (j + 1) & (cap_ - 1);
+                data_[j] = {old[i].key, std::move(old[i].value), true};
+                count_++;
+            }
+        }
+        delete[] old;
+    }
+
+public:
+    ptr_map() : data_(new slot[16]()), cap_(16), count_(0) {}
+    ~ptr_map() { delete[] data_; }
+    ptr_map(const ptr_map&) = delete;
+    ptr_map& operator=(const ptr_map&) = delete;
+
+    V* find(const void* key) {
+        size_t i = hash(key) & (cap_ - 1);
+        while (data_[i].occupied) {
+            if (data_[i].key == key) return &data_[i].value;
+            i = (i + 1) & (cap_ - 1);
+        }
+        return nullptr;
+    }
+
+    // Insert if absent. Returns true if newly inserted.
+    bool emplace(const void* key, V val) {
+        if (count_ * 4 >= cap_ * 3) grow();
+        size_t i = hash(key) & (cap_ - 1);
+        while (data_[i].occupied) {
+            if (data_[i].key == key) return false;
+            i = (i + 1) & (cap_ - 1);
+        }
+        data_[i] = {key, std::move(val), true};
+        count_++;
+        return true;
+    }
+};
+
+// Open-addressing hash set for {pc, sp_delta} visit keys (insert-only).
+class visit_set {
+    struct slot {
+        const uint32_t* pc;
+        int64_t sp_delta;
+        bool occupied;
+    };
+    slot* data_;
+    size_t cap_;
+    size_t count_;
+
+    static size_t hash(const uint32_t* pc, int64_t sp_delta) {
+        auto h = reinterpret_cast<uintptr_t>(pc) * 0x9E3779B97F4A7C15ULL;
+        h ^= static_cast<size_t>(sp_delta) * 0x517CC1B727220A95ULL;
+        return h;
+    }
+
+    void grow() {
+        size_t old_cap = cap_;
+        auto* old = data_;
+        cap_ *= 2;
+        data_ = new slot[cap_]();
+        count_ = 0;
+        for (size_t i = 0; i < old_cap; i++) {
+            if (old[i].occupied) {
+                size_t j = hash(old[i].pc, old[i].sp_delta) & (cap_ - 1);
+                while (data_[j].occupied) j = (j + 1) & (cap_ - 1);
+                data_[j] = {old[i].pc, old[i].sp_delta, true};
+                count_++;
+            }
+        }
+        delete[] old;
+    }
+
+public:
+    visit_set() : data_(new slot[256]()), cap_(256), count_(0) {}
+    ~visit_set() { delete[] data_; }
+    visit_set(const visit_set&) = delete;
+    visit_set& operator=(const visit_set&) = delete;
+
+    // Returns true if newly inserted.
+    bool insert(const uint32_t* pc, int64_t sp_delta) {
+        if (count_ * 4 >= cap_ * 3) grow();
+        size_t i = hash(pc, sp_delta) & (cap_ - 1);
+        while (data_[i].occupied) {
+            if (data_[i].pc == pc && data_[i].sp_delta == sp_delta) return false;
+            i = (i + 1) & (cap_ - 1);
+        }
+        data_[i] = {pc, sp_delta, true};
+        count_++;
+        return true;
+    }
+};
+
+// Fixed-capacity linear-scan set for cycle detection (bounded by call depth).
+class small_ptr_set {
+    static constexpr int MAX = 64;
+    const void* data_[MAX];
+    int size_ = 0;
+public:
+    bool contains(const void* p) const {
+        for (int i = 0; i < size_; i++)
+            if (data_[i] == p) return true;
+        return false;
+    }
+    void insert(const void* p) {
+        if (size_ < MAX) data_[size_++] = p;
+    }
+    void erase(const void* p) {
+        for (int i = 0; i < size_; i++) {
+            if (data_[i] == p) {
+                data_[i] = data_[--size_];
+                return;
+            }
+        }
+    }
+};
+
+// --- Intrusive reference-counted pointer ---
+//
+// Replaces expr_ptr to eliminate BLR instructions from
+// virtual dispatch in shared_ptr's control block destructor.  The
+// destructor is a direct `delete` (BL), not a virtual call (BLR).
+
+struct expr;
+
+class expr_ptr {
+    expr* p_ = nullptr;
+    void addref();
+    void release();
+public:
+    expr_ptr() = default;
+    explicit expr_ptr(expr* p) : p_(p) { addref(); }
+    expr_ptr(const expr_ptr& o) : p_(o.p_) { addref(); }
+    expr_ptr(expr_ptr&& o) noexcept : p_(o.p_) { o.p_ = nullptr; }
+    ~expr_ptr() { release(); }
+    expr_ptr& operator=(const expr_ptr& o) {
+        if (p_ != o.p_) { release(); p_ = o.p_; addref(); }
+        return *this;
+    }
+    expr_ptr& operator=(expr_ptr&& o) noexcept {
+        if (this != &o) { release(); p_ = o.p_; o.p_ = nullptr; }
+        return *this;
+    }
+    expr* get() const { return p_; }
+    expr& operator*() const { return *p_; }
+    expr* operator->() const { return p_; }
+    explicit operator bool() const { return p_ != nullptr; }
+};
 
 // --- Expression tree (transient IR) ---
 
@@ -23,87 +200,112 @@ struct expr {
     kind_t kind;
     size_t value = 0;              // CONST, BUDGET: depth; CALL_INDIRECT: offset
     const void* target = nullptr;  // CALL_DIRECT: callee address
-    std::shared_ptr<expr> left, right;
+    int refcount_ = 0;
+    expr_ptr left, right;
 
-    static std::shared_ptr<expr> make_const(size_t v) {
-        auto e = std::make_shared<expr>();
+    static expr_ptr make_const(size_t v) {
+        auto* e = new expr();
         e->kind = CONST;
         e->value = v;
-        return e;
+        return expr_ptr(e);
     }
-    static std::shared_ptr<expr> make_budget(size_t v) {
-        auto e = std::make_shared<expr>();
+    static expr_ptr make_budget(size_t v) {
+        auto* e = new expr();
         e->kind = BUDGET;
         e->value = v;
-        return e;
+        return expr_ptr(e);
     }
-    static std::shared_ptr<expr> make_max(std::shared_ptr<expr> a,
-                                          std::shared_ptr<expr> b) {
-        auto e = std::make_shared<expr>();
+    static expr_ptr make_max(expr_ptr a, expr_ptr b) {
+        auto* e = new expr();
         e->kind = MAX;
         e->left = std::move(a);
         e->right = std::move(b);
-        return e;
+        return expr_ptr(e);
     }
-    static std::shared_ptr<expr> make_add(std::shared_ptr<expr> a,
-                                          std::shared_ptr<expr> b) {
-        auto e = std::make_shared<expr>();
+    static expr_ptr make_add(expr_ptr a, expr_ptr b) {
+        auto* e = new expr();
         e->kind = ADD;
         e->left = std::move(a);
         e->right = std::move(b);
-        return e;
+        return expr_ptr(e);
     }
-    static std::shared_ptr<expr> make_call_direct(const void* addr) {
-        auto e = std::make_shared<expr>();
+    static expr_ptr make_call_direct(const void* addr) {
+        auto* e = new expr();
         e->kind = CALL_DIRECT;
         e->target = addr;
-        return e;
+        return expr_ptr(e);
     }
-    static std::shared_ptr<expr> make_call_indirect(size_t offset) {
-        auto e = std::make_shared<expr>();
+    static expr_ptr make_call_indirect(size_t offset) {
+        auto* e = new expr();
         e->kind = CALL_INDIRECT;
         e->value = offset;
-        return e;
+        return expr_ptr(e);
     }
 };
 
-// --- Expression simplification ---
+void expr_ptr::addref() { if (p_) p_->refcount_++; }
+void expr_ptr::release() { if (p_ && --p_->refcount_ == 0) delete p_; }
+
+// --- Expression operations (iterative to avoid stack overflow) ---
 
 // Returns true if the expression is a pure constant (no CALL_INDIRECT or BUDGET).
-bool is_pure(const expr& e) {
-    switch (e.kind) {
-    case expr::CONST: return true;
-    case expr::BUDGET: return false;
-    case expr::CALL_INDIRECT: return false;
-    case expr::CALL_DIRECT: return false; // might resolve to non-pure
-    case expr::MAX:
-    case expr::ADD:
-        return is_pure(*e.left) && is_pure(*e.right);
+bool is_pure(const expr& root) {
+    std::vector<const expr*> stack;
+    stack.push_back(&root);
+    while (!stack.empty()) {
+        auto* e = stack.back();
+        stack.pop_back();
+        switch (e->kind) {
+        case expr::CONST: break;
+        case expr::BUDGET:
+        case expr::CALL_INDIRECT:
+        case expr::CALL_DIRECT: return false;
+        case expr::MAX:
+        case expr::ADD:
+            stack.push_back(e->left.get());
+            stack.push_back(e->right.get());
+            break;
+        }
     }
-    return false;
+    return true;
 }
 
-// Evaluate a pure expression to a constant.
-size_t eval_pure(const expr& e) {
-    switch (e.kind) {
-    case expr::CONST: return e.value;
-    case expr::MAX: return std::max(eval_pure(*e.left), eval_pure(*e.right));
-    case expr::ADD: return eval_pure(*e.left) + eval_pure(*e.right);
-    default: assert(false); return 0;
+// Evaluate a pure expression to a constant (iterative post-order).
+size_t eval_pure(const expr& root) {
+    struct frame { const expr* e; int phase; };
+    std::vector<frame> traversal;
+    std::vector<size_t> values;
+    traversal.push_back({&root, 0});
+    while (!traversal.empty()) {
+        auto& f = traversal.back();
+        switch (f.e->kind) {
+        case expr::CONST:
+            values.push_back(f.e->value);
+            traversal.pop_back();
+            break;
+        case expr::MAX:
+        case expr::ADD:
+            if (f.phase == 0) {
+                f.phase = 1;
+                traversal.push_back({f.e->left.get(), 0});
+            } else if (f.phase == 1) {
+                f.phase = 2;
+                traversal.push_back({f.e->right.get(), 0});
+            } else {
+                auto b = values.back(); values.pop_back();
+                auto a = values.back(); values.pop_back();
+                values.push_back(f.e->kind == expr::MAX ? std::max(a, b) : a + b);
+                traversal.pop_back();
+            }
+            break;
+        default:
+            assert(false);
+            values.push_back(0);
+            traversal.pop_back();
+            break;
+        }
     }
-}
-
-// Simplify an expression: collapse pure subtrees to constants.
-std::shared_ptr<expr> simplify(std::shared_ptr<expr> e) {
-    if (!e) return e;
-    if (e->kind == expr::MAX || e->kind == expr::ADD) {
-        e->left = simplify(std::move(e->left));
-        e->right = simplify(std::move(e->right));
-    }
-    if (is_pure(*e)) {
-        return expr::make_const(eval_pure(*e));
-    }
-    return e;
+    return values.empty() ? 0 : values.back();
 }
 
 // --- Bytecode VM ---
@@ -137,64 +339,85 @@ const void* read_ptr(const uint8_t*& ip) {
     return reinterpret_cast<const void*>(read_u64(ip));
 }
 
-// Compile expression tree to bytecode (post-order traversal).
-void compile(const expr& e, std::vector<uint8_t>& prog) {
-    switch (e.kind) {
-    case expr::CONST:
-        prog.push_back(OP_PUSH);
-        emit_u64(prog, e.value);
-        break;
-    case expr::BUDGET:
-        prog.push_back(OP_BUDGET);
-        emit_u64(prog, e.value);
-        break;
-    case expr::MAX:
-        compile(*e.left, prog);
-        compile(*e.right, prog);
-        prog.push_back(OP_MAX);
-        break;
-    case expr::ADD:
-        compile(*e.left, prog);
-        compile(*e.right, prog);
-        prog.push_back(OP_ADD);
-        break;
-    case expr::CALL_DIRECT:
-        prog.push_back(OP_CALL_DIRECT);
-        emit_ptr(prog, e.target);
-        break;
-    case expr::CALL_INDIRECT:
-        prog.push_back(OP_CALL_INDIRECT);
-        emit_u64(prog, e.value);
-        break;
+// Compile expression tree to bytecode (iterative post-order traversal).
+void compile(const expr& root, std::vector<uint8_t>& prog) {
+    struct frame { const expr* e; int phase; };
+    std::vector<frame> stack;
+    stack.push_back({&root, 0});
+    while (!stack.empty()) {
+        auto& f = stack.back();
+        switch (f.e->kind) {
+        case expr::CONST:
+            prog.push_back(OP_PUSH);
+            emit_u64(prog, f.e->value);
+            stack.pop_back();
+            break;
+        case expr::BUDGET:
+            prog.push_back(OP_BUDGET);
+            emit_u64(prog, f.e->value);
+            stack.pop_back();
+            break;
+        case expr::CALL_DIRECT:
+            prog.push_back(OP_CALL_DIRECT);
+            emit_ptr(prog, f.e->target);
+            stack.pop_back();
+            break;
+        case expr::CALL_INDIRECT:
+            prog.push_back(OP_CALL_INDIRECT);
+            emit_u64(prog, f.e->value);
+            stack.pop_back();
+            break;
+        case expr::MAX:
+        case expr::ADD:
+            if (f.phase == 0) {
+                f.phase = 1;
+                stack.push_back({f.e->left.get(), 0});
+            } else if (f.phase == 1) {
+                f.phase = 2;
+                stack.push_back({f.e->right.get(), 0});
+            } else {
+                prog.push_back(f.e->kind == expr::MAX ? OP_MAX : OP_ADD);
+                stack.pop_back();
+            }
+            break;
+        }
     }
 }
 
+// --- Spinlock (pure inline atomics, no BLR) ---
+
+class spinlock {
+    std::atomic_flag flag_ = ATOMIC_FLAG_INIT;
+public:
+    void lock() { while (flag_.test_and_set(std::memory_order_acquire)) { } }
+    void unlock() { flag_.clear(std::memory_order_release); }
+};
+
 // --- Program cache ---
 
-std::mutex g_cache_mu;
-std::unordered_map<const void*, std::vector<uint8_t>> g_cache;
+spinlock g_cache_mu;
+ptr_map<std::vector<uint8_t>> g_cache;
+
+// Eval result cache: for data=nullptr evaluations, the result is deterministic.
+// Keyed by function address.
+spinlock g_eval_cache_mu;
+ptr_map<stack_analysis> g_eval_cache;
 
 // Forward declaration.
 std::vector<uint8_t> analyze_and_compile(const void* fn,
-                                         const stack_analysis_options& opts,
-                                         int depth,
-                                         std::set<const void*>& in_progress,
-                                         size_t& inst_count);
+                                         const stack_analysis_options& opts);
 
-const std::vector<uint8_t>& get_or_compile(const void* fn,
-                                            const stack_analysis_options& opts,
-                                            int depth,
-                                            std::set<const void*>& in_progress,
-                                            size_t& inst_count) {
+// Return by value: programs are typically 9-27 bytes, so copies are cheap.
+std::vector<uint8_t> get_or_compile(const void* fn,
+                                     const stack_analysis_options& opts) {
     {
-        std::lock_guard<std::mutex> lk(g_cache_mu);
-        auto it = g_cache.find(fn);
-        if (it != g_cache.end()) return it->second;
+        std::lock_guard<spinlock> lk(g_cache_mu);
+        if (auto* p = g_cache.find(fn)) return *p;
     }
-    auto prog = analyze_and_compile(fn, opts, depth, in_progress, inst_count);
-    std::lock_guard<std::mutex> lk(g_cache_mu);
-    auto [it, _] = g_cache.emplace(fn, std::move(prog));
-    return it->second;
+    auto prog = analyze_and_compile(fn, opts);
+    std::lock_guard<spinlock> lk(g_cache_mu);
+    g_cache.emplace(fn, prog);
+    return prog;
 }
 
 // --- ARM64 instruction decoding ---
@@ -224,354 +447,338 @@ struct analysis_state {
     reg_state regs[32];
 };
 
-// --- Instruction walker ---
+// --- Instruction walker (iterative worklist) ---
 
-// Visited set entry.
-struct visit_key {
-    const uint32_t* pc;
-    int64_t sp_delta;
-    bool operator<(const visit_key& o) const {
-        return pc < o.pc || (pc == o.pc && sp_delta < o.sp_delta);
-    }
+struct walk_work {
+    analysis_state state;
+    int branch_depth;
 };
 
-std::shared_ptr<expr> walk(analysis_state state,
-                           const stack_analysis_options& opts,
-                           int call_depth,
-                           std::set<const void*>& in_progress,
-                           std::set<visit_key>& visited,
-                           size_t& inst_count,
-                           int branch_depth = 0) {
+// Walk instructions iteratively, returning one expression per completed path.
+// At conditional branches, both paths are pushed to a worklist instead of
+// recursing.  BL instructions always emit CALL_DIRECT — callee resolution
+// is deferred to the bytecode evaluator, keeping walk() completely
+// non-recursive.
+std::vector<expr_ptr> walk(
+        analysis_state initial_state,
+        const stack_analysis_options& opts,
+        visit_set& visited,
+        size_t& inst_count) {
     static constexpr int MAX_BRANCH_DEPTH = 64;
-    std::shared_ptr<expr> result = expr::make_const(0);
-    size_t high_water = 0;  // max |sp_delta| seen on this path
+    std::vector<expr_ptr> path_results;
+    std::vector<walk_work> worklist;
+    worklist.push_back({initial_state, 0});
 
-    while (true) {
-        // Safety: stop if PC is null or misaligned.
-        if (!state.pc || ((uintptr_t)state.pc & 3) != 0) {
-            return expr::make_max(std::move(result),
-                                  expr::make_const(high_water));
-        }
-        // Track whether we've exceeded our budget. When over budget,
-        // we continue the sequential walk (to reach RET/BLR/BR) but
-        // stop exploring branch targets and callee bodies.
-        bool over_budget = inst_count >= opts.max_instructions ||
-                           branch_depth >= MAX_BRANCH_DEPTH;
-        inst_count++;
+    while (!worklist.empty()) {
+        auto work = std::move(worklist.back());
+        worklist.pop_back();
 
-        visit_key vk{state.pc, state.sp_delta};
-        if (!visited.insert(vk).second) {
-            // Back-edge: loop detected, terminate path.
-            return expr::make_max(std::move(result),
-                                  expr::make_const(high_water));
-        }
+        auto state = std::move(work.state);
+        int branch_depth = work.branch_depth;
+        auto result = expr::make_const(0);
+        size_t high_water = 0;
 
-        uint32_t inst = *state.pc;
-        size_t cur_depth = static_cast<size_t>(
-            state.sp_delta < 0 ? -state.sp_delta : state.sp_delta);
-        if (cur_depth > high_water) high_water = cur_depth;
+        while (true) {
+            // Safety: stop if PC is null or misaligned.
+            if (!state.pc || ((uintptr_t)state.pc & 3) != 0) {
+                path_results.push_back(expr::make_max(
+                    std::move(result), expr::make_const(high_water)));
+                break;
+            }
+            // Track whether we've exceeded our budget. When over budget,
+            // we continue the sequential walk (to reach RET/BLR/BR) but
+            // stop exploring branch targets and callee bodies.
+            bool over_budget = inst_count >= opts.max_instructions ||
+                               branch_depth >= MAX_BRANCH_DEPTH;
+            inst_count++;
 
-        // --- SUB SP, SP, #imm ---
-        if (match(inst, 0xFF0003FF, 0xD10003FF)) {
-            uint32_t imm12 = (inst >> 10) & 0xFFF;
-            uint32_t shift = (inst >> 22) & 0x3;
-            int64_t imm = imm12;
-            if (shift == 1) imm <<= 12;
-            state.sp_delta -= imm;
-            state.pc++;
-            continue;
-        }
-
-        // --- ADD SP, SP, #imm ---
-        if (match(inst, 0xFF0003FF, 0x910003FF)) {
-            uint32_t imm12 = (inst >> 10) & 0xFFF;
-            uint32_t shift = (inst >> 22) & 0x3;
-            int64_t imm = imm12;
-            if (shift == 1) imm <<= 12;
-            state.sp_delta += imm;
-            state.pc++;
-            continue;
-        }
-
-        // --- STP pre-indexed [SP, #imm]! (64-bit GP) ---
-        if (match(inst, 0xFFC003E0, 0xA9800000 | (31 << 5))) {
-            int32_t imm7 = (inst >> 15) & 0x7F;
-            int64_t offset = sign_extend(imm7, 7) * 8;
-            state.sp_delta += offset;
-            // Update dest register tracking: STP writes two regs from stack,
-            // but the registers being stored aren't modified. No reg tracking
-            // change needed — only SP changes via writeback.
-            state.pc++;
-            continue;
-        }
-
-        // --- LDP post-indexed [SP], #imm (64-bit GP) ---
-        if (match(inst, 0xFFC003E0, 0xA8C00000 | (31 << 5))) {
-            int32_t imm7 = (inst >> 15) & 0x7F;
-            int64_t offset = sign_extend(imm7, 7) * 8;
-            state.sp_delta += offset;
-            // Mark loaded registers as unknown.
-            uint32_t rt = inst & 0x1F;
-            uint32_t rt2 = (inst >> 10) & 0x1F;
-            if (rt < 31) state.regs[rt].origin = reg_state::UNKNOWN;
-            if (rt2 < 31) state.regs[rt2].origin = reg_state::UNKNOWN;
-            state.pc++;
-            continue;
-        }
-
-        // --- RET ---
-        if (match(inst, 0xFFFFFC1F, 0xD65F0000)) {
-            return expr::make_max(std::move(result),
-                                  expr::make_const(high_water));
-        }
-
-        // --- BR Xn (indirect tail call / indirect branch) ---
-        if (match(inst, 0xFFFFFC1F, 0xD61F0000)) {
-            uint32_t rn = (inst >> 5) & 0x1F;
-
-            std::shared_ptr<expr> callee;
-            if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                callee = expr::make_call_indirect(state.regs[rn].offset);
-            } else {
-                callee = expr::make_budget(opts.indirect_call_budget);
+            if (!visited.insert(state.pc, state.sp_delta)) {
+                // Back-edge: loop detected, terminate path.
+                path_results.push_back(expr::make_max(
+                    std::move(result), expr::make_const(high_water)));
+                break;
             }
 
-            auto call_expr = expr::make_add(expr::make_const(cur_depth),
-                                            std::move(callee));
-            return expr::make_max(std::move(result),
-                                  expr::make_max(expr::make_const(high_water),
-                                                 std::move(call_expr)));
-        }
+            uint32_t inst = *state.pc;
+            size_t cur_depth = static_cast<size_t>(
+                state.sp_delta < 0 ? -state.sp_delta : state.sp_delta);
+            if (cur_depth > high_water) high_water = cur_depth;
 
-        // --- BL offset ---
-        if (match(inst, 0xFC000000, 0x94000000)) {
-            int64_t imm26 = sign_extend(inst & 0x3FFFFFF, 26);
-            const void* target = state.pc + imm26;
-
-            std::shared_ptr<expr> callee;
-            if (!over_budget && call_depth > 0 && !in_progress.count(target)) {
-                const auto& prog = get_or_compile(target, opts, call_depth - 1, in_progress, inst_count);
-                // If the program is a simple PUSH (9 bytes), extract the constant.
-                if (prog.size() == 9 && prog[0] == OP_PUSH) {
-                    const uint8_t* p = prog.data() + 1;
-                    callee = expr::make_const(read_u64(p));
-                } else {
-                    callee = expr::make_call_direct(target);
-                }
-            } else {
-                callee = expr::make_budget(opts.indirect_call_budget);
-            }
-
-            auto call_expr = expr::make_add(expr::make_const(cur_depth),
-                                            std::move(callee));
-            result = expr::make_max(std::move(result), std::move(call_expr));
-
-            // Continue after the call.
-            state.pc++;
-            continue;
-        }
-
-        // --- BLR Xn ---
-        if (match(inst, 0xFFFFFC1F, 0xD63F0000)) {
-            uint32_t rn = (inst >> 5) & 0x1F;
-
-            std::shared_ptr<expr> callee;
-            if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                callee = expr::make_call_indirect(state.regs[rn].offset);
-            } else {
-                callee = expr::make_budget(opts.indirect_call_budget);
-            }
-
-            auto call_expr = expr::make_add(expr::make_const(cur_depth),
-                                            std::move(callee));
-            result = expr::make_max(std::move(result), std::move(call_expr));
-
-            // Continue after the call.
-            state.pc++;
-            continue;
-        }
-
-        // --- B offset (unconditional branch) ---
-        if (match(inst, 0xFC000000, 0x14000000)) {
-            int64_t imm26 = sign_extend(inst & 0x3FFFFFF, 26);
-            state.pc = state.pc + imm26;
-            continue;
-        }
-
-        // --- B.cond ---
-        if (match(inst, 0xFF000010, 0x54000000)) {
-            if (over_budget) {
-                // Over budget: only follow fall-through to keep reaching
-                // instructions on the main path (e.g., BLR, RET).
+            // --- SUB SP, SP, #imm ---
+            if (match(inst, 0xFF0003FF, 0xD10003FF)) {
+                uint32_t imm12 = (inst >> 10) & 0xFFF;
+                uint32_t shift = (inst >> 22) & 0x3;
+                int64_t imm = imm12;
+                if (shift == 1) imm <<= 12;
+                state.sp_delta -= imm;
                 state.pc++;
                 continue;
             }
-            int64_t imm19 = sign_extend((inst >> 5) & 0x7FFFF, 19);
-            const uint32_t* target = state.pc + imm19;
 
-            analysis_state taken_state = state;
-            taken_state.pc = target;
-            auto taken = walk(taken_state, opts, call_depth, in_progress,
-                              visited, inst_count, branch_depth + 1);
-
-            state.pc++;
-            auto not_taken = walk(state, opts, call_depth, in_progress,
-                                  visited, inst_count, branch_depth + 1);
-
-            return expr::make_max(std::move(result),
-                                  expr::make_max(std::move(taken),
-                                                 std::move(not_taken)));
-        }
-
-        // --- CBZ / CBNZ ---
-        if (match(inst, 0x7F000000, 0x34000000) ||
-            match(inst, 0x7F000000, 0x35000000)) {
-            if (over_budget) {
+            // --- ADD SP, SP, #imm ---
+            if (match(inst, 0xFF0003FF, 0x910003FF)) {
+                uint32_t imm12 = (inst >> 10) & 0xFFF;
+                uint32_t shift = (inst >> 22) & 0x3;
+                int64_t imm = imm12;
+                if (shift == 1) imm <<= 12;
+                state.sp_delta += imm;
                 state.pc++;
                 continue;
             }
-            int64_t imm19 = sign_extend((inst >> 5) & 0x7FFFF, 19);
-            const uint32_t* target = state.pc + imm19;
 
-            analysis_state taken_state = state;
-            taken_state.pc = target;
-            auto taken = walk(taken_state, opts, call_depth, in_progress,
-                              visited, inst_count, branch_depth + 1);
-
-            state.pc++;
-            auto not_taken = walk(state, opts, call_depth, in_progress,
-                                  visited, inst_count, branch_depth + 1);
-
-            return expr::make_max(std::move(result),
-                                  expr::make_max(std::move(taken),
-                                                 std::move(not_taken)));
-        }
-
-        // --- TBZ / TBNZ ---
-        if (match(inst, 0x7F000000, 0x36000000) ||
-            match(inst, 0x7F000000, 0x37000000)) {
-            if (over_budget) {
+            // --- STP pre-indexed [SP, #imm]! (64-bit GP) ---
+            if (match(inst, 0xFFC003E0, 0xA9800000 | (31 << 5))) {
+                int32_t imm7 = (inst >> 15) & 0x7F;
+                int64_t offset = sign_extend(imm7, 7) * 8;
+                state.sp_delta += offset;
                 state.pc++;
                 continue;
             }
-            int64_t imm14 = sign_extend((inst >> 5) & 0x3FFF, 14);
-            const uint32_t* target = state.pc + imm14;
 
-            analysis_state taken_state = state;
-            taken_state.pc = target;
-            auto taken = walk(taken_state, opts, call_depth, in_progress,
-                              visited, inst_count, branch_depth + 1);
+            // --- LDP post-indexed [SP], #imm (64-bit GP) ---
+            if (match(inst, 0xFFC003E0, 0xA8C00000 | (31 << 5))) {
+                int32_t imm7 = (inst >> 15) & 0x7F;
+                int64_t offset = sign_extend(imm7, 7) * 8;
+                state.sp_delta += offset;
+                uint32_t rt = inst & 0x1F;
+                uint32_t rt2 = (inst >> 10) & 0x1F;
+                if (rt < 31) state.regs[rt].origin = reg_state::UNKNOWN;
+                if (rt2 < 31) state.regs[rt2].origin = reg_state::UNKNOWN;
+                state.pc++;
+                continue;
+            }
 
-            state.pc++;
-            auto not_taken = walk(state, opts, call_depth, in_progress,
-                                  visited, inst_count, branch_depth + 1);
+            // --- RET ---
+            if (match(inst, 0xFFFFFC1F, 0xD65F0000)) {
+                path_results.push_back(expr::make_max(
+                    std::move(result), expr::make_const(high_water)));
+                break;
+            }
 
-            return expr::make_max(std::move(result),
-                                  expr::make_max(std::move(taken),
-                                                 std::move(not_taken)));
-        }
+            // --- BR Xn (indirect tail call / indirect branch) ---
+            if (match(inst, 0xFFFFFC1F, 0xD61F0000)) {
+                uint32_t rn = (inst >> 5) & 0x1F;
 
-        // --- SUB SP, SP, Xn (register-based stack adjustment) ---
-        if (match(inst, 0xFF0003FF, 0xCB0003FF)) {
-            return expr::make_max(std::move(result),
-                                  expr::make_budget(opts.indirect_call_budget));
-        }
-
-        // --- Register tracking: LDR Xt, [Xn, #imm] (unsigned offset) ---
-        if (match(inst, 0xFFC00000, 0xF9400000)) {
-            uint32_t rt = inst & 0x1F;
-            uint32_t rn = (inst >> 5) & 0x1F;
-            uint32_t imm12 = (inst >> 10) & 0xFFF;
-            size_t byte_offset = imm12 * 8; // scaled by 8 for 64-bit LDR
-
-            if (rt < 31) {
+                expr_ptr callee;
                 if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                    state.regs[rt].origin = reg_state::DATA_OFFSET;
-                    state.regs[rt].offset = state.regs[rn].offset + byte_offset;
-                } else if (rn == 31) {
-                    // LDR from SP — not data-derived.
-                    state.regs[rt].origin = reg_state::UNKNOWN;
+                    callee = expr::make_call_indirect(state.regs[rn].offset);
                 } else {
-                    state.regs[rt].origin = reg_state::UNKNOWN;
+                    callee = expr::make_budget(opts.indirect_call_budget);
                 }
+
+                auto call_expr = expr::make_add(expr::make_const(cur_depth),
+                                                std::move(callee));
+                path_results.push_back(expr::make_max(
+                    std::move(result),
+                    expr::make_max(expr::make_const(high_water),
+                                   std::move(call_expr))));
+                break;
             }
-            state.pc++;
-            continue;
-        }
 
-        // --- Register tracking: ADD Xd, Xn, #imm ---
-        // Note: must check AFTER ADD SP,SP,#imm (which has Rd=Rn=SP).
-        if (match(inst, 0xFF000000, 0x91000000)) {
-            uint32_t rd = inst & 0x1F;
-            uint32_t rn = (inst >> 5) & 0x1F;
-            uint32_t imm12 = (inst >> 10) & 0xFFF;
-            uint32_t shift = (inst >> 22) & 0x3;
-            size_t imm = imm12;
-            if (shift == 1) imm <<= 12;
+            // --- BL offset ---
+            if (match(inst, 0xFC000000, 0x94000000)) {
+                int64_t imm26 = sign_extend(inst & 0x3FFFFFF, 26);
+                const void* target = state.pc + imm26;
 
-            if (rd < 31) {
+                // Always emit CALL_DIRECT — callee depth is resolved
+                // at eval time by the iterative bytecode evaluator.
+                auto callee = over_budget
+                    ? expr::make_budget(opts.indirect_call_budget)
+                    : expr::make_call_direct(target);
+
+                auto call_expr = expr::make_add(expr::make_const(cur_depth),
+                                                std::move(callee));
+                result = expr::make_max(std::move(result), std::move(call_expr));
+
+                state.pc++;
+                continue;
+            }
+
+            // --- BLR Xn ---
+            if (match(inst, 0xFFFFFC1F, 0xD63F0000)) {
+                uint32_t rn = (inst >> 5) & 0x1F;
+
+                expr_ptr callee;
                 if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                    state.regs[rd].origin = reg_state::DATA_OFFSET;
-                    state.regs[rd].offset = state.regs[rn].offset + imm;
+                    callee = expr::make_call_indirect(state.regs[rn].offset);
                 } else {
+                    callee = expr::make_budget(opts.indirect_call_budget);
+                }
+
+                auto call_expr = expr::make_add(expr::make_const(cur_depth),
+                                                std::move(callee));
+                result = expr::make_max(std::move(result), std::move(call_expr));
+
+                state.pc++;
+                continue;
+            }
+
+            // --- B offset (unconditional branch) ---
+            if (match(inst, 0xFC000000, 0x14000000)) {
+                int64_t imm26 = sign_extend(inst & 0x3FFFFFF, 26);
+                state.pc = state.pc + imm26;
+                continue;
+            }
+
+            // --- B.cond ---
+            if (match(inst, 0xFF000010, 0x54000000)) {
+                if (over_budget) {
+                    result = expr::make_max(std::move(result),
+                                            expr::make_budget(opts.indirect_call_budget));
+                    state.pc++;
+                    continue;
+                }
+                int64_t imm19 = sign_extend((inst >> 5) & 0x7FFFF, 19);
+                const uint32_t* target = state.pc + imm19;
+
+                // Emit pre-branch BL call expressions.
+                path_results.push_back(std::move(result));
+
+                // Push both branch paths to worklist.
+                analysis_state taken_state = state;
+                taken_state.pc = target;
+                worklist.push_back({std::move(taken_state), branch_depth + 1});
+
+                state.pc++;
+                worklist.push_back({std::move(state), branch_depth + 1});
+                break;
+            }
+
+            // --- CBZ / CBNZ ---
+            if (match(inst, 0x7F000000, 0x34000000) ||
+                match(inst, 0x7F000000, 0x35000000)) {
+                if (over_budget) {
+                    result = expr::make_max(std::move(result),
+                                            expr::make_budget(opts.indirect_call_budget));
+                    state.pc++;
+                    continue;
+                }
+                int64_t imm19 = sign_extend((inst >> 5) & 0x7FFFF, 19);
+                const uint32_t* target = state.pc + imm19;
+
+                path_results.push_back(std::move(result));
+
+                analysis_state taken_state = state;
+                taken_state.pc = target;
+                worklist.push_back({std::move(taken_state), branch_depth + 1});
+
+                state.pc++;
+                worklist.push_back({std::move(state), branch_depth + 1});
+                break;
+            }
+
+            // --- TBZ / TBNZ ---
+            if (match(inst, 0x7F000000, 0x36000000) ||
+                match(inst, 0x7F000000, 0x37000000)) {
+                if (over_budget) {
+                    result = expr::make_max(std::move(result),
+                                            expr::make_budget(opts.indirect_call_budget));
+                    state.pc++;
+                    continue;
+                }
+                int64_t imm14 = sign_extend((inst >> 5) & 0x3FFF, 14);
+                const uint32_t* target = state.pc + imm14;
+
+                path_results.push_back(std::move(result));
+
+                analysis_state taken_state = state;
+                taken_state.pc = target;
+                worklist.push_back({std::move(taken_state), branch_depth + 1});
+
+                state.pc++;
+                worklist.push_back({std::move(state), branch_depth + 1});
+                break;
+            }
+
+            // --- SUB SP, SP, Xn (register-based stack adjustment) ---
+            if (match(inst, 0xFF0003FF, 0xCB0003FF)) {
+                path_results.push_back(expr::make_max(
+                    std::move(result),
+                    expr::make_budget(opts.indirect_call_budget)));
+                break;
+            }
+
+            // --- Register tracking: LDR Xt, [Xn, #imm] (unsigned offset) ---
+            if (match(inst, 0xFFC00000, 0xF9400000)) {
+                uint32_t rt = inst & 0x1F;
+                uint32_t rn = (inst >> 5) & 0x1F;
+                uint32_t imm12 = (inst >> 10) & 0xFFF;
+                size_t byte_offset = imm12 * 8; // scaled by 8 for 64-bit LDR
+
+                if (rt < 31) {
+                    if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
+                        state.regs[rt].origin = reg_state::DATA_OFFSET;
+                        state.regs[rt].offset = state.regs[rn].offset + byte_offset;
+                    } else if (rn == 31) {
+                        // LDR from SP — not data-derived.
+                        state.regs[rt].origin = reg_state::UNKNOWN;
+                    } else {
+                        state.regs[rt].origin = reg_state::UNKNOWN;
+                    }
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Register tracking: ADD Xd, Xn, #imm ---
+            // Note: must check AFTER ADD SP,SP,#imm (which has Rd=Rn=SP).
+            if (match(inst, 0xFF000000, 0x91000000)) {
+                uint32_t rd = inst & 0x1F;
+                uint32_t rn = (inst >> 5) & 0x1F;
+                uint32_t imm12 = (inst >> 10) & 0xFFF;
+                uint32_t shift = (inst >> 22) & 0x3;
+                size_t imm = imm12;
+                if (shift == 1) imm <<= 12;
+
+                if (rd < 31) {
+                    if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
+                        state.regs[rd].origin = reg_state::DATA_OFFSET;
+                        state.regs[rd].offset = state.regs[rn].offset + imm;
+                    } else {
+                        state.regs[rd].origin = reg_state::UNKNOWN;
+                    }
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Register tracking: MOV Xd, Xm (ORR Xd, XZR, Xm) ---
+            if (match(inst, 0xFFE0FFE0, 0xAA0003E0)) {
+                uint32_t rd = inst & 0x1F;
+                uint32_t rm = (inst >> 16) & 0x1F;
+                if (rd < 31) {
+                    if (rm < 31) {
+                        state.regs[rd] = state.regs[rm];
+                    } else {
+                        state.regs[rd].origin = reg_state::UNKNOWN;
+                    }
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Any other instruction: check if it writes a GP register ---
+            // Conservative: mark destination register as unknown for common
+            // instruction formats that write to Rd at bits [4:0].
+            {
+                uint32_t rd = inst & 0x1F;
+                if (rd < 31) {
                     state.regs[rd].origin = reg_state::UNKNOWN;
                 }
             }
+
             state.pc++;
-            continue;
         }
-
-        // --- Register tracking: MOV Xd, Xm (ORR Xd, XZR, Xm) ---
-        if (match(inst, 0xFFE0FFE0, 0xAA0003E0)) {
-            uint32_t rd = inst & 0x1F;
-            uint32_t rm = (inst >> 16) & 0x1F;
-            if (rd < 31) {
-                if (rm < 31) {
-                    state.regs[rd] = state.regs[rm];
-                } else {
-                    state.regs[rd].origin = reg_state::UNKNOWN;
-                }
-            }
-            state.pc++;
-            continue;
-        }
-
-        // --- Any other instruction: check if it writes a GP register ---
-        // Conservative: mark destination register as unknown for common
-        // instruction formats that write to Rd at bits [4:0].
-        {
-            uint32_t rd = inst & 0x1F;
-            if (rd < 31) {
-                // Only clear if this looks like it writes Rd.
-                // Most data-processing instructions do. We conservatively
-                // clear for any unrecognized instruction to avoid false
-                // DATA_OFFSET propagation.
-                state.regs[rd].origin = reg_state::UNKNOWN;
-            }
-        }
-
-        state.pc++;
     }
 
-    return result;
+    return path_results;
 }
 
-// Analyze a function and compile to bytecode.
-// inst_count is shared across all callees so the global budget is respected.
+// Analyze a single function and compile to bytecode.
+// walk() does not follow calls — it emits CALL_DIRECT for BL instructions,
+// deferring callee resolution to the bytecode evaluator.
 std::vector<uint8_t> analyze_and_compile(const void* fn,
-                                         const stack_analysis_options& opts,
-                                         int depth,
-                                         std::set<const void*>& in_progress,
-                                         size_t& inst_count) {
-    if (in_progress.count(fn) || inst_count >= opts.max_instructions) {
-        // Recursive call or budget exhausted — use budget.
-        std::vector<uint8_t> prog;
-        prog.push_back(OP_BUDGET);
-        emit_u64(prog, opts.indirect_call_budget);
-        return prog;
-    }
-    in_progress.insert(fn);
-
+                                         const stack_analysis_options& opts) {
     analysis_state initial{};
     initial.pc = static_cast<const uint32_t*>(fn);
     initial.sp_delta = 0;
@@ -579,101 +786,215 @@ std::vector<uint8_t> analyze_and_compile(const void* fn,
     initial.regs[0].origin = reg_state::DATA_OFFSET;
     initial.regs[0].offset = 0;
 
-    std::set<visit_key> visited;
-    auto tree = walk(initial, opts, depth, in_progress, visited, inst_count);
+    visit_set visited;
+    size_t inst_count = 0;
+    auto results = walk(initial, opts, visited, inst_count);
 
-    tree = simplify(std::move(tree));
+    // Constant-fold pure path results.
+    for (auto& r : results) {
+        if (is_pure(*r)) {
+            r = expr::make_const(eval_pure(*r));
+        }
+    }
 
+    // Compile each path result and combine with OP_MAX.
     std::vector<uint8_t> prog;
-    compile(*tree, prog);
-
-    in_progress.erase(fn);
+    if (results.empty()) {
+        prog.push_back(OP_PUSH);
+        emit_u64(prog, 0);
+    } else {
+        compile(*results[0], prog);
+        for (size_t i = 1; i < results.size(); i++) {
+            compile(*results[i], prog);
+            prog.push_back(OP_MAX);
+        }
+    }
     return prog;
 }
 
-// Evaluate a compiled program.
+// --- Iterative bytecode evaluator ---
+//
+// Evaluates a function's compiled bytecode using an explicit call stack
+// instead of C++ recursion.  When a CALL_DIRECT or CALL_INDIRECT opcode
+// is encountered, the callee is compiled on demand (via get_or_compile,
+// which itself is non-recursive) and entered by pushing the current
+// instruction pointer onto the call stack.  This keeps the C++ stack
+// at constant depth regardless of the analysed program's call chain.
+
 static constexpr int EVAL_STACK_SIZE = 256;
 
-stack_analysis eval_program(const std::vector<uint8_t>& program,
-                            const void* data,
-                            const stack_analysis_options& opts) {
-    size_t stack[EVAL_STACK_SIZE];
-    int sp = 0;
+stack_analysis eval_iterative(const void* root_fn, const void* data,
+                               const stack_analysis_options& opts) {
+    // Check eval cache for the root (data=nullptr only).
+    if (!data) {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        if (auto* p = g_eval_cache.find(root_fn)) return *p;
+    }
+
+    // Evaluation state.
+    size_t values[EVAL_STACK_SIZE];
+    int vsp = 0;
     bool is_exact = true;
-    const uint8_t* ip = program.data();
-    const uint8_t* end = ip + program.size();
 
-    std::set<const void*> in_progress;
+    struct eval_frame {
+        const uint8_t* return_ip;
+        const uint8_t* return_end;
+        const void* fn;
+        bool is_exact_before;
+        const void* saved_data;
+    };
+    std::vector<eval_frame> call_stack;
+    small_ptr_set on_stack;  // cycle detection
 
-    while (ip < end) {
-        if (sp >= EVAL_STACK_SIZE - 1) {
-            // Stack overflow — return what we have so far.
+    // Program storage: deque provides stable references on push_back,
+    // so ip/end pointers into stored programs remain valid when new
+    // programs are added for callees.
+    std::deque<std::vector<uint8_t>> prog_store;
+    prog_store.push_back(get_or_compile(root_fn, opts));
+
+    const uint8_t* ip = prog_store.back().data();
+    const uint8_t* end = ip + prog_store.back().size();
+    on_stack.insert(root_fn);
+    const void* current_data = data;
+
+    while (true) {
+        if (ip >= end) {
+            if (call_stack.empty()) break;
+            // Return from callee — cache its result.
+            auto& frame = call_stack.back();
+            bool callee_exact = is_exact;
+            size_t callee_depth = vsp > 0 ? values[vsp - 1] : 0;
+            {
+                std::lock_guard<spinlock> lk(g_eval_cache_mu);
+                g_eval_cache.emplace(frame.fn,
+                    stack_analysis{callee_depth, callee_exact});
+            }
+            // Restore caller state.
+            is_exact = frame.is_exact_before & callee_exact;
+            current_data = frame.saved_data;
+            on_stack.erase(frame.fn);
+            ip = frame.return_ip;
+            end = frame.return_end;
+            call_stack.pop_back();
+            continue;
+        }
+
+        if (vsp >= EVAL_STACK_SIZE - 1) {
             is_exact = false;
             break;
         }
+
         switch (*ip++) {
         case OP_PUSH:
-            stack[sp++] = read_u64(ip);
+            values[vsp++] = read_u64(ip);
             break;
         case OP_MAX: {
-            if (sp < 2) break;
-            auto b = stack[--sp], a = stack[--sp];
-            stack[sp++] = std::max(a, b);
+            if (vsp < 2) break;
+            auto b = values[--vsp], a = values[--vsp];
+            values[vsp++] = std::max(a, b);
             break;
         }
         case OP_ADD: {
-            if (sp < 2) break;
-            auto b = stack[--sp], a = stack[--sp];
-            stack[sp++] = a + b;
+            if (vsp < 2) break;
+            auto b = values[--vsp], a = values[--vsp];
+            values[vsp++] = a + b;
             break;
         }
         case OP_CALL_DIRECT: {
             auto addr = read_ptr(ip);
-            size_t eval_inst_count = 0;
-            const auto& callee = get_or_compile(addr, opts, opts.max_call_depth,
-                                                 in_progress, eval_inst_count);
-            auto r = eval_program(callee, nullptr, opts);
-            is_exact &= r.is_exact;
-            stack[sp++] = r.max_depth;
+            // Check eval cache.
+            {
+                std::lock_guard<spinlock> lk(g_eval_cache_mu);
+                if (auto* r = g_eval_cache.find(addr)) {
+                    is_exact &= r->is_exact;
+                    values[vsp++] = r->max_depth;
+                    break;
+                }
+            }
+            // Cycle detection.
+            if (on_stack.contains(addr)) {
+                is_exact = false;
+                values[vsp++] = opts.indirect_call_budget;
+                break;
+            }
+            // Compile callee on demand and enter it.
+            prog_store.push_back(get_or_compile(addr, opts));
+            call_stack.push_back({ip, end, addr, is_exact, current_data});
+            on_stack.insert(addr);
+            is_exact = true;
+            current_data = nullptr;
+            ip = prog_store.back().data();
+            end = ip + prog_store.back().size();
             break;
         }
         case OP_CALL_INDIRECT: {
             auto off = read_u64(ip);
-            if (!data) {
+            if (!current_data) {
                 is_exact = false;
-                stack[sp++] = opts.indirect_call_budget;
+                values[vsp++] = opts.indirect_call_budget;
             } else {
                 auto target = *reinterpret_cast<const void* const*>(
-                    static_cast<const char*>(data) + off);
-                size_t eval_inst_count = 0;
-                const auto& callee = get_or_compile(target, opts,
-                                                     opts.max_call_depth,
-                                                     in_progress, eval_inst_count);
-                auto r = eval_program(callee, nullptr, opts);
-                is_exact &= r.is_exact;
-                stack[sp++] = r.max_depth;
+                    static_cast<const char*>(current_data) + off);
+                // Check eval cache.
+                {
+                    std::lock_guard<spinlock> lk(g_eval_cache_mu);
+                    if (auto* r = g_eval_cache.find(target)) {
+                        is_exact &= r->is_exact;
+                        values[vsp++] = r->max_depth;
+                        break;
+                    }
+                }
+                // Cycle detection.
+                if (on_stack.contains(target)) {
+                    is_exact = false;
+                    values[vsp++] = opts.indirect_call_budget;
+                    break;
+                }
+                // Compile callee on demand and enter it.
+                prog_store.push_back(get_or_compile(target, opts));
+                call_stack.push_back({ip, end, target, is_exact, current_data});
+                on_stack.insert(target);
+                is_exact = true;
+                current_data = nullptr;
+                ip = prog_store.back().data();
+                end = ip + prog_store.back().size();
             }
             break;
         }
         case OP_BUDGET:
             is_exact = false;
-            stack[sp++] = read_u64(ip);
+            values[vsp++] = read_u64(ip);
             break;
         }
     }
 
-    return {sp > 0 ? stack[0] : 0, is_exact};
+    stack_analysis result = {vsp > 0 ? values[0] : 0, is_exact};
+
+    // Cache root result for data=nullptr.
+    if (!data) {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        g_eval_cache.emplace(root_fn, result);
+    }
+
+    return result;
 }
 
 } // anonymous namespace
 
 stack_analysis analyze_stack_depth(const void* fn, const void* data,
                                   stack_analysis_options opts) {
-    std::set<const void*> in_progress;
-    size_t inst_count = 0;
-    const auto& program = get_or_compile(fn, opts, opts.max_call_depth,
-                                          in_progress, inst_count);
-    return eval_program(program, data, opts);
+    return eval_iterative(fn, data, opts);
+}
+
+stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
+                                          stack_analysis_options opts) {
+    // Check eval cache only — no recursive analysis.
+    if (!data) {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        if (auto* p = g_eval_cache.find(fn)) return *p;
+    }
+    // Not cached — return conservative default.
+    return {32u << 10, false};
 }
 
 } // namespace csp
@@ -685,6 +1006,11 @@ namespace csp {
 stack_analysis analyze_stack_depth(const void* fn, const void* data,
                                   stack_analysis_options opts) {
     // Non-ARM64: return conservative default.
+    return {32u << 10, false};
+}
+
+stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
+                                          stack_analysis_options opts) {
     return {32u << 10, false};
 }
 

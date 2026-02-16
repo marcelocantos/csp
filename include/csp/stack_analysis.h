@@ -25,6 +25,14 @@ stack_analysis analyze_stack_depth(
     const void* data = nullptr,
     stack_analysis_options opts = {});
 
+// Cache-only lookup: returns a previously computed result if available,
+// otherwise returns {stack_size_default, false}. Safe to call from
+// threads with limited stack space (no recursive analysis).
+stack_analysis analyze_stack_depth_cached(
+    const void* fn,
+    const void* data = nullptr,
+    stack_analysis_options opts = {});
+
 } // namespace csp
 
 #endif
