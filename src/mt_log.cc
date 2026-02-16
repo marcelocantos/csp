@@ -189,7 +189,7 @@ namespace csp {
         std::vector<void *> bt;
         bt.reserve(32);
         auto here = static_cast<FP *>(__builtin_frame_address(0));
-        for (int i = 0; here && here->ret; ++i) {
+        for (; here && here->ret;) {
             bt.push_back(here->ret);
             here = here->next;
         }

@@ -64,7 +64,7 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
         }
     });
 
-    stats.spawn([send = std::move(send_w), recv = std::move(recv_w), &sent, &received] {
+    stats.spawn([send = std::move(send_w), recv = std::move(recv_w)] {
         auto fire = [&](auto && trigger, size_t n) {
             while (n--) {
                 trigger << poke;

@@ -225,7 +225,7 @@ TEST_CASE("Channel - NReaders") {
     int total = 0;
 
     for (int i = 0; i < 10; ++i) {
-        stats.spawn([in = r.copy(), &total, i]{
+        stats.spawn([in = r.copy(), &total]{
             total += in.read();
         });
     }
@@ -735,8 +735,8 @@ TEST_CASE("Channel - AltFairness") {
     int count_a = 0, count_b = 0;
     constexpr int trials = 1000;
 
-    stats.spawn([w = a.w.copy()]{ for (int i = 0; w << 0; ++i) { } });
-    stats.spawn([w = b.w.copy()]{ for (int i = 0; w << 0; ++i) { } });
+    stats.spawn([w = a.w.copy()]{ while (w << 0) { } });
+    stats.spawn([w = b.w.copy()]{ while (w << 0) { } });
 
     stats.spawn([ra = a.r.copy(), rb = b.r.copy(), &count_a, &count_b]{
         int n;

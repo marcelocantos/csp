@@ -37,9 +37,9 @@ TEST_CASE("Thread - Parallel") {
 TEST_CASE("Thread - SpawnSpawn") {
     int result = 0;
     for (int i = 0; i < 5; ++i) {
-        csp::spawn([&, i]{
+        csp::spawn([&]{
             for (int i = 0; i < 5; ++i) {
-                csp::spawn([&, i]{
+                csp::spawn([&]{
                     result += 1;
                 });
             }
