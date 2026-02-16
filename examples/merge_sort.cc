@@ -9,7 +9,7 @@
 // The parallelism is natural — no explicit thread management, no
 // barriers, no shared mutable state.
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <csp/enumerate.h>
 
 #include <cstdio>

@@ -1,4 +1,4 @@
-#include <csp/internal/microthread_internal.h>
+#include <csp/internal/csp_internal.h>
 #include <csp/internal/runtime.h>
 #include <csp/ringbuffer.h>
 

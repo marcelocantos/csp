@@ -6,7 +6,7 @@
 // The combinators (map, where, buffer, tee, sink, enumerate) are
 // all provided by the library — you just snap them together.
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <csp/enumerate.h>
 #include <csp/map.h>
 #include <csp/where.h>

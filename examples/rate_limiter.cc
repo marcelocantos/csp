@@ -9,7 +9,7 @@
 // careful edge-case handling. In CSP, it's a natural composition
 // of existing primitives.
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <csp/timer.h>
 #include <csp/buffer.h>
 

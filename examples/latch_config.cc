@@ -9,7 +9,7 @@
 // shared state with careful memory ordering. With CSP, the latch
 // combinator handles all synchronization.
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <csp/latch.h>
 #include <csp/timer.h>
 

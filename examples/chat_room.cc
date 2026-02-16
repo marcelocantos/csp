@@ -10,7 +10,7 @@
 // This kind of dynamic topology is natural in CSP but requires
 // careful mutex + subscriber-list management in traditional code.
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <csp/fanout.h>
 
 #include <cstdio>

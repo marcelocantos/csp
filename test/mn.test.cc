@@ -3,7 +3,7 @@
 
 #include <doctest/doctest.h>
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <csp/timer.h>
 
 #include <atomic>

@@ -21,7 +21,7 @@ A C++ microthreading library with typed, synchronous channels inspired by
 ## Quick start
 
 ```cpp
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <iostream>
 
 int main() {

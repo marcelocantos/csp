@@ -26,7 +26,7 @@ wait on data readiness or endpoint closure.
 ## Quick Start
 
 ```cpp
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <csp/timer.h>
 #include <iostream>
 
@@ -215,22 +215,22 @@ Requirements: Clang with C++17 and libc++, Boost.Context.
 
 ```
 include/csp/
-    microthread.h           Public API: spawn, channels, alt/prialt, action
+    csp.h                   Public API: spawn, channels, alt/prialt, action
     timer.h                 Timer primitives: sleep, after, tick
     ringbuffer.h            Internal ring buffer utility
     fcontext.h              Boost.Context type aliases
     buffer.h map.h ...      Stream combinator headers (header-only)
     internal/
-        microthread_internal.h   Microthread struct, scheduling primitives
+        csp_internal.h           Microthread struct, scheduling primitives
         runtime.h                M:N runtime coordinator
         processor.h              Per-processor state
         mt_log.h                 Debug logging infrastructure
 
 src/
-    microthread.cc           Context switching, run queue, spawn
+    csp.cc                   Context switching, run queue, spawn
     channel.cc               Channel and alt/prialt implementation
     runtime.cpp              M:N worker loop, work stealing, parking
-    microthread_globals.cpp  Thread-local state, runtime init/shutdown
+    csp_globals.cpp          Thread-local state, runtime init/shutdown
 
 test/
     *.test.cc                doctest-based test suite

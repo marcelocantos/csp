@@ -23,7 +23,7 @@ distributes work across OS threads.
 
 ## 1. Microthread Representation
 
-Each microthread is a `Microthread` struct (`microthread_internal.h`)
+Each microthread is a `Microthread` struct (`csp_internal.h`)
 allocated at the top of its own 32 KB stack:
 
 ```

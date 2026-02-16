@@ -10,7 +10,7 @@
 // Compare to the typical mess of cancellation tokens, timer callbacks,
 // and shared boolean flags.
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 #include <csp/timer.h>
 #include <csp/killswitch.h>
 

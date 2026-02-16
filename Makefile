@@ -40,8 +40,8 @@ INCLUDES := -Iinclude \
 
 # --- Sources ---
 
-LIB_SRCS := src/microthread.cc \
-            src/microthread_globals.cpp \
+LIB_SRCS := src/csp.cc \
+            src/csp_globals.cpp \
             src/channel.cc \
             src/mt_log.cc \
             src/runtime.cpp \

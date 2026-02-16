@@ -8,7 +8,7 @@
 //
 // No mutexes, no deadlock, no starvation — just channels.
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 
 #include <cstdio>
 #include <array>

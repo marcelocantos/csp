@@ -19,9 +19,9 @@ Build artifacts go to `build/`. Compiler: Clang, C++17, libc++, `-O2 -g`.
 
 All code lives in `namespace csp`. Key modules:
 
-- **include/csp/microthread.h** — Main public header: `spawn`, `schedule`,
+- **include/csp/csp.h** — Main public header: `spawn`, `schedule`,
   `chan`, `writer`, `reader`, `alt`/`prialt`, `action` RAII class.
-- **include/csp/internal/** — Internal headers (microthread_internal.h,
+- **include/csp/internal/** — Internal headers (csp_internal.h,
   mt_log.h) and vendored utilities (on_scope_exit.h, function.h).
 - **include/csp/timer.h** — Timer primitives: `sleep`, `sleep_until`,
   `after` (one-shot), `tick` (periodic). Timers are channels; composable

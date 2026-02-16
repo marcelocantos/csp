@@ -2,7 +2,7 @@
 
 #include <doctest/doctest.h>
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 
 #include <algorithm>
 #include <stdexcept>

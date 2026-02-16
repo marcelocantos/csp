@@ -2,12 +2,12 @@
 
 #include <doctest/doctest.h>
 
-#include <csp/microthread.h>
+#include <csp/csp.h>
 
 #include <exception>
 #include <mutex>
 
-// microthread.cc
+// csp.cc
 int csp__internal__channel_count(int endpt);
 
 class RunScope;
