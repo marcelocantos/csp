@@ -223,7 +223,12 @@ namespace {
             lock_all();
 
             // Phase 1: Scan for ready peer (priority order, rotated by offset).
+            // For data chanops (csp_ready_flag), a ready peer takes priority
+            // over dead-channel detection on other channels.  For vultures
+            // (~ch, csp_dead_flag only), dead is the expected signal — fire
+            // immediately.
             bool all_null = true;
+            int dead_data_result = 0;  // first dead data-chanop, 0 = none
             for (int k = 0 ; k < count ; ++k) {
                 int i = (offset + k) % count;
                 auto const & chop = chanops[i];
@@ -232,9 +237,17 @@ namespace {
                     int endpt = flags & csp_endpt_flag;
 
                     if (!*ch) {
-                        unlock_all();
-                        out->result = -(i + 1);
-                        return;
+                        if (flags & csp_ready_flag) {
+                            // Data chanop on dead channel: defer until
+                            // after scanning for ready peers elsewhere.
+                            if (!dead_data_result) dead_data_result = -(i + 1);
+                        } else {
+                            // Vulture: dead is the expected signal.
+                            unlock_all();
+                            out->result = -(i + 1);
+                            return;
+                        }
+                        continue;
                     }
 
                     auto & them = ch->endpts_[1 - endpt].waiters;
@@ -256,7 +269,7 @@ namespace {
                                     out->dst = const_cast<void *>(chop.message);
                                 }
 
-                    
+
                                 out->result = i + 1;
                                 mi->peer = cw.thread;
                                 mi->needs_unlock = true;
@@ -266,6 +279,12 @@ namespace {
                     }
                     all_null = false;
                 }
+            }
+
+            if (dead_data_result) {
+                unlock_all();
+                out->result = dead_data_result;
+                return;
             }
 
             if (all_null || nowait) {
