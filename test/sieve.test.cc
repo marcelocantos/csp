@@ -11,9 +11,9 @@ void eratosthenes(reader<int> r, int p, writer<int> w, RunStats & stats) {
     int i;
     while (r >> i) {
         if (i % p) {
-            channel<int> ch;
-            stats.spawn([r = --ch, i, w, &stats]{ eratosthenes(r, i, w, stats); });
-            w = ++ch;
+            chan<int> ch;
+            stats.spawn([r = std::move(ch.r), i, w = w.copy(), &stats]() mutable { eratosthenes(std::move(r), i, std::move(w), stats); });
+            w = std::move(ch.w);
             break;
         }
     }
@@ -25,8 +25,8 @@ void eratosthenes(reader<int> r, int p, writer<int> w, RunStats & stats) {
 }
 
 auto eratosthenes(writer<int> w, RunStats & stats) {
-    return [w, &stats]{
-        eratosthenes(chan::spawn_count(3, 8000, 2), 2, w, stats);
+    return [w = std::move(w), &stats]() mutable {
+        eratosthenes(spawn_count(3, 8000, 2), 2, std::move(w), stats);
     };
 }
 
@@ -35,12 +35,12 @@ static std::vector<int> primes();
 TEST_CASE("Sieve - Eratosthenes") {
     RunStats stats;
 
-    reader<int> out;
-    stats.spawn(eratosthenes(++out, stats));
+    chan<int> out;
+    stats.spawn(eratosthenes(std::move(out.w), stats));
     for (int i : primes()) {
-        CHECK_EQ(i, out.read());
+        CHECK_EQ(i, out.r.read());
     }
-    out = {};
+    out.r = {};
     csp::schedule();
 }
 

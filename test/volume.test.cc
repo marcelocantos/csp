@@ -8,15 +8,14 @@ static Logger g_log("Channel.Test");
 TEST_CASE("Volume - Megaloop") {
     constexpr int n_loops = 1000000 / SCALE_HEAVY;
 
-    channel<int> in, out;
     auto ch = spawn_filter<int>([](auto && r, auto && w) {
         for (int n; r >> n && w << (n + 1);) { }
     });
 
     int total = 0;
     for (int i = 0; i < n_loops; ++i) {
-        +ch << 0;
-        total += (-ch).read();
+        ch.w.copy() << 0;
+        total += ch.r.copy().read();
     }
     ch.release();
     CHECK_EQ(n_loops, total);
@@ -26,8 +25,8 @@ TEST_CASE("Volume - DaisyChain") {
     constexpr int n_threads = 100 / SCALE_LIGHT;
     constexpr int n_loops = 10000 / SCALE_MEDIUM;
 
-    channel<int> ch;
-    auto tail = --ch;
+    chan<int> ch;
+    auto tail = std::move(ch.r);
     for (int i = 0; i < n_threads; ++i) {
         tail = spawn_producer<int>([r = std::move(tail)](auto && w) {
             for (int n; r >> n && w << (n + 1);) { }
@@ -36,7 +35,7 @@ TEST_CASE("Volume - DaisyChain") {
 
     int total = 0;
     for (int i = 0; i < n_loops; ++i) {
-        +ch << 0;
+        ch.w.copy() << 0;
         total += tail.read();
     }
     ch = {};
@@ -50,7 +49,7 @@ TEST_CASE("Volume - RapidChannelLifecycle") {
     int before_r = csp__internal__channel_count(1);
 
     for (int i = 0; i < N; ++i) {
-        channel<int> ch;
+        chan<int> ch;
     }
 
     CHECK_EQ(before_w, csp__internal__channel_count(0));
@@ -77,9 +76,9 @@ TEST_CASE("Volume - ManyChannelPairs") {
     int total = 0;
 
     for (int i = 0; i < N; ++i) {
-        channel<int> ch;
-        csp::spawn([w = +ch, i]{ w << i; });
-        csp::spawn([r = -ch, &total]{ int n; if (r >> n) total += n; });
+        chan<int> ch;
+        csp::spawn([w = ch.w.copy(), i]{ w << i; });
+        csp::spawn([r = ch.r.copy(), &total]{ int n; if (r >> n) total += n; });
         ch.release();
     }
 

@@ -5,12 +5,10 @@
 
 namespace csp {
 
-    namespace chan {
-
         template <typename T>
         auto mute(writer<T> out) {
-            return [=]{
-                csp_descr("chan::mute");
+            return [out = std::move(out)]{
+                csp_descr("mute");
 
                 alt(~out);
             };
@@ -18,12 +16,10 @@ namespace csp {
 
         template <typename T = poke_t>
         reader<T> spawn_mute() {
-            return spawn_producer<T>([](auto && r) {
-                mute(r)();
+            return spawn_producer<T>([](auto && r) mutable {
+                mute(std::move(r))();
             });
         }
-
-    }
 
 }
 

@@ -11,12 +11,12 @@ static Logger g_log("Rpc.Test");
 TEST_CASE("Rpc - ChanPair") {
     RunStats stats;
 
-    channel<std::tuple<int>> req;
-    channel<int> rep;
+    chan<std::tuple<int>> req;
+    chan<int> rep;
 
-    spawn(chan::rpc_server(--req, ++rep, [](int n) { return 2 * n + 1; }));
+    spawn(rpc_server(std::move(req.r), std::move(rep.w), [](int n) { return 2 * n + 1; }));
 
-    auto f = chan::rpc_client(++req, --rep);
+    auto f = rpc_client(std::move(req.w), std::move(rep.r));
 
     CHECK_EQ(1, f(0));
     CHECK_EQ(21, f(10));
@@ -27,12 +27,12 @@ TEST_CASE("Rpc - ChanPair") {
 TEST_CASE("Rpc - VoidReq") {
     RunStats stats;
 
-    channel<std::tuple<>> req;
-    channel<int> rep;
+    chan<std::tuple<>> req;
+    chan<int> rep;
 
-    spawn(chan::rpc_server(-req, +rep, []() { return 42; }));
+    spawn(rpc_server(req.r.copy(), rep.w.copy(), []() { return 42; }));
 
-    auto f = chan::rpc_client(+req, -rep);
+    auto f = rpc_client(req.w.copy(), rep.r.copy());
 
     CHECK_EQ(42, f());
 }
@@ -40,14 +40,14 @@ TEST_CASE("Rpc - VoidReq") {
 TEST_CASE("Rpc - VoidRep") {
     RunStats stats;
 
-    channel<std::tuple<int>> req;
-    channel<> rep;
+    chan<std::tuple<int>> req;
+    chan<> rep;
 
     int result = 0;
 
-    spawn(chan::rpc_server(-req, +rep, [&result](int n) { result += n; }));
+    spawn(rpc_server(req.r.copy(), rep.w.copy(), [&result](int n) { result += n; }));
 
-    auto f = chan::rpc_client(+req, -rep);
+    auto f = rpc_client(req.w.copy(), rep.r.copy());
 
     for (int n = 1; n <= 10; ++n) {
         f(n);
@@ -59,14 +59,14 @@ TEST_CASE("Rpc - VoidRep") {
 TEST_CASE("Rpc - VoidVoid") {
     RunStats stats;
 
-    channel<std::tuple<>> req;
-    channel<> rep;
+    chan<std::tuple<>> req;
+    chan<> rep;
 
     int result = 0;
 
-    spawn(chan::rpc_server(-req, +rep, [&result]{ ++result; }));
+    spawn(rpc_server(req.r.copy(), rep.w.copy(), [&result]{ ++result; }));
 
-    auto f = chan::rpc_client(+req, -rep);
+    auto f = rpc_client(req.w.copy(), rep.r.copy());
 
     for (int i = 0; i < 10; ++i) {
         f();
@@ -78,11 +78,11 @@ TEST_CASE("Rpc - VoidVoid") {
 TEST_CASE("Rpc - RepInReq") {
     RunStats stats;
 
-    channel<std::pair<std::tuple<int>, writer<int>>> req;
+    chan<std::pair<std::tuple<int>, writer<int>>> req;
 
-    spawn(chan::rpc_server(-req, [](int n) { return 2 * n + 1; }));
+    spawn(rpc_server(req.r.copy(), [](int n) { return 2 * n + 1; }));
 
-    auto f = chan::rpc_client(+req);
+    auto f = rpc_client(req.w.copy());
 
     CHECK_EQ(1, f(0));
     CHECK_EQ(21, f(10));

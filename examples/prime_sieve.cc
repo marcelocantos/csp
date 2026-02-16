@@ -33,19 +33,19 @@ int main() {
     constexpr int N = 100;
 
     spawn([]{
-        channel<int> ch;
-        spawn([w = ++ch]{ generate(w); });
+        chan<int> ch;
+        spawn([w = std::move(ch.w)]() mutable { generate(std::move(w)); });
 
         for (int i = 0; i < N; ++i) {
-            int prime = (-ch).read();
+            int prime = ch.r.read();
             printf("%d ", prime);
 
             // Insert a new filter stage into the pipeline.
-            channel<int> next;
-            spawn([in = --ch, out = ++next, prime]{
-                filter(in, out, prime);
+            chan<int> next;
+            spawn([in = std::move(ch.r), out = std::move(next.w), prime]() mutable {
+                filter(std::move(in), std::move(out), prime);
             });
-            ch = next;
+            ch = std::move(next);
         }
         printf("\n");
     });

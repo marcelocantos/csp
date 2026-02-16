@@ -83,15 +83,15 @@ namespace {
     }
 
     template <typename T>
-    Channel * chan(T t) {
+    Channel * get_chan(T t) {
         if (auto cp = reinterpret_cast<Channel * *>((uintptr_t)t & ~15UL)) {
             return *cp;
         }
         return nullptr;
     }
 
-    Channel * chan(csp_chanop const & c) {
-        return chan(c.waiter);
+    Channel * get_chan(csp_chanop const & c) {
+        return get_chan(c.waiter);
     }
 
     char const * describe(void * ch);
@@ -99,7 +99,7 @@ namespace {
     class Channel {
     public:
         Channel() {
-            static_assert(offsetof(Channel,delegate_) == 0, "delegate_ must be at the start for chan() to work");
+            static_assert(offsetof(Channel,delegate_) == 0, "delegate_ must be at the start for get_chan() to work");
             // Must be 16-byte aligned.
             assert(((uintptr_t)this % 16) == 0);
 
@@ -189,7 +189,7 @@ namespace {
             Channel** sorted = fixed_chans;
             int n_sorted = 0;
             for (int i = 0; i < count; ++i) {
-                if (Channel * ch = chan(chanops[i])) {
+                if (Channel * ch = get_chan(chanops[i])) {
                     if (n_sorted < 8) {
                         fixed_chans[n_sorted++] = ch;
                     } else {
@@ -227,7 +227,7 @@ namespace {
             for (int k = 0 ; k < count ; ++k) {
                 int i = (offset + k) % count;
                 auto const & chop = chanops[i];
-                if (Channel * ch = chan(chop)) {
+                if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter;
                     int endpt = flags & csp_endpt_flag;
 
@@ -277,7 +277,7 @@ namespace {
             g_self->alt_state.store(Microthread::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
-                if (Channel * ch = chan(chop)) {
+                if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter;
                     ch->endpts_[flags & csp_endpt_flag].wait(&chop);
                 }
@@ -301,7 +301,7 @@ namespace {
             lock_all();
             for (int i = 0; i < g_self->n_chanops_; ++i) {
                 auto const & chop = g_self->chanops_[i];
-                if (Channel * ch = chan(chop)) {
+                if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter;
                     ch->endpts_[flags & csp_endpt_flag].remove(&chop, g_self);
                 }
@@ -371,7 +371,7 @@ namespace {
     };
 
     char const * describe(void * ch) {
-        if (Channel * c = chan(ch)) {
+        if (Channel * c = get_chan(ch)) {
             return c->descr_.c_str();
         }
         return "▸Ø";
@@ -398,7 +398,7 @@ int csp_chan(csp_writer * w, csp_reader * r) {
 }
 
 void csp_chdescr(void * ch, char const * descr) {
-    if (Channel * c = chan(ch)) {
+    if (Channel * c = get_chan(ch)) {
         c->set_descr(descr);
     }
 }
@@ -411,10 +411,10 @@ char const * csp__internal__getchflags(void * ch) {
     return descr_flags((uintptr_t)ch);
 }
 
-csp_writer csp_writer_addref (csp_writer w) { if (w) chan(w)->addref(wr); return w; }
-void        csp_writer_release(csp_writer w) { if (w) chan(w)->release(wr); }
-csp_reader csp_reader_addref (csp_reader r) { if (r) chan(r)->addref(rd); return r; }
-void        csp_reader_release(csp_reader r) { if (r) chan(r)->release(rd); }
+csp_writer csp_writer_addref (csp_writer w) { if (w) get_chan(w)->addref(wr); return w; }
+void        csp_writer_release(csp_writer w) { if (w) get_chan(w)->release(wr); }
+csp_reader csp_reader_addref (csp_reader r) { if (r) get_chan(r)->addref(rd); return r; }
+void        csp_reader_release(csp_reader r) { if (r) get_chan(r)->release(rd); }
 
 void csp_prialt_begin(csp_alt_match * out, csp_chanop const * chanops, int count, int nowait) {
     Channel::prialt_begin_impl(out, chanops, count, bool(nowait));

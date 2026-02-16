@@ -70,7 +70,8 @@ TEST_CASE("Thread - Throw") {
 
     CHECK_EQ(1, csp__internal__channel_count(0));
     CHECK_EQ(1, csp__internal__channel_count(1));
-    CHECK_THROWS_AS(csp::join(std::move(ex)), bork);
+    CHECK_THROWS_AS(csp::join(ex), bork);
+    ex = {};
     csp_run();
     CHECK_EQ(0, csp__internal__channel_count(0));
     CHECK_EQ(0, csp__internal__channel_count(1));

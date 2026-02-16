@@ -5,7 +5,7 @@
 // and returns the result on a reply channel. Multiple concurrent
 // clients share the same server.
 //
-// The chan::rpc_client / chan::rpc_server combinators abstract away
+// The rpc_client / rpc_server combinators abstract away
 // the request/response plumbing. Compare to the boilerplate of
 // futures + promises, or callback-based async patterns.
 
@@ -22,12 +22,12 @@ int main() {
         printf("RPC calculator service:\n");
 
         // RPC channel pair
-        channel<std::tuple<char, double, double>> req;
-        channel<double> rep;
+        chan<std::tuple<char, double, double>> req;
+        chan<double> rep;
 
         // Server: evaluate arithmetic operations
-        spawn(chan::rpc_server<char, double, double>(
-            --req, ++rep,
+        spawn(rpc_server<char, double, double>(
+            std::move(req.r), std::move(rep.w),
             [](char op, double a, double b) -> double {
                 switch (op) {
                 case '+': return a + b;
@@ -39,22 +39,23 @@ int main() {
             }
         ));
 
-        // Create the client callable. Each copy holds refs to req/rep,
-        // keeping the server alive as long as any client exists.
-        auto calc = chan::rpc_client<char, double, double>(++req, --rep);
+        // Each client needs its own rpc_client (move-only endpoints).
+        auto calc1 = rpc_client<char, double, double>(req.w.copy(), rep.r.copy());
+        auto calc2 = rpc_client<char, double, double>(req.w.copy(), rep.r.copy());
+        auto calc3 = rpc_client<char, double, double>(std::move(req.w), std::move(rep.r));
 
         // Multiple concurrent clients
-        spawn([calc]{
+        spawn([calc = std::move(calc1)]() mutable {
             printf("  Client 1: 10 + 32 = %.0f\n", calc('+', 10, 32));
             printf("  Client 1: 100 / 7 = %.4f\n", calc('/', 100, 7));
         });
 
-        spawn([calc]{
+        spawn([calc = std::move(calc2)]() mutable {
             printf("  Client 2: 6 * 7 = %.0f\n", calc('*', 6, 7));
             printf("  Client 2: 50 - 8 = %.0f\n", calc('-', 50, 8));
         });
 
-        spawn([calc]{
+        spawn([calc = std::move(calc3)]() mutable {
             printf("  Client 3: 2 + 2 = %.0f\n", calc('+', 2, 2));
         });
     });

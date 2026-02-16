@@ -182,7 +182,7 @@ namespace csp
         explicit operator bool() const { return false; }
     } poke;
 
-    template <typename T> class channel;
+    template <typename T> struct chan;
 
     namespace detail {
 
@@ -295,7 +295,7 @@ namespace csp
         static writer dead();
 
         writer() = default;
-        writer(writer const & w) : w_(w.w_) { if (w_) csp_writer_addref(w_); }
+        writer(writer const &) = delete;
         writer(writer && w) : w_(w.w_) { w.w_ = nullptr; }
         ~writer() {
             if (w_) {
@@ -303,13 +303,7 @@ namespace csp
             }
         }
 
-        writer& operator=(writer const & w) {
-            if (&w != this) {
-                writer w_(w);
-                swap(w_);
-            }
-            return *this;
-        }
+        writer& operator=(writer const &) = delete;
         writer<T>& operator=(writer && w) {
             if (w_) csp_writer_release(w_);
             w_ = w.w_;
@@ -335,6 +329,13 @@ namespace csp
             return chan_op<T>(csp_chanop{csp_wait_dead(w_), nullptr});
         }
 
+        writer copy() const {
+            writer c;
+            c.w_ = w_;
+            if (c.w_) csp_writer_addref(c.w_);
+            return c;
+        }
+
         csp_writer internal_writer() const { return w_; }
 
     private:
@@ -342,7 +343,7 @@ namespace csp
 
         void assign(csp_writer w) { w_ = w; }
 
-        friend class channel<T>;
+        friend struct chan<T>;
     };
 
     namespace { Logger g_reader_log("reader"); }
@@ -353,7 +354,7 @@ namespace csp
         static reader dead();
 
         reader() = default;
-        reader(const reader & r) : r_(r.r_) { if (r_) csp_reader_addref(r_); }
+        reader(reader const &) = delete;
         reader(reader && r) : r_(r.r_) { r.r_ = nullptr; }
         ~reader() {
             if (r_) {
@@ -361,13 +362,7 @@ namespace csp
             }
         }
 
-        reader& operator=(reader const & r) {
-            if (&r != this) {
-                reader r_(r);
-                swap(r_);
-            }
-            return *this;
-        }
+        reader& operator=(reader const &) = delete;
         reader& operator=(reader && r) {
             if (r_) csp_reader_release(r_);
             r_ = r.r_;
@@ -398,7 +393,7 @@ namespace csp
         // Connect two channels directly.
         template <typename U>
         auto stream_to(writer<U> out) const {
-            return [in = *this, out] {
+            return [in = this->copy(), out = std::move(out)] {
                 for (T t; prialt(~out, in >> t) > 0 && out << t;) { }
             };
         }
@@ -414,19 +409,20 @@ namespace csp
 
         class iterator : public boost::iterator_facade<iterator, T const, boost::forward_traversal_tag> {
         public:
-            iterator(reader<T> source) : source_(source) {
+            iterator() : source_(nullptr) {}
+            iterator(reader<T> const & source) : source_(source ? &source : nullptr) {
                 if (source_) {
                     increment();
                 }
             }
 
         private:
-            reader<T> source_;
+            reader<T> const * source_;
             T t_;
 
             void increment() {
-                if (!(source_ >> t_)) {
-                    source_ = {};
+                if (!(*source_ >> t_)) {
+                    source_ = nullptr;
                 }
             }
 
@@ -440,10 +436,17 @@ namespace csp
         };
 
         iterator begin() const { return {*this}; }
-        iterator end() const { return {{}}; }
+        iterator end() const { return {}; }
 
         chan_op<T> operator~() const {
             return chan_op<T>(csp_chanop{csp_wait_dead(r_), nullptr});
+        }
+
+        reader copy() const {
+            reader c;
+            c.r_ = r_;
+            if (c.r_) csp_reader_addref(c.r_);
+            return c;
         }
 
         csp_reader internal_reader() const { return r_; }
@@ -461,66 +464,45 @@ namespace csp
 
         bool read_(void * dest) const;
 
-        friend class channel<T>;
+        friend struct chan<T>;
     };
 
     template <typename T = poke_t>
-    class channel {
-    public:
-        channel() {
-            csp_writer w;
-            csp_reader r;
-            if (csp_chan(&w, &r) == 0) {
+    struct chan {
+        writer<T> w;
+        reader<T> r;
+
+        chan() {
+            csp_writer cw;
+            csp_reader cr;
+            if (csp_chan(&cw, &cr) == 0) {
                 throw microthread_error("channel creation failed");
             }
-            w_.assign(w);
-            r_.assign(r);
-        }
-        channel(writer<T> w, reader<T> r) : w_(w), r_(r) { }
-        channel(channel const &) = default;
-        channel(channel && e) : w_(std::move(e.w_)), r_(std::move(e.r_)) {
-            static Logger log("channel/test");
-            CSP_LOG(log, "move %p/%p", w_.internal_writer(), r_.internal_reader());
+            w.assign(cw);
+            r.assign(cr);
         }
 
-        channel & operator=(channel const &) = default;
-        channel & operator=(channel && e) {
-            static Logger log("channel/test");
-            CSP_LOG(log, "move %p/%p <- %p/%p", w_.internal_writer(), r_.internal_reader(), e.w_.internal_writer(), e.r_.internal_reader());
-            w_ = std::move(e.w_);
-            CSP_LOG(log, ".... %p/%p <- %p/%p", w_.internal_writer(), r_.internal_reader(), e.w_.internal_writer(), e.r_.internal_reader());
-            r_ = std::move(e.r_);
-            CSP_LOG(log, "moved %p/%p <- %p/%p", w_.internal_writer(), r_.internal_reader(), e.w_.internal_writer(), e.r_.internal_reader());
-            return *this;
-        }
+        chan(writer<T> w, reader<T> r) : w(std::move(w)), r(std::move(r)) {}
+
+        chan(chan const &) = delete;
+        chan(chan &&) = default;
+        chan & operator=(chan const &) = delete;
+        chan & operator=(chan &&) = default;
 
         void release() {
-            w_ = {};
-            r_ = {};
+            w = {};
+            r = {};
         }
-
-        writer<T> const & operator+() const { return w_; }
-        writer<T>       & operator+()       { return w_; }
-        reader<T> const & operator-() const { return r_; }
-        reader<T>       & operator-()       { return r_; }
-
-        // Move the endpoints.
-        writer<T> operator++() { return std::move(w_); }
-        reader<T> operator--() { return std::move(r_); }
-
-    private:
-        writer<T> w_;
-        reader<T> r_;
     };
 
     template <typename T>
     reader<T> reader<T>::dead() {
-        return --channel<T>();
+        return std::move(chan<T>().r);
     }
 
     template <typename T>
     writer<T> writer<T>::dead() {
-        return ++channel<T>();
+        return std::move(chan<T>().w);
     }
 
 
@@ -556,9 +538,9 @@ namespace csp
 
     template <typename T>
     void make_channel(writer<T> & w, reader<T> & r) {
-        channel<T> ch;
-        w = ++ch;
-        r = --ch;
+        chan<T> ch;
+        w = std::move(ch.w);
+        r = std::move(ch.r);
     }
 
     // Make a channel for a writer&, returning the matching reader.
@@ -567,9 +549,9 @@ namespace csp
         if (w) {
             throw microthread_error("writer already attached channel");
         }
-        channel<T> ch;
-        w = ++ch;
-        return --ch;
+        chan<T> ch;
+        w = std::move(ch.w);
+        return std::move(ch.r);
     }
 
     // Make a channel for a reader&, returning the matching writer.
@@ -578,9 +560,9 @@ namespace csp
         if (r) {
             throw microthread_error("reader already attached to channel");
         }
-        channel<T> ch;
-        r = --ch;
-        return ++ch;
+        chan<T> ch;
+        r = std::move(ch.r);
+        return std::move(ch.w);
     }
 
     extern writer<std::exception_ptr> global_exception_handler;
@@ -638,7 +620,7 @@ namespace csp
         return r;
     }
 
-    inline void join(reader<std::exception_ptr> r) {
+    inline void join(reader<std::exception_ptr> const & r) {
         std::exception_ptr ep;
         if (r >> ep) {
             std::rethrow_exception(ep);
@@ -648,7 +630,7 @@ namespace csp
     template <typename T, typename F>
     writer<T> spawn_consumer(F f) {
         writer<T> w;
-        spawn([f = std::move(f), r = --w]{
+        spawn([f = std::move(f), r = --w]() mutable {
             f(std::move(r));
         });
         return w;
@@ -657,19 +639,19 @@ namespace csp
     template <typename T, typename F>
     reader<T> spawn_producer(F && f) {
         reader<T> r;
-        spawn([f = std::move(f), w = ++r]{
+        spawn([f = std::move(f), w = ++r]() mutable {
             f(std::move(w));
         });
         return r;
     }
 
     template <typename T, typename F>
-    channel<T> spawn_filter(F && f) {
-        channel<T> in, out;
-        spawn([f = std::move(f), in = --in, out = ++out]{
-            f(std::move(in), std::move(out));
+    chan<T> spawn_filter(F && f) {
+        chan<T> in, out;
+        spawn([f = std::move(f), r = std::move(in.r), w = std::move(out.w)]() mutable {
+            f(std::move(r), std::move(w));
         });
-        return {++in, --out};
+        return {std::move(in.w), std::move(out.r)};
     }
 
     // Range over a producer µthread; propagate exceptions therefrom.
@@ -705,7 +687,7 @@ namespace csp
             friend class boost::iterator_core_access;
         };
 
-        range(reader<T> r, reader<std::exception_ptr> ex) : r_(r), ex_(ex) { }
+        range(reader<T> r, reader<std::exception_ptr> ex) : r_(std::move(r)), ex_(std::move(ex)) { }
 
         iterator begin() const { return {this}; }
         iterator end() const { return {}; }
@@ -721,10 +703,10 @@ namespace csp
     template <typename T, typename F>
     range<T> spawn_range(F f) {
         reader<T> r;
-        auto ex = spawn([f, w = ++r]{
+        auto ex = spawn([f = std::move(f), w = ++r]() mutable {
             f(std::move(w));
         });
-        return {r, ex};
+        return {std::move(r), std::move(ex)};
     }
 
     namespace detail {

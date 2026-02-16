@@ -31,10 +31,10 @@ int main() {
         printf("Live configuration reload:\n");
 
         // Latch: holds the most recent Config and serves it to readers.
-        auto latch = chan::spawn_latch<Config>();
+        auto latch = spawn_latch<Config>();
 
         // Config producer: updates config periodically
-        spawn([w = ++latch]{
+        spawn([w = std::move(latch.w)]{
             Config configs[] = {
                 {10, 1000, "normal"},
                 {20, 500,  "fast"},
@@ -48,7 +48,7 @@ int main() {
 
         // Service workers that read config when they need it
         for (int id = 1; id <= 3; ++id) {
-            spawn([id, config = -latch]{
+            spawn([id, config = latch.r.copy()]{
                 for (int i = 0; i < 3; ++i) {
                     csp::sleep(80ms * id);  // different rates
                     Config c;

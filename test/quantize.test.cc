@@ -13,7 +13,7 @@ TEST_CASE("Quantize - Simple") {
     writer<int> in, quanta;
     reader<int> out, residue;
 
-    stats.spawn(chan::quantize(--in, --quanta, ++out, ++residue));
+    stats.spawn(quantize(--in, --quanta, ++out, ++residue));
 
     quanta << 5; quanta = {};
     in << 7; in = {};
@@ -29,8 +29,8 @@ TEST_CASE("Quantize - Complex") {
 
     int sent = 0, delivered = 0, undelivered = 0;
 
-    channel<int> source;
-    stats.spawn([loops, w = ++source, &sent]{
+    chan<int> source;
+    stats.spawn([loops, w = std::move(source.w), &sent]{
         constexpr int delta = 23;
         for (int i = 0; i < loops * (7 + 13 + 11) && w << delta; i += delta) {
             CSP_LOG(g_log, "  \033[31mi=%3d δ=%d\033[0m", i, delta);
@@ -40,12 +40,12 @@ TEST_CASE("Quantize - Complex") {
 
     std::vector<int> qdata = {7, 13, 11};
 
-    channel<int> quanta;
+    chan<int> quanta;
     reader<int> residue;
-    stats.spawn(chan::enumerate(std::vector<int>{qdata}, ++quanta, true));
+    stats.spawn(enumerate(std::vector<int>{qdata}, std::move(quanta.w), true));
 
     reader<int> sink;
-    stats.spawn(chan::quantize(--source, --quanta, ++sink, ++residue));
+    stats.spawn(quantize(std::move(source.r), std::move(quanta.r), ++sink, ++residue));
 
     stats.spawn([loops, &qdata, &delivered, sink = std::move(sink)]{
         for (int i = 0; i < loops; ++i) {
@@ -75,10 +75,10 @@ TEST_CASE("Quantize - Uniform") {
 
     int sent = 0, delivered = 0, undelivered = 0;
 
-    channel<int> source;
-    stats.spawn([source = ++source, &sent]{
+    chan<int> source;
+    stats.spawn([w = std::move(source.w), &sent]{
         constexpr int delta = 23;
-        for (int i = 0; i < 13 * 7 && source << delta; i += delta) {
+        for (int i = 0; i < 13 * 7 && w << delta; i += delta) {
             sent += delta;
         }
     });
@@ -87,7 +87,7 @@ TEST_CASE("Quantize - Uniform") {
 
     reader<int> sink;
     reader<int> residue;
-    stats.spawn(chan::quantize(--source, quantum, ++sink, ++residue));
+    stats.spawn(quantize(std::move(source.r), quantum, ++sink, ++residue));
 
     stats.spawn([sink = std::move(sink), quantum, &delivered]{
         for (int n; sink >> n;) {

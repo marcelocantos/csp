@@ -9,11 +9,11 @@ using namespace csp;
 TEST_CASE("ChanUtil - BufferBounded") {
     RunStats stats;
 
-    auto ch = chan::spawn_buffer<int>(5);
+    auto ch = spawn_buffer<int>(5);
 
     int sent = 0;
 
-    stats.spawn([out = ++ch, &sent]{
+    stats.spawn([out = std::move(ch.w), &sent]{
         for (int i = 1; i <= 10; ++i) {
             REQUIRE(bool(out << i));
             sent += i;
@@ -27,7 +27,7 @@ TEST_CASE("ChanUtil - BufferBounded") {
 
     int received = 0;
 
-    stats.spawn([in = --ch, &received]{
+    stats.spawn([in = std::move(ch.r), &received]{
         int n;
         while (in >> n) {
             received += n;
@@ -45,25 +45,25 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
     int sent = 0;
     int received = 0;
 
-    channel<> send, recv;
+    chan<> send, recv;
 
-    auto buf = chan::spawn_buffer<int>();
+    auto buf = spawn_buffer<int>();
 
-    stats.spawn([trigger = --send, out = ++buf, &sent]{
+    stats.spawn([trigger = std::move(send.r), out = std::move(buf.w), &sent]{
         for (int i = 0; trigger >> poke; ++i) {
             out << i;
             sent += 1;
         }
     });
 
-    stats.spawn([trigger = --recv, in = --buf, &received]{
+    stats.spawn([trigger = std::move(recv.r), in = std::move(buf.r), &received]{
         for (int i = 0; trigger >> poke; ++i) {
             CHECK_EQ(i, in.read());
             received += 1;
         }
     });
 
-    stats.spawn([send = ++send, recv = ++recv, &sent, &received] {
+    stats.spawn([send = std::move(send.w), recv = std::move(recv.w), &sent, &received] {
         auto fire = [&](auto && trigger, size_t n) {
             while (n--) {
                 trigger << poke;
@@ -85,13 +85,13 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
 TEST_CASE("ChanUtil - BufferEmpty") {
     RunStats stats;
 
-    auto ch = chan::spawn_buffer<int>(5);
+    auto ch = spawn_buffer<int>(5);
 
     // Writer dies immediately without sending anything.
-    stats.spawn([out = ++ch]{ });
+    stats.spawn([out = std::move(ch.w)]{ });
 
     int received = 0;
-    stats.spawn([in = --ch, &received]{
+    stats.spawn([in = std::move(ch.r), &received]{
         int n;
         while (in >> n) {
             ++received;
@@ -106,15 +106,15 @@ TEST_CASE("ChanUtil - BufferEmpty") {
 TEST_CASE("ChanUtil - BufferSingle") {
     RunStats stats;
 
-    auto ch = chan::spawn_buffer<int>(1);
+    auto ch = spawn_buffer<int>(1);
 
-    stats.spawn([out = ++ch]{
+    stats.spawn([out = std::move(ch.w)]{
         for (int i = 1; i <= 5; ++i) {
             REQUIRE(bool(out << i));
         }
     });
 
-    stats.spawn([in = --ch]{
+    stats.spawn([in = std::move(ch.r)]{
         for (int i = 1; i <= 5; ++i) {
             CHECK_EQ(i, in.read());
         }

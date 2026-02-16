@@ -24,36 +24,36 @@ int main() {
         // Source: integers 1..50
         std::vector<int> nums(50);
         for (int i = 0; i < 50; ++i) nums[i] = i + 1;
-        auto source = chan::spawn_enumerate<int>(std::move(nums));
+        auto source = spawn_enumerate<int>(std::move(nums));
 
         // map: square each value
-        auto squared = chan::spawn_map<int>(source, [](int n) { return n * n; });
+        auto squared = spawn_map<int>(std::move(source), [](int n) { return n * n; });
 
         // where: keep only values whose digit sum > 10
-        auto filtered = chan::spawn_where<int>(squared, [](int n) {
+        auto filtered = spawn_where<int>(std::move(squared), [](int n) {
             int sum = 0;
             for (int v = n; v > 0; v /= 10) sum += v % 10;
             return sum > 10;
         });
 
         // buffer: decouple producer/consumer with capacity 4
-        auto buffered = chan::spawn_buffer<int>(filtered, 4);
+        auto buffered = spawn_buffer<int>(std::move(filtered), 4);
 
         // tee: tap the stream to print what flows through
-        channel<int> tap;
-        spawn([r = --tap]{
+        chan<int> tap;
+        spawn([r = std::move(tap.r)]{
             printf("  [tap] ");
             for (int n; r >> n;) printf("%d ", n);
             printf("\n");
         });
-        auto teed = spawn_producer<int>([=, tap = ++tap](writer<int> out) {
-            chan::tee(buffered, out, tap)();
+        auto teed = spawn_producer<int>([buffered = std::move(buffered), tap = std::move(tap.w)](writer<int> out) mutable {
+            tee(std::move(buffered), std::move(out), std::move(tap))();
         });
 
         // sink: collect results
         int total = 0;
         int count = 0;
-        chan::sink(teed, [&](int n) {
+        sink(std::move(teed), [&](int n) {
             count++;
             total += n;
         })();

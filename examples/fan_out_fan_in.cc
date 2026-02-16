@@ -25,8 +25,8 @@ int main() {
         struct Result { int id; double answer; };
 
         // Job source
-        channel<Job> jobs;
-        spawn([w = ++jobs]{
+        chan<Job> jobs;
+        spawn([w = std::move(jobs.w)]{
             for (int i = 0; i < NUM_JOBS; ++i) {
                 if (!(w << Job{i, (i + 1) * 7})) return;
             }
@@ -34,14 +34,14 @@ int main() {
 
         // Results channel — shared by all workers.
         // Move the writer out so workers hold the only refs.
-        channel<Result> results;
-        writer<Result> results_w = ++results;
+        chan<Result> results;
+        writer<Result> results_w = std::move(results.w);
 
         // Spawn workers. Each pulls from jobs, computes, pushes to results.
         // When all workers exit, the results writer refcount drops to zero
         // and the reader closes.
         for (int w = 0; w < NUM_WORKERS; ++w) {
-            spawn([jobs_r = -jobs, out = results_w]{
+            spawn([jobs_r = jobs.r.copy(), out = results_w.copy()]{
                 for (Job j; jobs_r >> j;) {
                     // "Heavy computation"
                     double answer = std::sqrt(static_cast<double>(j.value));
@@ -54,7 +54,7 @@ int main() {
         // Collect results
         printf("Fan-out to %d workers, %d jobs:\n", NUM_WORKERS, NUM_JOBS);
         std::vector<Result> collected;
-        for (Result r; -results >> r;) {
+        for (Result r; results.r >> r;) {
             collected.push_back(r);
         }
         std::sort(collected.begin(), collected.end(),

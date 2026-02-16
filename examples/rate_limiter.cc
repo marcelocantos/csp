@@ -27,11 +27,11 @@ int main() {
         auto tokens = tick(100ms);
 
         // Buffer up to 3 tokens (burst capacity)
-        auto bucket = chan::spawn_buffer<clock::time_point>(tokens, 3);
+        auto bucket = spawn_buffer<clock::time_point>(std::move(tokens), 3);
 
         // Simulate 8 bursty requests
-        channel<int> requests;
-        spawn([w = ++requests]{
+        chan<int> requests;
+        spawn([w = std::move(requests.w)]{
             // First burst: 3 requests at once
             for (int i = 1; i <= 3; ++i) {
                 if (!(w << i)) return;
@@ -45,7 +45,7 @@ int main() {
 
         // Process requests, consuming one token per request
         auto start = clock::now();
-        for (int req; -requests >> req;) {
+        for (int req; requests.r >> req;) {
             // Wait for a token
             bucket >> nullptr;
 

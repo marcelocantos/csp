@@ -22,39 +22,36 @@ A C++ microthreading library with typed, synchronous channels inspired by
 
 ```cpp
 #include <csp/microthread.h>
-#include <csp/buffer.h>
 #include <iostream>
 
 int main() {
     using namespace csp;
 
-    channel<int> ch;
+    chan<int> ch;
 
-    // Producer
-    spawn([w = +ch] {
+    // Producer — move the writer into the spawned microthread
+    spawn([w = std::move(ch.w)] {
         for (int i = 0; i < 10; ++i)
             w << i;
     });
 
-    // Consumer
-    spawn([r = -ch] {
-        for (int n; r >> n;)
-            std::cout << n << "\n";
-    });
-
-    ch.release();
-    schedule();
+    // Consumer — read until the writer dies
+    for (int n; ch.r >> n;)
+        std::cout << n << "\n";
 }
 ```
 
-## Channel conventions
+## Channel API
+
+`chan<T>` creates a channel with public `w` (writer) and `r` (reader) members.
+Endpoints are **move-only** — forgetting to move is a compile error, not a
+silent deadlock. Use `.copy()` when you need shared ownership.
 
 | Expression | Meaning |
 |---|---|
-| `+ch` | Get a writer reference |
-| `-ch` | Get a reader reference |
-| `++ch` | Move the writer out |
-| `--ch` | Move the reader out |
+| `chan<T> ch` | Create a channel with `ch.w` and `ch.r` |
+| `std::move(ch.w)` | Move writer into a lambda/function |
+| `ch.w.copy()` | Explicit shared ownership (addref) |
 | `w << val` | Blocking send (returns false if reader is dead) |
 | `r >> val` | Blocking receive (returns false if writer is dead) |
 | `~w` | Wait for writer death |
@@ -73,7 +70,7 @@ make clean  # remove build artifacts
 ## Dependencies
 
 - **Boost.Context** (linked library) — coroutine context switching
-- **Google Test/Mock** (vendored in `third_party/`) — test framework
+- **doctest** (vendored in `third_party/`) — test framework
 
 ## License
 

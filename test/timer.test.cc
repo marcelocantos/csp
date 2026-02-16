@@ -110,16 +110,16 @@ TEST_CASE("Timer - MultipleTimersOrdering") {
 TEST_CASE("Timer - TimeoutPattern") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
     int which_result = 0;
     int val = 0;
 
-    stats.spawn([w = +ch]{
+    stats.spawn([w = ch.w.copy()]{
         csp::sleep(5ms);
         w << 42;
     });
 
-    stats.spawn([&, r = -ch]{
+    stats.spawn([&, r = ch.r.copy()]{
         auto timeout = csp::after(50ms);
         which_result = alt(r >> val, timeout >> poke);
     });

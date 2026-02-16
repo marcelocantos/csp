@@ -5,12 +5,10 @@
 
 namespace csp {
 
-    namespace chan {
-
         template <typename T, typename Pred>
         auto where(reader<T> in, writer<T> out, Pred && pred) {
             return [in = std::move(in), out = std::move(out), pred]{
-                csp_descr("chan::where");
+                csp_descr("where");
 
                 static Logger log("chan/where");
                 CSP_LOG(log, "start");
@@ -28,27 +26,25 @@ namespace csp {
         // Wire up an existing downstream writer, returning an upstream writer.
         template <typename T, typename Pred>
         writer<T> spawn_where(writer<T> w, Pred && pred) {
-            return spawn_consumer<T>([w = std::move(w), pred = std::move(pred)](auto && r) {
-                where(r, w, pred)();
+            return spawn_consumer<T>([w = std::move(w), pred = std::move(pred)](auto && r) mutable {
+                where(std::move(r), std::move(w), std::move(pred))();
             });
         }
 
         // Wire up an existing upstream reader, returning a downstream reader.
         template <typename T, typename Pred>
         reader<T> spawn_where(reader<T> r, Pred && pred) {
-            return spawn_producer<T>([=, r = std::move(r), pred = std::move(pred)](auto && w) {
-                where(r, w, pred)();
+            return spawn_producer<T>([r = std::move(r), pred = std::move(pred)](auto && w) mutable {
+                where(std::move(r), std::move(w), std::move(pred))();
             });
         }
 
         template <typename T, typename Pred>
-        channel<T> spawn_where(Pred && pred) {
-            return spawn_filter<T>([=](auto && r, auto && w) {
-                where(r, w, pred)();
+        chan<T> spawn_where(Pred && pred) {
+            return spawn_filter<T>([pred = std::move(pred)](auto && r, auto && w) mutable {
+                where(std::move(r), std::move(w), std::move(pred))();
             });
         }
-
-    }
 
 }
 

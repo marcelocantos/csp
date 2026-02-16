@@ -5,12 +5,10 @@
 
 namespace csp {
 
-    namespace chan {
-
         template <typename T>
         auto deaf(reader<T> in) {
-            return [=]{
-                csp_descr("chan::deaf");
+            return [in = std::move(in)]{
+                csp_descr("deaf");
 
                 static Logger scope("chan/deaf/scope");
                 BRAC_SCOPE(scope, "deaf", "");
@@ -21,12 +19,10 @@ namespace csp {
 
         template <typename T>
         writer<T> spawn_deaf() {
-            return spawn_consumer<T>([](auto r) {
-                deaf(r)();
+            return spawn_consumer<T>([](auto r) mutable {
+                deaf(std::move(r))();
             });
         }
-
-    }
 
 }
 

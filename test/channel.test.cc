@@ -14,9 +14,9 @@ static Logger g_log("Channel.Test");
 
 TEST_CASE("Channel - RefCounts1") {
     {
-        channel<int> ch;
-        auto wr = +ch;
-        auto rd = -ch;
+        chan<int> ch;
+        auto wr = ch.w.copy();
+        auto rd = ch.r.copy();
     }
     CHECK_EQ(0, csp__internal__channel_count(0));
     CHECK_EQ(0, csp__internal__channel_count(1));
@@ -24,8 +24,8 @@ TEST_CASE("Channel - RefCounts1") {
 
 TEST_CASE("Channel - RefCounts2") {
     {
-        channel<int> ch;
-        auto f = [in = +ch, out = -ch]{ };
+        chan<int> ch;
+        auto f = [in = ch.w.copy(), out = ch.r.copy()]{ };
         f();
     }
     CHECK_EQ(0, csp__internal__channel_count(0));
@@ -36,7 +36,7 @@ TEST_CASE("Channel - RefCounts3") {
     CHECK_EQ(0, csp__internal__channel_count(0));
     CHECK_EQ(0, csp__internal__channel_count(1));
 
-    channel<int> ch;
+    chan<int> ch;
     CHECK_EQ(1, csp__internal__channel_count(0));
 
     ch.release();
@@ -48,7 +48,7 @@ TEST_CASE("Channel - ThreadRefCounts") {
     CHECK_EQ(0, csp__internal__channel_count(0));
     CHECK_EQ(0, csp__internal__channel_count(1));
     {
-        channel<int> ch;
+        chan<int> ch;
 
         CHECK_EQ(1, csp__internal__channel_count(1));
 
@@ -60,13 +60,13 @@ TEST_CASE("Channel - ThreadRefCounts") {
 }
 
 TEST_CASE("Channel - OneShot") {
-    channel<int> ch;
+    chan<int> ch;
     int result = 0;
 
-    spawn([o = +ch]{
+    spawn([o = ch.w.copy()]{
         o << 42;
     });
-    spawn([i = -ch, &result]{
+    spawn([i = ch.r.copy(), &result]{
         i >> result;
     });
 
@@ -77,13 +77,13 @@ TEST_CASE("Channel - OneShot") {
 
 // Repeat OneShot to exercise a SEGFAULT bug.
 TEST_CASE("Channel - OneShotAgain") {
-    channel<int> ch;
+    chan<int> ch;
     int result = 0;
 
-    spawn([o = +ch]{
+    spawn([o = ch.w.copy()]{
         o << 42;
     });
-    spawn([i = -ch, &result]{
+    spawn([i = ch.r.copy(), &result]{
         i >> result;
     });
 
@@ -95,13 +95,13 @@ TEST_CASE("Channel - OneShotAgain") {
 TEST_CASE("Channel - OneShotStats") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
     int result = 0;
 
-    stats.spawn([o = +ch]{
+    stats.spawn([o = ch.w.copy()]{
         o << 42;
     });
-    stats.spawn([i = -ch, &result]{
+    stats.spawn([i = ch.r.copy(), &result]{
         i >> result;
     });
 
@@ -113,18 +113,18 @@ TEST_CASE("Channel - OneShotStats") {
 TEST_CASE("Channel - Basic") {
     RunStats stats;
 
-    channel<int> a, b, c;
+    chan<int> a, b, c;
 
-    stats.spawn([in = -a, out = +b]{
+    stats.spawn([in = a.r.copy(), out = b.w.copy()]{
         out << (in.read() + 20);
     });
-    stats.spawn([in = -b, out = +c]{
+    stats.spawn([in = b.r.copy(), out = c.w.copy()]{
         out << (in.read() + 300);
     });
 
     int result = 0;
 
-    stats.spawn([in = +a, out = -c, &result]{
+    stats.spawn([in = a.w.copy(), out = c.r.copy(), &result]{
         in << 1;
         result = out.read();
     });
@@ -141,16 +141,16 @@ TEST_CASE("Channel - Basic") {
 TEST_CASE("Channel - WriterGone") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
 
     int total = 0;
 
-    stats.spawn([out = +ch]{
+    stats.spawn([out = ch.w.copy()]{
         for (int n = 1; n <= 10; ++n) {
             out << n;
         }
     });
-    stats.spawn([in = -ch, &total]{
+    stats.spawn([in = ch.r.copy(), &total]{
         int n;
         while (in >> n) {
             total += n;
@@ -167,14 +167,14 @@ TEST_CASE("Channel - WriterGone") {
 TEST_CASE("Channel - ReaderGone") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
 
     int total = 0;
 
-    stats.spawn([out = +ch]{
+    stats.spawn([out = ch.w.copy()]{
         for (int n = 1; out << n; n *= 2) { }
     });
-    stats.spawn([in = -ch, &total]{
+    stats.spawn([in = ch.r.copy(), &total]{
         for (int i = 0; i < 10; ++i) {
             total += in.read();
         }
@@ -190,21 +190,21 @@ TEST_CASE("Channel - ReaderGone") {
 TEST_CASE("Channel - NWriters") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
 
     std::vector<int> total;
 
     for (int n = 1; n <= 2; ++n) {
-        stats.spawn([out = +ch, n]{
+        stats.spawn([out = ch.w.copy(), n]{
             CSP_LOG(g_log, "producer[%d]", n);
             out << n;
         });
     }
-    ++ch;
+    ch.w = {};
 
     csp::schedule();
 
-    stats.spawn([out = --ch, &total] {
+    stats.spawn([out = std::move(ch.r), &total] {
         CSP_LOG(g_log, "consumer");
         for (auto n : out) {
             total.push_back(n);
@@ -220,21 +220,21 @@ TEST_CASE("Channel - NWriters") {
 TEST_CASE("Channel - NReaders") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
 
     int total = 0;
 
     for (int i = 0; i < 10; ++i) {
-        stats.spawn([in = -ch, &total, i]{
+        stats.spawn([in = ch.r.copy(), &total, i]{
             total += in.read();
         });
     }
 
-    --ch;
+    ch.r = {};
 
     csp::schedule();
 
-    stats.spawn([out = +ch]{
+    stats.spawn([out = ch.w.copy()]{
         for (int n = 1; out << n; n *= 2) { }
     });
 
@@ -245,8 +245,8 @@ TEST_CASE("Channel - NReaders") {
 
 // We don't want channel.test.cc to depend on rpc.h.
 template <typename Req, typename Rep>
-static auto rpc(writer<Req> const & req, reader<Rep> const & rep) {
-    return [req, rep](int n) {
+static auto rpc(writer<Req> req, reader<Rep> rep) {
+    return [req = std::move(req), rep = std::move(rep)](int n) {
         req << n;
         return rep.read();
     };
@@ -255,11 +255,11 @@ static auto rpc(writer<Req> const & req, reader<Rep> const & rep) {
 TEST_CASE("Channel - AltIn") {
     RunStats stats;
 
-    channel<int> up0, up1, down;
+    chan<int> up0, up1, down;
 
     int sent = 0, received = 0;;
 
-    stats.spawn([in0 = --up0, in1 = --up1, out = ++down, &sent]{
+    stats.spawn([in0 = std::move(up0.r), in1 = std::move(up1.r), out = std::move(down.w), &sent]{
         int n;
         for (int i = 0; i < 2; ++i) {
             alt(in0 >> n, in1 >> n);
@@ -268,11 +268,11 @@ TEST_CASE("Channel - AltIn") {
         }
     });
 
-    stats.spawn([out0 = ++up0, out1 = ++up1, in = --down, &received]{
-        CHECK_EQ(11, rpc(out0, in)(11));
+    stats.spawn([out0 = std::move(up0.w), out1 = std::move(up1.w), in = std::move(down.r), &received]() mutable {
+        CHECK_EQ(11, rpc(std::move(out0), in.copy())(11));
         ++received;
 
-        CHECK_EQ(42, rpc(out1, in)(42));
+        CHECK_EQ(42, rpc(std::move(out1), std::move(in))(42));
         ++received;
     });
 
@@ -285,11 +285,11 @@ TEST_CASE("Channel - AltIn") {
 TEST_CASE("Channel - AltDead") {
     RunStats stats;
 
-    channel<int> up, down, die;
+    chan<int> up, down, die;
 
     int reqs = 0, reps = 0;
 
-    stats.spawn([in = --up, out = ++down, die = --die, &reqs]{
+    stats.spawn([in = std::move(up.r), out = std::move(down.w), die = std::move(die.r), &reqs]{
         for (;;) {
             int n;
             switch (alt(in >> n, ~die)) {
@@ -303,10 +303,10 @@ TEST_CASE("Channel - AltDead") {
         }
     });
 
-    auto kill = ++die;
+    auto kill = std::move(die.w);
 
-    stats.spawn([out = ++up, in = --down, &kill, &reps]{
-        auto echo = rpc(out, in);
+    stats.spawn([out = std::move(up.w), in = std::move(down.r), &kill, &reps]() mutable {
+        auto echo = rpc(out.copy(), in.copy());
 
         for (int i = 1; i <= 10; ++i) {
             CHECK_EQ(i, echo(i));
@@ -328,17 +328,17 @@ TEST_CASE("Channel - AltDead") {
 TEST_CASE("Channel - AltNull") {
     RunStats stats;
 
-    channel<int> up, down;
+    chan<int> up, down;
 
-    stats.spawn([in = -up]{
+    stats.spawn([in = up.r.copy()]{
         CHECK_EQ(42, in.read());
     });
 
-    stats.spawn([out = +down]{
+    stats.spawn([out = down.w.copy()]{
         out << 11;
     });
 
-    stats.spawn([up = +up, down = -down]{
+    stats.spawn([up = up.w.copy(), down = down.r.copy()]{
         int n;
         std::vector<chan_op<int>> actions;
         actions.push_back(up << 42);
@@ -365,8 +365,8 @@ TEST_CASE("Channel - AltNull") {
 TEST_CASE("Channel - Range") {
     RunStats stats;
 
-    channel<int> ch;
-    stats.spawn([out = ++ch]{
+    chan<int> ch;
+    stats.spawn([out = std::move(ch.w)]{
         for (int n = 1; n <= 10; ++n) {
             out << n;
         }
@@ -374,7 +374,8 @@ TEST_CASE("Channel - Range") {
 
     int total = 0;
 
-    for (auto n : --ch) {
+    auto r = std::move(ch.r);
+    for (auto n : r) {
         total += n;
     }
 
@@ -417,13 +418,13 @@ TEST_CASE("Channel - ActionBig") {
     };
     Big big2 = big, big3 = {};
 
-    channel<Big> chanb;
+    chan<Big> chanb;
     std::vector<csp::chan_op<Big>> a;
-    a.push_back(+chanb << big);
+    a.push_back(chanb.w.copy() << big);
     big = {};
 
     stats.spawn([&]{
-        -chanb >> big3;
+        chanb.r.copy() >> big3;
     });
 
     CHECK_EQ(1, csp::alt(a));
@@ -437,12 +438,12 @@ TEST_CASE("Channel - String") {
     RunStats stats;
 
     writer<std::string> in;
-    channel<std::string> branch[2];
-    channel<std::string> merge[2];
+    chan<std::string> branch[2];
+    chan<std::string> merge[2];
     reader<std::string> out;
 
     // splitter
-    stats.spawn([r = --in, w0 = ++branch[0], w1 = ++branch[1]]{
+    stats.spawn([r = --in, w0 = std::move(branch[0].w), w1 = std::move(branch[1].w)]{
         for (std::string s; r >> s;) {
             auto sp = s.find(' ');
             if (sp != s.npos) {
@@ -453,7 +454,7 @@ TEST_CASE("Channel - String") {
     });
 
     // capser
-    stats.spawn([r = --branch[0], w = ++merge[0]]{
+    stats.spawn([r = std::move(branch[0].r), w = std::move(merge[0].w)]{
             for (std::string s; r >> s;) {
                 for (auto & c : s) {
                     c = toupper(c);
@@ -463,7 +464,7 @@ TEST_CASE("Channel - String") {
         });
 
     // reverser
-    stats.spawn([r = --branch[1], w = ++merge[1]]{
+    stats.spawn([r = std::move(branch[1].r), w = std::move(merge[1].w)]{
             for (std::string s; r >> s;) {
                 reverse(begin(s), end(s));
                 w << s;
@@ -471,7 +472,7 @@ TEST_CASE("Channel - String") {
         });
 
     // merger
-    stats.spawn([r0 = --merge[0], r1 = --merge[1], w = ++out]{
+    stats.spawn([r0 = std::move(merge[0].r), r1 = std::move(merge[1].r), w = ++out]{
             for (std::string a, b;
                  (alt(r0 >> a, ~r1, ~w) > 0 &&
                   alt(r1 >> b, ~r0, ~w) > 0 &&
@@ -512,27 +513,27 @@ TEST_CASE("Channel - FeedbackLoop") {
 
     RunStats stats;
 
-    auto buf = chan::spawn_buffer<int>();
+    auto buf = spawn_buffer<int>();
 
     constexpr int cadence = 5;
 
     // Pre-fill buffer with a few zeros.
     for (int i = 0; i < cadence; ++i) {
-        +buf << 0;
+        buf.w.copy() << 0;
     }
 
-    channel<int> inner;
+    chan<int> inner;
     reader<int> out;
 
     // minus
-    spawn([sub = --buf, out = ++inner] {
-        auto in = chan::spawn_count_forever(0);
+    spawn([sub = std::move(buf.r), out = std::move(inner.w)] {
+        auto in = spawn_count_forever(0);
         for (int a = 0, b = 0; in >> a && sub >> b && out << (a - b);) {
             CSP_LOG(g_log, "a = %d, b = %d", a, b);
         }
     });
 
-    spawn(chan::tee(--inner, ++out, ++buf));
+    spawn(tee(std::move(inner.r), ++out, std::move(buf.w)));
 
     for (int i = 0; i < 100; i += cadence) {
         for (int j = 0; j < cadence; ++j) REQUIRE_EQ(i + j, out.read());
@@ -546,12 +547,12 @@ template <typename T>
 static void spawn_outward_tree(RunStats & stats, reader<T> in, writer<T> * outs, size_t n_outs) {
     if (n_outs == 1) {
         auto out = std::move(*outs);
-        stats.spawn(in.stream_to(out));
+        stats.spawn(in.stream_to(std::move(out)));
     } else {
         writer<T> inner0, inner1;
         spawn_outward_tree(stats, --inner0, outs, n_outs / 2);
         spawn_outward_tree(stats, --inner1, outs + n_outs / 2, n_outs - n_outs / 2);
-        stats.spawn([=] {
+        stats.spawn([in = std::move(in), inner0 = std::move(inner0), inner1 = std::move(inner1)] {
             // round robin
             for (T t; in >> t && inner0 << t && in >> t && inner1 << t;) { }
         });
@@ -562,12 +563,12 @@ template <typename T>
 static void spawn_inward_tree(RunStats & stats, reader<T> * ins, size_t n_ins, writer<T> out) {
     if (n_ins == 1) {
         auto in = std::move(*ins);
-        stats.spawn(in.stream_to(out));
+        stats.spawn(in.stream_to(std::move(out)));
     } else {
         reader<T> inner0, inner1;
         spawn_inward_tree(stats, ins, n_ins / 2, ++inner0);
         spawn_inward_tree(stats, ins + n_ins / 2, n_ins - n_ins / 2, ++inner1);
-        stats.spawn([=] {
+        stats.spawn([out = std::move(out), inner0 = std::move(inner0), inner1 = std::move(inner1)] {
             // alt
             for (T t; prialt(~out, inner0 >> t, inner1 >> t) > 0 && out << t;) { }
         });
@@ -605,7 +606,7 @@ TEST_CASE("Channel - Capillaries") {
     spawn_outward_tree(stats, --in, ww, WIDTH);
     spawn_inward_tree(stats, rr, WIDTH, ++out);
 
-    stats.spawn(chan::count(std::move(in), 0UL, MESSAGES));
+    stats.spawn(count(std::move(in), 0UL, MESSAGES));
 
     std::bitset<MESSAGES> received;
     for (size_t i; out >> i;) {
@@ -620,14 +621,14 @@ TEST_CASE("Channel - Capillaries") {
 TEST_CASE("Channel - MoveOnly") {
     RunStats stats;
 
-    channel<std::unique_ptr<int>> ch;
+    chan<std::unique_ptr<int>> ch;
 
-    stats.spawn([w = +ch]{
+    stats.spawn([w = ch.w.copy()]{
         w << std::make_unique<int>(42);
     });
 
     std::unique_ptr<int> result;
-    stats.spawn([r = -ch, &result]{
+    stats.spawn([r = ch.r.copy(), &result]{
         r >> result;
     });
 
@@ -642,14 +643,14 @@ TEST_CASE("Channel - MoveOnly") {
 TEST_CASE("Channel - StreamTo") {
     RunStats stats;
 
-    channel<int> src;
+    chan<int> src;
     reader<int> out;
 
-    stats.spawn([w = +src]{
+    stats.spawn([w = src.w.copy()]{
         for (int i = 1; i <= 10; ++i) w << i;
     });
 
-    stats.spawn((-src).stream_to(++out));
+    stats.spawn(src.r.copy().stream_to(++out));
 
     src.release();
 
@@ -664,15 +665,15 @@ TEST_CASE("Channel - StreamTo") {
 TEST_CASE("Channel - CopySemantics") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
 
-    // Copy writer and reader.
-    auto w1 = +ch;
-    auto w2 = w1;
+    // Copy writer and reader via .copy().
+    auto w1 = ch.w.copy();
+    auto w2 = w1.copy();
     CHECK_EQ(w1, w2);
 
-    auto r1 = -ch;
-    auto r2 = r1;
+    auto r1 = ch.r.copy();
+    auto r2 = r1.copy();
     CHECK_EQ(r1, r2);
 
     ch.release();
@@ -700,17 +701,17 @@ TEST_CASE("Channel - CopySemantics") {
 TEST_CASE("Channel - NWritersNReaders") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
 
     constexpr int N = 10;
     int sent = 0, received = 0;
 
     for (int i = 0; i < N; ++i) {
-        stats.spawn([w = +ch, &sent]{
+        stats.spawn([w = ch.w.copy(), &sent]{
             w << 1;
             ++sent;
         });
-        stats.spawn([r = -ch, &received]{
+        stats.spawn([r = ch.r.copy(), &received]{
             received += r.read();
         });
     }
@@ -726,14 +727,14 @@ TEST_CASE("Channel - NWritersNReaders") {
 TEST_CASE("Channel - AltFairness") {
     RunStats stats;
 
-    channel<int> a, b;
+    chan<int> a, b;
     int count_a = 0, count_b = 0;
     constexpr int trials = 1000;
 
-    stats.spawn([w = +a]{ for (int i = 0; w << 0; ++i) { } });
-    stats.spawn([w = +b]{ for (int i = 0; w << 0; ++i) { } });
+    stats.spawn([w = a.w.copy()]{ for (int i = 0; w << 0; ++i) { } });
+    stats.spawn([w = b.w.copy()]{ for (int i = 0; w << 0; ++i) { } });
 
-    stats.spawn([ra = -a, rb = -b, &count_a, &count_b]{
+    stats.spawn([ra = a.r.copy(), rb = b.r.copy(), &count_a, &count_b]{
         int n;
         for (int i = 0; i < trials; ++i) {
             switch (alt(ra >> n, rb >> n)) {
@@ -757,11 +758,11 @@ TEST_CASE("Channel - AltFairness") {
 TEST_CASE("Channel - PrialtOrder") {
     RunStats stats;
 
-    channel<int> a, b;
+    chan<int> a, b;
 
     // Only channel a has a writer; channel b is writer-dead.
-    stats.spawn([w = +a]{ for (;;) { if (!(w << 42)) return; } });
-    auto ra = -a, rb = -b;
+    stats.spawn([w = a.w.copy()]{ for (;;) { if (!(w << 42)) return; } });
+    auto ra = a.r.copy(), rb = b.r.copy();
     a.release();
     b.release();
 
@@ -778,8 +779,8 @@ TEST_CASE("Channel - PrialtOrder") {
 TEST_CASE("Channel - NonBlocking") {
     RunStats stats;
 
-    channel<int> ch;
-    auto r = -ch;
+    chan<int> ch;
+    auto r = ch.r.copy();
     int n = -1;
 
     // No writer ready; skip (dead channel) fires immediately.
@@ -787,7 +788,7 @@ TEST_CASE("Channel - NonBlocking") {
     CHECK_EQ(-1, n);
 
     // Make a writer ready.
-    stats.spawn([w = +ch]{ w << 42; });
+    stats.spawn([w = ch.w.copy()]{ w << 42; });
     ch.release();
     while (csp_run()) { }
 
@@ -808,7 +809,7 @@ TEST_CASE("Channel - AltManyChannels") {
 
     for (int i = 0; i < N; ++i) {
         rs[i] = --ws[i];
-        stats.spawn([w = ws[i], i]{ w << i; });
+        stats.spawn([w = ws[i].copy(), i]{ w << i; });
         ws[i] = {};
     }
 

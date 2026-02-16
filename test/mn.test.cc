@@ -45,13 +45,13 @@ TEST_CASE("MN - MultipleThreads") {
 TEST_CASE("MN - CrossThreadChannel") {
     csp::init_runtime(2);
 
-    csp::channel<int> ch;
+    csp::chan<int> ch;
     std::atomic<std::thread::id> writer_tid{};
     std::atomic<std::thread::id> reader_tid{};
 
     csp::spawn([&] {
         writer_tid.store(std::this_thread::get_id(), std::memory_order_relaxed);
-        auto w = ++ch;
+        auto w = std::move(ch.w);
         for (int i = 0; i < 10; ++i) {
             w << i;
         }
@@ -59,7 +59,7 @@ TEST_CASE("MN - CrossThreadChannel") {
 
     csp::spawn([&] {
         reader_tid.store(std::this_thread::get_id(), std::memory_order_relaxed);
-        auto r = --ch;
+        auto r = std::move(ch.r);
         int sum = 0;
         for (int v; r >> v;) {
             sum += v;
@@ -175,17 +175,17 @@ TEST_CASE("MN - ConcurrentTimersAndChannels") {
 
     csp::init_runtime(4);
 
-    csp::channel<int> ch;
+    csp::chan<int> ch;
     std::atomic<int> result{0};
 
     // Writer sleeps then sends.
-    csp::spawn([w = ++ch] {
+    csp::spawn([w = std::move(ch.w)] {
         csp::sleep(15ms);
         w << 42;
     });
 
     // Reader uses alt with a generous timeout — should get the value.
-    csp::spawn([&, r = --ch] {
+    csp::spawn([&, r = std::move(ch.r)] {
         auto timeout = csp::after(200ms);
         int val = 0;
         int which = csp::alt(r >> val, timeout >> csp::poke);
@@ -209,13 +209,13 @@ TEST_CASE("MN - StressChannels") {
     std::atomic<int> total{0};
 
     for (int p = 0; p < NUM_PAIRS; ++p) {
-        csp::channel<int> ch;
-        csp::spawn([w = ++ch] {
+        csp::chan<int> ch;
+        csp::spawn([w = std::move(ch.w)] {
             for (int i = 0; i < MSGS_PER_PAIR; ++i) {
                 w << i;
             }
         });
-        csp::spawn([r = --ch, &total] {
+        csp::spawn([r = std::move(ch.r), &total] {
             for (int v; r >> v;) {
                 total.fetch_add(v, std::memory_order_relaxed);
             }
@@ -259,9 +259,9 @@ TEST_CASE("MN Volume - ChannelPairs 10K") {
     std::atomic<int64_t> total{0};
 
     for (int i = 0; i < N; ++i) {
-        csp::channel<int> ch;
-        csp::spawn([w = ++ch, i] { w << i; });
-        csp::spawn([r = --ch, &total] {
+        csp::chan<int> ch;
+        csp::spawn([w = std::move(ch.w), i] { w << i; });
+        csp::spawn([r = std::move(ch.r), &total] {
             int v;
             if (r >> v) total.fetch_add(v, std::memory_order_relaxed);
         });
@@ -283,8 +283,8 @@ TEST_CASE("MN Volume - ChannelPipeline") {
 
     // Build a pipeline: source → stage[0] → stage[1] → ... → stage[N-1] → sink
     // Each stage increments the value by 1.
-    csp::channel<int> head;
-    auto tail = --head;
+    csp::chan<int> head;
+    auto tail = std::move(head.r);
     for (int s = 0; s < STAGES; ++s) {
         tail = csp::spawn_producer<int>([r = std::move(tail)](auto&& w) {
             for (int v; r >> v;) {
@@ -294,7 +294,7 @@ TEST_CASE("MN Volume - ChannelPipeline") {
     }
 
     // Feed MSGS zeros into the head.
-    csp::spawn([w = ++head] {
+    csp::spawn([w = std::move(head.w)] {
         for (int i = 0; i < MSGS; ++i) {
             w << 0;
         }
@@ -323,11 +323,11 @@ TEST_CASE("MN Volume - FanOutFanIn") {
     constexpr int WORKERS = 50 / SCALE_LIGHT;
     constexpr int MSGS = 10'000 / SCALE_MEDIUM;
 
-    csp::channel<int> work_ch;
-    csp::channel<int64_t> result_ch;
+    csp::chan<int> work_ch;
+    csp::chan<int64_t> result_ch;
 
     // Producer: sends MSGS items.
-    csp::spawn([w = ++work_ch] {
+    csp::spawn([w = std::move(work_ch.w)] {
         for (int i = 0; i < MSGS; ++i) {
             w << i;
         }
@@ -335,7 +335,7 @@ TEST_CASE("MN Volume - FanOutFanIn") {
 
     // Workers: each reads from work_ch, squares the value, sends to result_ch.
     for (int i = 0; i < WORKERS; ++i) {
-        csp::spawn([r = -work_ch, w = +result_ch] {
+        csp::spawn([r = work_ch.r.copy(), w = result_ch.w.copy()] {
             for (int v; r >> v;) {
                 w << (int64_t)v * v;
             }
@@ -345,7 +345,7 @@ TEST_CASE("MN Volume - FanOutFanIn") {
 
     // Collector: sums all results.
     std::atomic<int64_t> total{0};
-    csp::spawn([&total, r = --result_ch] {
+    csp::spawn([&total, r = std::move(result_ch.r)] {
         for (int64_t v; r >> v;) {
             total.fetch_add(v, std::memory_order_relaxed);
         }
@@ -366,16 +366,16 @@ TEST_CASE("MN Volume - ManyChannelMessages") {
     csp::init_runtime(4);
 
     constexpr int N = 1'000'000 / SCALE_HEAVY;
-    csp::channel<int> ch;
+    csp::chan<int> ch;
 
-    csp::spawn([w = ++ch] {
+    csp::spawn([w = std::move(ch.w)] {
         for (int i = 0; i < N; ++i) {
             w << 1;
         }
     });
 
     std::atomic<int> total{0};
-    csp::spawn([&total, r = --ch] {
+    csp::spawn([&total, r = std::move(ch.r)] {
         for (int v; r >> v;) {
             total.fetch_add(v, std::memory_order_relaxed);
         }
@@ -412,8 +412,8 @@ TEST_CASE("MN Volume - DaisyChain") {
     constexpr int CHAIN_LEN = 1000 / SCALE_MEDIUM;
     constexpr int MSGS = 100 / SCALE_LIGHT;
 
-    csp::channel<int> head;
-    auto tail = --head;
+    csp::chan<int> head;
+    auto tail = std::move(head.r);
     for (int i = 0; i < CHAIN_LEN; ++i) {
         tail = csp::spawn_producer<int>([r = std::move(tail)](auto&& w) {
             for (int v; r >> v;) {
@@ -424,7 +424,7 @@ TEST_CASE("MN Volume - DaisyChain") {
 
     // I/O must happen in spawned microthreads in M:N mode — the main
     // thread cannot block on channels because its P may have no local work.
-    csp::spawn([w = ++head] {
+    csp::spawn([w = std::move(head.w)] {
         for (int i = 0; i < MSGS; ++i) {
             w << 0;
         }
@@ -452,15 +452,15 @@ TEST_CASE("MN Volume - AltSelectStress") {
     std::atomic<int> total{0};
 
     for (int i = 0; i < N; ++i) {
-        csp::channel<int> a, b;
+        csp::chan<int> a, b;
 
         // Writer to channel a.
-        csp::spawn([w = ++a, i] { w << i; });
+        csp::spawn([w = std::move(a.w), i] { w << i; });
         // Writer to channel b.
-        csp::spawn([w = ++b, i] { w << i * 10; });
+        csp::spawn([w = std::move(b.w), i] { w << i * 10; });
 
         // Reader uses alt to pick whichever is ready first.
-        csp::spawn([&total, ra = --a, rb = --b] {
+        csp::spawn([&total, ra = std::move(a.r), rb = std::move(b.r)] {
             int va = 0, vb = 0;
             int which = csp::alt(ra >> va, rb >> vb);
             if (which == 1) total.fetch_add(va, std::memory_order_relaxed);
@@ -492,10 +492,10 @@ TEST_CASE("MN Volume - ProducerConsumer") {
     constexpr int CONSUMERS = 20 / SCALE_LIGHT;
     constexpr int MSGS_PER_PRODUCER = 5000 / SCALE_MEDIUM;
 
-    csp::channel<int> ch;
+    csp::chan<int> ch;
 
     for (int p = 0; p < PRODUCERS; ++p) {
-        csp::spawn([w = +ch] {
+        csp::spawn([w = ch.w.copy()] {
             for (int i = 0; i < MSGS_PER_PRODUCER; ++i) {
                 w << 1;
             }
@@ -504,7 +504,7 @@ TEST_CASE("MN Volume - ProducerConsumer") {
 
     std::atomic<int> total{0};
     for (int c = 0; c < CONSUMERS; ++c) {
-        csp::spawn([r = -ch, &total] {
+        csp::spawn([r = ch.r.copy(), &total] {
             for (int v; r >> v;) {
                 total.fetch_add(v, std::memory_order_relaxed);
             }
@@ -550,9 +550,9 @@ TEST_CASE("MN Stress - ChannelPairs") {
         csp::init_runtime(4);
         std::atomic<int64_t> total{0};
         for (int i = 0; i < PAIRS; ++i) {
-            csp::channel<int> ch;
-            csp::spawn([w = ++ch, i] { w << i; });
-            csp::spawn([r = --ch, &total] {
+            csp::chan<int> ch;
+            csp::spawn([w = std::move(ch.w), i] { w << i; });
+            csp::spawn([r = std::move(ch.r), &total] {
                 int v;
                 if (r >> v) total.fetch_add(v, std::memory_order_relaxed);
             });
@@ -574,16 +574,16 @@ TEST_CASE("MN Stress - ProducerConsumer") {
 
     for (int cycle = 0; cycle < CYCLES; ++cycle) {
         csp::init_runtime(4);
-        csp::channel<int> ch;
+        csp::chan<int> ch;
         for (int p = 0; p < PRODUCERS; ++p) {
-            csp::spawn([w = +ch] {
+            csp::spawn([w = ch.w.copy()] {
                 for (int i = 0; i < MSGS_PER_PRODUCER; ++i)
                     w << 1;
             });
         }
         std::atomic<int> total{0};
         for (int c = 0; c < CONSUMERS; ++c) {
-            csp::spawn([r = -ch, &total] {
+            csp::spawn([r = ch.r.copy(), &total] {
                 for (int v; r >> v;)
                     total.fetch_add(v, std::memory_order_relaxed);
             });

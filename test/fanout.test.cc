@@ -11,14 +11,14 @@ TEST_CASE("Fanout - Simple") {
     RunStats stats;
 
     CSP_LOG(g_log, "new_out{}");
-    writer<writer<int>> new_out;
+    chan<writer<int>> new_out;
     CSP_LOG(g_log, "spawn_fanout");
-    auto new_in = chan::spawn_fanout(--new_out);
+    auto new_in = spawn_fanout(std::move(new_out.r));
     CSP_LOG(g_log, "out{}");
-    reader<int> out;
+    chan<int> out;
 
-    CSP_LOG(g_log, "new_out << ++out");
-    CHECK(bool(new_out << ++out));
+    CSP_LOG(g_log, "new_out << std::move(out.w)");
+    CHECK(bool(new_out.w << std::move(out.w)));
 
     CSP_LOG(g_log, "in{}");
     writer<int> in;
@@ -32,8 +32,8 @@ TEST_CASE("Fanout - Simple") {
     CSP_LOG(g_log, "in = {}");
     in = {};
 
-    CSP_LOG(g_log, "out.read()");
-    CHECK_EQ(42, out.read());
+    CSP_LOG(g_log, "out.r.read()");
+    CHECK_EQ(42, out.r.read());
 
     CSP_LOG(g_log, "EOT");
 }
@@ -41,19 +41,19 @@ TEST_CASE("Fanout - Simple") {
 TEST_CASE("Fanout - Complex") {
     RunStats stats;
 
-    writer<writer<int>> new_out;
+    chan<writer<int>> new_out;
 
-    auto new_in = chan::spawn_fanout(--new_out);
+    auto new_in = spawn_fanout(std::move(new_out.r));
 
     struct {
-        channel<int> ch;
+        chan<int> ch;
         int result = 0;
     } receiverses[2][5];
 
     auto setup = [&](auto & receivers) {
         for (auto & s : receivers) {
-            CHECK(bool(new_out << ++s.ch));
-            stats.spawn([&, down = --s.ch, result = &s.result]{
+            CHECK(bool(new_out.w << std::move(s.ch.w)));
+            stats.spawn([&, down = std::move(s.ch.r), result = &s.result]{
                 int n;
                 while (down >> n) {
                     *result += n;
@@ -69,13 +69,11 @@ TEST_CASE("Fanout - Complex") {
     CHECK(bool(new_in >> in));
     new_in = {};
 
-    stats.spawn(chan::count(in, 1, 6));
+    stats.spawn(count(in.copy(), 1, 6));
     schedule();
 
     setup(receiverses[1]);
-    stats.spawn(chan::count(in, 6, 11));
-
-    in = {};
+    stats.spawn(count(std::move(in), 6, 11));
 
     schedule();
 
@@ -91,20 +89,20 @@ TEST_CASE("Fanout - Complex") {
 TEST_CASE("Fanout - Waves") {
     RunStats stats;
 
-    writer<writer<int>> new_out;
-    channel<> keepalive;
+    chan<writer<int>> new_out;
+    chan<> keepalive;
 
-    auto new_in = chan::spawn_fanout(--new_out);
+    auto new_in = spawn_fanout(std::move(new_out.r));
 
     struct {
-        channel<int> ch;
+        chan<int> ch;
         int result = 0;
     } receiverses[2][1];
 
     auto setup = [&](auto & receivers) {
         for (auto & s : receivers) {
-            CHECK(bool(new_out << ++s.ch));
-            stats.spawn([&, down = --s.ch, result = &s.result, keepalive = +keepalive]{
+            CHECK(bool(new_out.w << std::move(s.ch.w)));
+            stats.spawn([&, down = std::move(s.ch.r), result = &s.result, keepalive = keepalive.w.copy()]{
                 csp_descr("R%d", &s - std::begin(receivers));
                 int n;
                 while (alt(down >> n, ~keepalive) > 0) {
@@ -154,20 +152,20 @@ TEST_CASE("Fanout - Waves") {
 TEST_CASE("Fanout - Chain") {
     RunStats stats;
 
-    writer<writer<int>> new_out;
+    chan<writer<int>> new_out;
 
-    auto new_in = chan::spawn_fanout(--new_out);
+    auto new_in = spawn_fanout(std::move(new_out.r));
 
     constexpr int m = 2, n = 1;
     int total = 0;
 
     for (int i = 0; i < m; ++i) {
-        writer<writer<int>> new_out2;
-        stats.spawn(chan::fanout(--new_out2, new_out));
+        chan<writer<int>> new_out2;
+        stats.spawn(fanout(std::move(new_out2.r), new_out.w.copy()));
 
         for (int j = 0; j < n; ++j) {
-            new_out2 << spawn_consumer<int>([&](auto r) {
-                csp_descr("chan::fanout");
+            new_out2.w << spawn_consumer<int>([&](auto r) {
+                csp_descr("fanout");
                 BRAC_SCOPE(g_log, "FanoutChain::λ", "%d, %d", i, j);
 
                 for (int i; r >> i;) {
@@ -177,7 +175,7 @@ TEST_CASE("Fanout - Chain") {
             });
         }
     }
-    new_out = {};
+    new_out.w = {};
 
     writer<int> in;
     new_in >> in;

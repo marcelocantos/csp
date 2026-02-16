@@ -23,24 +23,24 @@ int main() {
         auto start = std::chrono::steady_clock::now();
 
         // Build the chain right-to-left.
-        channel<int> rightmost;
-        reader<int> right = -rightmost;
+        chan<int> rightmost;
+        reader<int> right = rightmost.r.copy();
 
         for (int i = 0; i < N; ++i) {
-            channel<int> left;
-            spawn([in = -left, out = +rightmost]{
+            chan<int> left;
+            spawn([in = left.r.copy(), out = rightmost.w.copy()]{
                 int n;
                 if (in >> n) {
                     out << (n + 1);
                 }
             });
-            rightmost = left;
+            rightmost = std::move(left);
         }
 
         auto built = std::chrono::steady_clock::now();
 
         // Send 0 into the left end.
-        +rightmost << 0;
+        rightmost.w << 0;
 
         // Read from the right end.
         int result = right.read();

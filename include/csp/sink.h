@@ -5,12 +5,10 @@
 
 namespace csp {
 
-    namespace chan {
-
         template <typename A, typename F>
         auto sink(reader<A> in, F f) {
             return [in = std::move(in), f = std::move(f)] {
-                csp_descr("chan::sink");
+                csp_descr("sink");
 
                 static Logger scope("chan/sink/scope");
                 BRAC_SCOPE(scope, "sink", "");
@@ -23,8 +21,8 @@ namespace csp {
 
         template <typename T, typename F>
         writer<T> spawn_sink(F f) {
-            return spawn_consumer<T>([f = std::move(f)](auto && r) {
-                sink(r, f)();
+            return spawn_consumer<T>([f = std::move(f)](auto && r) mutable {
+                sink(std::move(r), std::move(f))();
             });
         }
 
@@ -34,8 +32,6 @@ namespace csp {
                 *t = a;
             });
         }
-
-    }
 
 }
 

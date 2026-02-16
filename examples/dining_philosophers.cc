@@ -23,19 +23,19 @@ int main() {
         // Each fork is a channel. A fork microthread repeatedly offers
         // itself; a philosopher picks it up by reading, and returns it
         // by reading again (the fork blocks until returned).
-        std::array<channel<>, N> forks;
+        std::array<chan<>, N> forks;
         for (int i = 0; i < N; ++i) {
-            spawn([w = +forks[i]]{
+            spawn([w = forks[i].w.copy()]{
                 while (w << poke) { }  // offer fork
             });
         }
 
         // Spawn philosophers
-        channel<> done;
-        writer<> done_w = +done;
+        chan<> done;
+        writer<> done_w = done.w.copy();
         for (int i = 0; i < N; ++i) {
-            spawn([i, left = -forks[i], right = -forks[(i + 1) % N],
-                   done_w]{
+            spawn([i, left = forks[i].r.copy(), right = forks[(i + 1) % N].r.copy(),
+                   done_w = done_w.copy()]{
                 for (int meal = 0; meal < MEALS; ++meal) {
                     // Think
                     csp_yield();
@@ -62,7 +62,7 @@ int main() {
         done_w = {};  // release our ref
 
         // Wait for all philosophers to finish
-        -done >> nullptr;
+        done.r >> nullptr;
     });
 
     schedule();

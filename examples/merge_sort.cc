@@ -57,8 +57,8 @@ reader<int> parallel_sort(std::vector<int> data) {
     auto left  = parallel_sort({data.begin(), data.begin() + mid});
     auto right = parallel_sort({data.begin() + mid, data.end()});
 
-    return spawn_producer<int>([left, right](writer<int> out) {
-        merge(left, right, out);
+    return spawn_producer<int>([left = std::move(left), right = std::move(right)](writer<int> out) mutable {
+        merge(std::move(left), std::move(right), std::move(out));
     });
 }
 

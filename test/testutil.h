@@ -27,7 +27,7 @@ public:
         CHECK_EQ(0UL, pending());
         CHECK_EQ(0UL, running());
 
-        csp::global_exception_handler = ++csp::channel<std::exception_ptr>{};
+        csp::global_exception_handler = std::move(csp::chan<std::exception_ptr>().w);
 
         while (csp_run()) { }
 
@@ -84,7 +84,7 @@ private:
 template <typename F>
 void RunStats::spawn(F && f) {
     ++pending_;
-    csp::spawn([f = std::move(f), this] mutable {
+    csp::spawn([f = std::move(f), this]() mutable {
         RunScope scope(*this);
         f();
     });

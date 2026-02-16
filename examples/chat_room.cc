@@ -28,13 +28,13 @@ int main() {
 
         // Spawn fanout: it reads new subscriber endpoints from new_sub,
         // and returns a reader from which we get input channels.
-        auto new_in = chan::spawn_fanout(--new_sub);
+        auto new_in = spawn_fanout(--new_sub);
 
         // Helper to add a user
         auto add_user = [&](const char* name) {
-            channel<std::string> ch;
-            new_sub << ++ch;  // register this user's writer with fanout
-            spawn([name, r = --ch]{
+            chan<std::string> ch;
+            new_sub << std::move(ch.w);  // register this user's writer with fanout
+            spawn([name, r = std::move(ch.r)]{
                 for (std::string msg; r >> msg;) {
                     printf("  [%s] %s\n", name, msg.c_str());
                 }

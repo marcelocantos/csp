@@ -9,12 +9,10 @@
 
 namespace csp {
 
-    namespace chan {
-
         template <typename T>
         auto buffer(reader<T> input, writer<T> output, size_t capacity = size_t(-1)) {
             return [in = std::move(input), out = std::move(output), capacity] {
-                csp_descr("chan::buffer");
+                csp_descr("buffer");
 
                 static Logger log("chan/buffer");
                 static Logger scope("chan/buffer/scope");
@@ -59,27 +57,25 @@ namespace csp {
         // Wire up an existing downstream writer, returning an upstream writer.
         template <typename T>
         writer<T> spawn_buffer(writer<T> w, size_t capacity = size_t(-1)) {
-            return spawn_consumer<T>([=](auto r) {
-                buffer(r, w, capacity)();
+            return spawn_consumer<T>([w = std::move(w), capacity](auto && r) mutable {
+                buffer(std::move(r), std::move(w), capacity)();
             });
         }
 
         // Wire up an existing upstream reader, returning a downstream reader.
         template <typename T>
         reader<T> spawn_buffer(reader<T> r, size_t capacity = size_t(-1)) {
-            return spawn_producer<T>([=](auto w) {
-                buffer(r, w, capacity)();
+            return spawn_producer<T>([r = std::move(r), capacity](auto && w) mutable {
+                buffer(std::move(r), std::move(w), capacity)();
             });
         }
 
         template <typename T>
-        channel<T> spawn_buffer(size_t capacity = size_t(-1)) {
-            return spawn_filter<T>([=](auto r, auto w) {
-                buffer(r, w, capacity)();
+        chan<T> spawn_buffer(size_t capacity = size_t(-1)) {
+            return spawn_filter<T>([capacity](auto && r, auto && w) mutable {
+                buffer(std::move(r), std::move(w), capacity)();
             });
         }
-
-    }
 
 }
 

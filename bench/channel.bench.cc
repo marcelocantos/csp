@@ -19,12 +19,12 @@ int main() {
 
     // --- Baseline: single channel send/receive ---
     bench.batch(BATCH).run("send/recv", [&] {
-        channel<int> ch;
-        csp::spawn([w = +ch] {
+        chan<int> ch;
+        csp::spawn([w = ch.w.copy()] {
             for (int i = 0; i < BATCH; i++) w << i;
         });
         int sum = 0;
-        csp::spawn([r = -ch, &sum] {
+        csp::spawn([r = ch.r.copy(), &sum] {
             int n;
             for (int i = 0; i < BATCH; i++) { r >> n; sum += n; }
         });
@@ -35,11 +35,11 @@ int main() {
 
     // --- prialt with 2 channels ---
     bench.batch(2 * BATCH).run("prialt/2ch", [&] {
-        channel<int> c0, c1;
-        csp::spawn([w = +c0] { for (int i = 0; i < BATCH; i++) w << i; });
-        csp::spawn([w = +c1] { for (int i = 0; i < BATCH; i++) w << i; });
+        chan<int> c0, c1;
+        csp::spawn([w = c0.w.copy()] { for (int i = 0; i < BATCH; i++) w << i; });
+        csp::spawn([w = c1.w.copy()] { for (int i = 0; i < BATCH; i++) w << i; });
         int sum = 0;
-        csp::spawn([&, r0 = -c0, r1 = -c1] {
+        csp::spawn([&, r0 = c0.r.copy(), r1 = c1.r.copy()] {
             int n;
             for (int i = 0; i < 2 * BATCH; i++) {
                 prialt(r0 >> n, r1 >> n);
@@ -54,11 +54,11 @@ int main() {
 
     // --- alt with 2 channels ---
     bench.batch(2 * BATCH).run("alt/2ch", [&] {
-        channel<int> c0, c1;
-        csp::spawn([w = +c0] { for (int i = 0; i < BATCH; i++) w << i; });
-        csp::spawn([w = +c1] { for (int i = 0; i < BATCH; i++) w << i; });
+        chan<int> c0, c1;
+        csp::spawn([w = c0.w.copy()] { for (int i = 0; i < BATCH; i++) w << i; });
+        csp::spawn([w = c1.w.copy()] { for (int i = 0; i < BATCH; i++) w << i; });
         int sum = 0;
-        csp::spawn([&, r0 = -c0, r1 = -c1] {
+        csp::spawn([&, r0 = c0.r.copy(), r1 = c1.r.copy()] {
             int n;
             for (int i = 0; i < 2 * BATCH; i++) {
                 alt(r0 >> n, r1 >> n);
@@ -74,15 +74,15 @@ int main() {
     // --- prialt with 8 channels ---
     static constexpr int K = 8;
     bench.batch(K * BATCH).run("prialt/8ch", [&] {
-        channel<int> chs[K];
+        chan<int> chs[K];
         for (int k = 0; k < K; k++) {
-            csp::spawn([w = +chs[k]] {
+            csp::spawn([w = chs[k].w.copy()] {
                 for (int i = 0; i < BATCH; i++) w << i;
             });
         }
         int sum = 0;
-        csp::spawn([&, r0 = -chs[0], r1 = -chs[1], r2 = -chs[2], r3 = -chs[3],
-                        r4 = -chs[4], r5 = -chs[5], r6 = -chs[6], r7 = -chs[7]] {
+        csp::spawn([&, r0 = chs[0].r.copy(), r1 = chs[1].r.copy(), r2 = chs[2].r.copy(), r3 = chs[3].r.copy(),
+                        r4 = chs[4].r.copy(), r5 = chs[5].r.copy(), r6 = chs[6].r.copy(), r7 = chs[7].r.copy()] {
             int n;
             for (int i = 0; i < K * BATCH; i++) {
                 prialt(r0 >> n, r1 >> n, r2 >> n, r3 >> n,
@@ -97,15 +97,15 @@ int main() {
 
     // --- alt with 8 channels ---
     bench.batch(K * BATCH).run("alt/8ch", [&] {
-        channel<int> chs[K];
+        chan<int> chs[K];
         for (int k = 0; k < K; k++) {
-            csp::spawn([w = +chs[k]] {
+            csp::spawn([w = chs[k].w.copy()] {
                 for (int i = 0; i < BATCH; i++) w << i;
             });
         }
         int sum = 0;
-        csp::spawn([&, r0 = -chs[0], r1 = -chs[1], r2 = -chs[2], r3 = -chs[3],
-                        r4 = -chs[4], r5 = -chs[5], r6 = -chs[6], r7 = -chs[7]] {
+        csp::spawn([&, r0 = chs[0].r.copy(), r1 = chs[1].r.copy(), r2 = chs[2].r.copy(), r3 = chs[3].r.copy(),
+                        r4 = chs[4].r.copy(), r5 = chs[5].r.copy(), r6 = chs[6].r.copy(), r7 = chs[7].r.copy()] {
             int n;
             for (int i = 0; i < K * BATCH; i++) {
                 alt(r0 >> n, r1 >> n, r2 >> n, r3 >> n,

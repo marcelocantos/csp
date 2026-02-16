@@ -9,14 +9,14 @@ static Logger g_log("ChanMain.Test");
 TEST_CASE("ChanMain - Write") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
     int result = 0;
 
-    stats.spawn([i = --ch, &result]{
+    stats.spawn([i = std::move(ch.r), &result]{
         i >> result;
     });
 
-    auto o = ++ch;
+    auto o = std::move(ch.w);
 
     csp_run();
     o << 42;
@@ -28,13 +28,13 @@ TEST_CASE("ChanMain - Write") {
 TEST_CASE("ChanMain - Read") {
     RunStats stats;
 
-    channel<int> ch;
+    chan<int> ch;
 
-    stats.spawn([o = ++ch]{
+    stats.spawn([o = std::move(ch.w)]{
         o << 42;
     });
 
-    auto i = --ch;
+    auto i = std::move(ch.r);
 
     // Give reader a chance to block on output.
     csp_run();
@@ -48,7 +48,7 @@ TEST_CASE("ChanMain - Read") {
 }
 
 auto worker = [](auto && o, auto && i) {
-    return [o = std::move(o), i = std::move(i)] mutable {
+    return [o = std::move(o), i = std::move(i)]() mutable {
         for (int n = 1; n <= 5; ++n) {
             CHECK(bool(o << n));
         }
@@ -69,10 +69,10 @@ auto worker = [](auto && o, auto && i) {
 TEST_CASE("ChanMain - WriteReadNormal") {
     RunStats stats;
 
-    channel<int> a, b;
+    chan<int> a, b;
 
-    stats.spawn(chan::buffer(--a, ++b, 5));
-    stats.spawn(worker(++a, --b));
+    stats.spawn(buffer(std::move(a.r), std::move(b.w), 5));
+    stats.spawn(worker(std::move(a.w), std::move(b.r)));
 
     while (csp_run()) { }
 }
@@ -81,10 +81,10 @@ TEST_CASE("ChanMain - WriteReadNormal") {
 TEST_CASE("ChanMain - WriteReadFromMain") {
     RunStats stats;
 
-    channel<int> a, b;
+    chan<int> a, b;
 
-    stats.spawn(chan::buffer(--a, ++b, 5));
-    auto work = worker(++a, --b);
+    stats.spawn(buffer(std::move(a.r), std::move(b.w), 5));
+    auto work = worker(std::move(a.w), std::move(b.r));
 
     csp_run();
     work();

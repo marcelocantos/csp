@@ -2,11 +2,11 @@
 
 namespace csp {
 
-    writer<std::exception_ptr> global_exception_handler = ++channel<std::exception_ptr>{};
+    writer<std::exception_ptr> global_exception_handler = std::move(chan<std::exception_ptr>().w);
 
     poke_t poke;
 
-    reader<> const skip = --channel<>();
+    reader<> const skip = std::move(chan<>().r);
 
     namespace detail {
 

@@ -7,14 +7,12 @@
 
 namespace csp {
 
-    namespace chan {
-
         // Tee successfully delivered messages to a side channel.
         // Keep going after ~tee.
         template <typename T>
         auto tee(reader<T> in, writer<T> out, writer<T> tee) {
-            return [=]{
-                csp_descr("chan::tee");
+            return [in = std::move(in), out = std::move(out), tee = std::move(tee)]{
+                csp_descr("tee");
 
                 static Logger scope("chan/tee/scope");
                 BRAC_SCOPE(scope, "tee", "");
@@ -28,19 +26,17 @@ namespace csp {
 
         template <typename T>
         writer<T> spawn_tee(writer<T> out) {
-            return spawn_consumer<T>([=](auto in) {
-                tee(in, out)();
+            return spawn_consumer<T>([out = std::move(out)](auto && in) mutable {
+                tee(std::move(in), std::move(out))();
             });
         }
 
         template <typename T>
         reader<T> spawn_tee(reader<T> in) {
-            return spawn_producer<T>([=](auto out) {
-                tee(in, out)();
+            return spawn_producer<T>([in = std::move(in)](auto && out) mutable {
+                tee(std::move(in), std::move(out))();
             });
         }
-
-    }
 
 }
 

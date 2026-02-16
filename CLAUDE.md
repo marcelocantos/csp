@@ -20,15 +20,15 @@ Build artifacts go to `build/`. Compiler: Clang, C++17, libc++, `-O2 -g`.
 All code lives in `namespace csp`. Key modules:
 
 - **include/csp/microthread.h** — Main public header: `spawn`, `schedule`,
-  `channel`, `writer`, `reader`, `alt`/`prialt`, `action` RAII class.
+  `chan`, `writer`, `reader`, `alt`/`prialt`, `action` RAII class.
 - **include/csp/internal/** — Internal headers (microthread_internal.h,
   mt_log.h) and vendored utilities (on_scope_exit.h, function.h).
 - **include/csp/timer.h** — Timer primitives: `sleep`, `sleep_until`,
   `after` (one-shot), `tick` (periodic). Timers are channels; composable
   with `alt`/`prialt` for timeout patterns.
-- **Stream combinators** — Header-only: buffer, map, where, tee, fanout,
-  chain, quantize, latch, killswitch, enumerate, count, sink, blackhole,
-  deaf, mute, rpc.
+- **Stream combinators** — Header-only, in `namespace csp`: buffer, map,
+  where, tee, fanout, chain, quantize, latch, killswitch, enumerate, count,
+  sink, blackhole, deaf, mute, rpc.
 - **src/** — Implementation files for microthread scheduler, channels,
   ring buffer, logging.
 
