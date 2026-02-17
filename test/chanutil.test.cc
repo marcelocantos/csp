@@ -6,17 +6,20 @@
 #include <csp/part/count.h>
 #include <csp/part/deaf.h>
 #include <csp/part/debounce.h>
+#include <csp/part/delay.h>
 #include <csp/part/enumerate.h>
 #include <csp/part/first_last.h>
 #include <csp/part/killswitch.h>
 #include <csp/part/latch.h>
 #include <csp/part/map.h>
 #include <csp/part/merge.h>
+#include <csp/part/sample.h>
 #include <csp/part/mute.h>
 #include <csp/part/scan.h>
 #include <csp/part/sink.h>
 #include <csp/part/tee.h>
 #include <csp/part/throttle.h>
+#include <csp/part/timeout.h>
 #include <csp/part/where.h>
 #include <csp/part/zip.h>
 
@@ -718,6 +721,86 @@ TEST_CASE("ChanUtil - Throttle budget reset") {
         CHECK_EQ(2, r.read());
         CHECK_EQ(4, r.read());
         CHECK_EQ(5, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Sample") {
+    RunStats stats;
+
+    auto [trig_w, trig_r] = chan<>{};
+    auto r = sample(count(1, 4).spawn(), std::move(trig_r)).spawn();
+
+    stats.spawn([trig_w = std::move(trig_w)]{
+        // Give scheduler time to deliver source values before triggering.
+        csp::yield();
+        trig_w << poke;
+        trig_w << poke;
+    });
+
+    stats.spawn([r = std::move(r)]{
+        // Source 1,2,3 all latched; triggers emit latest (3) twice.
+        CHECK_EQ(3, r.read());
+        CHECK_EQ(3, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Delay") {
+    using namespace std::chrono_literals;
+    RunStats stats;
+
+    auto r = delay<int>(50ms).spawn(count(1, 4).spawn());
+
+    stats.spawn([r = std::move(r)]{
+        auto start = csp::clock::now();
+        CHECK_EQ(1, r.read());
+        CHECK_EQ(2, r.read());
+        CHECK_EQ(3, r.read());
+        auto elapsed = csp::clock::now() - start;
+        CHECK(elapsed >= 45ms);
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Timeout no expiry") {
+    using namespace std::chrono_literals;
+
+    // count sends 1–5 instantly — well within any timeout.
+    auto r = timeout<int>(1s).spawn(count(1, 6).spawn());
+
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(2, r.read());
+    CHECK_EQ(3, r.read());
+    CHECK_EQ(4, r.read());
+    CHECK_EQ(5, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Timeout expiry") {
+    using namespace std::chrono_literals;
+    RunStats stats;
+
+    auto to = timeout<int>(100ms).spawn();
+
+    stats.spawn([w = std::move(to.w)]{
+        w << 1;
+        csp::sleep(200ms);
+        w << 2;  // Timeout already fired.
+    });
+
+    stats.spawn([r = std::move(to.r)]{
+        CHECK_EQ(1, r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
