@@ -618,3 +618,85 @@ TEST_CASE("MN Volume - SpawnDuringExecution") {
 
     csp::shutdown_runtime();
 }
+
+// ---------------------------------------------------------------------------
+// Watchdog / dynamic processor pool tests
+// ---------------------------------------------------------------------------
+
+TEST_CASE("MN - Watchdog rescues stalled P") {
+    using namespace std::chrono_literals;
+
+    csp::init_runtime(2);
+
+    // Stall both Ps with busy-loops. The watchdog should detect the stalls,
+    // add new Ps, and work stealing drains the channel writer so it completes.
+    auto [w, r] = csp::chan<int>{};
+    std::atomic<bool> stall1_done{false};
+    std::atomic<bool> stall2_done{false};
+    std::atomic<bool> writer_done{false};
+
+    // Two busy-loop MTs to stall the initial 2 Ps.
+    csp::spawn([&stall1_done] {
+        auto end = std::chrono::steady_clock::now() + 200ms;
+        while (std::chrono::steady_clock::now() < end) { }
+        stall1_done.store(true, std::memory_order_relaxed);
+    });
+    csp::spawn([&stall2_done] {
+        auto end = std::chrono::steady_clock::now() + 200ms;
+        while (std::chrono::steady_clock::now() < end) { }
+        stall2_done.store(true, std::memory_order_relaxed);
+    });
+
+    // A writer that should complete even though the Ps are stalled,
+    // because the watchdog adds a new P that steals this MT.
+    csp::spawn([&writer_done, w = std::move(w)] {
+        w << 42;
+        writer_done.store(true, std::memory_order_relaxed);
+    });
+
+    // Reader consumes.
+    csp::spawn([r = std::move(r)] {
+        int v;
+        r >> v;
+    });
+
+    csp::schedule();
+    CHECK(stall1_done.load());
+    CHECK(stall2_done.load());
+    CHECK(writer_done.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN - Watchdog rescues timers from stalled P") {
+    using namespace std::chrono_literals;
+
+    csp::init_runtime(2);
+
+    std::atomic<bool> timer_fired{false};
+    std::atomic<bool> stall_done{false};
+
+    // Stall one P with a busy-loop for 300ms.
+    csp::spawn([&stall_done] {
+        auto end = std::chrono::steady_clock::now() + 300ms;
+        while (std::chrono::steady_clock::now() < end) { }
+        stall_done.store(true, std::memory_order_relaxed);
+    });
+
+    // A timer-based sleep on what might be the same P. The watchdog should
+    // fire the timer even though the P is stalled.
+    csp::spawn([&timer_fired] {
+        auto start = std::chrono::steady_clock::now();
+        csp::sleep(50ms);
+        auto elapsed = std::chrono::steady_clock::now() - start;
+        // Should fire reasonably close to 50ms, not delayed by 300ms stall.
+        CHECK_LT(elapsed, 200ms);
+        timer_fired.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(timer_fired.load());
+    CHECK(stall_done.load());
+
+    csp::shutdown_runtime();
+}

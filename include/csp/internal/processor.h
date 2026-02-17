@@ -24,9 +24,12 @@ struct Processor {
     std::priority_queue<TimerEntry, std::vector<TimerEntry>,
                         std::greater<TimerEntry>> timer_heap;
 
-    std::mutex run_mu;                // Protects the busy queue DLL
+    std::mutex run_mu;                // Protects busy queue DLL + timer_heap
     Microthread* running = nullptr;   // MT claimed by local_next (steal-safe)
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
+
+    std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
+    std::atomic<bool> alive{true};       // False when surplus worker exits
 
     int id;
 

@@ -264,7 +264,7 @@ namespace {
                                 if (endpt == wr) {
                                     out->src = chop.message;
                                     out->dst = const_cast<void *>(cw.chanop->message);
-                                    mi->use_run = (Runtime::instance().procs.size() <= 1);
+                                    mi->use_run = !Runtime::instance().mn_mode_;
                                 } else {
                                     out->src = cw.chanop->message;
                                     out->dst = const_cast<void *>(chop.message);

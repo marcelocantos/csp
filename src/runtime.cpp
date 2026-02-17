@@ -31,10 +31,19 @@ namespace csp {
                 num_procs = std::max(1, (int)std::thread::hardware_concurrency());
             }
 
-            procs.reserve(num_procs);
+            mn_mode_ = num_procs > 1;
+            initial_procs_ = num_procs;
+            max_procs_ = std::max(num_procs, (int)std::thread::hardware_concurrency() * 4);
+
+            // Pre-reserve to max_procs_ so the vector never reallocates.
+            // This lets steal_work and take_from_global read procs[i]
+            // safely using num_procs_.load() as the bound.
+            procs.clear();
+            procs.resize(max_procs_);
             for (int i = 0; i < num_procs; ++i) {
-                procs.push_back(std::make_unique<Processor>(i));
+                procs[i] = std::make_unique<Processor>(i);
             }
+            num_procs_.store(num_procs, std::memory_order_release);
             bind_processor(procs[0].get());
 
             for (int i = 1; i < num_procs; ++i) {
@@ -42,6 +51,10 @@ namespace csp {
                     bind_processor(procs[i].get());
                     worker_loop();
                 });
+            }
+
+            if (mn_mode_) {
+                watchdog_ = std::thread([this] { watchdog_loop(); });
             }
         }
 
@@ -55,6 +68,10 @@ namespace csp {
             { std::lock_guard<std::mutex> lk(park_mu); }
             park_cv.notify_all();
 
+            if (watchdog_.joinable()) {
+                watchdog_.join();
+            }
+
             for (auto& w : workers) {
                 if (w.joinable()) {
                     w.join();
@@ -63,6 +80,8 @@ namespace csp {
 
             workers.clear();
             procs.clear();
+            num_procs_.store(0, std::memory_order_release);
+            mn_mode_ = false;
         }
 
         void Runtime::unpark_one() {
@@ -81,6 +100,8 @@ namespace csp {
             auto& p = current_p();
 
             while (!stopping.load(std::memory_order_acquire)) {
+                p.heartbeat.fetch_add(1, std::memory_order_relaxed);
+
                 // Fire expired timers.
                 fire_timers(p);
 
@@ -107,6 +128,19 @@ namespace csp {
                     p.parked.store(true, std::memory_order_release);
 
                     auto deadline = next_timer_deadline(p);
+
+                    // Surplus Ps wind down after 5s idle.
+                    using namespace std::chrono;
+                    constexpr auto wind_down = seconds(5);
+                    bool is_surplus = p.id >= initial_procs_;
+
+                    if (is_surplus && !deadline) {
+                        deadline = steady_clock::now() + wind_down;
+                    } else if (is_surplus && deadline) {
+                        auto wd = steady_clock::now() + wind_down;
+                        if (wd < *deadline) deadline = wd;
+                    }
+
                     if (deadline) {
                         park_cv.wait_until(lk, *deadline, [this, &p] {
                             return stopping.load(std::memory_order_acquire)
@@ -121,6 +155,14 @@ namespace csp {
 
                     p.parked.store(false, std::memory_order_release);
                 }
+
+                // Surplus P wind-down: exit if still idle after timeout.
+                if (p.id >= initial_procs_
+                    && !stopping.load(std::memory_order_acquire)
+                    && !has_work(p)) {
+                    p.alive.store(false, std::memory_order_release);
+                    return;
+                }
             }
         }
 
@@ -131,6 +173,52 @@ namespace csp {
             park_cv.wait(lk, [this] {
                 return live_gs.load(std::memory_order_acquire) == 0;
             });
+        }
+
+        void Runtime::watchdog_loop() {
+            using namespace std::chrono;
+            constexpr auto interval = milliseconds(10);
+
+            std::vector<uint64_t> last(max_procs_, 0);
+
+            while (!stopping.load(std::memory_order_acquire)) {
+                std::this_thread::sleep_for(interval);
+
+                int n = num_procs_.load(std::memory_order_acquire);
+                for (int i = 0; i < n; ++i) {
+                    auto& p = *procs[i];
+                    if (!p.alive.load(std::memory_order_acquire)) continue;
+                    if (p.parked.load(std::memory_order_acquire)) {
+                        last[i] = p.heartbeat.load(std::memory_order_acquire);
+                        continue;
+                    }
+                    uint64_t hb = p.heartbeat.load(std::memory_order_acquire);
+                    if (hb == last[i]) {
+                        // P is stalled — rescue its expired timers and
+                        // add a new P so work stealing can drain its queue.
+                        fire_timers(p);
+                        add_processor();
+                    }
+                    last[i] = hb;
+                }
+            }
+        }
+
+        void Runtime::add_processor() {
+            std::lock_guard<std::mutex> lk(global_mu);
+            int idx = num_procs_.load(std::memory_order_relaxed);
+            if (idx >= max_procs_) return;
+
+            procs[idx] = std::make_unique<Processor>(idx);
+            num_procs_.store(idx + 1, std::memory_order_release);
+
+            workers.emplace_back([this, idx] {
+                bind_processor(procs[idx].get());
+                worker_loop();
+            });
+
+            // Wake existing workers so they notice the new P for stealing.
+            unpark_one();
         }
 
         Microthread* Runtime::local_next(Processor& p) {
@@ -163,7 +251,8 @@ namespace csp {
 
             // Take a fair share so other workers also get work.
             int avail = (int)global_run_queue.size();
-            int n = std::max(1, avail / (int)procs.size());
+            int np = num_procs_.load(std::memory_order_relaxed);
+            int n = std::max(1, avail / np);
             for (int i = 0; i < n; ++i) {
                 auto* mt = global_run_queue.front();
                 global_run_queue.pop_front();
@@ -174,18 +263,35 @@ namespace csp {
         }
 
         void Runtime::fire_timers(Processor& p) {
-            auto now = std::chrono::steady_clock::now();
-            while (!p.timer_heap.empty() && p.timer_heap.top().deadline <= now) {
-                auto* mt = p.timer_heap.top().thread;
-                p.timer_heap.pop();
-                mt->schedule_local();
+            // Collect expired timers under run_mu, then schedule after
+            // releasing. This avoids deadlock: schedule_local acquires
+            // current_p().run_mu, which may be the same lock (when the
+            // owning worker fires its own timers), and std::mutex is
+            // not recursive. It also allows the watchdog (which has no
+            // P) to fire timers from stalled Ps via the global queue.
+            Microthread* expired[64];
+            int count = 0;
+            {
+                std::lock_guard<std::mutex> lk(p.run_mu);
+                auto now = std::chrono::steady_clock::now();
+                while (!p.timer_heap.empty()
+                       && p.timer_heap.top().deadline <= now
+                       && count < 64) {
+                    expired[count++] = p.timer_heap.top().thread;
+                    p.timer_heap.pop();
+                }
+            }
+            for (int i = 0; i < count; ++i) {
+                expired[i]->schedule();
             }
         }
 
         bool Runtime::steal_work(Processor& thief) {
-            for (auto& victim_ptr : procs) {
-                auto& victim = *victim_ptr;
+            int n = num_procs_.load(std::memory_order_acquire);
+            for (int i = 0; i < n; ++i) {
+                auto& victim = *procs[i];
                 if (&victim == &thief) continue;
+                if (!victim.alive.load(std::memory_order_acquire)) continue;
 
                 Microthread* stolen = nullptr;
                 {
@@ -226,6 +332,7 @@ namespace csp {
 
         std::optional<std::chrono::steady_clock::time_point>
         Runtime::next_timer_deadline(Processor& p) {
+            std::lock_guard<std::mutex> lk(p.run_mu);
             if (p.timer_heap.empty()) {
                 return std::nullopt;
             }
@@ -248,9 +355,12 @@ namespace csp {
                 }
             }
 
-            if (!p.timer_heap.empty() &&
-                p.timer_heap.top().deadline <= std::chrono::steady_clock::now()) {
-                return true;
+            {
+                std::lock_guard<std::mutex> lk(p.run_mu);
+                if (!p.timer_heap.empty() &&
+                    p.timer_heap.top().deadline <= std::chrono::steady_clock::now()) {
+                    return true;
+                }
             }
 
             return false;

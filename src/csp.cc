@@ -43,7 +43,7 @@ namespace csp {
         // wake_pending_ in between (seeing false both times).
         static void drain_suspended(Microthread* suspended) {
             auto& rt = Runtime::instance();
-            if (rt.procs.size() > 1) {
+            if (rt.mn_mode_) {
                 bool need_unpark = false;
                 {
                     std::lock_guard<std::mutex> lk(rt.global_mu);
@@ -118,7 +118,7 @@ namespace csp {
             // In M:N mode, push to the global run queue so any worker
             // can pick it up, preventing stranding on a P whose worker
             // is about to park.
-            if (rt.procs.size() > 1) {
+            if (rt.mn_mode_) {
                 {
                     std::lock_guard<std::mutex> lk(rt.global_mu);
                     if (in_global_) {
@@ -372,7 +372,7 @@ int spawn(EntryFn start_f, void * data) {
         auto& rt = Runtime::instance();
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
 
-        if (rt.procs.size() > 1) {
+        if (rt.mn_mode_) {
             // M:N mode: after the handshake switch_to, mt is initialized
             // and suspended but NOT on any run queue. Push it to the
             // global queue for workers to pick up and run.
@@ -399,7 +399,10 @@ int spawn(EntryFn start_f, void * data) {
 void sleep_until(int64_t deadline_ns) {
     using namespace std::chrono;
     auto deadline = steady_clock::time_point(nanoseconds(deadline_ns));
-    current_p().timer_heap.push({deadline, g_self});
+    {
+        std::lock_guard<std::mutex> lk(current_p().run_mu);
+        current_p().timer_heap.push({deadline, g_self});
+    }
     g_self->suspending_.store(true, std::memory_order_release);
     do_switch(Status::detach);
     g_self->suspending_.store(false, std::memory_order_release);
