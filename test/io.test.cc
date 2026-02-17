@@ -3,9 +3,11 @@
 #include <csp/blocking.h>
 #include <csp/io.h>
 #include <csp/part/io.h>
+#include <csp/signal.h>
 #include <csp/timer.h>
 
 #include <atomic>
+#include <csignal>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -408,5 +410,79 @@ TEST_CASE("IO - Resolve localhost") {
 
     csp::schedule();
     CHECK(resolved.load());
+    csp::shutdown_runtime();
+}
+
+// --- Signal channels ---
+
+TEST_CASE("IO - Signal delivery") {
+    csp::init_runtime(2);
+
+    auto sig = csp::signal::notify({SIGUSR1});
+    std::atomic<bool> got_signal{false};
+
+    csp::spawn([&got_signal, sig = std::move(sig)] {
+        int s;
+        sig >> s;
+        CHECK_EQ(SIGUSR1, s);
+        got_signal.store(true, std::memory_order_relaxed);
+    });
+
+    csp::spawn([] {
+        csp::sleep(std::chrono::milliseconds(10));
+        ::raise(SIGUSR1);
+    });
+
+    csp::schedule();
+    CHECK(got_signal.load());
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("IO - Signal multiple signals") {
+    csp::init_runtime(2);
+
+    auto sig = csp::signal::notify({SIGUSR1, SIGUSR2});
+    std::vector<int> received;
+    std::atomic<bool> done{false};
+
+    csp::spawn([&received, &done, sig = std::move(sig)] {
+        int s;
+        // Read two signals.
+        sig >> s;
+        received.push_back(s);
+        sig >> s;
+        received.push_back(s);
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::spawn([] {
+        csp::sleep(std::chrono::milliseconds(10));
+        ::raise(SIGUSR1);
+        csp::sleep(std::chrono::milliseconds(10));
+        ::raise(SIGUSR2);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    REQUIRE_EQ(2, received.size());
+    CHECK_EQ(SIGUSR1, received[0]);
+    CHECK_EQ(SIGUSR2, received[1]);
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("IO - Signal reader drop cleanup") {
+    csp::init_runtime(2);
+
+    {
+        auto sig = csp::signal::notify({SIGUSR1});
+        // Drop immediately — sentinel closes the pipe, MTs exit.
+    }
+
+    // Wait for producer + sentinel MTs to finish.
+    csp::schedule();
+
+    // Signal after cleanup — handler skips (mask cleared).
+    ::raise(SIGUSR1);
+
     csp::shutdown_runtime();
 }
