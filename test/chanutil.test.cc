@@ -13,14 +13,18 @@
 #include <csp/part/first_wins.h>
 #include <csp/part/flat_map.h>
 #include <csp/part/gate.h>
+#include <csp/part/group_by.h>
 #include <csp/part/interleave.h>
 #include <csp/part/join.h>
 #include <csp/part/killswitch.h>
 #include <csp/part/latch.h>
 #include <csp/part/map.h>
 #include <csp/part/merge.h>
+#include <csp/part/metrics.h>
 #include <csp/part/sample.h>
 #include <csp/part/mute.h>
+#include <csp/part/nwise.h>
+#include <csp/part/pairwise.h>
 #include <csp/part/partition.h>
 #include <csp/part/reduce.h>
 #include <csp/part/round_robin.h>
@@ -30,7 +34,13 @@
 #include <csp/part/tee.h>
 #include <csp/part/throttle.h>
 #include <csp/part/timeout.h>
+#include <csp/part/default_if_empty.h>
+#include <csp/part/flatten.h>
+#include <csp/part/skip_while.h>
+#include <csp/part/stride.h>
+#include <csp/part/take_while.h>
 #include <csp/part/unique.h>
+#include <csp/part/unzip.h>
 #include <csp/part/where.h>
 #include <csp/part/window.h>
 #include <csp/part/zip.h>
@@ -317,6 +327,69 @@ TEST_CASE("ChanUtil - Scan type change") {
     CHECK_EQ(6, r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Metrics basic") {
+    auto [data, stats] = metrics(count(1, 6).spawn());
+
+    // Drain all data first.
+    std::vector<int> got;
+    for (int n; data >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5}), got);
+
+    // Pull final stats.
+    auto snap = stats.read();
+    CHECK_EQ(5, snap.count);
+    CHECK(snap.elapsed.count() > 0);
+}
+
+TEST_CASE("ChanUtil - Metrics mid-stream pull") {
+    chan<int> in;
+    auto [data, stats] = metrics(std::move(in.r));
+
+    csp::spawn([&in]() mutable {
+        in.w << 1; in.w << 2; in.w << 3;
+        // Pause to let stats be pulled.
+        csp::yield();
+        in.w << 4; in.w << 5;
+        in.w = {};
+    });
+
+    // Read 3 values.
+    CHECK_EQ(1, data.read());
+    CHECK_EQ(2, data.read());
+    CHECK_EQ(3, data.read());
+
+    // Pull stats mid-stream.
+    auto snap = stats.read();
+    CHECK_EQ(3, snap.count);
+
+    // Read remaining.
+    CHECK_EQ(4, data.read());
+    CHECK_EQ(5, data.read());
+    int _;
+    CHECK_FALSE(bool(data >> _));
+}
+
+TEST_CASE("ChanUtil - Metrics stats reader dropped") {
+    auto [data, stats] = metrics(count(1, 4).spawn());
+
+    // Drop the stats reader immediately.
+    stats = {};
+
+    // Data should still flow.
+    std::vector<int> got;
+    for (int n; data >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - Metrics data reader dropped") {
+    auto [data, stats] = metrics(count(1, 100).spawn());
+
+    // Drop both readers — metrics should terminate cleanly.
+    data = {};
+    stats = {};
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("ChanUtil - Mute") {
@@ -1382,6 +1455,68 @@ TEST_CASE("ChanUtil - Gate output death") {
     while (csp::internal::run()) { }
 }
 
+TEST_CASE("ChanUtil - GroupBy") {
+    RunStats stats;
+
+    auto groups = group_by<int>(
+        count(1, 7).spawn(),
+        [](int n) { return n % 2; });  // even=0, odd=1
+
+    // Read group announcements and drain sub-streams concurrently.
+    std::vector<int> evens, odds;
+
+    stats.spawn([&, groups = std::move(groups)]() mutable {
+        std::pair<int, reader<int>> g;
+        while (groups >> g) {
+            auto& dest = g.first == 0 ? evens : odds;
+            csp::spawn([&dest, r = std::move(g.second)]() mutable {
+                for (int n; r >> n;) dest.push_back(n);
+            });
+        }
+    });
+
+    csp::schedule();
+    CHECK_EQ(std::vector<int>({2, 4, 6}), evens);
+    CHECK_EQ(std::vector<int>({1, 3, 5}), odds);
+}
+
+TEST_CASE("ChanUtil - GroupBy sub-stream dropped") {
+    RunStats stats;
+
+    // Drop the odd group's reader; even group should still work.
+    std::vector<int> got;
+
+    stats.spawn([&]{
+        auto groups = group_by<int>(
+            count(1, 6).spawn(),
+            [](int n) { return n % 2; });
+
+        std::pair<int, reader<int>> g;
+        while (groups >> g) {
+            if (g.first == 0) {
+                csp::spawn([&got, r = std::move(g.second)]() mutable {
+                    for (int n; r >> n;) got.push_back(n);
+                });
+            } else {
+                g.second = {};  // Drop odd reader — unblocks group_by.
+            }
+        }
+    });
+
+    csp::schedule();
+    CHECK_EQ(std::vector<int>({2, 4}), got);
+}
+
+TEST_CASE("ChanUtil - GroupBy meta-reader dropped") {
+    auto groups = group_by<int>(
+        count(1, 100).spawn(),
+        [](int n) { return n % 3; });
+
+    // Drop the meta-reader — group_by should terminate.
+    groups = {};
+    while (csp::internal::run()) { }
+}
+
 TEST_CASE("ChanUtil - FirstWins") {
     RunStats stats;
 
@@ -1478,4 +1613,398 @@ TEST_CASE("ChanUtil - Join") {
 TEST_CASE("ChanUtil - Join empty") {
     std::vector<reader<int>> empty;
     join(std::move(empty));  // Should return immediately.
+}
+
+TEST_CASE("ChanUtil - Compose filter | filter") {
+    // map then where, composed left-to-right.
+    auto pipeline = map<int>([](int n) { return n * 2; })
+                  | where<int>([](int n) { return n > 4; });
+    auto r = pipeline.spawn(count(1, 6).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({6, 8, 10}), got);
+}
+
+TEST_CASE("ChanUtil - Compose producer | filter") {
+    // Producer composed with filter.
+    auto p = count(1, 6) | map<int>([](int n) { return n * 10; });
+    auto r = p.spawn();
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({10, 20, 30, 40, 50}), got);
+}
+
+TEST_CASE("ChanUtil - Compose three filters") {
+    auto pipeline = map<int>([](int n) { return n + 1; })
+                  | map<int>([](int n) { return n * 2; })
+                  | where<int>([](int n) { return n > 6; });
+    auto r = pipeline.spawn(count(1, 6).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    // (1+1)*2=4, (2+1)*2=6, (3+1)*2=8, (4+1)*2=10, (5+1)*2=12
+    CHECK_EQ(std::vector<int>({8, 10, 12}), got);
+}
+
+TEST_CASE("ChanUtil - Compose producer | filter chain") {
+    auto p = count(1, 4)
+           | map<int>([](int n) { return n * 3; })
+           | where<int>([](int n) { return n > 3; });
+    auto r = p.spawn();
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({6, 9}), got);
+}
+
+TEST_CASE("ChanUtil - Compose filter | consumer") {
+    std::vector<int> got;
+    auto w = (map<int>([](int n) { return n * 2; })
+            | sink<int>([&got](int n) { got.push_back(n); }))
+              .spawn();
+
+    w << 1; w << 2; w << 3;
+    w = {};
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({2, 4, 6}), got);
+}
+
+TEST_CASE("ChanUtil - Compose producer | consumer") {
+    std::vector<int> got;
+    auto run_it = count(1, 4)
+                | sink<int>([&got](int n) { got.push_back(n); });
+    csp::spawn(std::move(run_it));
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - Compose reader | filter") {
+    auto r = count(1, 6).spawn()
+           | map<int>([](int n) { return n * 2; });
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({2, 4, 6, 8, 10}), got);
+}
+
+TEST_CASE("ChanUtil - Compose reader | consumer") {
+    std::vector<int> got;
+    auto run_it = count(1, 4).spawn()
+                | sink<int>([&got](int n) { got.push_back(n); });
+    csp::spawn(std::move(run_it));
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - Compose filter | writer") {
+    chan<int> ch;
+    auto w = map<int>([](int n) { return n * 2; })
+           | std::move(ch.w);
+
+    std::vector<int> got;
+    csp::spawn([&got, r = std::move(ch.r)]() mutable {
+        for (int n; r >> n;) got.push_back(n);
+    });
+    w << 1; w << 2; w << 3;
+    w = {};
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({2, 4, 6}), got);
+}
+
+TEST_CASE("ChanUtil - Compose producer | writer") {
+    chan<int> ch;
+    auto run_it = count(1, 4) | std::move(ch.w);
+
+    std::vector<int> got;
+    csp::spawn([&got, r = std::move(ch.r)]() mutable {
+        for (int n; r >> n;) got.push_back(n);
+    });
+    csp::spawn(std::move(run_it));
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - Compose reader | filter | filter") {
+    auto r = count(1, 6).spawn()
+           | map<int>([](int n) { return n + 10; })
+           | where<int>([](int n) { return n > 13; });
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({14, 15}), got);
+}
+
+// --- take_while / skip_while ---
+
+TEST_CASE("ChanUtil - TakeWhile") {
+    auto r = take_while<int>([](int n) { return n < 4; })
+                 .spawn(count(1, 8).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - TakeWhile all pass") {
+    auto r = take_while<int>([](int n) { return n < 100; })
+                 .spawn(count(1, 4).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - TakeWhile none pass") {
+    auto r = take_while<int>([](int) { return false; })
+                 .spawn(count(1, 4).spawn());
+
+    int n;
+    CHECK_FALSE(bool(r >> n));
+}
+
+TEST_CASE("ChanUtil - SkipWhile") {
+    auto r = skip_while<int>([](int n) { return n < 4; })
+                 .spawn(count(1, 8).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({4, 5, 6, 7}), got);
+}
+
+TEST_CASE("ChanUtil - SkipWhile all skipped") {
+    auto r = skip_while<int>([](int) { return true; })
+                 .spawn(count(1, 4).spawn());
+
+    int n;
+    CHECK_FALSE(bool(r >> n));
+}
+
+TEST_CASE("ChanUtil - SkipWhile none skipped") {
+    auto r = skip_while<int>([](int) { return false; })
+                 .spawn(count(1, 4).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+// --- pairwise ---
+
+TEST_CASE("ChanUtil - Pairwise") {
+    auto r = pairwise<int>().spawn(count(1, 6).spawn());
+
+    CHECK_EQ(std::make_pair(1, 2), r.read());
+    CHECK_EQ(std::make_pair(2, 3), r.read());
+    CHECK_EQ(std::make_pair(3, 4), r.read());
+    CHECK_EQ(std::make_pair(4, 5), r.read());
+    std::pair<int, int> p;
+    CHECK_FALSE(bool(r >> p));
+}
+
+TEST_CASE("ChanUtil - Pairwise single element") {
+    auto r = pairwise<int>().spawn(count(1, 2).spawn());
+
+    std::pair<int, int> p;
+    CHECK_FALSE(bool(r >> p));
+}
+
+TEST_CASE("ChanUtil - Pairwise empty") {
+    auto r = pairwise<int>().spawn(
+        merge(std::vector<reader<int>>{}).spawn());
+
+    std::pair<int, int> p;
+    CHECK_FALSE(bool(r >> p));
+}
+
+// --- nwise ---
+
+TEST_CASE("ChanUtil - Nwise 3") {
+    auto r = nwise<3, int>().spawn(count(1, 7).spawn());
+
+    CHECK_EQ(std::make_tuple(1, 2, 3), r.read());
+    CHECK_EQ(std::make_tuple(2, 3, 4), r.read());
+    CHECK_EQ(std::make_tuple(3, 4, 5), r.read());
+    CHECK_EQ(std::make_tuple(4, 5, 6), r.read());
+    std::tuple<int, int, int> t;
+    CHECK_FALSE(bool(r >> t));
+}
+
+TEST_CASE("ChanUtil - Nwise 2 matches pairwise") {
+    auto r = nwise<2, int>().spawn(count(1, 5).spawn());
+
+    CHECK_EQ(std::make_tuple(1, 2), r.read());
+    CHECK_EQ(std::make_tuple(2, 3), r.read());
+    CHECK_EQ(std::make_tuple(3, 4), r.read());
+    std::tuple<int, int> t;
+    CHECK_FALSE(bool(r >> t));
+}
+
+TEST_CASE("ChanUtil - Nwise too few elements") {
+    auto r = nwise<5, int>().spawn(count(1, 4).spawn());
+
+    std::tuple<int, int, int, int, int> t;
+    CHECK_FALSE(bool(r >> t));
+}
+
+// --- flatten ---
+
+TEST_CASE("ChanUtil - Flatten") {
+    auto r = flatten<int>().spawn(
+        batch<int>(3).spawn(count(1, 8).spawn()));
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5, 6, 7}), got);
+}
+
+TEST_CASE("ChanUtil - Flatten empty vectors") {
+    auto [w, rd] = chan<std::vector<int>>{};
+    auto r = flatten<int>().spawn(std::move(rd));
+
+    csp::spawn([w = std::move(w)] {
+        w << std::vector<int>{};
+        w << std::vector<int>{1, 2};
+        w << std::vector<int>{};
+        w << std::vector<int>{3};
+    });
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+// --- unzip ---
+
+TEST_CASE("ChanUtil - Unzip2") {
+    auto src = zip2(count(1, 4).spawn(), count(10, 40, 10).spawn()).spawn();
+    auto [ra, rb] = unzip2(std::move(src));
+
+    std::vector<int> as, bs;
+    csp::spawn([ra = std::move(ra), &as]{
+        for (int n; ra >> n;) as.push_back(n);
+    });
+    csp::spawn([rb = std::move(rb), &bs]{
+        for (int n; rb >> n;) bs.push_back(n);
+    });
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({1, 2, 3}), as);
+    CHECK_EQ(std::vector<int>({10, 20, 30}), bs);
+}
+
+TEST_CASE("ChanUtil - Unzip2f") {
+    // Decompose int into quotient and remainder.
+    auto [rq, rr] = unzip2f<int>(count(0, 5).spawn(),
+        [](int n) { return std::make_pair(n / 2, n % 2); });
+
+    std::vector<int> qs, rs;
+    csp::spawn([rq = std::move(rq), &qs]{
+        for (int n; rq >> n;) qs.push_back(n);
+    });
+    csp::spawn([rr = std::move(rr), &rs]{
+        for (int n; rr >> n;) rs.push_back(n);
+    });
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({0, 0, 1, 1, 2}), qs);
+    CHECK_EQ(std::vector<int>({0, 1, 0, 1, 0}), rs);
+}
+
+TEST_CASE("ChanUtil - Unzip tuple") {
+    auto src = zip(count(1, 4).spawn(),
+                   count(10, 40, 10).spawn(),
+                   count(100, 400, 100).spawn()).spawn();
+    auto [ra, rb, rc] = unzip(std::move(src));
+
+    std::vector<int> as, bs, cs;
+    csp::spawn([ra = std::move(ra), &as]{
+        for (int n; ra >> n;) as.push_back(n);
+    });
+    csp::spawn([rb = std::move(rb), &bs]{
+        for (int n; rb >> n;) bs.push_back(n);
+    });
+    csp::spawn([rc = std::move(rc), &cs]{
+        for (int n; rc >> n;) cs.push_back(n);
+    });
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({1, 2, 3}), as);
+    CHECK_EQ(std::vector<int>({10, 20, 30}), bs);
+    CHECK_EQ(std::vector<int>({100, 200, 300}), cs);
+}
+
+TEST_CASE("ChanUtil - Unzipf") {
+    // Decompose int into three fields via function.
+    auto readers = unzipf<int>(count(0, 4).spawn(),
+        [](int n) { return std::make_tuple(n, n * 10, n * 100); });
+    auto& [ra, rb, rc] = readers;
+
+    std::vector<int> as, bs, cs;
+    csp::spawn([ra = std::move(ra), &as]{
+        for (int n; ra >> n;) as.push_back(n);
+    });
+    csp::spawn([rb = std::move(rb), &bs]{
+        for (int n; rb >> n;) bs.push_back(n);
+    });
+    csp::spawn([rc = std::move(rc), &cs]{
+        for (int n; rc >> n;) cs.push_back(n);
+    });
+    while (csp::internal::run()) { }
+
+    CHECK_EQ(std::vector<int>({0, 1, 2, 3}), as);
+    CHECK_EQ(std::vector<int>({0, 10, 20, 30}), bs);
+    CHECK_EQ(std::vector<int>({0, 100, 200, 300}), cs);
+}
+
+// --- default_if_empty ---
+
+TEST_CASE("ChanUtil - DefaultIfEmpty with values") {
+    auto r = default_if_empty<int>(99)
+                 .spawn(count(1, 4).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - DefaultIfEmpty empty input") {
+    auto r = default_if_empty<int>(99)
+                 .spawn(merge(std::vector<reader<int>>{}).spawn());
+
+    CHECK_EQ(99, r.read());
+    int n;
+    CHECK_FALSE(bool(r >> n));
+}
+
+// --- stride ---
+
+TEST_CASE("ChanUtil - Stride 3") {
+    auto r = stride<int>(3).spawn(count(1, 11).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 4, 7, 10}), got);
+}
+
+TEST_CASE("ChanUtil - Stride 1 is identity") {
+    auto r = stride<int>(1).spawn(count(1, 5).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 2, 3, 4}), got);
+}
+
+TEST_CASE("ChanUtil - Stride 2") {
+    auto r = stride<int>(2).spawn(count(1, 8).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(std::vector<int>({1, 3, 5, 7}), got);
 }
