@@ -4,6 +4,7 @@
 
 namespace csp::part {
 
+    // Generate [start, start+step, ...) up to stop.
     template <typename T>
     auto count(T start, T stop, T step = 1, bool cyclic = false) {
         return make_producer<T>([start, stop, step, cyclic](writer<T> sink) {
@@ -24,6 +25,7 @@ namespace csp::part {
         });
     }
 
+    // Generate [start, start+step, ...) indefinitely.
     template <typename T>
     auto count_forever(T start, T step = 1) {
         return make_producer<T>([start, step](writer<T> sink) {

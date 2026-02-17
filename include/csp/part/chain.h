@@ -8,6 +8,8 @@
 
 namespace csp::part {
 
+    // Concatenate multiple readers into a single sequential stream.
+    // Reads each input to exhaustion in order, then moves to the next.
     template <typename T, typename R,
               typename = decltype(std::begin(std::declval<R>())->read())>
     auto chain(R rr) {
@@ -22,7 +24,7 @@ namespace csp::part {
             for (auto & r : rr) {
                 for (T n; csp::alt(r >> n, ~w) == 1;) {
                     CSP_LOG(log, "loop");
-                    if (!(w << n)) {
+                    if (!(w << std::move(n))) {
                         break;
                     }
                 }

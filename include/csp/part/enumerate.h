@@ -6,6 +6,7 @@
 
 namespace csp::part {
 
+    // Stream elements from a container or initializer list.
     template <typename T, typename C>
     auto enumerate(C&& c, bool cyclic = false) {
         return make_producer<T>([c = std::forward<C>(c), cyclic](writer<T> sink) {
@@ -26,6 +27,7 @@ namespace csp::part {
         return enumerate<T>(std::vector<T>(c), cyclic);
     }
 
+    // Stream elements from a container, repeating forever.
     template <typename T, typename C>
     auto cycle(C&& c) {
         return enumerate<T>(std::forward<C>(c), true);

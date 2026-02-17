@@ -5,6 +5,9 @@
 
 namespace csp::part {
 
+    // Hold and serve the most recent value.
+    // While the writer is alive, each read returns the latest written value.
+    // After the writer dies, the last value is served repeatedly.
     template <typename T>
     auto latch() {
         return make_filter<T>([](reader<T> in, writer<T> out) {

@@ -8,6 +8,8 @@
 
 namespace csp::part {
 
+    // Bounded (or unbounded) FIFO buffer between producer and consumer.
+    // Decouples production rate from consumption rate up to the given capacity.
     template <typename T>
     auto buffer(size_t capacity = size_t(-1)) {
         return make_filter<T>([capacity](reader<T> in, writer<T> out) {
@@ -29,7 +31,7 @@ namespace csp::part {
                     break;
                 case -1:
                     CSP_LOG(log, "DRAIN");
-                    while (!buf.empty() && out << buf.front()) {
+                    while (!buf.empty() && out << std::move(buf.front())) {
                         buf.pop();
                     }
                     return;

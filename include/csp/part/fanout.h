@@ -4,6 +4,9 @@
 
 namespace csp::part {
 
+    // Broadcast each value to a dynamic set of subscribers.
+    // New subscribers register by sending their writer<T> endpoint via a
+    // control channel. Dead subscribers are automatically removed.
     template <typename T>
     auto fanout() {
         return make_filter<writer<T>>([](reader<writer<T>> new_out, writer<writer<T>> new_in) {

@@ -7,6 +7,8 @@
 
 namespace csp::part {
 
+    // Batch an incoming stream of additive values into variable-size quanta.
+    // Emits each quantum when enough has accumulated. Residue reported on close.
     template <typename T>
     auto quantize(reader<T> source,  // incoming units
                   reader<T> quanta,  // quanta to emit
@@ -90,6 +92,7 @@ namespace csp::part {
         });
     }
 
+    // Fixed-quantum variant: every emitted value equals quantum.
     template <typename T>
     auto quantize(reader<T> source, // incoming units
                   T quantum,        // quanta to emit

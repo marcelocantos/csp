@@ -12,6 +12,7 @@
 #include <csp/part/sink.h>
 #include <csp/part/tee.h>
 #include <csp/part/where.h>
+#include <csp/part/zip.h>
 
 using namespace csp;
 using namespace csp::part;
@@ -366,6 +367,71 @@ TEST_CASE("ChanUtil - LatchRepeat") {
     });
 
     while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - Zip2") {
+    auto r = zip2(count(1, 4).spawn(), count(10, 40, 10).spawn()).spawn();
+
+    auto [a, b] = r.read();
+    CHECK_EQ(1, a); CHECK_EQ(10, b);
+    std::tie(a, b) = r.read();
+    CHECK_EQ(2, a); CHECK_EQ(20, b);
+    std::tie(a, b) = r.read();
+    CHECK_EQ(3, a); CHECK_EQ(30, b);
+    std::pair<int, int> _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Zip2 early termination") {
+    // Second stream is shorter — zip2 terminates when it dies.
+    auto r = zip2(count(0, 100).spawn(), count(0, 3).spawn()).spawn();
+
+    for (int i = 0; i < 3; ++i) {
+        auto [a, b] = r.read();
+        CHECK_EQ(i, a);
+        CHECK_EQ(i, b);
+    }
+    std::pair<int, int> _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Zip2f") {
+    auto r = zip2f(count(1, 5).spawn(), count(10, 50, 10).spawn(),
+                   [](int a, int b) { return a * b; }).spawn();
+
+    CHECK_EQ(10, r.read());
+    CHECK_EQ(40, r.read());
+    CHECK_EQ(90, r.read());
+    CHECK_EQ(160, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Zip") {
+    auto r = zip(count(1, 4).spawn(), count(10, 40, 10).spawn(),
+                 count(100, 400, 100).spawn()).spawn();
+
+    auto [a, b, c] = r.read();
+    CHECK_EQ(1, a); CHECK_EQ(10, b); CHECK_EQ(100, c);
+    std::tie(a, b, c) = r.read();
+    CHECK_EQ(2, a); CHECK_EQ(20, b); CHECK_EQ(200, c);
+    std::tie(a, b, c) = r.read();
+    CHECK_EQ(3, a); CHECK_EQ(30, b); CHECK_EQ(300, c);
+    std::tuple<int, int, int> _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Zipf") {
+    auto r = zipf<int, int, int>(
+                  count(1, 4).spawn(), count(10, 40, 10).spawn(),
+                  count(100, 400, 100).spawn(),
+                  [](int a, int b, int c) { return a + b + c; }).spawn();
+
+    CHECK_EQ(111, r.read());
+    CHECK_EQ(222, r.read());
+    CHECK_EQ(333, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
 }
 
 TEST_CASE("ChanUtil - Sinkhole") {

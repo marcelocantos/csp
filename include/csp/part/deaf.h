@@ -4,6 +4,8 @@
 
 namespace csp::part {
 
+    // A writer endpoint that never accepts values.
+    // Useful as a default or placeholder in alt/prialt expressions.
     template <typename T>
     auto deaf() {
         return make_consumer<T>([](reader<T> in) {

@@ -7,6 +7,10 @@
 
 namespace csp::part {
 
+    // Wrapper for a reader-consuming combinator body.
+    // spawn() creates a channel and microthread; bind() returns a deferred
+    // callable; operator() runs inline. const& overloads copy the body,
+    // && overloads move it.
     template <typename T, typename F>
     struct consumer {
         F body_;
@@ -36,6 +40,7 @@ namespace csp::part {
         }
     };
 
+    // Wrapper for a writer-producing combinator body.
     template <typename T, typename F>
     struct producer {
         F body_;
@@ -65,6 +70,9 @@ namespace csp::part {
         }
     };
 
+    // Wrapper for a reader→writer transform combinator body.
+    // spawn(writer) binds the output; spawn(reader) binds the input;
+    // spawn() (when In == Out) creates both endpoints.
     template <typename In, typename Out, typename F>
     struct filter {
         F body_;
