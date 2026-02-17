@@ -7,9 +7,6 @@
 #include <exception>
 #include <mutex>
 
-// csp.cc
-int csp__internal__channel_count(int endpt);
-
 class RunScope;
 
 class RunStats {
@@ -28,7 +25,7 @@ public:
 
         csp::global_exception_handler = std::move(csp::chan<std::exception_ptr>().w);
 
-        while (csp_run()) { }
+        while (csp::internal::run()) { }
 
         // TODO: Use alt to drain as many as possible.
         if (!running()) {
@@ -46,8 +43,8 @@ public:
             }
         }
 
-        CHECK_EQ(0, csp__internal__channel_count(0));
-        CHECK_EQ(0, csp__internal__channel_count(1));
+        CHECK_EQ(0, csp::internal::channel_count(0));
+        CHECK_EQ(0, csp::internal::channel_count(1));
     }
 
     size_t pending() { return pending_; }

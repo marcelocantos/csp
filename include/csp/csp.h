@@ -6,129 +6,6 @@
 #include <exception>
 #include <stdint.h>
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
-
-
-/*-------------------------------------------------------------------
- * Microthreads
- */
-
-typedef void (*csp_entry_f)(void *);
-
-/* Invoke this from high up in the application stack, preferably main.
- * Evaluates to non-zero iff the initialization process succeeded. */
-#define csp_init(stacksize) (csp__internal__init(_alloca((stacksize)), (stacksize)))
-
-/* Call from main so csp can tell where the main stack is located. */
-/* Not currently required. */
-/* void csp_main(); */
-
-/* Create a new microthread that calls entry(data).
- * Return non-zero iff the thread was created successfully. */
-int csp_spawn(csp_entry_f entry, void * data);
-
-/* Run the currently scheduled microthread until it yields, then schedule
- * another microthread, but return without running it.
- * Return non-zero iff there remain threads that are ready to run. */
-int csp_run();
-
-/* Yield control so other microthreads can run. Does nothing outside a
- * microthread. */
-void csp_yield();
-
-/* Provide a printf'ed status message for use when logging the current
- * microthread. Formatted messages are truncated to <= 31 bytes. */
-void csp_descr(char const * fmt, ...);
-
-
-/*-------------------------------------------------------------------
- * Memory management
- */
-
-/* Asserts that p is not on the stack. Returns p iff assertion succeeds. */
-void * csp_off_stack(void * p);
-
-
-/*-------------------------------------------------------------------
- * Channels
- */
-
-/* The internal structure of the following is fake. It is a poor
- * man's static type checker. */
-typedef struct csp_tag_writer { char can_wait; } * csp_writer;
-typedef struct csp_tag_reader { char can_wait; } * csp_reader;
-
-/* Create a channel, populating the i/o-let parameters. The copy function
- * is used to copy csp_write's src parameter into a temporary slot.
- * Return non-zero iff success. */
-int csp_chan(csp_writer * w, csp_reader * r);
-
-/* Add and release refcount on writers and readers. */
-csp_writer csp_writer_addref (csp_writer w);
-void        csp_writer_release(csp_writer w);
-csp_reader csp_reader_addref (csp_reader r);
-void        csp_reader_release(csp_reader r);
-
-void csp_chdescr(void * ch, char const * descr);
-
-/* The following operations must be called from inside a microthread. */
-
-/* Prepare a ochan or ichan for csp_(pri)alt. */
-typedef struct csp_tag_waiter { char can_wait; } * csp_waiter;
-enum { csp_dead = 2, csp_ready = csp_dead | 1 };
-#define csp_wait(obj) ((csp_waiter)((uintptr_t)&(obj)->can_wait | ((int)::csp_ready << 1) | 8))
-#define csp_wait_dead(obj) ((csp_waiter)((uintptr_t)&(obj)->can_wait | ((int)::csp_dead << 1) | 8))
-
-typedef struct csp_tag_chanop {
-    csp_waiter waiter;
-    void * message;
-} csp_chanop;
-
-/* Block until at least one end-point is signalled, then return a
- * signalled end-point.
- *
- * A signalled writer returns after the reader has processed the
- * message, and may thus safely send stack object addresses.
- *
- * If several waitops are ready at the same time, alt chooses randomly
- * and is thus fairer, whereas prialt chooses the lowest index and is
- * more efficient. */
-/* Two-phase prialt: separates match-finding from data transfer.
- *
- * Phase 1 (begin): Finds a matching peer and returns with channel
- * locks held. The caller inspects src/dst to perform a typed transfer.
- * Phase 2 (end): Releases locks and schedules the peer.
- *
- * If no match is found (sleep/wake path or nowait), begin returns with
- * src=dst=NULL and end is a no-op. */
-typedef struct csp_alt_match {
-    int result;
-    void * src;
-    void * dst;
-    /* Internal state — do not access directly. */
-    char opaque_[128] __attribute__((aligned(8)));
-} csp_alt_match;
-
-void csp_prialt_begin(csp_alt_match * out, csp_chanop const * chanops, int count, int nowait);
-void csp_alt_begin   (csp_alt_match * out, csp_chanop const * chanops, int count, int nowait);
-void csp_alt_end     (csp_alt_match * m);
-
-/* Block the current microthread until the given deadline (nanoseconds since
- * steady_clock epoch). */
-void csp_sleep_until(int64_t deadline_ns);
-
-/* Don't call these. */
-int csp__internal__init(void* stack, int stacksize);
-char const * csp__internal__getchdescr(void* ch);
-char const * csp__internal__getchflags(void* ch);
-
-
-#ifdef __cplusplus
-}
-
 #include <array>
 #include <functional>
 #include <initializer_list>
@@ -142,11 +19,81 @@ char const * csp__internal__getchflags(void* ch);
 #include <boost/iterator/iterator_facade.hpp>
 
 
+namespace csp::internal {
+
+    // Opaque channel endpoint handles.
+    // WriterRef: holds Channel* (16-byte aligned, low bits available for flags).
+    // ReaderRef: holds (Channel* | 1) — endpoint bit in bit 0.
+    struct WriterRef { void* ptr = nullptr; explicit operator bool() const { return ptr; } };
+    struct ReaderRef { void* ptr = nullptr; explicit operator bool() const { return ptr; } };
+
+    // Waiter: encoded channel pointer + endpoint + state flags.
+    struct Waiter { void* ptr = nullptr; };
+
+    // State flag constants.
+    enum : int { dead = 2, ready = dead | 1 };
+
+    // Create a waiter for data or death-watch operations.
+    inline Waiter wait(WriterRef w)      { return {(void*)((uintptr_t)w.ptr | (ready << 1) | 8)}; }
+    inline Waiter wait(ReaderRef r)      { return {(void*)((uintptr_t)r.ptr | (ready << 1) | 8)}; }
+    inline Waiter wait_dead(WriterRef w) { return {(void*)((uintptr_t)w.ptr | (dead << 1) | 8)}; }
+    inline Waiter wait_dead(ReaderRef r) { return {(void*)((uintptr_t)r.ptr | (dead << 1) | 8)}; }
+
+    // Channel operation descriptor.
+    struct ChanOp {
+        Waiter waiter;
+        void * message = nullptr;
+    };
+
+    // Two-phase alt/prialt match result.
+    struct AltMatch {
+        int result = 0;
+        void * src = nullptr;
+        void * dst = nullptr;
+        alignas(8) char opaque_[128];
+    };
+
+    // Microthread entry function.
+    using EntryFn = void (*)(void *);
+
+    // Microthread management.
+    int spawn(EntryFn entry, void * data);
+    int run();
+    void yield();
+    void descr(char const * fmt, ...);
+
+    // Channel creation and refcounting.
+    bool make_chan(WriterRef * w, ReaderRef * r);
+    WriterRef writer_addref(WriterRef w);
+    void writer_release(WriterRef w);
+    ReaderRef reader_addref(ReaderRef r);
+    void reader_release(ReaderRef r);
+
+    // Channel introspection.
+    void set_chan_descr(void * ch, char const * descr);
+
+    // Two-phase alt/prialt protocol.
+    void prialt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait);
+    void alt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait);
+    void alt_end(AltMatch * m);
+
+    // Timer.
+    void sleep_until(int64_t deadline_ns);
+
+    // Debug/test.
+    char const * get_descr(void * thr);
+    char const * get_chan_descr(void * ch);
+    char const * get_chan_flags(void * ch);
+    int channel_count(int endpt);
+
+}
+
+
 #define CSP_DESCR_CHAN__(a) do { CSP_LOG(g_descrlog, "%s = %X:%s", #a, uintptr_t(*(a)) >> 4, uintptr_t(*(a)) & 1 ? "R" : "W"); (a).descr(#a); } while (false)
 #define CSP_DESCR_CHAN_(a, ...) CSP_DESCR_CHAN__(a); CSP_DESCR_CHAN_(##__VA_ARGS__);
 #define CSP_DESCR_CHAN(a, ...) do { CSP_DESCR_CHAN_(a, ##__VA_ARGS__); } while (false)
 
-#define CSP_DESCR_(F) do { CSP_LOG(g_descrlog, "%s", #F); csp_descr(#F); } while (false)
+#define CSP_DESCR_(F) do { CSP_LOG(g_descrlog, "%s", #F); csp::internal::descr(#F); } while (false)
 #define BRAC_DESCR(F, ...) do { CSP_DESCR_(F); CSP_DESCR_CHAN(##__VA_ARGS__); } while (false)
 
 
@@ -161,6 +108,10 @@ namespace csp
 
     void set_scheduler(std::function<void()> f);
     void schedule();
+
+    // Yield control so other microthreads can run. Does nothing outside a
+    // microthread.
+    inline void yield() { internal::yield(); }
 
     // Initialize the M:N runtime with the given number of processors (0 = auto).
     // If never called, auto-initializes with 1 processor (single-threaded).
@@ -209,64 +160,83 @@ namespace csp
         chan_op() : active_(false) {}
 
         // Write operation (copy).
-        chan_op(csp_writer w, T const & t)
-            : chanop_{csp_wait(w), new T(t)}, owns_buf_(true) {}
+        chan_op(internal::WriterRef w, T const & t)
+            : chanop_{internal::wait(w), &buf_}, has_buf_(true)
+        {
+            new (&buf_) T(t);
+        }
 
         // Write operation (move).
-        chan_op(csp_writer w, T && t)
-            : chanop_{csp_wait(w), new T(std::move(t))}, owns_buf_(true) {}
+        chan_op(internal::WriterRef w, T && t)
+            : chanop_{internal::wait(w), &buf_}, has_buf_(true)
+        {
+            new (&buf_) T(std::move(t));
+        }
 
         // Read operation.
         template <typename U, typename = std::enable_if_t<std::is_convertible<T, U>::value>>
-        chan_op(csp_reader r, U & dest)
-            : chanop_{csp_wait(r), &dest} {}
+        chan_op(internal::ReaderRef r, U & dest)
+            : chanop_{internal::wait(r), &dest} {}
 
         // Raw-pointer read (for ring buffer slots and nullptr discard).
-        chan_op(csp_reader r, void * dest)
-            : chanop_{csp_wait(r), dest} {}
+        chan_op(internal::ReaderRef r, void * dest)
+            : chanop_{internal::wait(r), dest} {}
 
         // Dead-endpoint operation.
-        explicit chan_op(csp_chanop op) : chanop_(op) {}
+        explicit chan_op(internal::ChanOp op) : chanop_(op) {}
 
         chan_op(chan_op const &) = delete;
         chan_op(chan_op && o)
-            : chanop_(o.chanop_), owns_buf_(o.owns_buf_), active_(o.active_)
+            : chanop_(o.chanop_), has_buf_(o.has_buf_), active_(o.active_)
         {
-            o.chanop_ = {nullptr, nullptr};
-            o.owns_buf_ = false;
+            if (has_buf_) {
+                new (&buf_) T(std::move(*reinterpret_cast<T*>(&o.buf_)));
+                chanop_.message = &buf_;
+                reinterpret_cast<T*>(&o.buf_)->~T();
+            }
+            o.chanop_ = {{}, nullptr};
+            o.has_buf_ = false;
             o.active_ = false;
         }
 
         ~chan_op() {
             if (active_) {
-                csp_alt_match m;
-                csp_prialt_begin(&m, &chanop_, 1, false);
+                internal::AltMatch m;
+                internal::prialt_begin(&m, &chanop_, 1, false);
                 if (m.src && m.dst)
                     *static_cast<T *>(m.dst) = std::move(*static_cast<T *>(m.src));
-                csp_alt_end(&m);
+                internal::alt_end(&m);
             }
-            if (owns_buf_) delete static_cast<T *>(chanop_.message);
+            if (has_buf_) reinterpret_cast<T*>(&buf_)->~T();
         }
 
         chan_op & operator=(chan_op const &) = delete;
         chan_op & operator=(chan_op && o) {
-            if (owns_buf_) delete static_cast<T *>(chanop_.message);
+            if (has_buf_) {
+                reinterpret_cast<T*>(&buf_)->~T();
+                has_buf_ = false;
+            }
             chanop_ = o.chanop_;
-            owns_buf_ = o.owns_buf_;
+            has_buf_ = o.has_buf_;
             active_ = o.active_;
-            o.chanop_ = {nullptr, nullptr};
-            o.owns_buf_ = false;
+            if (has_buf_) {
+                new (&buf_) T(std::move(*reinterpret_cast<T*>(&o.buf_)));
+                chanop_.message = &buf_;
+                reinterpret_cast<T*>(&o.buf_)->~T();
+            }
+            o.chanop_ = {{}, nullptr};
+            o.has_buf_ = false;
             o.active_ = false;
             return *this;
         }
 
         explicit operator bool() const {
             active_ = false;
-            csp_alt_match m;
-            csp_prialt_begin(&m, &chanop_, 1, false);
+            internal::AltMatch m;
+            internal::prialt_begin(&m, &chanop_, 1, false);
             if (m.src && m.dst)
                 *static_cast<T *>(m.dst) = std::move(*static_cast<T *>(m.src));
-            csp_alt_end(&m);
+            internal::alt_end(&m);
             return m.result > 0;
         }
 
@@ -275,11 +245,12 @@ namespace csp
         }
 
         void disarm() const { active_ = false; }
-        csp_chanop chanop() const { return chanop_; }
+        internal::ChanOp chanop() const { return chanop_; }
 
     private:
-        csp_chanop chanop_ = {nullptr, nullptr};
-        bool owns_buf_ = false;
+        internal::ChanOp chanop_ = {{}, nullptr};
+        mutable std::aligned_storage_t<sizeof(T), alignof(T)> buf_;
+        bool has_buf_ = false;
         mutable bool active_ = true;
     };
 
@@ -295,52 +266,52 @@ namespace csp
 
         writer() = default;
         writer(writer const &) = delete;
-        writer(writer && w) : w_(w.w_) { w.w_ = nullptr; }
+        writer(writer && w) : w_(w.w_) { w.w_ = {}; }
         ~writer() {
             if (w_) {
-                csp_writer_release(w_);
+                internal::writer_release(w_);
             }
         }
 
         writer& operator=(writer const &) = delete;
         writer<T>& operator=(writer && w) {
-            if (w_) csp_writer_release(w_);
+            if (w_) internal::writer_release(w_);
             w_ = w.w_;
-            w.w_ = nullptr;
+            w.w_ = {};
             return *this;
         }
         void swap(writer& w) {
-            csp_writer tmp = w_;
+            auto tmp = w_;
             w_ = w.w_;
             w.w_ = tmp;
         }
 
-        bool operator==(const writer& w) const { return w_ == w.w_; }
+        bool operator==(const writer& w) const { return w_.ptr == w.w_.ptr; }
         bool operator!=(const writer& w) const { return !(*this == w); }
         explicit operator bool() const { return bool(w_); }
 
-        void descr(const char* d) const { csp_chdescr(w_, d); }
+        void descr(const char* d) const { internal::set_chan_descr(w_.ptr, d); }
 
         chan_op<T> operator<<(T const & t) const { return {w_, t}; }
         chan_op<T> operator<<(T && t) const { return {w_, std::move(t)}; }
 
         chan_op<T> operator~() const {
-            return chan_op<T>(csp_chanop{csp_wait_dead(w_), nullptr});
+            return chan_op<T>(internal::ChanOp{internal::wait_dead(w_), nullptr});
         }
 
         writer copy() const {
             writer c;
             c.w_ = w_;
-            if (c.w_) csp_writer_addref(c.w_);
+            if (c.w_) internal::writer_addref(c.w_);
             return c;
         }
 
-        csp_writer internal_writer() const { return w_; }
+        internal::WriterRef internal_writer() const { return w_; }
 
     private:
-        mutable csp_writer w_ = nullptr;
+        mutable internal::WriterRef w_;
 
-        void assign(csp_writer w) { w_ = w; }
+        void assign(internal::WriterRef w) { w_ = w; }
 
         friend struct chan<T>;
     };
@@ -354,31 +325,31 @@ namespace csp
 
         reader() = default;
         reader(reader const &) = delete;
-        reader(reader && r) : r_(r.r_) { r.r_ = nullptr; }
+        reader(reader && r) : r_(r.r_) { r.r_ = {}; }
         ~reader() {
             if (r_) {
-                csp_reader_release(r_);
+                internal::reader_release(r_);
             }
         }
 
         reader& operator=(reader const &) = delete;
         reader& operator=(reader && r) {
-            if (r_) csp_reader_release(r_);
+            if (r_) internal::reader_release(r_);
             r_ = r.r_;
-            r.r_ = nullptr;
+            r.r_ = {};
             return *this;
         }
         void swap(reader& i) {
-            csp_reader tmp = r_;
+            auto tmp = r_;
             r_ = i.r_;
             i.r_ = tmp;
         }
 
-        bool operator==(const reader& r) const { return r_ == r.r_; }
+        bool operator==(const reader& r) const { return r_.ptr == r.r_.ptr; }
         bool operator!=(const reader& r) const { return !(*this == r); }
         explicit operator bool() const  { return bool(r_); }
 
-        void descr(const char* d) { csp_chdescr(r_, d); }
+        void descr(const char* d) { internal::set_chan_descr(r_.ptr, d); }
 
         template <typename U>
         std::enable_if_t<std::is_convertible<T, U>::value, chan_op<T>>
@@ -438,30 +409,22 @@ namespace csp
         iterator end() const { return {}; }
 
         chan_op<T> operator~() const {
-            return chan_op<T>(csp_chanop{csp_wait_dead(r_), nullptr});
+            return chan_op<T>(internal::ChanOp{internal::wait_dead(r_), nullptr});
         }
 
         reader copy() const {
             reader c;
             c.r_ = r_;
-            if (c.r_) csp_reader_addref(c.r_);
+            if (c.r_) internal::reader_addref(c.r_);
             return c;
         }
 
-        csp_reader internal_reader() const { return r_; }
+        internal::ReaderRef internal_reader() const { return r_; }
 
     private:
-        mutable csp_reader r_ = nullptr;
+        mutable internal::ReaderRef r_;
 
-        void assign(csp_reader r) { r_ = r; }
-
-        // Extract the next T into a U reference, returning true iff the channel hasn't died.
-        // This function is only visible if T can be converted to U.
-        template <typename U>
-        std::enable_if_t<std::is_convertible<T, U>::value, bool>
-        read_(U & u) const;
-
-        bool read_(void * dest) const;
+        void assign(internal::ReaderRef r) { r_ = r; }
 
         friend struct chan<T>;
     };
@@ -472,9 +435,9 @@ namespace csp
         reader<T> r;
 
         chan() {
-            csp_writer cw;
-            csp_reader cr;
-            if (csp_chan(&cw, &cr) == 0) {
+            internal::WriterRef cw;
+            internal::ReaderRef cr;
+            if (!internal::make_chan(&cw, &cr)) {
                 throw microthread_error("channel creation failed");
             }
             w.assign(cw);
@@ -504,36 +467,6 @@ namespace csp
         return std::move(chan<T>().w);
     }
 
-
-    template <typename T>
-    template <typename U>
-    std::enable_if_t<std::is_convertible<T, U>::value, bool>
-    reader<T>::read_(U& u) const {
-        if (!r_) {
-            throw microthread_error("Can't read from empty reader");
-        }
-        if (T * slot = static_cast<T *>(csp_read(r_))) {
-            u = std::move(*slot);
-            slot->~T();
-            return true;
-        }
-        return false;
-    }
-
-    template <typename T>
-    bool reader<T>::read_(void * dest) const {
-        if (!r_) {
-            throw microthread_error("Can't read from empty reader");
-        }
-        if (T * slot = static_cast<T *>(csp_read(r_))) {
-            if (dest) {
-                new (dest) T(std::move(*slot));
-            }
-            slot->~T();
-            return true;
-        }
-        return false;
-    }
 
     template <typename T>
     void make_channel(writer<T> & w, reader<T> & r) {
@@ -613,7 +546,7 @@ namespace csp
     reader<std::exception_ptr> spawn(F && f) {
         reader<std::exception_ptr> r;
         auto sd = new detail::spawn_data<F>{std::move(f), ++r};
-        if (!csp_spawn(detail::spawn_entry<F>, sd)) {
+        if (!internal::spawn(detail::spawn_entry<F>, sd)) {
             throw microthread_error("spawn failed");
         }
         return r;
@@ -711,22 +644,22 @@ namespace csp
 
     namespace detail {
 
-        using csp_alt_begin_f = void(csp_alt_match *, csp_chanop const *, int, int);
+        using alt_begin_f = void(internal::AltMatch *, internal::ChanOp const *, int, int);
 
         // Typed variadic alt: compile-time dispatch, no function pointers.
-        template <csp_alt_begin_f * begin_f, typename... Ops>
+        template <alt_begin_f * begin_f, typename... Ops>
         inline
         std::enable_if_t<(is_chan_op<std::decay_t<Ops>>::value && ...), int>
         typed_alt(Ops &&... ops) {
             constexpr size_t N = sizeof...(Ops);
-            csp_chanop chanops[N] = {ops.chanop()...};
-            csp_alt_match m;
+            internal::ChanOp chanops[N] = {ops.chanop()...};
+            internal::AltMatch m;
             begin_f(&m, chanops, N, false);
             if (m.src && m.dst) {
                 int idx = (m.result > 0 ? m.result : -m.result) - 1;
                 transfer_at<0>(idx, m.src, m.dst, ops...);
             }
-            csp_alt_end(&m);
+            internal::alt_end(&m);
             (ops.disarm(), ...);
             return m.result;
         }
@@ -740,17 +673,17 @@ namespace csp
         // different channel types appear in a single alt, the count is
         // known at compile time and the variadic overload handles it with
         // per-index type dispatch.
-        template <csp_alt_begin_f * begin_f, typename T>
+        template <alt_begin_f * begin_f, typename T>
         inline
         int typed_alt_vec(std::vector<chan_op<T>> const & ops) {
-            std::vector<csp_chanop> chanops;
+            std::vector<internal::ChanOp> chanops;
             chanops.reserve(ops.size());
             for (auto & op : ops) chanops.push_back(op.chanop());
-            csp_alt_match m;
+            internal::AltMatch m;
             begin_f(&m, chanops.data(), (int)chanops.size(), 0);
             if (m.src && m.dst)
                 chan_op<T>::transfer(m.src, m.dst);
-            csp_alt_end(&m);
+            internal::alt_end(&m);
             for (auto & op : ops) op.disarm();
             return m.result;
         }
@@ -763,14 +696,14 @@ namespace csp
     inline
     std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
     alt(Ops &&... ops) {
-        return detail::typed_alt<&csp_alt_begin>(std::forward<Ops>(ops)...);
+        return detail::typed_alt<&internal::alt_begin>(std::forward<Ops>(ops)...);
     }
 
     template <typename... Ops>
     inline
     std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
     prialt(Ops &&... ops) {
-        return detail::typed_alt<&csp_prialt_begin>(std::forward<Ops>(ops)...);
+        return detail::typed_alt<&internal::prialt_begin>(std::forward<Ops>(ops)...);
     }
 
     // --- vector overloads (single type T, inline transfer) ---
@@ -778,13 +711,13 @@ namespace csp
     template <typename T>
     inline
     int alt(std::vector<chan_op<T>> const & ops) {
-        return detail::typed_alt_vec<&csp_alt_begin>(ops);
+        return detail::typed_alt_vec<&internal::alt_begin>(ops);
     }
 
     template <typename T>
     inline
     int prialt(std::vector<chan_op<T>> const & ops) {
-        return detail::typed_alt_vec<&csp_prialt_begin>(ops);
+        return detail::typed_alt_vec<&internal::prialt_begin>(ops);
     }
 
     // Dead channel to assist non-blocking waits.
@@ -805,5 +738,3 @@ namespace std {
     }
 
 }
-
-#endif /* __cplusplus */

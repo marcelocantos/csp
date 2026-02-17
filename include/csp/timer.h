@@ -10,7 +10,7 @@ namespace csp {
 
     // Block the current microthread until the given deadline.
     inline void sleep_until(clock::time_point tp) {
-        csp_sleep_until(tp.time_since_epoch().count());
+        internal::sleep_until(tp.time_since_epoch().count());
     }
 
     // Block the current microthread for the given duration.

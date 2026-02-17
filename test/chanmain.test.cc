@@ -18,9 +18,9 @@ TEST_CASE("ChanMain - Write") {
 
     auto o = std::move(w);
 
-    csp_run();
+    csp::internal::run();
     o << 42;
-    csp_run();
+    csp::internal::run();
 
     CHECK_EQ(42, result);
 }
@@ -37,12 +37,12 @@ TEST_CASE("ChanMain - Read") {
     auto i = std::move(r);
 
     // Give reader a chance to block on output.
-    csp_run();
+    csp::internal::run();
 
     int result = i.read();
 
     // Let reader exit.
-    csp_run();
+    csp::internal::run();
 
     CHECK_EQ(42, result);
 }
@@ -58,7 +58,7 @@ auto worker = [](auto && o, auto && i) {
         int result = 0;
         int n;
         while (i >> n) {
-            csp_run();
+            csp::internal::run();
             result += n;
         };
         CHECK_EQ(15, result);
@@ -75,7 +75,7 @@ TEST_CASE("ChanMain - WriteReadNormal") {
     stats.spawn(buffer(std::move(a_r), std::move(b_w), 5));
     stats.spawn(worker(std::move(a_w), std::move(b_r)));
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 // Now try from main.
@@ -88,6 +88,6 @@ TEST_CASE("ChanMain - WriteReadFromMain") {
     stats.spawn(buffer(std::move(a_r), std::move(b_w), 5));
     auto work = worker(std::move(a_w), std::move(b_r));
 
-    csp_run();
+    csp::internal::run();
     work();
 }

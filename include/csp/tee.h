@@ -11,7 +11,7 @@ namespace csp {
         template <typename T>
         auto tee(reader<T> in, writer<T> out, writer<T> tee) {
             return [in = std::move(in), out = std::move(out), tee = std::move(tee)]{
-                csp_descr("tee");
+                internal::descr("tee");
 
                 static Logger scope("chan/tee/scope");
                 BRAC_SCOPE(scope, "tee", "");

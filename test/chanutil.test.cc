@@ -85,9 +85,9 @@ TEST_CASE("ChanUtil - Deaf") {
         CHECK_EQ(-2, prialt(w << 42, ~give_up));
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
     give_up_w = {};
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("ChanUtil - Enumerate") {
@@ -102,7 +102,7 @@ TEST_CASE("ChanUtil - Enumerate") {
     }
 
     e = {};
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     CHECK_EQ(2 * 3 * 5 * 2, product);
 }
@@ -131,7 +131,7 @@ TEST_CASE("ChanUtil - Latch") {
         CHECK_EQ(1, in.read());
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     stats.spawn([out = std::move(latch.w)]{
         for (int n = 1; n <= 5; ++n) {
@@ -139,13 +139,13 @@ TEST_CASE("ChanUtil - Latch") {
         }
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     stats.spawn([in = std::move(latch.r)]{
         CHECK_EQ(5, in.read());
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("ChanUtil - Map") {
@@ -161,7 +161,7 @@ TEST_CASE("ChanUtil - Map") {
         CHECK_EQ(42, in.read());
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("ChanUtil - MapStrToLen") {
@@ -182,7 +182,7 @@ TEST_CASE("ChanUtil - MapStrToLen") {
         CHECK_EQ(i, lengths_r.read());
     }
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("ChanUtil - Mute") {
@@ -196,9 +196,9 @@ TEST_CASE("ChanUtil - Mute") {
         CHECK_GT(0, prialt(r >> n, ~give_up));
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
     give_up_w = {};
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("ChanUtil - Sink") {
@@ -354,7 +354,7 @@ TEST_CASE("ChanUtil - LatchRepeat") {
         }
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     // After writer dies, latch serves the last value repeatedly.
     stats.spawn([in = std::move(latch.r)]{
@@ -363,7 +363,7 @@ TEST_CASE("ChanUtil - LatchRepeat") {
         CHECK_EQ(5, in.read());
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("ChanUtil - Sinkhole") {
@@ -376,5 +376,5 @@ TEST_CASE("ChanUtil - Sinkhole") {
     CHECK_EQ(10, latest);
 
     w = {};
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }

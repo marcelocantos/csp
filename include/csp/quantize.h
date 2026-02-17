@@ -15,7 +15,7 @@ namespace csp {
     {
         return [source = std::move(source), quanta = std::move(quanta),
                 sink = std::move(sink), residue = std::move(residue)]{
-            csp_descr("quantize");
+            internal::descr("quantize");
 
             static Logger log("chan/quantize");
 

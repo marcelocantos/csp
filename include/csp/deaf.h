@@ -7,7 +7,7 @@ namespace csp {
         template <typename T>
         auto deaf(reader<T> in) {
             return [in = std::move(in)]{
-                csp_descr("deaf");
+                internal::descr("deaf");
 
                 static Logger scope("chan/deaf/scope");
                 BRAC_SCOPE(scope, "deaf", "");

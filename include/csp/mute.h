@@ -7,7 +7,7 @@ namespace csp {
         template <typename T>
         auto mute(writer<T> out) {
             return [out = std::move(out)]{
-                csp_descr("mute");
+                internal::descr("mute");
 
                 alt(~out);
             };

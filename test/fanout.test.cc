@@ -103,7 +103,7 @@ TEST_CASE("Fanout - Waves") {
         for (auto & s : receivers) {
             CHECK(bool(now << std::move(s.ch.w)));
             stats.spawn([&, down = std::move(s.ch.r), result = &s.result, keepalive = keepalive.w.copy()]{
-                csp_descr("R%d", &s - std::begin(receivers));
+                csp::internal::descr("R%d", &s - std::begin(receivers));
                 int n;
                 while (alt(down >> n, ~keepalive) > 0) {
                     *result += n;
@@ -165,7 +165,7 @@ TEST_CASE("Fanout - Chain") {
 
         for (int j = 0; j < n; ++j) {
             new_out2_w << spawn_consumer<int>([&](auto r) {
-                csp_descr("fanout");
+                csp::internal::descr("fanout");
                 BRAC_SCOPE(g_log, "FanoutChain::λ", "%d, %d", i, j);
 
                 for (int i; r >> i;) {

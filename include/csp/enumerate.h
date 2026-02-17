@@ -8,7 +8,7 @@ namespace csp {
 
     template <typename T, typename C>
     auto enumerate(C && c, writer<T> sink, bool cyclic = false) {
-        csp_descr("enumerate");
+        internal::descr("enumerate");
 
         return [c = std::move(c), sink = std::move(sink), cyclic]{
             do {

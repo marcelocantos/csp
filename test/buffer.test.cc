@@ -20,7 +20,7 @@ TEST_CASE("ChanUtil - BufferBounded") {
         }
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
     CHECK_EQ(0UL, stats.pending());
 
     REQUIRE_EQ(15, sent);
@@ -34,7 +34,7 @@ TEST_CASE("ChanUtil - BufferBounded") {
         }
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
     CHECK_EQ(55, sent);
     CHECK_EQ(55, received);
 }
@@ -77,7 +77,7 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
         }
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     CHECK_EQ(55, sent);
     CHECK_EQ(55, received);

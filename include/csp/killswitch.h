@@ -8,7 +8,7 @@ namespace csp {
         template <typename A>
         auto killswitch(reader<A> in, writer<A> out, reader<> keepalive) {
             return [in = std::move(in), out = std::move(out), keepalive = std::move(keepalive)]{
-                csp_descr("killswitch");
+                internal::descr("killswitch");
 
                 for (A a; prialt(~keepalive, ~out, in >> a) > 0 && prialt(~keepalive, out << a) > 0;) { }
             };

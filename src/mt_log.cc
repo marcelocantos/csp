@@ -1,5 +1,6 @@
 #include <csp/internal/mt_log.h>
 
+#include <csp/csp.h>
 #include <csp/internal/on_scope_exit.h>
 
 #include <cxxabi.h>
@@ -23,12 +24,6 @@
 
 using namespace csp;
 
-extern "C" {
-
-    // Return the current status message for the current microthread.
-    char const * csp_getdescr(void* thr);
-
-}
 
 
 namespace {
@@ -123,7 +118,7 @@ namespace csp {
         };
 
         if (flags & 1) {
-            auto descr = csp_getdescr(nullptr);
+            auto descr = csp::internal::get_descr(nullptr);
             advance(snprintf(cp, len, "%s%s:%d: %.3f [%s] ", prefix.c_str(), file, line, dt, descr));
         }
 

@@ -18,8 +18,8 @@ TEST_CASE("Channel - RefCounts1") {
         auto wr = ch.w.copy();
         auto rd = ch.r.copy();
     }
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Channel - RefCounts2") {
@@ -28,35 +28,35 @@ TEST_CASE("Channel - RefCounts2") {
         auto f = [in = ch.w.copy(), out = ch.r.copy()]{ };
         f();
     }
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Channel - RefCounts3") {
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 
     chan<int> ch;
-    CHECK_EQ(1, csp__internal__channel_count(0));
+    CHECK_EQ(1, csp::internal::channel_count(0));
 
     ch.release();
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Channel - ThreadRefCounts") {
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
     {
         chan<int> ch;
 
-        CHECK_EQ(1, csp__internal__channel_count(1));
+        CHECK_EQ(1, csp::internal::channel_count(1));
 
         ch.release();
 
-        CHECK_EQ(0, csp__internal__channel_count(1));
+        CHECK_EQ(0, csp::internal::channel_count(1));
     }
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Channel - OneShot") {
@@ -318,7 +318,7 @@ TEST_CASE("Channel - AltDead") {
         }
 
         kill = {};
-        csp_yield(); // Let the other guy wake up and smell the roses.
+        csp::yield(); // Let the other guy wake up and smell the roses.
 
         CHECK_FALSE((out << 5));
     });
@@ -777,7 +777,7 @@ TEST_CASE("Channel - PrialtOrder") {
 
     ra = {};
     rb = {};
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("Channel - NonBlocking") {
@@ -794,14 +794,14 @@ TEST_CASE("Channel - NonBlocking") {
     // Make a writer ready.
     stats.spawn([w = ch.w.copy()]{ w << 42; });
     ch.release();
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     // Writer is waiting; read should succeed.
     CHECK_EQ(1, prialt(r >> n, ~skip));
     CHECK_EQ(42, n);
 
     r = {};
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }
 
 TEST_CASE("Channel - AltManyChannels") {
@@ -817,7 +817,7 @@ TEST_CASE("Channel - AltManyChannels") {
         ws[i] = {};
     }
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     int n = -1;
     std::vector<chan_op<int>> actions;
@@ -834,5 +834,5 @@ TEST_CASE("Channel - AltManyChannels") {
     // Clean up: release readers so remaining writers unblock.
     actions.clear();
     for (int i = 0; i < N; ++i) rs[i] = {};
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 }

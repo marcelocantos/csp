@@ -23,6 +23,7 @@
 
 using namespace csp;
 using namespace csp::detail;
+using namespace csp::internal;
 
 
 struct Counters {
@@ -41,13 +42,13 @@ namespace {
     class Channel;
 
     struct ChanopWaiter {
-        csp_chanop const * chanop;
+        ChanOp const * chanop;
         Microthread * thread;
 
         bool operator==(ChanopWaiter const & cw) const { return chanop == cw.chanop && thread == cw.thread; }
         bool operator!=(ChanopWaiter const & cw) const { return !(*this == cw); }
 
-        ChanopWaiter(csp_chanop const * chanop, Microthread * thread) : chanop{chanop}, thread{thread} { }
+        ChanopWaiter(ChanOp const * chanop, Microthread * thread) : chanop{chanop}, thread{thread} { }
     };
 
 }
@@ -60,11 +61,11 @@ namespace {
         rd = 1
     };
     enum {
-        csp_alive_flag = 8,
-        csp_endpt_flag = 1,
-        csp_ready_flag = (csp_ready & ~csp_dead) << 1,
-        csp_dead_flag = csp_dead << 1,
-        csp_ready_or_dead = csp_ready_flag | csp_dead_flag,
+        alive_flag = 8,
+        endpt_flag = 1,
+        ready_flag = (ready & ~dead) << 1,
+        dead_flag = dead << 1,
+        ready_or_dead = ready_flag | dead_flag,
     };
 
     char const * descr_flags(uintptr_t waiter) {
@@ -82,17 +83,17 @@ namespace {
         return waiter & ~uintptr_t(15) ? descrs[waiter & 15] : "";
     }
 
-    template <typename T>
-    Channel * get_chan(T t) {
-        if (auto cp = reinterpret_cast<Channel * *>((uintptr_t)t & ~15UL)) {
+    Channel * get_chan(void * ptr) {
+        if (auto cp = reinterpret_cast<Channel * *>((uintptr_t)ptr & ~15UL)) {
             return *cp;
         }
         return nullptr;
     }
 
-    Channel * get_chan(csp_chanop const & c) {
-        return get_chan(c.waiter);
-    }
+    Channel * get_chan(WriterRef w) { return get_chan(w.ptr); }
+    Channel * get_chan(ReaderRef r) { return get_chan(r.ptr); }
+    Channel * get_chan(Waiter w) { return get_chan(w.ptr); }
+    Channel * get_chan(ChanOp const & c) { return get_chan(c.waiter); }
 
     char const * describe(void * ch);
 
@@ -110,8 +111,8 @@ namespace {
         }
         ~Channel() {
         }
-        csp_writer as_writer() { return reinterpret_cast<csp_writer>(this); }
-        csp_reader as_reader() { return reinterpret_cast<csp_reader>((uintptr_t)this | 1); }
+        WriterRef as_writer() { return {reinterpret_cast<void*>(this)}; }
+        ReaderRef as_reader() { return {reinterpret_cast<void*>((uintptr_t)this | 1)}; }
         void set_descr(char const * d) { descr_ = d; }
 
         void addref(int endpt) {
@@ -160,7 +161,7 @@ namespace {
 
         explicit operator bool() { return endpts_[wr].refcount.load() > 0 && endpts_[rd].refcount.load() > 0; }
 
-        // Internal state stored in csp_alt_match::opaque_.
+        // Internal state stored in AltMatch::opaque_.
         struct match_internal {
             Channel* fixed_sorted[8];
             Channel** sorted;       // points to fixed_sorted or heap_alloc
@@ -172,7 +173,7 @@ namespace {
         };
         static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
 
-        static void prialt_begin_impl(csp_alt_match * out, csp_chanop const * chanops, int count, bool nowait, int offset = 0) {
+        static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
             mi->heap_alloc = nullptr;
             mi->peer = nullptr;
@@ -223,9 +224,9 @@ namespace {
             lock_all();
 
             // Phase 1: Scan for ready peer (priority order, rotated by offset).
-            // For data chanops (csp_ready_flag), a ready peer takes priority
+            // For data chanops (ready_flag), a ready peer takes priority
             // over dead-channel detection on other channels.  For vultures
-            // (~ch, csp_dead_flag only), dead is the expected signal — fire
+            // (~ch, dead_flag only), dead is the expected signal — fire
             // immediately.
             bool all_null = true;
             int dead_data_result = 0;  // first dead data-chanop, 0 = none
@@ -233,11 +234,11 @@ namespace {
                 int i = (offset + k) % count;
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
-                    auto flags = (uintptr_t)chop.waiter;
-                    int endpt = flags & csp_endpt_flag;
+                    auto flags = (uintptr_t)chop.waiter.ptr;
+                    int endpt = flags & endpt_flag;
 
                     if (!*ch) {
-                        if (flags & csp_ready_flag) {
+                        if (flags & ready_flag) {
                             // Data chanop on dead channel: defer until
                             // after scanning for ready peers elsewhere.
                             if (!dead_data_result) dead_data_result = -(i + 1);
@@ -251,7 +252,7 @@ namespace {
                     }
 
                     auto & them = ch->endpts_[1 - endpt].waiters;
-                    if ((flags & csp_ready_flag)) {
+                    if ((flags & ready_flag)) {
                         for (auto & cw : them) {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
@@ -297,8 +298,8 @@ namespace {
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
-                    auto flags = (uintptr_t)chop.waiter;
-                    ch->endpts_[flags & csp_endpt_flag].wait(&chop);
+                    auto flags = (uintptr_t)chop.waiter.ptr;
+                    ch->endpts_[flags & endpt_flag].wait(&chop);
                 }
             }
 
@@ -321,8 +322,8 @@ namespace {
             for (int i = 0; i < g_self->n_chanops_; ++i) {
                 auto const & chop = g_self->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
-                    auto flags = (uintptr_t)chop.waiter;
-                    ch->endpts_[flags & csp_endpt_flag].remove(&chop, g_self);
+                    auto flags = (uintptr_t)chop.waiter.ptr;
+                    ch->endpts_[flags & endpt_flag].remove(&chop, g_self);
                 }
             }
             unlock_all();
@@ -334,7 +335,7 @@ namespace {
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
-        static void alt_end_impl(csp_alt_match * m) {
+        static void alt_end_impl(AltMatch * m) {
             auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
             if (mi->needs_unlock) {
                 if (mi->use_run) {
@@ -367,18 +368,18 @@ namespace {
             Waiters waiters;
             Vultures vultures;
 
-            void wait(csp_chanop const * chop) {
-                auto flags = (uintptr_t)chop->waiter;
-                if (flags & csp_ready_flag) {
+            void wait(ChanOp const * chop) {
+                auto flags = (uintptr_t)chop->waiter.ptr;
+                if (flags & ready_flag) {
                     waiters.emplace(chop, g_self);
                 } else {
                     vultures.emplace(chop, g_self);
                 }
             }
 
-            void remove(csp_chanop const * chop, Microthread * t) {
-                auto flags = (uintptr_t)chop->waiter;
-                if (flags & csp_ready_flag) {
+            void remove(ChanOp const * chop, Microthread * t) {
+                auto flags = (uintptr_t)chop->waiter.ptr;
+                if (flags & ready_flag) {
                     waiters.remove({chop, t});
                 } else {
                     vultures.remove({chop, t});
@@ -399,47 +400,49 @@ namespace {
 }
 
 
-int csp__internal__channel_count(int endpt) {
+namespace csp::internal {
+
+int channel_count(int endpt) {
     auto & c = counterses()[endpt];
     return c.active - 1; // Exclude skip and global_exception_handler from the reader count.
 }
 
-int csp_chan(csp_writer * w, csp_reader * r) {
+bool make_chan(WriterRef * w, ReaderRef * r) {
     try {
         auto ch = new Channel{};
         *w = ch->as_writer();
         *r = ch->as_reader();
-        return int(true);
+        return true;
     } catch (std::exception const & e) {
     } catch (...) {
     }
-    return int(false);
+    return false;
 }
 
-void csp_chdescr(void * ch, char const * descr) {
+void set_chan_descr(void * ch, char const * descr) {
     if (Channel * c = get_chan(ch)) {
         c->set_descr(descr);
     }
 }
 
-char const * csp__internal__getchdescr(void * ch) {
+char const * get_chan_descr(void * ch) {
     return describe(ch);
 }
 
-char const * csp__internal__getchflags(void * ch) {
+char const * get_chan_flags(void * ch) {
     return descr_flags((uintptr_t)ch);
 }
 
-csp_writer csp_writer_addref (csp_writer w) { if (w) get_chan(w)->addref(wr); return w; }
-void        csp_writer_release(csp_writer w) { if (w) get_chan(w)->release(wr); }
-csp_reader csp_reader_addref (csp_reader r) { if (r) get_chan(r)->addref(rd); return r; }
-void        csp_reader_release(csp_reader r) { if (r) get_chan(r)->release(rd); }
+WriterRef writer_addref(WriterRef w) { if (w) get_chan(w)->addref(wr); return w; }
+void      writer_release(WriterRef w) { if (w) get_chan(w)->release(wr); }
+ReaderRef reader_addref(ReaderRef r) { if (r) get_chan(r)->addref(rd); return r; }
+void      reader_release(ReaderRef r) { if (r) get_chan(r)->release(rd); }
 
-void csp_prialt_begin(csp_alt_match * out, csp_chanop const * chanops, int count, int nowait) {
+void prialt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait) {
     Channel::prialt_begin_impl(out, chanops, count, bool(nowait));
 }
 
-void csp_alt_begin(csp_alt_match * out, csp_chanop const * chanops, int count, int nowait) {
+void alt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait) {
     int offset = 0;
     if (count > 1) {
         thread_local std::mt19937 rng{std::random_device{}()};
@@ -448,6 +451,8 @@ void csp_alt_begin(csp_alt_match * out, csp_chanop const * chanops, int count, i
     Channel::prialt_begin_impl(out, chanops, count, bool(nowait), offset);
 }
 
-void csp_alt_end(csp_alt_match * m) {
+void alt_end(AltMatch * m) {
     Channel::alt_end_impl(m);
 }
+
+} // namespace csp::internal

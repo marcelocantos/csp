@@ -45,15 +45,15 @@ TEST_CASE("Volume - DaisyChain") {
 TEST_CASE("Volume - RapidChannelLifecycle") {
     constexpr int N = 10000 / SCALE_MEDIUM;
 
-    int before_w = csp__internal__channel_count(0);
-    int before_r = csp__internal__channel_count(1);
+    int before_w = csp::internal::channel_count(0);
+    int before_r = csp::internal::channel_count(1);
 
     for (int i = 0; i < N; ++i) {
         chan<int> ch;
     }
 
-    CHECK_EQ(before_w, csp__internal__channel_count(0));
-    CHECK_EQ(before_r, csp__internal__channel_count(1));
+    CHECK_EQ(before_w, csp::internal::channel_count(0));
+    CHECK_EQ(before_r, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Volume - ManyMicrothreads") {
@@ -64,11 +64,11 @@ TEST_CASE("Volume - ManyMicrothreads") {
         csp::spawn([&]{ ++completed; });
     }
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     CHECK_EQ(N, completed);
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Volume - ManyChannelPairs") {
@@ -82,9 +82,9 @@ TEST_CASE("Volume - ManyChannelPairs") {
         ch.release();
     }
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     CHECK_EQ(N * (N - 1) / 2, total);
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }

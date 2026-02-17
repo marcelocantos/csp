@@ -393,7 +393,7 @@ TEST_CASE("MN Volume - SpawnWithYield") {
 
     for (int i = 0; i < N; ++i) {
         csp::spawn([&] {
-            csp_yield();
+            csp::yield();
             count.fetch_add(1, std::memory_order_relaxed);
         });
     }

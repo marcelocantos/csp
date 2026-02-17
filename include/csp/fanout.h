@@ -26,7 +26,7 @@ namespace csp {
     template <typename T>
     auto fanout(reader<writer<T>> new_out, writer<writer<T>> new_in) {
         return [new_out = std::move(new_out), new_in = std::move(new_in)]{
-            csp_descr("fanout");
+            internal::descr("fanout");
 
             static Logger scope("chan/fanout/scope");
             BRAC_SCOPE(scope, "fanout", "");
@@ -46,11 +46,11 @@ namespace csp {
                 //   1: in >> t             (T transfer) — initially empty
                 //   2: new_out >> out_val  (writer<T> transfer)
                 //   3+: ~outs[i]           (death watches, no transfer)
-                std::vector<csp_chanop> chanops;
-                chanops.push_back({csp_wait(new_in.internal_writer()), &in_val});
-                chanops.push_back({nullptr, nullptr});
-                chanops.push_back({csp_wait(new_out.internal_reader()), &out_val});
-                chanops.push_back({csp_wait_dead(out.internal_writer()), nullptr});
+                std::vector<internal::ChanOp> chanops;
+                chanops.push_back({internal::wait(new_in.internal_writer()), &in_val});
+                chanops.push_back({{}, nullptr});
+                chanops.push_back({internal::wait(new_out.internal_reader()), &out_val});
+                chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
 
                 std::vector<writer<T>> outs;
                 outs.push_back(std::move(out));
@@ -63,8 +63,8 @@ namespace csp {
                 };
 
                 while (!outs.empty()) {
-                    csp_alt_match m;
-                    csp_prialt_begin(&m, chanops.data(), chanops.size(), 0);
+                    internal::AltMatch m;
+                    internal::prialt_begin(&m, chanops.data(), chanops.size(), 0);
                     if (m.src && m.dst) {
                         int idx = (m.result > 0 ? m.result : -m.result) - 1;
                         if (idx == 0 || idx == 2)
@@ -72,13 +72,13 @@ namespace csp {
                         else if (idx == 1)
                             *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
                     }
-                    csp_alt_end(&m);
+                    internal::alt_end(&m);
 
                     switch (m.result) {
                     case 1:
                         CSP_LOG(log, "new_in");
-                        chanops[0] = {nullptr, nullptr};
-                        chanops[1] = {csp_wait(in.internal_reader()), &t};
+                        chanops[0] = {{}, nullptr};
+                        chanops[1] = {internal::wait(in.internal_reader()), &t};
                         break;
                     case -1:
                         CSP_LOG(log, "~new_in");
@@ -98,18 +98,18 @@ namespace csp {
                         CSP_LOG(log, "~in");
                         in = {};
                         in_val = ++in;
-                        chanops[0] = {csp_wait(new_in.internal_writer()), &in_val};
-                        chanops[1] = {nullptr, nullptr};
+                        chanops[0] = {internal::wait(new_in.internal_writer()), &in_val};
+                        chanops[1] = {{}, nullptr};
                         break;
                     case 3:  // new_out
                         CSP_LOG(log, "new_out");
-                        chanops.push_back({csp_wait_dead(out_val.internal_writer()), nullptr});
+                        chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr});
                         outs.push_back(std::move(out_val));
                         break;
                     case -3:
                         CSP_LOG(log, "~new_out");
                         // No more new outs.
-                        chanops[2] = {nullptr, nullptr};
+                        chanops[2] = {{}, nullptr};
                         break;
                     default: {  // ~outs
                         auto i = -4 - m.result;

@@ -11,7 +11,7 @@ namespace csp {
         template <typename T>
         auto buffer(reader<T> input, writer<T> output, size_t capacity = size_t(-1)) {
             return [in = std::move(input), out = std::move(output), capacity] {
-                csp_descr("buffer");
+                internal::descr("buffer");
 
                 static Logger log("chan/buffer");
                 static Logger scope("chan/buffer/scope");

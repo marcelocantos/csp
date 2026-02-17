@@ -48,7 +48,7 @@ namespace csp {
             std::atomic<fcontext_t> ctx_;
             StackSlot * stk_;
             char status_[32];
-            csp_chanop const * chanops_;
+            internal::ChanOp const * chanops_;
             int n_chanops_, signal_;
 
             size_t id_ = []{

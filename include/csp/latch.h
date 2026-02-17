@@ -7,7 +7,7 @@ namespace csp {
         template <typename T>
         auto latch(reader<T> in, writer<T> out) {
             return [in = std::move(in), out = std::move(out)]{
-                csp_descr("latch");
+                internal::descr("latch");
 
                 T t;
                 if (prialt(~out, in >> t) > 0) {

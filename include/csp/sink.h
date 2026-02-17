@@ -7,7 +7,7 @@ namespace csp {
         template <typename A, typename F>
         auto sink(reader<A> in, F f) {
             return [in = std::move(in), f = std::move(f)] {
-                csp_descr("sink");
+                internal::descr("sink");
 
                 static Logger scope("chan/sink/scope");
                 BRAC_SCOPE(scope, "sink", "");

@@ -14,10 +14,10 @@ TEST_CASE("Thread - OneShot") {
         ran = true;
     });
 
-    CHECK_FALSE(csp_run());
+    CHECK_FALSE(csp::internal::run());
     CHECK(ran);
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Thread - Parallel") {
@@ -28,10 +28,10 @@ TEST_CASE("Thread - Parallel") {
         });
     }
 
-    CHECK_FALSE(csp_run());
+    CHECK_FALSE(csp::internal::run());
     CHECK_EQ("hello", std::string(buf));
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Thread - SpawnSpawn") {
@@ -46,11 +46,11 @@ TEST_CASE("Thread - SpawnSpawn") {
         });
     }
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     CHECK_EQ(25, result);
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Thread - Throw") {
@@ -66,15 +66,15 @@ TEST_CASE("Thread - Throw") {
         }
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
-    CHECK_EQ(1, csp__internal__channel_count(0));
-    CHECK_EQ(1, csp__internal__channel_count(1));
+    CHECK_EQ(1, csp::internal::channel_count(0));
+    CHECK_EQ(1, csp::internal::channel_count(1));
     CHECK_THROWS_AS(csp::join(ex), bork);
     ex = {};
-    csp_run();
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    csp::internal::run();
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Thread - Yield") {
@@ -82,23 +82,23 @@ TEST_CASE("Thread - Yield") {
 
     csp::spawn([&]{
         trace += 'A';
-        csp_yield();
+        csp::yield();
         trace += 'A';
     });
     csp::spawn([&]{
         trace += 'B';
-        csp_yield();
+        csp::yield();
         trace += 'B';
     });
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     CHECK_EQ(2, std::count(trace.begin(), trace.end(), 'A'));
     CHECK_EQ(2, std::count(trace.begin(), trace.end(), 'B'));
     // Yield should cause interleaving, not sequential execution.
     CHECK_NE(std::string("AABB"), trace);
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
 TEST_CASE("Thread - CustomScheduler") {
@@ -106,7 +106,7 @@ TEST_CASE("Thread - CustomScheduler") {
 
     csp::set_scheduler([&]{
         custom_ran = true;
-        while (csp_run()) { }
+        while (csp::internal::run()) { }
     });
 
     csp::spawn([]{});
@@ -116,7 +116,7 @@ TEST_CASE("Thread - CustomScheduler") {
     CHECK(custom_ran);
 
     // Reset to default.
-    csp::set_scheduler([]{ while (csp_run()) { } });
+    csp::set_scheduler([]{ while (csp::internal::run()) { } });
 }
 
 TEST_CASE("Thread - SpawnMany") {
@@ -127,9 +127,9 @@ TEST_CASE("Thread - SpawnMany") {
         csp::spawn([&]{ ++completed; });
     }
 
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 
     CHECK_EQ(N, completed);
-    CHECK_EQ(0, csp__internal__channel_count(0));
-    CHECK_EQ(0, csp__internal__channel_count(1));
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
 }

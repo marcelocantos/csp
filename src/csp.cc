@@ -13,16 +13,8 @@
 
 #include <stdlib.h>
 
-extern "C" {
-
-    // Return the current status message for the current microthread.
-    const char* csp_getdescr(void* thr);
-
-}
-
-
 static std::function<void()> g_scheduler = []{
-    while (csp_run()) { }
+    while (csp::internal::run()) { }
 };
 
 
@@ -329,7 +321,9 @@ static void start(transfer_t t) {
     do_switch(Status::exit);
 };
 
-int csp_spawn(void (*start_f)(void *), void * data) {
+namespace csp::internal {
+
+int spawn(EntryFn start_f, void * data) {
     (void)current_p(); // Ensure g_self is bound before use.
     try {
         // Analyze stack depth to right-size the allocation.
@@ -402,7 +396,7 @@ int csp_spawn(void (*start_f)(void *), void * data) {
     }
 }
 
-void csp_sleep_until(int64_t deadline_ns) {
+void sleep_until(int64_t deadline_ns) {
     using namespace std::chrono;
     auto deadline = steady_clock::time_point(nanoseconds(deadline_ns));
     current_p().timer_heap.push({deadline, g_self});
@@ -411,7 +405,7 @@ void csp_sleep_until(int64_t deadline_ns) {
     g_self->suspending_.store(false, std::memory_order_release);
 }
 
-int csp_run() {
+int run() {
     auto& p = current_p();
     auto& timer_heap = p.timer_heap;
 
@@ -452,7 +446,7 @@ int csp_run() {
     }
 }
 
-void csp_yield() {
+void yield() {
     bool should_switch;
     {
         std::lock_guard<std::mutex> lk(current_p().run_mu);
@@ -464,7 +458,7 @@ void csp_yield() {
     }
 }
 
-void csp_descr(char const * fmt, ...) {
+void descr(char const * fmt, ...) {
     va_list args;
     va_start(args, fmt);
     vstatus(g_self, fmt, args);
@@ -473,6 +467,8 @@ void csp_descr(char const * fmt, ...) {
     pthread_setname_np(getstatus(g_self));
 }
 
-char const * csp_getdescr(void * thr) {
+char const * get_descr(void * thr) {
     return getfullstatus(thr ? static_cast<Microthread const *>(thr) : g_self);
 }
+
+} // namespace csp::internal

@@ -11,7 +11,7 @@ namespace csp {
     template <typename T, typename R,
               typename = decltype(std::begin(std::declval<R>())->read())>
     auto chain(R rr, writer<T> w) {
-        csp_descr("chain");
+        internal::descr("chain");
 
         return [rr = std::move(rr), w = std::move(w)]{
             static Logger scope("chan/chain/scope");

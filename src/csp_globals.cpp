@@ -56,7 +56,7 @@ namespace csp {
         detail::tl_proc_ = nullptr;
 
         // Restore default single-threaded scheduler.
-        set_scheduler([]{ while (csp_run()) { } });
+        set_scheduler([]{ while (csp::internal::run()) { } });
     }
 
 }

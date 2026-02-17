@@ -13,7 +13,7 @@ namespace csp {
     template <typename T>
     auto count(writer<T> sink, T start, T stop, T step = 1, bool cyclic = false) {
         return [sink = std::move(sink), start, stop, step, cyclic]{
-            csp_descr("count");
+            internal::descr("count");
 
             static Logger log("chan/count");
             BRAC_SCOPE(log, "count", "..., cyclic=%s", cyclic ? "true" : "false");
@@ -33,7 +33,7 @@ namespace csp {
     template <typename T>
     auto count_forever(writer<T> sink, T start, T step = 1) {
         return [sink = std::move(sink), start, step]{
-            csp_descr("count_∞");
+            internal::descr("count_∞");
 
             static Logger log("chan/count_forever");
             BRAC_SCOPE(log, "count_forever", "");

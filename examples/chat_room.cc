@@ -53,16 +53,16 @@ int main() {
 
         // Broadcast messages
         in << std::string("Hello everyone!");
-        csp_yield();  // let receivers print
+        csp::yield();  // let receivers print
 
         // Charlie joins mid-conversation
         add_user("Charlie");
 
         in << std::string("Welcome Charlie!");
-        csp_yield();
+        csp::yield();
 
         in << std::string("Goodbye!");
-        csp_yield();
+        csp::yield();
 
         // Shut down: close input, then subscribers
         in = {};

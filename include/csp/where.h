@@ -7,7 +7,7 @@ namespace csp {
         template <typename T, typename Pred>
         auto where(reader<T> in, writer<T> out, Pred && pred) {
             return [in = std::move(in), out = std::move(out), pred]{
-                csp_descr("where");
+                internal::descr("where");
 
                 static Logger log("chan/where");
                 CSP_LOG(log, "start");

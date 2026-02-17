@@ -37,7 +37,7 @@ int main() {
                    done_w = done_w.copy()]{
                 for (int meal = 0; meal < MEALS; ++meal) {
                     // Think
-                    csp_yield();
+                    csp::yield();
 
                     // Pick up forks (philosopher 0 reverses order to break symmetry)
                     if (i == 0) {
@@ -49,7 +49,7 @@ int main() {
                     }
 
                     printf("  Philosopher %d eating meal %d\n", i, meal + 1);
-                    csp_yield();  // eat
+                    csp::yield();  // eat
 
                     // Put down forks (read again to unblock the fork thread)
                     left.read();

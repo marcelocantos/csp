@@ -7,7 +7,7 @@ namespace csp {
         template <typename A, typename B, typename F>
         auto map(reader<A> in, writer<B> out, F && f) {
             return [in = std::move(in), out = std::move(out), f]{
-                csp_descr("map");
+                internal::descr("map");
 
                 for (A a; alt(in >> a, ~out) > 0 && out << f(a);) { }
             };
