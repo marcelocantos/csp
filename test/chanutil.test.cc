@@ -348,8 +348,7 @@ TEST_CASE("ChanUtil - Share single subscriber") {
 TEST_CASE("ChanUtil - Share multiple subscribers") {
     RunStats stats;
 
-    std::vector<int> got_a, got_b;
-    stats.spawn([&]{
+    stats.spawn([]{
         chan<int> in;
         auto subs = share(std::move(in.r));
 
@@ -357,19 +356,26 @@ TEST_CASE("ChanUtil - Share multiple subscribers") {
         auto b = subs.read();
         subs = {};
 
-        csp::spawn([&got_b, b = std::move(b)]() mutable {
-            for (int n; b >> n;) got_b.push_back(n);
-        });
+        // Interleave writes and reads so latches deliver each value.
+        in.w << 10;
+        CHECK_EQ(10, a.read());
+        CHECK_EQ(10, b.read());
 
-        in.w << 10; in.w << 20; in.w << 30;
+        in.w << 20;
+        CHECK_EQ(20, a.read());
+        CHECK_EQ(20, b.read());
+
+        in.w << 30;
+        CHECK_EQ(30, a.read());
+        CHECK_EQ(30, b.read());
+
         in.w = {};
-
-        for (int n; a >> n;) got_a.push_back(n);
+        int _;
+        CHECK_FALSE(bool(a >> _));
+        CHECK_FALSE(bool(b >> _));
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({10, 20, 30}), got_a);
-    CHECK_EQ(std::vector<int>({10, 20, 30}), got_b);
 }
 
 TEST_CASE("ChanUtil - Share late subscriber gets current value") {
@@ -407,8 +413,7 @@ TEST_CASE("ChanUtil - Share late subscriber gets current value") {
 TEST_CASE("ChanUtil - Share subscriber dropped") {
     RunStats stats;
 
-    std::vector<int> got;
-    stats.spawn([&]{
+    stats.spawn([]{
         chan<int> in;
         auto subs = share(std::move(in.r));
 
@@ -425,13 +430,17 @@ TEST_CASE("ChanUtil - Share subscriber dropped") {
         b = {};
 
         // a should still work.
-        in.w << 2; in.w << 3;
+        in.w << 2;
+        CHECK_EQ(2, a.read());
+        in.w << 3;
+        CHECK_EQ(3, a.read());
+
         in.w = {};
-        for (int n; a >> n;) got.push_back(n);
+        int _;
+        CHECK_FALSE(bool(a >> _));
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({2, 3}), got);
 }
 
 TEST_CASE("ChanUtil - Share source dies") {

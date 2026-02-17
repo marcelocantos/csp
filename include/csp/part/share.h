@@ -47,9 +47,19 @@ reader<reader<T>> share(reader<T> source) {
                         for (;;) {
                             T update;
                             switch (csp::alt(fr >> update, out << val)) {
-                            case 1:   val = std::move(update); break;
-                            case 2:   if (!(fr >> val)) return; break;
-                            default:  return;
+                            case 1:  // New value overwrites pending.
+                                val = std::move(update);
+                                break;
+                            case 2:  // Subscriber read — wait for next.
+                                if (!(fr >> val)) {
+                                    return;
+                                }
+                                break;
+                            case -1:  // Feed dead — deliver last value.
+                                out << std::move(val);
+                                return;
+                            default:  // Subscriber dead.
+                                return;
                             }
                         }
                     });
