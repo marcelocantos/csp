@@ -9,6 +9,7 @@
 #include <csp/part/killswitch.h>
 #include <csp/part/latch.h>
 #include <csp/part/map.h>
+#include <csp/part/merge.h>
 #include <csp/part/mute.h>
 #include <csp/part/scan.h>
 #include <csp/part/sink.h>
@@ -228,6 +229,49 @@ TEST_CASE("ChanUtil - MapStrToLen") {
         CHECK_EQ(i, lengths_r.read());
     }
 
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - Merge") {
+    // Merge three count streams. All 15 values should arrive (order varies).
+    std::vector<reader<int>> rs;
+    rs.push_back(count(0, 5).spawn());
+    rs.push_back(count(10, 15).spawn());
+    rs.push_back(count(20, 25).spawn());
+    auto r = merge(std::move(rs)).spawn();
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    CHECK_EQ(15, got.size());
+
+    std::sort(got.begin(), got.end());
+    std::vector<int> expect = {0,1,2,3,4, 10,11,12,13,14, 20,21,22,23,24};
+    CHECK_EQ(expect, got);
+}
+
+TEST_CASE("ChanUtil - Merge single") {
+    std::vector<reader<int>> rs;
+    rs.push_back(count(1, 4).spawn());
+    auto r = merge(std::move(rs)).spawn();
+
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(2, r.read());
+    CHECK_EQ(3, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Merge output death") {
+    RunStats stats;
+
+    std::vector<reader<int>> rs;
+    rs.push_back(count_forever(0).spawn());
+    rs.push_back(count_forever(0).spawn());
+    auto r = merge(std::move(rs)).spawn();
+
+    // Read a few then drop — merge should terminate.
+    for (int i = 0; i < 10; ++i) r.read();
+    r = {};
     while (csp::internal::run()) { }
 }
 
