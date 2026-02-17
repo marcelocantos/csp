@@ -20,12 +20,14 @@
 #include <csp/part/mute.h>
 #include <csp/part/round_robin.h>
 #include <csp/part/scan.h>
+#include <csp/part/slide.h>
 #include <csp/part/sink.h>
 #include <csp/part/tee.h>
 #include <csp/part/throttle.h>
 #include <csp/part/timeout.h>
 #include <csp/part/unique.h>
 #include <csp/part/where.h>
+#include <csp/part/window.h>
 #include <csp/part/zip.h>
 
 using namespace csp;
@@ -1096,6 +1098,139 @@ TEST_CASE("ChanUtil - Interleave output death") {
 
     // Read a few then drop.
     for (int i = 0; i < 10; ++i) r.read();
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - SlideFixed") {
+    RunStats stats;
+
+    // Window of 3 over 1..6. Both channels must be drained concurrently.
+    auto [in, out] = slide_fixed<int>(count(1, 7).spawn(), 3);
+
+    std::vector<int> ins, outs;
+    stats.spawn([r = std::move(in), &ins]{
+        for (int n; r >> n;) ins.push_back(n);
+    });
+    stats.spawn([r = std::move(out), &outs]{
+        for (int n; r >> n;) outs.push_back(n);
+    });
+    csp::schedule();
+
+    // All 6 elements enter.
+    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5, 6}), ins);
+    // Elements 1, 2, 3 expire when 4, 5, 6 arrive.
+    CHECK_EQ(std::vector<int>({1, 2, 3}), outs);
+}
+
+TEST_CASE("ChanUtil - SlideFixed no slide_in") {
+    RunStats stats;
+
+    auto [in, out] = slide_fixed<int>(count(1, 7).spawn(), 3, false);
+
+    std::vector<int> ins, outs;
+    stats.spawn([r = std::move(in), &ins]{
+        for (int n; r >> n;) ins.push_back(n);
+    });
+    stats.spawn([r = std::move(out), &outs]{
+        for (int n; r >> n;) outs.push_back(n);
+    });
+    csp::schedule();
+
+    // slide_in=false: no events during growth (elements 1, 2, 3).
+    // Events start when element 4 arrives and element 1 expires.
+    CHECK_EQ(std::vector<int>({4, 5, 6}), ins);
+    CHECK_EQ(std::vector<int>({1, 2, 3}), outs);
+}
+
+TEST_CASE("ChanUtil - SlideFixed window larger than input") {
+    RunStats stats;
+
+    auto [in, out] = slide_fixed<int>(count(1, 4).spawn(), 10);
+
+    std::vector<int> ins, outs;
+    stats.spawn([r = std::move(in), &ins]{
+        for (int n; r >> n;) ins.push_back(n);
+    });
+    stats.spawn([r = std::move(out), &outs]{
+        for (int n; r >> n;) outs.push_back(n);
+    });
+    csp::schedule();
+
+    CHECK_EQ(std::vector<int>({1, 2, 3}), ins);
+    CHECK(outs.empty());
+}
+
+TEST_CASE("ChanUtil - Slide predicate") {
+    RunStats stats;
+
+    // Expire when older <= current - 3 (window holds values within range 3).
+    auto [in, out] = slide<int>(count(1, 9).spawn(),
+        [](const int& older, const int& current) {
+            return older <= current - 3;
+        });
+
+    std::vector<int> ins, outs;
+    stats.spawn([r = std::move(in), &ins]{
+        for (int n; r >> n;) ins.push_back(n);
+    });
+    stats.spawn([r = std::move(out), &outs]{
+        for (int n; r >> n;) outs.push_back(n);
+    });
+    csp::schedule();
+
+    // All elements enter.
+    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5, 6, 7, 8}), ins);
+    // 1 expires when 4 arrives, 2 when 5, etc.
+    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5}), outs);
+}
+
+TEST_CASE("ChanUtil - Slide output death") {
+    RunStats stats;
+
+    auto [in, out] = slide_fixed<int>(count_forever(0).spawn(), 3);
+
+    // Read a few from each then drop.
+    stats.spawn([r = std::move(in)]{
+        for (int i = 0; i < 5; ++i) r.read();
+    });
+    stats.spawn([r = std::move(out)]{
+        for (int i = 0; i < 3; ++i) r.read();
+    });
+    csp::schedule();
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - Window") {
+    // Window of 3 over 1..6. Emits full vector each time.
+    auto r = window<int>(3).spawn(count(1, 7).spawn());
+
+    CHECK_EQ(std::vector<int>({1}), r.read());
+    CHECK_EQ(std::vector<int>({1, 2}), r.read());
+    CHECK_EQ(std::vector<int>({1, 2, 3}), r.read());
+    CHECK_EQ(std::vector<int>({2, 3, 4}), r.read());
+    CHECK_EQ(std::vector<int>({3, 4, 5}), r.read());
+    CHECK_EQ(std::vector<int>({4, 5, 6}), r.read());
+    std::vector<int> _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Window larger than input") {
+    auto r = window<int>(10).spawn(count(1, 4).spawn());
+
+    CHECK_EQ(std::vector<int>({1}), r.read());
+    CHECK_EQ(std::vector<int>({1, 2}), r.read());
+    CHECK_EQ(std::vector<int>({1, 2, 3}), r.read());
+    std::vector<int> _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Window output death") {
+    RunStats stats;
+
+    auto r = window<int>(3).spawn(count_forever(0).spawn());
+
+    for (int i = 0; i < 5; ++i) r.read();
     r = {};
     while (csp::internal::run()) { }
 }
