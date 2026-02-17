@@ -1,3 +1,4 @@
+#include <csp/internal/reactor.h>
 #include <csp/internal/runtime.h>
 
 namespace csp {
@@ -51,6 +52,7 @@ namespace csp {
     }
 
     void shutdown_runtime() {
+        detail::Reactor::instance().shutdown();
         detail::Runtime::instance().shutdown();
         detail::runtime_initialized_ = false;
         detail::tl_proc_ = nullptr;
