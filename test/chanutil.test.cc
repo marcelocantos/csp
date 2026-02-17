@@ -5,7 +5,9 @@
 #include <csp/part/chain.h>
 #include <csp/part/count.h>
 #include <csp/part/deaf.h>
+#include <csp/part/debounce.h>
 #include <csp/part/enumerate.h>
+#include <csp/part/first_last.h>
 #include <csp/part/killswitch.h>
 #include <csp/part/latch.h>
 #include <csp/part/map.h>
@@ -14,6 +16,7 @@
 #include <csp/part/scan.h>
 #include <csp/part/sink.h>
 #include <csp/part/tee.h>
+#include <csp/part/throttle.h>
 #include <csp/part/where.h>
 #include <csp/part/zip.h>
 
@@ -558,4 +561,166 @@ TEST_CASE("ChanUtil - Sinkhole") {
 
     w = {};
     while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - First") {
+    auto r = first<int>(3).spawn(count(1, 11).spawn());
+
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(2, r.read());
+    CHECK_EQ(3, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - First short input") {
+    auto r = first<int>(5).spawn(count(1, 3).spawn());
+
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(2, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Last") {
+    auto r = last<int>(3).spawn(count(1, 11).spawn());
+
+    CHECK_EQ(8, r.read());
+    CHECK_EQ(9, r.read());
+    CHECK_EQ(10, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Last short input") {
+    auto r = last<int>(5).spawn(count(1, 3).spawn());
+
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(2, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - SkipFirst") {
+    auto r = skip_first<int>(3).spawn(count(1, 11).spawn());
+
+    for (int i = 4; i <= 10; ++i) {
+        CHECK_EQ(i, r.read());
+    }
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - SkipFirst short input") {
+    auto r = skip_first<int>(5).spawn(count(1, 3).spawn());
+
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - SkipLast") {
+    auto r = skip_last<int>(3).spawn(count(1, 11).spawn());
+
+    for (int i = 1; i <= 7; ++i) {
+        CHECK_EQ(i, r.read());
+    }
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - SkipLast short input") {
+    auto r = skip_last<int>(5).spawn(count(1, 3).spawn());
+
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Debounce rapid") {
+    using namespace std::chrono_literals;
+
+    // count sends 1–5 instantly. Each replaces pending and restarts timer.
+    // Input closes → pending (5) emitted immediately.
+    auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
+
+    CHECK_EQ(5, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Debounce spaced") {
+    using namespace std::chrono_literals;
+    RunStats stats;
+
+    auto db = debounce<int>(50ms).spawn();
+
+    stats.spawn([w = std::move(db.w)]{
+        w << 1;
+        csp::sleep(100ms);
+        w << 2;
+        csp::sleep(100ms);
+        w << 3;
+    });
+
+    // Each value has 100ms quiet (> 50ms debounce), so all emitted.
+    stats.spawn([r = std::move(db.r)]{
+        CHECK_EQ(1, r.read());
+        CHECK_EQ(2, r.read());
+        CHECK_EQ(3, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Throttle n=1") {
+    using namespace std::chrono_literals;
+
+    // Budget=1, interval=1s. Only first value passes; rest dropped before tick.
+    auto r = throttle<int>(1s).spawn(count(1, 6).spawn());
+
+    CHECK_EQ(1, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Throttle n=2") {
+    using namespace std::chrono_literals;
+
+    // Budget=2, interval=1s. First two pass, rest dropped.
+    auto r = throttle<int>(1s, 2).spawn(count(1, 6).spawn());
+
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(2, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Throttle budget reset") {
+    using namespace std::chrono_literals;
+    RunStats stats;
+
+    auto th = throttle<int>(100ms, 2).spawn();
+
+    stats.spawn([w = std::move(th.w)]{
+        // First burst: 1,2,3.
+        w << 1; w << 2; w << 3;
+        // Wait for tick to reset budget.
+        csp::sleep(150ms);
+        // Second burst: 4,5,6.
+        w << 4; w << 5; w << 6;
+    });
+
+    // First burst: 1,2 pass, 3 dropped.
+    // After tick: 4,5 pass, 6 dropped.
+    stats.spawn([r = std::move(th.r)]{
+        CHECK_EQ(1, r.read());
+        CHECK_EQ(2, r.read());
+        CHECK_EQ(4, r.read());
+        CHECK_EQ(5, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
 }
