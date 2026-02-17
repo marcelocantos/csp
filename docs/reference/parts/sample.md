@@ -96,21 +96,19 @@ auto r = sample<int, std::string>(source, request_reader).spawn();
 
 using namespace csp::part;
 
-csp::schedule([] {
-    auto [trig_w, trig_r] = csp::chan<>{};
-    auto r = sample(count(1, 4).spawn(), std::move(trig_r)).spawn();
+auto [trig_w, trig_r] = csp::chan<>{};
+auto r = sample(count(1, 4).spawn(), std::move(trig_r)).spawn();
 
-    csp::spawn([trig_w = std::move(trig_w)] {
-        // Let source values (1, 2, 3) latch first.
-        csp::yield();
-        trig_w << csp::poke;
-        trig_w << csp::poke;
-    });
-
-    // Source 1,2,3 all latched; triggers emit latest (3) twice.
-    // Output: 3, 3
-    for (int v; r >> v;) { /* ... */ }
+csp::spawn([trig_w = std::move(trig_w)] {
+    // Let source values (1, 2, 3) latch first.
+    csp::yield();
+    trig_w << csp::poke;
+    trig_w << csp::poke;
 });
+
+// Source 1,2,3 all latched; triggers emit latest (3) twice.
+// Output: 3, 3
+for (int v; r >> v;) { /* ... */ }
 ```
 
 ## Note

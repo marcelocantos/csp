@@ -163,5 +163,5 @@ csp::spawn([] {
 ## Next steps
 
 - [`06-io.md`](06-io.md) -- reactor-based I/O with `io::read` and `io::write`
-- [`08-runtime.md`](08-runtime.md) -- configuring the M:N runtime and
+- [`09-concurrency.md`](09-concurrency.md) -- configuring the M:N runtime and
   processor count

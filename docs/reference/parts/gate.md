@@ -104,23 +104,21 @@ csp::spawn([w = std::move(ctrl.w)] {
 
 using namespace csp::part;
 
-csp::schedule([] {
-    csp::chan<bool> ctrl;
-    auto r = gate(count(1, 100).spawn(), std::move(ctrl.r));
+csp::chan<bool> ctrl;
+auto r = gate(count(1, 100).spawn(), std::move(ctrl.r));
 
-    csp::spawn([w = std::move(ctrl.w)] {
-        csp::yield(); csp::yield(); csp::yield();
-        w << false;           // Close the gate.
-        csp::yield(); csp::yield();
-        w << true;            // Re-open.
-        csp::yield(); csp::yield(); csp::yield();
-        // Drop control -- gate stays in last state (open).
-    });
-
-    std::vector<int> got;
-    for (int n; r >> n;) got.push_back(n);
-    // got[0] == 1 (gate starts open)
+csp::spawn([w = std::move(ctrl.w)] {
+    csp::yield(); csp::yield(); csp::yield();
+    w << false;           // Close the gate.
+    csp::yield(); csp::yield();
+    w << true;            // Re-open.
+    csp::yield(); csp::yield(); csp::yield();
+    // Drop control -- gate stays in last state (open).
 });
+
+std::vector<int> got;
+for (int n; r >> n;) got.push_back(n);
+// got[0] == 1 (gate starts open)
 ```
 
 ## Note

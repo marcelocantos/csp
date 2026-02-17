@@ -55,21 +55,17 @@ output.
 
 using namespace csp::part;
 
-csp::schedule([] {
-    // 2, 9, 16, 23, ... up to (but not including) 12345
-    auto r = count(2, 12345, 7).spawn();
-    for (int n; r >> n; ) {
-        // process n
-    }
-});
+// 2, 9, 16, 23, ... up to (but not including) 12345
+auto r = count(2, 12345, 7).spawn();
+for (int n; r >> n; ) {
+    // process n
+}
 
-csp::schedule([] {
-    // 0, 11, 22, 33, ... forever (until reader closes)
-    auto r = count_forever(2, 11).spawn();
-    for (int i = 0; i < 100; ++i) {
-        int n = r.read();
-    }
-});
+// 0, 11, 22, 33, ... forever (until reader closes)
+auto r2 = count_forever(2, 11).spawn();
+for (int i = 0; i < 100; ++i) {
+    int n = r2.read();
+}
 ```
 
 ## See Also

@@ -97,13 +97,11 @@ csp::spawn([w = std::move(ch.w)] {
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-csp::schedule([] {
-    // count sends 1-5 instantly -- well within 1s timeout.
-    auto r = timeout<int>(1s).spawn(count(1, 6).spawn());
+// count sends 1-5 instantly -- well within 1s timeout.
+auto r = timeout<int>(1s).spawn(count(1, 6).spawn());
 
-    // All values pass through.
-    for (int v; r >> v;) { /* 1, 2, 3, 4, 5 */ }
-});
+// All values pass through.
+for (int v; r >> v;) { /* 1, 2, 3, 4, 5 */ }
 ```
 
 ## See also

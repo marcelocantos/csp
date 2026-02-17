@@ -86,16 +86,14 @@ for (int v; ch.r >> v;) { /* ... */ }
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-csp::schedule([] {
-    auto r = delay<int>(50ms).spawn(count(1, 4).spawn());
+auto r = delay<int>(50ms).spawn(count(1, 4).spawn());
 
-    auto start = csp::clock::now();
-    while (int v; r >> v) {
-        // Each value arrives ~50ms after it was sent.
-    }
-    auto elapsed = csp::clock::now() - start;
-    // elapsed >= 50ms
-});
+auto start = csp::clock::now();
+while (int v; r >> v) {
+    // Each value arrives ~50ms after it was sent.
+}
+auto elapsed = csp::clock::now() - start;
+// elapsed >= 50ms
 ```
 
 ## See also

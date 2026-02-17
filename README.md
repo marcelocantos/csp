@@ -23,6 +23,8 @@ A C++ microthreading library with typed, synchronous channels inspired by
   `namespace csp::part`, with `operator|` composition for building pipelines.
 - **I/O and signals** — non-blocking file descriptor reads, DNS resolution via
   a blocking thread pool, and Unix signal channels via the I/O reactor.
+- **Dynamic scoping** — `dynamic<T>` provides microthread-scoped variables
+  with copy-on-write isolation, inherited by child microthreads.
 
 ## Quick start
 
@@ -190,7 +192,7 @@ auto r = pipeline.spawn();  // reader<int>
 | `flatten` | Flatten stream of containers into elements |
 | `batch(n)` | Collect n elements into vectors |
 | `window(n)` | Sliding window as vector snapshots |
-| `slide(pred)` / `slide_fixed(n)` | Sliding window with enter/exit events |
+| `slide(src, n)` / `slide(src, pred)` | Sliding window with enter/exit events |
 | `nwise(n)` / `pairwise` | Sliding n-tuples / consecutive pairs |
 | `distinct` / `unique(n)` | Suppress consecutive / all-time duplicates |
 | `take_while(pred)` / `skip_while(pred)` | Predicate-based take/drop |
@@ -210,6 +212,7 @@ auto r = pipeline.spawn();  // reader<int>
 |---|---|
 | `tee(side)` | Duplicate stream to a side channel |
 | `fanout` | Broadcast to dynamically added subscribers |
+| `chain(readers)` | Sequential concatenation of N readers |
 | `merge(readers...)` | Non-deterministic merge of N readers |
 | `zip(readers...)` | Combine N readers into tuples |
 | `unzip` | Split tuple stream into separate readers |
@@ -291,6 +294,7 @@ make clean  # remove build artifacts
 - [Concurrency & M:N Runtime](docs/guide/09-concurrency.md)
 - [Error Handling](docs/guide/10-error-handling.md)
 - [Common Pitfalls](docs/guide/11-pitfalls.md)
+- [Dynamic Scoping](docs/guide/12-dynamic-scoping.md)
 
 ### Reference
 - [Parts Catalog](docs/reference/parts.md) — all 50+ stream combinators

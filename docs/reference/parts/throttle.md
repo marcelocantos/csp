@@ -106,19 +106,17 @@ csp::spawn([w = std::move(ch.w)] {
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-csp::schedule([] {
-    // Budget=2, interval=100ms. First two pass, rest dropped within interval.
-    auto th = throttle<int>(100ms, 2).spawn();
+// Budget=2, interval=100ms. First two pass, rest dropped within interval.
+auto th = throttle<int>(100ms, 2).spawn();
 
-    csp::spawn([w = std::move(th.w)] {
-        w << 1; w << 2; w << 3;       // 1,2 pass; 3 dropped
-        csp::sleep(150ms);
-        w << 4; w << 5; w << 6;       // 4,5 pass; 6 dropped
-    });
-
-    // Read: 1, 2, 4, 5
-    for (int v; th.r >> v;) { /* ... */ }
+csp::spawn([w = std::move(th.w)] {
+    w << 1; w << 2; w << 3;       // 1,2 pass; 3 dropped
+    csp::sleep(150ms);
+    w << 4; w << 5; w << 6;       // 4,5 pass; 6 dropped
 });
+
+// Read: 1, 2, 4, 5
+for (int v; th.r >> v;) { /* ... */ }
 ```
 
 ## See also

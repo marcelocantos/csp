@@ -63,19 +63,17 @@ to its output.
 
 using namespace csp::part;
 
-csp::schedule([] {
-    // Stream a fixed set of values.
-    auto r = enumerate<int>({10, 20, 30}).spawn();
-    // r.read() returns 10, 20, 30, then the channel closes.
+// Stream a fixed set of values.
+auto r = enumerate<int>({10, 20, 30}).spawn();
+// r.read() returns 10, 20, 30, then the channel closes.
 
-    // Stream from an existing vector.
-    std::vector<std::string> names = {"alice", "bob", "carol"};
-    auto r2 = enumerate<std::string>(names).spawn();
+// Stream from an existing vector.
+std::vector<std::string> names = {"alice", "bob", "carol"};
+auto r2 = enumerate<std::string>(names).spawn();
 
-    // Repeat forever (useful with take, killswitch, etc.).
-    auto r3 = cycle<int>({1, 2, 3}).spawn();
-    // r3.read() returns 1, 2, 3, 1, 2, 3, ... until reader closes.
-});
+// Repeat forever (useful with take, killswitch, etc.).
+auto r3 = cycle<int>({1, 2, 3}).spawn();
+// r3.read() returns 1, 2, 3, 1, 2, 3, ... until reader closes.
 ```
 
 ## See Also

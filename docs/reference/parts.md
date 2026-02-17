@@ -26,8 +26,8 @@ Each entry below documents:
 2. [Basic Transforms](#basic-transforms) -- map, where, scan, flat_map, flatten, reduce
 3. [Windowing](#windowing) -- batch, window, slide, nwise, pairwise, quantize
 4. [Filtering](#filtering) -- distinct, unique, take_while, skip_while, first/last/skip_first/skip_last, stride, default_if_empty
-5. [Timing](#timing) -- delay, debounce, throttle, sample, timeout, gate
-6. [Fan-out / Fan-in](#fan-out--fan-in) -- tee, fanout, merge, zip, unzip
+5. [Timing](#timing) -- delay, debounce, throttle, sample, timeout, gate, timer
+6. [Fan-out / Fan-in](#fan-out--fan-in) -- tee, fanout, chain, merge, zip, unzip
 7. [Routing](#routing) -- round_robin, interleave, partition, group_by
 8. [Advanced](#advanced) -- share, first_wins, join, latch, killswitch, metrics
 9. [Lifecycle](#lifecycle) -- buffer, sink, blackhole, deaf, mute
@@ -95,21 +95,17 @@ output.
 
 using namespace csp::part;
 
-csp::schedule([] {
-    // 2, 9, 16, 23, ... up to (but not including) 12345
-    auto r = count(2, 12345, 7).spawn();
-    for (int n; r >> n; ) {
-        // process n
-    }
-});
+// 2, 9, 16, 23, ... up to (but not including) 12345
+auto r = count(2, 12345, 7).spawn();
+for (int n; r >> n; ) {
+    // process n
+}
 
-csp::schedule([] {
-    // 0, 11, 22, 33, ... forever (until reader closes)
-    auto r = count_forever(2, 11).spawn();
-    for (int i = 0; i < 100; ++i) {
-        int n = r.read();
-    }
-});
+// 0, 11, 22, 33, ... forever (until reader closes)
+auto r = count_forever(2, 11).spawn();
+for (int i = 0; i < 100; ++i) {
+    int n = r.read();
+}
 ```
 
 #### See Also
@@ -185,19 +181,17 @@ to its output.
 
 using namespace csp::part;
 
-csp::schedule([] {
-    // Stream a fixed set of values.
-    auto r = enumerate<int>({10, 20, 30}).spawn();
-    // r.read() returns 10, 20, 30, then the channel closes.
+// Stream a fixed set of values.
+auto r = enumerate<int>({10, 20, 30}).spawn();
+// r.read() returns 10, 20, 30, then the channel closes.
 
-    // Stream from an existing vector.
-    std::vector<std::string> names = {"alice", "bob", "carol"};
-    auto r2 = enumerate<std::string>(names).spawn();
+// Stream from an existing vector.
+std::vector<std::string> names = {"alice", "bob", "carol"};
+auto r2 = enumerate<std::string>(names).spawn();
 
-    // Repeat forever (useful with take, killswitch, etc.).
-    auto r3 = cycle<int>({1, 2, 3}).spawn();
-    // r3.read() returns 1, 2, 3, 1, 2, 3, ... until reader closes.
-});
+// Repeat forever (useful with take, killswitch, etc.).
+auto r3 = cycle<int>({1, 2, 3}).spawn();
+// r3.read() returns 1, 2, 3, 1, 2, 3, ... until reader closes.
 ```
 
 #### See Also
@@ -1589,16 +1583,14 @@ graph LR
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-csp::schedule([] {
-    auto r = delay<int>(50ms).spawn(count(1, 4).spawn());
+auto r = delay<int>(50ms).spawn(count(1, 4).spawn());
 
-    auto start = csp::clock::now();
-    while (int v; r >> v) {
-        // Each value arrives ~50ms after it was sent.
-    }
-    auto elapsed = csp::clock::now() - start;
-    // elapsed >= 50ms
-});
+auto start = csp::clock::now();
+while (int v; r >> v) {
+    // Each value arrives ~50ms after it was sent.
+}
+auto elapsed = csp::clock::now() - start;
+// elapsed >= 50ms
 ```
 
 #### See Also
@@ -1664,13 +1656,11 @@ out: -----------------3----------------4---
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-csp::schedule([] {
-    // count sends 1-5 instantly. Each replaces pending and restarts timer.
-    // Input closes -> pending (5) emitted immediately.
-    auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
+// count sends 1-5 instantly. Each replaces pending and restarts timer.
+// Input closes -> pending (5) emitted immediately.
+auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
 
-    CHECK_EQ(5, r.read());  // Only the last value survives.
-});
+CHECK_EQ(5, r.read());  // Only the last value survives.
 ```
 
 #### See Also
@@ -1734,19 +1724,17 @@ out: --1--2------------5--6---------
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-csp::schedule([] {
-    // Budget=2, interval=100ms. First two pass, rest dropped within interval.
-    auto th = throttle<int>(100ms, 2).spawn();
+// Budget=2, interval=100ms. First two pass, rest dropped within interval.
+auto th = throttle<int>(100ms, 2).spawn();
 
-    csp::spawn([w = std::move(th.w)] {
-        w << 1; w << 2; w << 3;       // 1,2 pass; 3 dropped
-        csp::sleep(150ms);
-        w << 4; w << 5; w << 6;       // 4,5 pass; 6 dropped
-    });
-
-    // Read: 1, 2, 4, 5
-    for (int v; th.r >> v;) { /* ... */ }
+csp::spawn([w = std::move(th.w)] {
+    w << 1; w << 2; w << 3;       // 1,2 pass; 3 dropped
+    csp::sleep(150ms);
+    w << 4; w << 5; w << 6;       // 4,5 pass; 6 dropped
 });
+
+// Read: 1, 2, 4, 5
+for (int v; th.r >> v;) { /* ... */ }
 ```
 
 #### See Also
@@ -1816,21 +1804,19 @@ stream. It cannot be composed with `|` as a filter stage.
 
 using namespace csp::part;
 
-csp::schedule([] {
-    auto [trig_w, trig_r] = csp::chan<>{};
-    auto r = sample(count(1, 4).spawn(), std::move(trig_r)).spawn();
+auto [trig_w, trig_r] = csp::chan<>{};
+auto r = sample(count(1, 4).spawn(), std::move(trig_r)).spawn();
 
-    csp::spawn([trig_w = std::move(trig_w)] {
-        // Let source values (1, 2, 3) latch first.
-        csp::yield();
-        trig_w << csp::poke;
-        trig_w << csp::poke;
-    });
-
-    // Source 1,2,3 all latched; triggers emit latest (3) twice.
-    // Output: 3, 3
-    for (int v; r >> v;) { /* ... */ }
+csp::spawn([trig_w = std::move(trig_w)] {
+    // Let source values (1, 2, 3) latch first.
+    csp::yield();
+    trig_w << csp::poke;
+    trig_w << csp::poke;
 });
+
+// Source 1,2,3 all latched; triggers emit latest (3) twice.
+// Output: 3, 3
+for (int v; r >> v;) { /* ... */ }
 ```
 
 #### See Also
@@ -1895,13 +1881,11 @@ out: --1--2-------------------X (closed)
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-csp::schedule([] {
-    // count sends 1-5 instantly -- well within 1s timeout.
-    auto r = timeout<int>(1s).spawn(count(1, 6).spawn());
+// count sends 1-5 instantly -- well within 1s timeout.
+auto r = timeout<int>(1s).spawn(count(1, 6).spawn());
 
-    // All values pass through.
-    for (int v; r >> v;) { /* 1, 2, 3, 4, 5 */ }
-});
+// All values pass through.
+for (int v; r >> v;) { /* 1, 2, 3, 4, 5 */ }
 ```
 
 #### See Also
@@ -1966,29 +1950,126 @@ composed with `|`.
 
 using namespace csp::part;
 
-csp::schedule([] {
-    csp::chan<bool> ctrl;
-    auto r = gate(count(1, 100).spawn(), std::move(ctrl.r));
+csp::chan<bool> ctrl;
+auto r = gate(count(1, 100).spawn(), std::move(ctrl.r));
 
-    csp::spawn([w = std::move(ctrl.w)] {
-        csp::yield(); csp::yield(); csp::yield();
-        w << false;           // Close the gate.
-        csp::yield(); csp::yield();
-        w << true;            // Re-open.
-        csp::yield(); csp::yield(); csp::yield();
-        // Drop control -- gate stays in last state (open).
-    });
-
-    std::vector<int> got;
-    for (int n; r >> n;) got.push_back(n);
-    // got[0] == 1 (gate starts open)
+csp::spawn([w = std::move(ctrl.w)] {
+    csp::yield(); csp::yield(); csp::yield();
+    w << false;           // Close the gate.
+    csp::yield(); csp::yield();
+    w << true;            // Re-open.
+    csp::yield(); csp::yield(); csp::yield();
+    // Drop control -- gate stays in last state (open).
 });
+
+std::vector<int> got;
+for (int n; r >> n;) got.push_back(n);
+// got[0] == 1 (gate starts open)
 ```
 
 #### See Also
 
 - [throttle](#throttle) -- rate-limit by dropping excess values
 - [timeout](#timeout) -- close if no value arrives in time
+- [sample](#sample) -- emit latest value on trigger
+
+---
+
+### timer
+
+Convert a stream of sleep requests into a stream of actual fire times. Each
+value read from the control channel triggers a sleep (relative or absolute),
+after which the actual wall-clock time is emitted.
+
+**Header:** `<csp/part/timer.h>`
+
+#### Signature
+
+```cpp
+// Relative durations: sleep for each duration, then emit now().
+inline reader<clock::time_point> timer(reader<clock::duration> control);
+
+// Absolute time_points: sleep until each deadline, then emit now().
+inline reader<clock::time_point> timer(reader<clock::time_point> control);
+```
+
+Returns a `reader<clock::time_point>`.
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `control` | `reader<clock::duration>` | Stream of relative sleep intervals |
+
+or
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `control` | `reader<clock::time_point>` | Stream of absolute deadlines |
+
+#### Topology
+
+```mermaid
+graph LR
+    ctrl["reader&lt;clock::duration&gt;<br/>or reader&lt;clock::time_point&gt;<br/>(control)"] --> T["timer"]
+    T --> out["reader&lt;clock::time_point&gt;"]
+    style T fill:#f5d6a8
+    style ctrl fill:#d4edda
+```
+
+##### Timing (duration overload)
+
+```
+control: ──100ms──200ms──150ms──|
+output:  ────────t1──────────t2──────t3──|
+```
+
+Each control value triggers a sleep; the output emits the actual time when the
+sleep completes.
+
+#### Semantics
+
+- Each value read from `control` becomes a sleep request: a `duration` is
+  passed to `csp::sleep`, a `time_point` is passed to `csp::sleep_until`.
+- After the sleep completes, `clock::now()` is emitted on the output.
+- Sleeps are serialized: the next control value is not read until the current
+  sleep finishes and the output value is accepted.
+- **Control closes:** the output closes (no more values to sleep on).
+- **Output closes:** the timer returns immediately (the next write after sleep
+  fails, ending the microthread).
+- The emitted time_point is the *actual* fire time, which may be slightly later
+  than the requested deadline due to scheduling.
+
+#### Example
+
+```cpp
+#include <csp/csp.h>
+#include <csp/part/timer.h>
+
+using namespace csp::part;
+using namespace std::chrono_literals;
+
+// Send two durations on a control channel.
+auto [ctrl_w, ctrl_r] = csp::chan<csp::clock::duration>{};
+auto r = timer(std::move(ctrl_r));
+
+csp::spawn([w = std::move(ctrl_w)] {
+    w << 50ms;
+    w << 100ms;
+});
+
+// Read two fire times.
+csp::clock::time_point t1, t2;
+r >> t1;
+r >> t2;
+// t2 - t1 >= 100ms (the second sleep duration).
+```
+
+#### See Also
+
+- [delay](#delay) -- delay each value by a fixed duration
+- [debounce](#debounce) -- suppress rapid values until a quiet period
+- [throttle](#throttle) -- rate-limit by dropping excess values
 - [sample](#sample) -- emit latest value on trigger
 
 ---
@@ -2140,6 +2221,77 @@ in << 42;
 - [tee](#tee) -- duplicate to a single fixed side channel
 - [share](#share) -- broadcast via latched subscription model
 - [round_robin](#round_robin) -- distribute values across outputs in rotation
+
+---
+
+### chain
+
+Concatenates multiple readers into a single sequential stream. Reads each
+input to exhaustion in order, then moves to the next. The output closes when
+all inputs are exhausted or the output reader is dropped.
+
+#### Signature
+
+```cpp
+template <typename T, typename R,
+          typename = decltype(std::begin(std::declval<R>())->read())>
+auto chain(R rr);
+// Returns: producer<T, ...>
+```
+
+#### Topology
+
+```mermaid
+graph LR
+    In1[reader&lt;T&gt; #1] --> Chain[chain]
+    In2[reader&lt;T&gt; #2] --> Chain
+    InN[reader&lt;T&gt; ...N] --> Chain
+    Chain --> Out[reader&lt;T&gt;]
+```
+
+One internal microthread reads each input reader to exhaustion in sequence,
+writing every value to the single output.
+
+#### Semantics
+
+- Output order is deterministic: all values from reader #1, then all values
+  from reader #2, and so on.
+- Each input is read to exhaustion (or until its writer closes) before the
+  next input is started.
+- Exits when all inputs are exhausted or when the output reader is dropped
+  (output death terminates the chain early).
+- Backpressure: the microthread blocks on each write to the output, so a
+  slow consumer throttles reading.
+- Chaining zero inputs produces an immediately-closed output.
+- Chains can be nested: a chain of chains produces a flat sequential stream.
+
+#### Example
+
+```cpp
+#include <csp/csp.h>
+#include <csp/part/chain.h>
+#include <csp/part/count.h>
+
+using namespace csp;
+using namespace csp::part;
+
+// Concatenate two count streams sequentially.
+std::vector<reader<int>> rs;
+rs.push_back(count(0, 3).spawn());
+rs.push_back(count(3, 6).spawn());
+auto r = chain<int>(std::move(rs)).spawn();
+
+// All 6 values arrive in order.
+std::vector<int> got;
+for (int n; r >> n;) got.push_back(n);
+// got == {0, 1, 2, 3, 4, 5}
+```
+
+#### See Also
+
+- [merge](#merge) -- non-deterministic concurrent merge
+- [interleave](#interleave) -- deterministic round-robin merge
+- [flatten](#flatten) -- unpack containers into individual elements
 
 ---
 

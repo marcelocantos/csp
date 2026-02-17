@@ -98,13 +98,11 @@ csp::spawn([w = std::move(ch.w)] {
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-csp::schedule([] {
-    // count sends 1-5 instantly. Each replaces pending and restarts timer.
-    // Input closes -> pending (5) emitted immediately.
-    auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
+// count sends 1-5 instantly. Each replaces pending and restarts timer.
+// Input closes -> pending (5) emitted immediately.
+auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
 
-    CHECK_EQ(5, r.read());  // Only the last value survives.
-});
+CHECK_EQ(5, r.read());  // Only the last value survives.
 ```
 
 ## See also
