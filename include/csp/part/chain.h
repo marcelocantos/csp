@@ -1,19 +1,19 @@
 #pragma once
 
-#include <csp/csp.h>
+#include <csp/part/part.h>
 
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-namespace csp {
+namespace csp::part {
 
     template <typename T, typename R,
               typename = decltype(std::begin(std::declval<R>())->read())>
-    auto chain(R rr, writer<T> w) {
-        internal::descr("chain");
+    auto chain(R rr) {
+        return make_producer<T>([rr = std::move(rr)](writer<T> w) {
+            internal::descr("chain");
 
-        return [rr = std::move(rr), w = std::move(w)]{
             static Logger scope("chan/chain/scope");
             BRAC_SCOPE(scope, "chain", "%d readers", rr.size());
 
@@ -28,14 +28,6 @@ namespace csp {
                 }
                 CSP_LOG(log, "next in");
             }
-        };
-    }
-
-    // Wire up an existing upstream reader, returning a downstream reader.
-    template <typename T, typename R>
-    reader<T> spawn_chain(R rr) {
-        return spawn_producer<T>([rr = std::move(rr)](auto w) mutable {
-            chain(std::move(rr), std::move(w))();
         });
     }
 

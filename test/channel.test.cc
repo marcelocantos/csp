@@ -1,14 +1,15 @@
 #include "testutil.h"
 
-#include <csp/buffer.h>
-#include <csp/count.h>
-#include <csp/tee.h>
+#include <csp/part/buffer.h>
+#include <csp/part/count.h>
+#include <csp/part/tee.h>
 
 #include <algorithm>
 #include <memory>
 #include <vector>
 
 using namespace csp;
+using namespace csp::part;
 
 static Logger g_log("Channel.Test");
 
@@ -517,7 +518,7 @@ TEST_CASE("Channel - FeedbackLoop") {
 
     RunStats stats;
 
-    auto buf = spawn_buffer<int>();
+    auto buf = buffer<int>().spawn();
 
     constexpr int cadence = 5;
 
@@ -531,13 +532,13 @@ TEST_CASE("Channel - FeedbackLoop") {
 
     // minus
     spawn([sub = std::move(buf.r), out = std::move(inner_w)] {
-        auto in = spawn_count_forever(0);
+        auto in = count_forever(0).spawn();
         for (int a = 0, b = 0; in >> a && sub >> b && out << (a - b);) {
             CSP_LOG(g_log, "a = %d, b = %d", a, b);
         }
     });
 
-    spawn(tee(std::move(inner_r), ++out, std::move(buf.w)));
+    spawn(tee<int>(std::move(buf.w)).bind(std::move(inner_r), ++out));
 
     for (int i = 0; i < 100; i += cadence) {
         for (int j = 0; j < cadence; ++j) REQUIRE_EQ(i + j, out.read());
@@ -610,7 +611,7 @@ TEST_CASE("Channel - Capillaries") {
     spawn_outward_tree(stats, --in, ww, WIDTH);
     spawn_inward_tree(stats, rr, WIDTH, ++out);
 
-    stats.spawn(count(std::move(in), 0UL, MESSAGES));
+    stats.spawn(count(0UL, MESSAGES).bind(std::move(in)));
 
     std::bitset<MESSAGES> received;
     for (size_t i; out >> i;) {

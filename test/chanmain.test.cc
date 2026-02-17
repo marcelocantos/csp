@@ -1,8 +1,9 @@
 #include "testutil.h"
 
-#include <csp/buffer.h>
+#include <csp/part/buffer.h>
 
 using namespace csp;
+using namespace csp::part;
 
 static Logger g_log("ChanMain.Test");
 
@@ -72,7 +73,7 @@ TEST_CASE("ChanMain - WriteReadNormal") {
     auto [a_w, a_r] = chan<int>{};
     auto [b_w, b_r] = chan<int>{};
 
-    stats.spawn(buffer(std::move(a_r), std::move(b_w), 5));
+    stats.spawn(buffer<int>(5).bind(std::move(a_r), std::move(b_w)));
     stats.spawn(worker(std::move(a_w), std::move(b_r)));
 
     while (csp::internal::run()) { }
@@ -85,7 +86,7 @@ TEST_CASE("ChanMain - WriteReadFromMain") {
     auto [a_w, a_r] = chan<int>{};
     auto [b_w, b_r] = chan<int>{};
 
-    stats.spawn(buffer(std::move(a_r), std::move(b_w), 5));
+    stats.spawn(buffer<int>(5).bind(std::move(a_r), std::move(b_w)));
     auto work = worker(std::move(a_w), std::move(b_r));
 
     csp::internal::run();

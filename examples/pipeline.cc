@@ -7,37 +7,38 @@
 // all provided by the library — you just snap them together.
 
 #include <csp/csp.h>
-#include <csp/enumerate.h>
-#include <csp/map.h>
-#include <csp/where.h>
-#include <csp/buffer.h>
-#include <csp/tee.h>
-#include <csp/sink.h>
+#include <csp/part/enumerate.h>
+#include <csp/part/map.h>
+#include <csp/part/where.h>
+#include <csp/part/buffer.h>
+#include <csp/part/tee.h>
+#include <csp/part/sink.h>
 
 #include <cstdio>
 #include <vector>
 
 using namespace csp;
+using namespace csp::part;
 
 int main() {
     spawn([]{
         // Source: integers 1..50
         std::vector<int> nums(50);
         for (int i = 0; i < 50; ++i) nums[i] = i + 1;
-        auto source = spawn_enumerate<int>(std::move(nums));
+        auto source = enumerate<int>(std::move(nums)).spawn();
 
         // map: square each value
-        auto squared = spawn_map<int>(std::move(source), [](int n) { return n * n; });
+        auto squared = map<int>([](int n) { return n * n; }).spawn(std::move(source));
 
         // where: keep only values whose digit sum > 10
-        auto filtered = spawn_where<int>(std::move(squared), [](int n) {
+        auto filtered = where<int>([](int n) {
             int sum = 0;
             for (int v = n; v > 0; v /= 10) sum += v % 10;
             return sum > 10;
-        });
+        }).spawn(std::move(squared));
 
         // buffer: decouple producer/consumer with capacity 4
-        auto buffered = spawn_buffer<int>(std::move(filtered), 4);
+        auto buffered = buffer<int>(4).spawn(std::move(filtered));
 
         // tee: tap the stream to print what flows through
         auto [tap_w, tap_r] = chan<int>{};
@@ -46,19 +47,17 @@ int main() {
             for (int n; r >> n;) printf("%d ", n);
             printf("\n");
         });
-        auto teed = spawn_producer<int>([buffered = std::move(buffered), tap = std::move(tap_w)](writer<int> out) mutable {
-            tee(std::move(buffered), std::move(out), std::move(tap))();
-        });
+        auto teed = tee<int>(std::move(tap_w)).spawn(std::move(buffered));
 
         // sink: collect results
         int total = 0;
-        int count = 0;
-        sink(std::move(teed), [&](int n) {
-            count++;
+        int cnt = 0;
+        sink<int>([&](int n) {
+            cnt++;
             total += n;
-        })();
+        })(std::move(teed));
 
-        printf("  %d values passed all stages, sum = %d\n", count, total);
+        printf("  %d values passed all stages, sum = %d\n", cnt, total);
     });
 
     schedule();

@@ -1,9 +1,10 @@
 #include "testutil.h"
 
-#include <csp/count.h>
-#include <csp/fanout.h>
+#include <csp/part/count.h>
+#include <csp/part/fanout.h>
 
 using namespace csp;
+using namespace csp::part;
 
 static Logger g_log("fanout.test");
 
@@ -13,7 +14,7 @@ TEST_CASE("Fanout - Simple") {
     CSP_LOG(g_log, "new_out{}");
     auto [new_out_w, new_out_r] = chan<writer<int>>{};
     CSP_LOG(g_log, "spawn_fanout");
-    auto new_in = spawn_fanout(std::move(new_out_r));
+    auto new_in = fanout<int>().spawn(std::move(new_out_r));
     CSP_LOG(g_log, "out{}");
     auto [out_w, out_r] = chan<int>{};
 
@@ -43,7 +44,7 @@ TEST_CASE("Fanout - Complex") {
 
     auto [new_out_w, new_out_r] = chan<writer<int>>{};
 
-    auto new_in = spawn_fanout(std::move(new_out_r));
+    auto new_in = fanout<int>().spawn(std::move(new_out_r));
 
     struct {
         chan<int> ch;
@@ -69,11 +70,11 @@ TEST_CASE("Fanout - Complex") {
     CHECK(bool(new_in >> in));
     new_in = {};
 
-    stats.spawn(count(in.copy(), 1, 6));
+    stats.spawn(count(1, 6).bind(in.copy()));
     schedule();
 
     setup(new_out_w, receiverses[1]);
-    stats.spawn(count(std::move(in), 6, 11));
+    stats.spawn(count(6, 11).bind(std::move(in)));
 
     schedule();
 
@@ -92,7 +93,7 @@ TEST_CASE("Fanout - Waves") {
     auto [new_out_w, new_out_r] = chan<writer<int>>{};
     chan<> keepalive;
 
-    auto new_in = spawn_fanout(std::move(new_out_r));
+    auto new_in = fanout<int>().spawn(std::move(new_out_r));
 
     struct {
         chan<int> ch;
@@ -154,14 +155,14 @@ TEST_CASE("Fanout - Chain") {
 
     auto [new_out_w, new_out_r] = chan<writer<int>>{};
 
-    auto new_in = spawn_fanout(std::move(new_out_r));
+    auto new_in = fanout<int>().spawn(std::move(new_out_r));
 
     constexpr int m = 2, n = 1;
     int total = 0;
 
     for (int i = 0; i < m; ++i) {
         auto [new_out2_w, new_out2_r] = chan<writer<int>>{};
-        stats.spawn(fanout(std::move(new_out2_r), new_out_w.copy()));
+        stats.spawn(fanout<int>().bind(std::move(new_out2_r), new_out_w.copy()));
 
         for (int j = 0; j < n; ++j) {
             new_out2_w << spawn_consumer<int>([&](auto r) {

@@ -10,7 +10,7 @@
 // combinator handles all synchronization.
 
 #include <csp/csp.h>
-#include <csp/latch.h>
+#include <csp/part/latch.h>
 #include <csp/timer.h>
 
 #include <cstdio>
@@ -18,6 +18,7 @@
 #include <chrono>
 
 using namespace csp;
+using namespace csp::part;
 using namespace std::chrono_literals;
 
 struct Config {
@@ -31,7 +32,7 @@ int main() {
         printf("Live configuration reload:\n");
 
         // Latch: holds the most recent Config and serves it to readers.
-        auto [w, r] = spawn_latch<Config>();
+        auto [w, r] = latch<Config>().spawn();
 
         // Config producer: updates config periodically
         spawn([w = std::move(w)]{

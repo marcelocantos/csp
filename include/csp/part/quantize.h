@@ -5,7 +5,7 @@
 
 #include <sstream>
 
-namespace csp {
+namespace csp::part {
 
     template <typename T>
     auto quantize(reader<T> source,  // incoming units

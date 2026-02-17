@@ -1,15 +1,16 @@
 #include "testutil.h"
 
-#include <csp/buffer.h>
+#include <csp/part/buffer.h>
 
 using namespace csp;
+using namespace csp::part;
 
 // TODO: test more buffer edge-cases.
 
 TEST_CASE("ChanUtil - BufferBounded") {
     RunStats stats;
 
-    auto ch = spawn_buffer<int>(5);
+    auto ch = buffer<int>(5).spawn();
 
     int sent = 0;
 
@@ -48,7 +49,7 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
     auto [send_w, send_r] = chan<>{};
     auto [recv_w, recv_r] = chan<>{};
 
-    auto buf = spawn_buffer<int>();
+    auto buf = buffer<int>().spawn();
 
     stats.spawn([trigger = std::move(send_r), out = std::move(buf.w), &sent]{
         for (int i = 0; trigger >> poke; ++i) {
@@ -86,7 +87,7 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
 TEST_CASE("ChanUtil - BufferEmpty") {
     RunStats stats;
 
-    auto ch = spawn_buffer<int>(5);
+    auto ch = buffer<int>(5).spawn();
 
     // Writer dies immediately without sending anything.
     stats.spawn([out = std::move(ch.w)]{ });
@@ -107,7 +108,7 @@ TEST_CASE("ChanUtil - BufferEmpty") {
 TEST_CASE("ChanUtil - BufferSingle") {
     RunStats stats;
 
-    auto ch = spawn_buffer<int>(1);
+    auto ch = buffer<int>(1).spawn();
 
     stats.spawn([out = std::move(ch.w)]{
         for (int i = 1; i <= 5; ++i) {

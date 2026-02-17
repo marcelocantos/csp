@@ -1,31 +1,12 @@
 #pragma once
 
-#include <csp/csp.h>
+#include <csp/part/part.h>
 
-namespace csp {
+namespace csp::part {
 
-    // Transfer incoming messages from one reader to multiple
-    // writers.
-    //
-    // If there are no writers, incoming messages are dropped.
-    // This is impossible to avoid, since writers may go away
-    // after a message is read.
-    //
-    // new_out: Reads new output channels to deliver messages to.
-    //
-    // new_in: Writes input channels when there are active output
-    //         channels. Input channels die when output count
-    //         reaches zero.
-    //
-    // The inner loop uses a raw csp_chanop vector because the
-    // operations span two channel types (channel<writer<T>> for
-    // the control plane, channel<T> for the data plane).  The
-    // transfer is dispatched inline by slot index — no function
-    // pointer, no BLR — because each slot's type is fixed at
-    // compile time.
     template <typename T>
-    auto fanout(reader<writer<T>> new_out, writer<writer<T>> new_in) {
-        return [new_out = std::move(new_out), new_in = std::move(new_in)]{
+    auto fanout() {
+        return make_filter<writer<T>>([](reader<writer<T>> new_out, writer<writer<T>> new_in) {
             internal::descr("fanout");
 
             static Logger scope("chan/fanout/scope");
@@ -119,20 +100,6 @@ namespace csp {
                     }
                 }
             }
-        };
-    }
-
-    template <typename T>
-    writer<writer<T>> spawn_fanout(writer<writer<T>> new_in) {
-        return spawn_consumer<writer<T>>([new_in = std::move(new_in)](auto new_out) mutable {
-            fanout(std::move(new_out), std::move(new_in))();
-        });
-    }
-
-    template <typename T>
-    reader<writer<T>> spawn_fanout(reader<writer<T>> new_out) {
-        return spawn_producer<writer<T>>([new_out = std::move(new_out)](auto new_in) mutable {
-            fanout(std::move(new_out), std::move(new_in))();
         });
     }
 

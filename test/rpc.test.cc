@@ -1,8 +1,9 @@
 #include "testutil.h"
 
-#include <csp/rpc.h>
+#include <csp/part/rpc.h>
 
 using namespace csp;
+using namespace csp::part;
 
 static Logger g_log("Rpc.Test");
 

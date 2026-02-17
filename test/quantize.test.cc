@@ -1,9 +1,10 @@
 #include "testutil.h"
 
-#include <csp/enumerate.h>
-#include <csp/quantize.h>
+#include <csp/part/enumerate.h>
+#include <csp/part/quantize.h>
 
 using namespace csp;
+using namespace csp::part;
 
 static Logger g_log("Quantize.Test");
 
@@ -42,7 +43,7 @@ TEST_CASE("Quantize - Complex") {
 
     auto [quanta_w, quanta_r] = chan<int>{};
     reader<int> residue;
-    stats.spawn(enumerate(std::vector<int>{qdata}, std::move(quanta_w), true));
+    stats.spawn(enumerate<int>(std::vector<int>{qdata}, true).bind(std::move(quanta_w)));
 
     reader<int> sink;
     stats.spawn(quantize(std::move(source_r), std::move(quanta_r), ++sink, ++residue));

@@ -1,10 +1,11 @@
 #include "testutil.h"
 
-#include <csp/count.h>
+#include <csp/part/count.h>
 
 #include <vector>
 
 using namespace csp;
+using namespace csp::part;
 
 void eratosthenes(reader<int> r, int p, writer<int> w, RunStats & stats) {
     w << p;
@@ -26,7 +27,7 @@ void eratosthenes(reader<int> r, int p, writer<int> w, RunStats & stats) {
 
 auto eratosthenes(writer<int> w, RunStats & stats) {
     return [w = std::move(w), &stats]() mutable {
-        eratosthenes(spawn_count(3, 8000, 2), 2, std::move(w), stats);
+        eratosthenes(count(3, 8000, 2).spawn(), 2, std::move(w), stats);
     };
 }
 

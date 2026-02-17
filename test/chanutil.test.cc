@@ -1,22 +1,23 @@
 #include "testutil.h"
 
-#include <csp/blackhole.h>
-#include <csp/chain.h>
-#include <csp/count.h>
-#include <csp/deaf.h>
-#include <csp/enumerate.h>
-#include <csp/killswitch.h>
-#include <csp/latch.h>
-#include <csp/map.h>
-#include <csp/mute.h>
-#include <csp/sink.h>
-#include <csp/tee.h>
-#include <csp/where.h>
+#include <csp/part/blackhole.h>
+#include <csp/part/chain.h>
+#include <csp/part/count.h>
+#include <csp/part/deaf.h>
+#include <csp/part/enumerate.h>
+#include <csp/part/killswitch.h>
+#include <csp/part/latch.h>
+#include <csp/part/map.h>
+#include <csp/part/mute.h>
+#include <csp/part/sink.h>
+#include <csp/part/tee.h>
+#include <csp/part/where.h>
 
 using namespace csp;
+using namespace csp::part;
 
 TEST_CASE("ChanUtil - Blackhole") {
-    auto w = spawn_blackhole<int>();
+    auto w = blackhole<int>.spawn();
 
     for (int i = 0; i < 1000; ++i) {
         w << i;
@@ -25,19 +26,19 @@ TEST_CASE("ChanUtil - Blackhole") {
 
 TEST_CASE("ChanUtil - Chain") {
     std::vector<reader<int>> v1;
-    v1.push_back(spawn_count(0, 10));
-    v1.push_back(spawn_count(10, 20));
-    auto a = spawn_chain<int>(std::move(v1));
+    v1.push_back(count(0, 10).spawn());
+    v1.push_back(count(10, 20).spawn());
+    auto a = chain<int>(std::move(v1)).spawn();
 
     std::vector<reader<int>> v2;
-    v2.push_back(spawn_count(20, 30));
-    v2.push_back(spawn_count(30, 40));
-    auto b = spawn_chain<int>(std::move(v2));
+    v2.push_back(count(20, 30).spawn());
+    v2.push_back(count(30, 40).spawn());
+    auto b = chain<int>(std::move(v2)).spawn();
 
     std::vector<reader<int>> v3;
     v3.push_back(std::move(a));
     v3.push_back(std::move(b));
-    auto c = spawn_chain<int>(std::move(v3));
+    auto c = chain<int>(std::move(v3)).spawn();
 
     for (int i = 0, n; c >> n; ++i) {
         CHECK_EQ(i, n);
@@ -47,7 +48,7 @@ TEST_CASE("ChanUtil - Chain") {
 TEST_CASE("ChanUtil - Count") {
     RunStats stats;
 
-    auto e = spawn_count(2, 12345, 7);
+    auto e = count(2, 12345, 7).spawn();
 
     for (int i = 2, n; e >> n; i += 7) {
         CHECK_EQ(i, n);
@@ -57,7 +58,7 @@ TEST_CASE("ChanUtil - Count") {
 TEST_CASE("ChanUtil - CountCyclic") {
     RunStats stats;
 
-    auto e = spawn_count(2, 15, 7, true);
+    auto e = count(2, 15, 7, true).spawn();
 
     for (int i = 0; i < 100; i += 7) {
         CHECK_EQ(2 + i % (15 - 2), e.read());
@@ -67,7 +68,7 @@ TEST_CASE("ChanUtil - CountCyclic") {
 TEST_CASE("ChanUtil - CountForever") {
     RunStats stats;
 
-    auto e = spawn_count_forever(2, 11);
+    auto e = count_forever(2, 11).spawn();
 
     for (int i = 2, n; i < 10000; i += 11) {
         CHECK(bool(e >> n));
@@ -78,7 +79,7 @@ TEST_CASE("ChanUtil - CountForever") {
 TEST_CASE("ChanUtil - Deaf") {
     RunStats stats;
 
-    auto w = spawn_deaf<int>();
+    auto w = deaf<int>().spawn();
     auto [give_up_w, give_up_r] = chan<>{};
 
     stats.spawn([w = std::move(w), give_up = std::move(give_up_r)]{
@@ -93,7 +94,7 @@ TEST_CASE("ChanUtil - Deaf") {
 TEST_CASE("ChanUtil - Enumerate") {
     RunStats stats;
 
-    reader<int> e = spawn_cycle({2, 3, 5});
+    reader<int> e = cycle<int>({2, 3, 5}).spawn();
 
     int product = 1;
 
@@ -111,29 +112,29 @@ TEST_CASE("ChanUtil - KillSwitch") {
     RunStats stats;
 
     auto [keepalive_w, keepalive_r] = chan<>{};
-    auto killswitch = spawn_killswitch<int>(std::move(keepalive_r));
+    auto ks = killswitch<int>(std::move(keepalive_r)).spawn();
 
-    CHECK(bool(killswitch.w.copy() << 42));
-    CHECK_EQ(42, killswitch.r.copy().read());
+    CHECK(bool(ks.w.copy() << 42));
+    CHECK_EQ(42, ks.r.copy().read());
 
     keepalive_w = {};
-    CHECK_FALSE((killswitch.w.copy() << 21));
+    CHECK_FALSE((ks.w.copy() << 21));
     int _;
-    CHECK_FALSE((killswitch.r.copy() >> _));
+    CHECK_FALSE((ks.r.copy() >> _));
 }
 
 TEST_CASE("ChanUtil - Latch") {
     RunStats stats;
 
-    auto latch = spawn_latch<int>();
+    auto lat = latch<int>().spawn();
 
-    stats.spawn([in = latch.r.copy()]{
+    stats.spawn([in = lat.r.copy()]{
         CHECK_EQ(1, in.read());
     });
 
     while (csp::internal::run()) { }
 
-    stats.spawn([out = std::move(latch.w)]{
+    stats.spawn([out = std::move(lat.w)]{
         for (int n = 1; n <= 5; ++n) {
             out << n;
         }
@@ -141,7 +142,7 @@ TEST_CASE("ChanUtil - Latch") {
 
     while (csp::internal::run()) { }
 
-    stats.spawn([in = std::move(latch.r)]{
+    stats.spawn([in = std::move(lat.r)]{
         CHECK_EQ(5, in.read());
     });
 
@@ -151,7 +152,7 @@ TEST_CASE("ChanUtil - Latch") {
 TEST_CASE("ChanUtil - Map") {
     RunStats stats;
 
-    auto plus_one = spawn_map<int>([](int n) { return n + 1; });
+    auto plus_one = map<int>([](int n) { return n + 1; }).spawn();
 
     stats.spawn([out = std::move(plus_one.w)]{
         out << 41;
@@ -169,7 +170,8 @@ TEST_CASE("ChanUtil - MapStrToLen") {
 
     auto [words_w, words_r] = chan<std::string>{};
     auto [lengths_w, lengths_r] = chan<size_t>{};
-    spawn(map(std::move(words_r), std::move(lengths_w), [](auto && s) { return s.length(); }));
+    spawn(map<std::string, size_t>([](auto && s) { return s.length(); })
+        .bind(std::move(words_r), std::move(lengths_w)));
 
     stats.spawn([out = std::move(words_w)]{
         std::string message[] = {"The", "rain", "in", "spain", "falls", "mainly", "on", "the", "plain"};
@@ -188,7 +190,7 @@ TEST_CASE("ChanUtil - MapStrToLen") {
 TEST_CASE("ChanUtil - Mute") {
     RunStats stats;
 
-    auto r = spawn_mute<int>();
+    auto r = mute<int>().spawn();
     auto [give_up_w, give_up_r] = chan<>{};
 
     stats.spawn([r = r.copy(), give_up = std::move(give_up_r)]{
@@ -206,10 +208,10 @@ TEST_CASE("ChanUtil - Sink") {
 
     int total = 0;
 
-    auto sink = spawn_sink<int>([&](int n) { total += n; });
+    auto snk = sink<int>([&](int n) { total += n; }).spawn();
 
     for (int i = 1; i <= 10; ++i) {
-        sink << i;
+        snk << i;
     }
 
     CHECK_EQ(55, total);
@@ -218,7 +220,7 @@ TEST_CASE("ChanUtil - Sink") {
 TEST_CASE("ChanUtil - Where") {
     RunStats stats;
 
-    auto threes = spawn_where<int>([](int n) { return n % 3 == 0; });
+    auto threes = where<int>([](int n) { return n % 3 == 0; }).spawn();
 
     stats.spawn([out = std::move(threes.w)]{
         for (int i = 0; i < 20; ++i) {
@@ -236,7 +238,7 @@ TEST_CASE("ChanUtil - WhereAll") {
     RunStats stats;
 
     // Predicate rejects everything — nothing should pass through.
-    auto ch = spawn_where<int>([](int) { return false; });
+    auto ch = where<int>([](int) { return false; }).spawn();
 
     stats.spawn([out = std::move(ch.w)]{
         for (int i = 0; i < 10; ++i) {
@@ -261,7 +263,7 @@ TEST_CASE("ChanUtil - WhereNone") {
     RunStats stats;
 
     // Predicate accepts everything — all values pass through.
-    auto ch = spawn_where<int>([](int) { return true; });
+    auto ch = where<int>([](int) { return true; }).spawn();
 
     stats.spawn([out = std::move(ch.w)]{
         for (int i = 0; i < 10; ++i) {
@@ -286,7 +288,7 @@ TEST_CASE("ChanUtil - TeeBasic") {
 
     chan<int> src, dst, side;
 
-    stats.spawn(tee(std::move(src.r), std::move(dst.w), std::move(side.w)));
+    stats.spawn(tee<int>(std::move(side.w)).bind(std::move(src.r), std::move(dst.w)));
 
     stats.spawn([w = std::move(src.w)]{
         for (int i = 1; i <= 5; ++i) w << i;
@@ -315,7 +317,7 @@ TEST_CASE("ChanUtil - TeeSideChannelDeath") {
 
     chan<int> src, dst, side;
 
-    stats.spawn(tee(std::move(src.r), std::move(dst.w), std::move(side.w)));
+    stats.spawn(tee<int>(std::move(side.w)).bind(std::move(src.r), std::move(dst.w)));
 
     stats.spawn([w = std::move(src.w)]{
         for (int i = 1; i <= 5; ++i) w << i;
@@ -346,9 +348,9 @@ TEST_CASE("ChanUtil - TeeSideChannelDeath") {
 TEST_CASE("ChanUtil - LatchRepeat") {
     RunStats stats;
 
-    auto latch = spawn_latch<int>();
+    auto lat = latch<int>().spawn();
 
-    stats.spawn([out = std::move(latch.w)]{
+    stats.spawn([out = std::move(lat.w)]{
         for (int n = 1; n <= 5; ++n) {
             out << n;
         }
@@ -357,7 +359,7 @@ TEST_CASE("ChanUtil - LatchRepeat") {
     while (csp::internal::run()) { }
 
     // After writer dies, latch serves the last value repeatedly.
-    stats.spawn([in = std::move(latch.r)]{
+    stats.spawn([in = std::move(lat.r)]{
         CHECK_EQ(5, in.read());
         CHECK_EQ(5, in.read());
         CHECK_EQ(5, in.read());
@@ -368,7 +370,7 @@ TEST_CASE("ChanUtil - LatchRepeat") {
 
 TEST_CASE("ChanUtil - Sinkhole") {
     int latest = 0;
-    auto w = spawn_sinkhole<int>(latest);
+    auto w = sinkhole<int>(latest).spawn();
 
     for (int i = 1; i <= 10; ++i) {
         w << i;

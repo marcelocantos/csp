@@ -7,7 +7,7 @@
 #include <tuple>
 #include <utility>
 
-namespace csp {
+namespace csp::part {
 
     namespace detail {
 

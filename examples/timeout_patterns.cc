@@ -12,12 +12,13 @@
 
 #include <csp/csp.h>
 #include <csp/timer.h>
-#include <csp/killswitch.h>
+#include <csp/part/killswitch.h>
 
 #include <cstdio>
 #include <chrono>
 
 using namespace csp;
+using namespace csp::part;
 using namespace std::chrono_literals;
 
 int main() {
@@ -92,7 +93,7 @@ int main() {
             // so we spawn a thread that holds it alive then releases.
             auto [kw, kr] = chan<>{};
             spawn([w = std::move(kw)]{ csp::sleep(100ms); });
-            auto guarded = spawn_killswitch<int>(std::move(source), std::move(kr));
+            auto guarded = killswitch<int>(std::move(kr)).spawn(std::move(source));
 
             int count = 0;
             for (int n; guarded >> n;) {

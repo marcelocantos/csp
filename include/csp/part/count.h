@@ -1,0 +1,39 @@
+#pragma once
+
+#include <csp/part/part.h>
+
+namespace csp::part {
+
+    template <typename T>
+    auto count(T start, T stop, T step = 1, bool cyclic = false) {
+        return make_producer<T>([start, stop, step, cyclic](writer<T> sink) {
+            internal::descr("count");
+
+            static Logger log("chan/count");
+            BRAC_SCOPE(log, "count", "..., cyclic=%s", cyclic ? "true" : "false");
+
+            T i = start;
+            do {
+                for (; i < stop; i += step) {
+                    if (!(sink << i)) {
+                        return;
+                    }
+                }
+                i -= stop - start;
+            } while (cyclic);
+        });
+    }
+
+    template <typename T>
+    auto count_forever(T start, T step = 1) {
+        return make_producer<T>([start, step](writer<T> sink) {
+            internal::descr("count_∞");
+
+            static Logger log("chan/count_forever");
+            BRAC_SCOPE(log, "count_forever", "");
+
+            for (T i = start; sink << i; i += step) { }
+        });
+    }
+
+}

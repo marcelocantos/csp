@@ -10,12 +10,13 @@
 // futures + promises, or callback-based async patterns.
 
 #include <csp/csp.h>
-#include <csp/rpc.h>
+#include <csp/part/rpc.h>
 
 #include <cstdio>
 #include <tuple>
 
 using namespace csp;
+using namespace csp::part;
 
 int main() {
     spawn([]{

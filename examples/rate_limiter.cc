@@ -11,12 +11,13 @@
 
 #include <csp/csp.h>
 #include <csp/timer.h>
-#include <csp/buffer.h>
+#include <csp/part/buffer.h>
 
 #include <cstdio>
 #include <chrono>
 
 using namespace csp;
+using namespace csp::part;
 using namespace std::chrono_literals;
 
 int main() {
@@ -27,7 +28,7 @@ int main() {
         auto tokens = tick(100ms);
 
         // Buffer up to 3 tokens (burst capacity)
-        auto bucket = spawn_buffer<clock::time_point>(std::move(tokens), 3);
+        auto bucket = buffer<clock::time_point>(3).spawn(std::move(tokens));
 
         // Simulate 8 bursty requests
         auto [w, r] = chan<int>{};

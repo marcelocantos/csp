@@ -10,13 +10,14 @@
 // barriers, no shared mutable state.
 
 #include <csp/csp.h>
-#include <csp/enumerate.h>
+#include <csp/part/enumerate.h>
 
 #include <cstdio>
 #include <vector>
 #include <algorithm>
 
 using namespace csp;
+using namespace csp::part;
 
 // Merge two sorted channels into one.
 void merge(reader<int> left, reader<int> right, writer<int> out) {

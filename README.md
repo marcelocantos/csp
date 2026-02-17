@@ -104,7 +104,7 @@ case -2: /* timed out */     break;
 ## M:N Threading
 
 ```cpp
-csp::init_runtime(4);  // 4 OS threads (0 = auto-detect)
+csp::init_runtime(4);  // 4 OS threads (default = 0 = auto-detect)
 
 // ... spawn microthreads as usual ...
 // They are automatically distributed across OS threads
