@@ -1,4 +1,5 @@
 #include <csp/internal/runtime.h>
+#include <csp/internal/hamt.h>
 #include <csp/stack_analysis.h>
 
 #include <pthread.h>
@@ -92,6 +93,10 @@ namespace csp {
         Microthread::Microthread() : Microthread(nullptr, nullptr) {
             prev_ = next_ = this;
             snprintf(status_, sizeof(status_), "§main");
+        }
+
+        Microthread::~Microthread() {
+            if (dyn_ctx_) csp::internal::hamt_release(dyn_ctx_);
         }
 
         void Microthread::schedule_local(bool make_current) {
@@ -291,10 +296,13 @@ static void start(transfer_t t) {
     auto start_f = sd.start_f;
     auto data = sd.data;
     auto * self = &sd.self;
+    auto parent_dyn_ctx = sd.caller.dyn_ctx_;
     g_self = self;
     auto killyou_val = switch_to(sd.caller, 0);
     // After warmup switch, sd may be invalid. Use local copies only.
     g_self = self;
+    self->dyn_ctx_ = parent_dyn_ctx;
+    if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
 
     // In M:N mode, the resuming switch may carry a killyou pointer — a
     // dying microthread that exited and chained into us via run(exit).

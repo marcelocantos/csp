@@ -43,6 +43,7 @@ INCLUDES := -Iinclude \
 LIB_SRCS := src/csp.cc \
             src/csp_globals.cpp \
             src/channel.cc \
+            src/hamt.cc \
             src/mt_log.cc \
             src/runtime.cpp \
             src/stack_analysis_arm64.cc \

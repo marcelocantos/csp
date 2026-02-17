@@ -56,6 +56,7 @@ struct alignas(16) Microthread {
 
     Microthread(fcontext_t ctx, StackSlot * stk);
     Microthread();
+    ~Microthread();
     Microthread(Microthread const &) = delete;
 
     Microthread & operator=(Microthread const &) = delete;
@@ -72,6 +73,8 @@ struct alignas(16) Microthread {
 
     enum AltState : uint32_t { ALT_IDLE, ALT_WAITING, ALT_CLAIMED };
     std::atomic<uint32_t> alt_state{ALT_IDLE};
+
+    uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
 
     bool in_global_ = false;  // true while in the global run queue
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
