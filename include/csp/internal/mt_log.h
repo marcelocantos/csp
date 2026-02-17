@@ -19,48 +19,48 @@
 
 namespace csp {
 
-    class Logger {
-    public:
-        static constexpr char const * suffix(char const * file) {
-            char const srcroot[] = CSP__DETAIL__SOURCE_ROOT;
-            return file + sizeof(srcroot);
-        }
+class Logger {
+public:
+    static constexpr char const * suffix(char const * file) {
+        char const srcroot[] = CSP__DETAIL__SOURCE_ROOT;
+        return file + sizeof(srcroot);
+    }
 
-        Logger(char const * component);
-        ~Logger();
+    Logger(char const * component);
+    ~Logger();
 
-        explicit operator bool() const { return enabled_; }
+    explicit operator bool() const { return enabled_; }
 
-        void log(int flags, char const * srcroot, char const * file, int line, char const * fmt, ...);
-        void vlog(int flags, char const * srcroot, char const * file, int line, char const * fmt, va_list ap);
+    void log(int flags, char const * srcroot, char const * file, int line, char const * fmt, ...);
+    void vlog(int flags, char const * srcroot, char const * file, int line, char const * fmt, va_list ap);
 
-        static void regapp(char const * vendor, char const * appname);
+    static void regapp(char const * vendor, char const * appname);
 
-        static void dump_stack();
+    static void dump_stack();
 
-    private:
-        struct Rep;
+private:
+    struct Rep;
 
-        union {
-            bool enabled_;
-            struct { char a, b; };
-        };
-        Rep* rep_;
-
-        static void dump_stack_(bool truncate);
+    union {
+        bool enabled_;
+        struct { char a, b; };
     };
+    Rep* rep_;
 
-    class LogScope {
-    public:
-        LogScope(Logger & logger, char const * prefix, char const * file, int line, char const * func, char const * fmt, ...);
-        ~LogScope();
+    static void dump_stack_(bool truncate);
+};
 
-    private:
-        Logger & logger_;
-        bool log_;
-        std::string prefix_, file_, func_;
-        int line_;
-    };
+class LogScope {
+public:
+    LogScope(Logger & logger, char const * prefix, char const * file, int line, char const * func, char const * fmt, ...);
+    ~LogScope();
+
+private:
+    Logger & logger_;
+    bool log_;
+    std::string prefix_, file_, func_;
+    int line_;
+};
 
 }
 
