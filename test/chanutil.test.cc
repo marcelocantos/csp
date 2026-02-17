@@ -7,6 +7,7 @@
 #include <csp/part/deaf.h>
 #include <csp/part/debounce.h>
 #include <csp/part/delay.h>
+#include <csp/part/distinct.h>
 #include <csp/part/enumerate.h>
 #include <csp/part/first_last.h>
 #include <csp/part/killswitch.h>
@@ -20,6 +21,7 @@
 #include <csp/part/tee.h>
 #include <csp/part/throttle.h>
 #include <csp/part/timeout.h>
+#include <csp/part/unique.h>
 #include <csp/part/where.h>
 #include <csp/part/zip.h>
 
@@ -800,6 +802,116 @@ TEST_CASE("ChanUtil - Timeout expiry") {
     });
 
     stats.spawn([r = std::move(to.r)]{
+        CHECK_EQ(1, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Distinct adjacent") {
+    RunStats stats;
+
+    auto d = distinct<int>().spawn();
+
+    stats.spawn([w = std::move(d.w)]{
+        for (int v : {1, 1, 2, 2, 3, 1, 1}) w << v;
+    });
+
+    stats.spawn([r = std::move(d.r)]{
+        CHECK_EQ(1, r.read());
+        CHECK_EQ(2, r.read());
+        CHECK_EQ(3, r.read());
+        CHECK_EQ(1, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Distinct all same") {
+    RunStats stats;
+
+    auto d = distinct<int>().spawn();
+
+    stats.spawn([w = std::move(d.w)]{
+        for (int v : {5, 5, 5, 5}) w << v;
+    });
+
+    stats.spawn([r = std::move(d.r)]{
+        CHECK_EQ(5, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Distinct custom comparator") {
+    RunStats stats;
+
+    auto ci_eq = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (std::tolower(a[i]) != std::tolower(b[i])) return false;
+        return true;
+    };
+    auto d = distinct<std::string>(ci_eq).spawn();
+
+    stats.spawn([w = std::move(d.w)]{
+        for (auto s : {"Foo", "foo", "Bar", "bar", "BAR"})
+            w << std::string(s);
+    });
+
+    stats.spawn([r = std::move(d.r)]{
+        CHECK_EQ("Foo", r.read());
+        CHECK_EQ("Bar", r.read());
+        std::string _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Unique") {
+    RunStats stats;
+
+    auto u = unique<int>().spawn();
+
+    stats.spawn([w = std::move(u.w)]{
+        for (int v : {1, 2, 3, 2, 1, 4}) w << v;
+    });
+
+    stats.spawn([r = std::move(u.r)]{
+        CHECK_EQ(1, r.read());
+        CHECK_EQ(2, r.read());
+        CHECK_EQ(3, r.read());
+        CHECK_EQ(4, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
+TEST_CASE("ChanUtil - Unique bounded FIFO") {
+    RunStats stats;
+
+    // max_remembered=2: remembers last 2 unique values, evicts oldest.
+    auto u = unique<int>(2).spawn();
+
+    stats.spawn([w = std::move(u.w)]{
+        // 1→emit,set={1}. 2→emit,set={1,2}. 3→evict 1,emit,set={2,3}.
+        // 2→in set,suppress. 1→not in set,evict 2,emit,set={3,1}.
+        for (int v : {1, 2, 3, 2, 1}) w << v;
+    });
+
+    stats.spawn([r = std::move(u.r)]{
+        CHECK_EQ(1, r.read());
+        CHECK_EQ(2, r.read());
+        CHECK_EQ(3, r.read());
         CHECK_EQ(1, r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
