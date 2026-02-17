@@ -32,12 +32,24 @@ switching).
 - **include/csp/timer.h** — Timer primitives: `sleep`, `sleep_until`,
   `after` (one-shot), `tick` (periodic). Timers are channels; composable
   with `alt`/`prialt` for timeout patterns.
-- **Stream combinators** — Header-only, in `namespace csp`: buffer, map,
-  where, tee, fanout, chain, quantize, latch, killswitch, enumerate, count,
-  sink, blackhole, deaf, mute, rpc.
+- **include/csp/io.h** — Non-blocking I/O: `read_fd` (fd→reader via kqueue
+  reactor), `resolve` (DNS via blocking thread pool).
+- **include/csp/signal.h** — Unix signal channels via self-pipe trick.
+- **include/csp/blocking.h** — Blocking thread pool for offloading
+  OS-blocking calls from microthreads.
+- **include/csp/part/** — 50+ header-only stream combinators in
+  `namespace csp::part`. Three wrapper types (`filter`, `producer`,
+  `consumer`) with `operator|` composition. Key combinators: map, where,
+  scan, flat_map, batch, window, slide, merge, zip, unzip, round_robin,
+  interleave, partition, group_by, share, debounce, throttle, gate,
+  metrics, reduce, and more.
+- **include/csp/part/part.h** — Combinator infrastructure: `filter`,
+  `producer`, `consumer` wrapper types and `operator|` composition
+  (8 overloads for all pairwise combinations including concrete endpoints).
 - **src/** — Implementation files for microthread scheduler (`csp.cc`),
   channels (`channel.cc`), M:N runtime (`runtime.cpp`), globals
-  (`csp_globals.cpp`), logging (`mt_log.cc`).
+  (`csp_globals.cpp`), logging (`mt_log.cc`), I/O reactor (`reactor.cc`),
+  blocking pool (`blocking_pool.cc`), signal handling (`signal.cc`).
 
 ### Key design points
 
@@ -59,7 +71,7 @@ switching).
 ## Tests
 
 doctest (vendored in `third_party/doctest/`). Test files in `test/`
-with `.test.cc` extension. 135 tests.
+with `.test.cc` extension. 271 tests.
 
 ## Dependencies
 

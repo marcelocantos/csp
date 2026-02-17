@@ -19,9 +19,10 @@ A C++ microthreading library with typed, synchronous channels inspired by
   single-threaded cooperative scheduling.
 - **Timers** — `sleep`, `after` (one-shot), `tick` (periodic). All timers are
   channels, composable with `alt`/`prialt` for timeout patterns.
-- **Stream combinators** — composable channel transformers: `buffer`, `map`,
-  `where`, `tee`, `fanout`, `chain`, `quantize`, `latch`, `killswitch`,
-  `enumerate`, `count`, `sink`, `blackhole`, `deaf`, `mute`, `rpc`.
+- **Stream combinators** — 50+ composable channel transformers in
+  `namespace csp::part`, with `operator|` composition for building pipelines.
+- **I/O and signals** — non-blocking file descriptor reads, DNS resolution via
+  a blocking thread pool, and Unix signal channels via the I/O reactor.
 
 ## Quick start
 
@@ -101,6 +102,22 @@ case -2: /* timed out */     break;
 }
 ```
 
+## I/O and Signals
+
+```cpp
+#include <csp/io.h>
+#include <csp/signal.h>
+
+// Non-blocking file descriptor read (requires init_runtime)
+auto bytes = csp::io::read_fd(fd);  // reader<std::vector<uint8_t>>
+
+// Non-blocking DNS resolution (runs on blocking thread pool)
+auto addr = csp::io::resolve("example.com", "80");
+
+// Unix signal channels (requires init_runtime)
+auto sigs = csp::signal::watch({SIGINT, SIGTERM});  // reader<int>
+```
+
 ## M:N Threading
 
 ```cpp
@@ -138,24 +155,90 @@ auto ch = spawn_filter<int>([](reader<int> r, writer<int> w) {
 
 ## Stream combinators
 
+All combinators live in `namespace csp::part` and are header-only. Most return
+composable wrapper types (`filter`, `producer`, `consumer`) that can be
+connected with `operator|`.
+
+```cpp
+using namespace csp::part;
+// Pipeline: generate → transform → consume
+auto pipeline = count(1, 100) | map<int, int>([](int n){ return n * n; })
+                               | where<int>([](int n){ return n % 2 == 0; });
+auto r = pipeline.spawn();  // reader<int>
+```
+
+### Sources
+
 | Combinator | Description |
 |---|---|
-| `buffer(r, w, n)` | Bounded/unbounded FIFO buffer |
-| `map(r, w, f)` | Transform each element with `f` |
-| `where(r, w, pred)` | Filter elements by predicate |
-| `tee(r, w, side)` | Duplicate stream to a side channel |
-| `fanout(new_out, new_in)` | Broadcast to dynamically added subscribers |
-| `chain(readers, w)` | Concatenate multiple readers sequentially |
-| `latch(r, w)` | Hold and repeat the last value |
-| `killswitch(r, w, keepalive)` | Terminate when keepalive signal dies |
-| `quantize(src, quanta, sink)` | Batch values into quanta |
-| `count(w, start, stop, step)` | Generate integer sequences |
-| `enumerate(collection, w)` | Stream elements from a collection |
-| `sink(r, f)` | Consume with side-effect function |
-| `blackhole(r)` | Consume and discard all messages |
+| `count(start, stop, step)` | Generate integer sequences |
+| `enumerate(collection)` | Stream elements from a collection |
+
+### Transforms
+
+| Combinator | Description |
+|---|---|
+| `map(f)` | Transform each element with `f` |
+| `where(pred)` | Filter elements by predicate |
+| `scan(init, f)` | Running fold — emit accumulator after each input |
+| `flat_map(f)` | Map to sub-streams, merge non-deterministically |
+| `flatten` | Flatten stream of containers into elements |
+| `batch(n)` | Collect n elements into vectors |
+| `window(n)` | Sliding window as vector snapshots |
+| `slide(pred)` / `slide_fixed(n)` | Sliding window with enter/exit events |
+| `nwise(n)` / `pairwise` | Sliding n-tuples / consecutive pairs |
+| `distinct` / `unique(n)` | Suppress consecutive / all-time duplicates |
+| `take_while(pred)` / `skip_while(pred)` | Predicate-based take/drop |
+| `first(n)` / `last(n)` | First/last n elements |
+| `skip_first(n)` / `skip_last(n)` | Drop first/last n elements |
+| `stride(n)` | Every nth element |
+| `default_if_empty(val)` | Emit default if input is empty |
+| `delay(d)` | Delay each value by duration d |
+| `debounce(d)` | Emit after quiet period elapses |
+| `throttle(n, interval)` | Rate-limit to n values per interval |
+| `sample(trigger)` | Emit latest value on each trigger |
+| `timeout(d)` | Close if no value within duration d |
+
+### Fan-out / Fan-in
+
+| Combinator | Description |
+|---|---|
+| `tee(side)` | Duplicate stream to a side channel |
+| `fanout` | Broadcast to dynamically added subscribers |
+| `merge(readers...)` | Non-deterministic merge of N readers |
+| `zip(readers...)` | Combine N readers into tuples |
+| `unzip` | Split tuple stream into separate readers |
+| `round_robin(n)` | Distribute across N outputs deterministically |
+| `interleave(readers...)` | Strict round-robin merge of N inputs |
+| `partition(n, f)` | Route to one of N outputs by classifier |
+| `group_by(f)` | Dynamic partitioning by key |
+| `share` | Pub/sub with per-subscriber backpressure |
+| `first_wins(readers...)` | Read from whichever source responds first |
+
+### Lifecycle / Control
+
+| Combinator | Description |
+|---|---|
+| `buffer(n)` | Bounded/unbounded FIFO buffer |
+| `latch` | Hold and repeat the last value |
+| `killswitch(keepalive)` | Terminate when keepalive dies |
+| `gate(control)` | Pause/resume via control channel |
+| `reduce(init, f)` | Fold to single value |
+| `join(readers...)` | Block until all channels close |
+| `metrics` | Pull-based throughput stats (count, elapsed) |
+| `sink(f)` | Consume with side-effect function |
+| `blackhole` | Consume and discard all values |
+| `deaf` / `mute` | Dead-end reader / writer |
+| `quantize(quanta)` | Batch values into quanta |
 | `rpc_client` / `rpc_server` | Request-response over channel pairs |
 
-All combinators have `spawn_*` variants that return connected endpoints.
+### Controlled timer
+
+```cpp
+#include <csp/part/timer.h>
+chan<clock::duration> ctl;
+auto t = csp::part::timer(std::move(ctl.r));  // or clock::time_point
+```
 
 ## Examples
 
