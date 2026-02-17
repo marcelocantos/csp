@@ -9,6 +9,7 @@
 #include <csp/part/latch.h>
 #include <csp/part/map.h>
 #include <csp/part/mute.h>
+#include <csp/part/scan.h>
 #include <csp/part/sink.h>
 #include <csp/part/tee.h>
 #include <csp/part/where.h>
@@ -186,6 +187,32 @@ TEST_CASE("ChanUtil - MapStrToLen") {
     }
 
     while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - Scan") {
+    // Running sum: 1, 1+2, 1+2+3, 1+2+3+4, 1+2+3+4+5
+    auto r = scan<int, int>(0, [](int acc, int v) { return acc + v; })
+                 .spawn(count(1, 6).spawn());
+
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(3, r.read());
+    CHECK_EQ(6, r.read());
+    CHECK_EQ(10, r.read());
+    CHECK_EQ(15, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Scan type change") {
+    // Accumulate string lengths into an int.
+    auto r = scan<std::string, int>(0, [](int acc, std::string s) { return acc + (int)s.size(); })
+                 .spawn(enumerate<std::string>({"ab", "cde", "f"}).spawn());
+
+    CHECK_EQ(2, r.read());
+    CHECK_EQ(5, r.read());
+    CHECK_EQ(6, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
 }
 
 TEST_CASE("ChanUtil - Mute") {
