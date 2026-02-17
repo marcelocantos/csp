@@ -1,4 +1,4 @@
-build/
+build*/
 *.d
 .DS_Store
 .claude/
