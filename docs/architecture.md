@@ -18,6 +18,9 @@ distributes work across OS threads.
 9. [Timer System](#9-timer-system)
 10. [Lifecycle of a Microthread](#10-lifecycle-of-a-microthread)
 11. [Stream Combinators](#11-stream-combinators)
+12. [I/O Reactor](#12-io-reactor)
+13. [Blocking Pool](#13-blocking-pool)
+14. [Signal Delivery](#14-signal-delivery)
 
 ---
 
@@ -623,3 +626,309 @@ r = spawn_buffer(std::move(r), 16);
 Each `spawn_*` call adds a microthread to the pipeline. The microthreads
 coordinate through synchronous channel operations, with backpressure
 propagating naturally through the blocking send/receive semantics.
+
+---
+
+## 12. I/O Reactor
+
+The I/O reactor (`reactor.h`, `reactor.cc`) provides non-blocking file
+descriptor readiness notification, allowing microthreads to suspend on I/O
+without stalling their processor.
+
+### Architecture
+
+The reactor is a singleton (`Reactor::instance()`) running a kqueue event
+loop on a dedicated OS thread. This thread is not a Processor---it does not
+run microthreads. Its sole purpose is to monitor file descriptors and
+reschedule waiting microthreads when I/O readiness events fire.
+
+```
+Microthread                    Reactor thread              Global queue
+    │                              │                           │
+    │ wait_read(fd, mt)            │                           │
+    ├─────────────────────────────→│                           │
+    │ do_switch(detach)            │ kevent() blocks           │
+    │                              │ fd ready                  │
+    │                              │ mt->schedule()            │
+    │                              ├──────────────────────────→│
+    │                              │                      push mt
+    │                              │                    unpark_one()
+    │ ←─── worker picks up mt ─────┼───────────────────────────│
+```
+
+### Lazy Initialisation
+
+`ensure_started()` uses double-checked locking: the fast path reads
+`running_` with acquire; the slow path locks `start_mu_`, creates the
+kqueue descriptor, registers an `EVFILT_USER` event (ident 0) for shutdown
+wakeup, and spawns the reactor thread.
+
+### Event Registration
+
+`wait_read(fd, mt)` and `wait_write(fd, mt)` register a kevent with
+`EV_ADD | EV_ONESHOT`. The microthread pointer is stored in the kevent's
+`udata` field. `EV_ONESHOT` semantics mean each registration fires at most
+once---the caller must re-register for subsequent waits. This avoids stale
+event accumulation and simplifies cancellation.
+
+`cancel(fd)` removes both read and write registrations for a descriptor.
+Errors are ignored since the fd may not be registered for both filters.
+
+### Suspension Protocol
+
+The I/O wait primitives (`io_wait_readable`, `io_wait_writable`) follow
+the same suspension protocol as channel operations:
+
+```
+io_wait_readable(fd):
+    suspending_ = true           // (1) before reactor sees us
+    reactor.wait_read(fd, self)  // (2) register with kqueue
+    do_switch(detach)            // (3) context switch away
+    suspending_ = false          // (4) resumed
+```
+
+Step (1) must happen **before** step (2). Once the kevent is registered,
+the reactor thread can call `mt->schedule()` at any moment. If the
+microthread has not yet completed its context switch (step 3), the
+`suspending_` flag tells `schedule()` to set `wake_pending_` instead of
+pushing directly to the global queue. After the context switch completes,
+`drain_suspended()` checks `wake_pending_` and pushes the microthread if
+set. This is the same TOCTOU prevention mechanism used by the channel path
+(see [Section 8](#8-concurrency-control)).
+
+### Event Loop
+
+The reactor thread runs a tight loop calling `kevent()` with a 64-event
+output buffer and no timeout (blocking indefinitely). For each event:
+
+- `EVFILT_USER` events are skipped---they exist only to break the
+  `kevent()` block during shutdown.
+- All other events extract the `Microthread*` from `udata` and call
+  `mt->schedule()`, which pushes the microthread to the global run queue
+  and calls `unpark_one()` to wake a worker.
+
+`EINTR` is handled by retrying the `kevent()` call.
+
+### Shutdown
+
+`shutdown()` sets `stopping_` with release ordering, then triggers the
+`EVFILT_USER` event via `wake()` (`NOTE_TRIGGER`). This breaks the reactor
+out of its `kevent()` block. The reactor thread checks `stopping_` at
+the top of its loop and exits. The caller then joins the thread and closes
+the kqueue descriptor.
+
+### Layer 2: I/O Wrappers
+
+The `csp::io` namespace (`io.h`) provides non-blocking wrappers around
+standard POSIX calls (`read`, `write`, `accept`, `connect`). Each wrapper
+retries on `EINTR`, and on `EAGAIN`/`EWOULDBLOCK` it calls
+`wait_readable`/`wait_writable` to suspend the microthread until the
+descriptor is ready, then retries the syscall. This gives callers
+synchronous-looking I/O semantics while cooperating with the scheduler.
+
+---
+
+## 13. Blocking Pool
+
+The blocking pool (`blocking_pool.h`, `blocking_pool.cc`) offloads
+blocking OS calls to a dedicated thread pool so that microthreads can
+invoke them without stalling their processor.
+
+### Motivation
+
+Some operations---DNS resolution (`getaddrinfo`), synchronous file I/O,
+third-party library calls---cannot be made non-blocking. Running them
+directly on a processor thread would stall all microthreads on that
+processor. The blocking pool solves this by detaching the microthread from
+its processor, running the blocking function on a pool thread, and
+rescheduling the microthread when it completes.
+
+### Architecture
+
+The pool is a singleton (`BlockingPool::instance()`) with a fixed number of
+worker threads (`max(4, hardware_concurrency)`). Workers spend most of their
+time blocked in the kernel, not consuming CPU, so a relatively large pool
+is cheap.
+
+```
+Microthread                  Pool thread              Global queue
+    │                            │                        │
+    │ submit(mt, fn)             │                        │
+    ├───────────────────────────→│                        │
+    │ do_switch(detach)          │ fn()  (blocking)       │
+    │                            │ mt->schedule()         │
+    │                            ├───────────────────────→│
+    │                            │                   push mt
+    │ ←── worker picks up mt ────┼────────────────────────│
+```
+
+### Submission
+
+`submit(mt, fn)` pushes a `Work{mt, fn}` pair onto a `std::vector`-based
+queue (LIFO order) and signals the condition variable. LIFO ordering gives
+better cache locality for bursty submission patterns.
+
+### Suspension Protocol
+
+The public `csp::blocking(fn)` primitive (and the internal `run_blocking`)
+follows the same suspension pattern as the reactor:
+
+```
+run_blocking(fn):
+    suspending_ = true
+    pool.submit(self, fn)
+    do_switch(detach)
+    suspending_ = false
+```
+
+As with I/O waits, `suspending_` is set before `submit` because the pool
+thread can call `mt->schedule()` immediately upon completion. The
+`suspending_`/`wake_pending_`/`drain_suspended` protocol prevents the
+microthread from being pushed to the global queue before its context switch
+completes.
+
+### Return Value Forwarding
+
+The public `csp::blocking<Fn>(fn)` template (`blocking.h`) supports
+arbitrary return types. For non-void return types, it captures the result
+in a local variable via a lambda wrapper, so the blocking function's return
+value is available to the microthread when it resumes. For void functions,
+no wrapper is needed.
+
+### Worker Loop
+
+Each pool thread blocks on a condition variable waiting for work or a
+shutdown signal. When work arrives, it pops from the back of the queue,
+runs `fn()`, then calls `mt->schedule()` to reschedule the microthread.
+
+### Shutdown
+
+`shutdown()` sets `stopping_` under the queue mutex and calls
+`cv_.notify_all()`. Workers exit when they find the queue empty and
+`stopping_` is true. All threads are joined and the queue is cleared.
+Like the reactor, startup and shutdown are protected by double-checked
+locking on `running_` with a `start_mu_` mutex.
+
+---
+
+## 14. Signal Delivery
+
+Signal delivery (`signal.h`, `signal.cc`) converts asynchronous POSIX
+signals into CSP channel events using the self-pipe trick.
+
+### The Problem
+
+POSIX signal handlers run asynchronously in an unspecified context and are
+severely restricted in what they can safely do. Most library functions,
+mutex operations, and memory allocations are forbidden. The signal delivery
+system bridges this gap by having the handler perform only async-signal-safe
+operations, with all complex logic running in microthreads.
+
+### Self-Pipe Trick
+
+Each call to `csp::signal::notify({SIGINT, SIGTERM, ...})` creates a pipe
+and returns a `reader<int>` that emits the signal number each time a
+matching signal arrives:
+
+```
+Signal handler               Pipe                 Producer MT          Channel
+     │                         │                       │                  │
+     │ write(byte)             │                       │                  │
+     ├────────────────────────→│                       │                  │
+     │                         │ io::read(buf)         │                  │
+     │                         ├──────────────────────→│                  │
+     │                         │                       │ out << signo     │
+     │                         │                       ├─────────────────→│
+```
+
+The signal handler writes the signal number (as a single byte) to the pipe.
+A producer microthread reads bytes from the pipe (using the I/O reactor for
+non-blocking reads) and writes them to the output CSP channel.
+
+### Lock-Free Signal-Safe Data Structures
+
+The handler must avoid locks entirely. The design uses a fixed-size global
+array of `SigPipe` structs:
+
+```cpp
+struct SigPipe {
+    int write_fd;
+    std::atomic<uint64_t> sig_mask;  // bitmask of signals this pipe cares about
+};
+SigPipe g_sig_pipes[MAX_SIG_PIPES];  // fixed array, no allocation
+std::atomic<int> g_sig_pipe_count;   // number of active pipes
+```
+
+Lock-free atomics are async-signal-safe (they compile to single instructions
+on modern architectures, with no possibility of deadlock). The handler reads
+`g_sig_pipe_count` with acquire ordering, then checks each pipe's `sig_mask`
+with acquire ordering, and calls `write()` on matching pipes. Both atomic
+loads and `write()` are async-signal-safe.
+
+### Memory Ordering
+
+The ordering constraints form two acquire-release pairs:
+
+1. **Registration (release) / handler (acquire) on `g_sig_pipe_count`**:
+   When `notify()` stores a new pipe's `write_fd` and `sig_mask`, it
+   publishes them by incrementing `g_sig_pipe_count` with release ordering.
+   The handler's acquire load of `count` guarantees it sees the fully
+   initialised `write_fd` and `sig_mask`.
+
+2. **Cleanup (release) / handler (acquire) on `sig_mask`**: When the
+   sentinel microthread clears a pipe's `sig_mask` to zero with release
+   ordering, subsequent handler invocations that acquire-load `sig_mask`
+   see zero and skip the pipe, preventing writes to a closed fd.
+
+### Sentinel Microthread Pattern
+
+Each `notify()` call spawns two microthreads:
+
+- **Producer**: Reads bytes from the pipe read end via `io::read()` and
+  writes signal numbers to the output channel. Runs until EOF (pipe write
+  end closed) or the output channel dies.
+
+- **Sentinel**: Watches for either the output reader dying (`~out_copy`)
+  or the producer exiting (`~kill_r`, triggered when the producer's
+  `kill_w` is destroyed). When either event fires, the sentinel:
+  1. Clears `sig_mask` to zero (release), stopping the signal handler from
+     writing to this pipe.
+  2. Closes the pipe write fd, causing the producer's `io::read()` to
+     return EOF and exit cleanly.
+
+```
+notify() creates:
+
+  Producer MT                 Sentinel MT
+  ─────────────               ─────────────
+  holds: kill_w               holds: ~out_copy, ~kill_r
+  loop:                       prialt(~out, ~kill):
+    io::read(rfd) → out         clear sig_mask
+    if out dead → return        close(wfd)
+    (kill_w destroyed)          (producer sees EOF)
+```
+
+This two-microthread pattern ensures clean shutdown regardless of which
+side initiates teardown:
+
+- **Reader dropped**: `~out_copy` fires in the sentinel, which closes the
+  pipe write end. The producer gets EOF and exits. Its `kill_w` is
+  destroyed, but the sentinel has already exited via `~out_copy`.
+- **Producer exits first**: `kill_w` is destroyed, so `~kill_r` fires in
+  the sentinel, which closes the write fd and clears the mask.
+
+### macOS Pipe Safety
+
+On macOS, the pipe write end is configured with `F_SETNOSIGPIPE` via
+`fcntl`. This prevents `SIGPIPE` delivery when `write()` is called on a
+pipe whose read end has already been closed---a race that can occur between
+the signal handler writing to the pipe and the producer closing the read
+end during shutdown.
+
+### Handler Installation
+
+Signal handlers are installed via `sigaction` with `SA_RESTART` (to avoid
+`EINTR` in unrelated syscalls). Installation is idempotent per signal
+number and protected by `g_sig_mu` (a regular mutex, used only outside the
+handler). Handlers remain installed after the pipe is cleaned up; they
+become harmless no-ops since no pipe's `sig_mask` includes the signal.

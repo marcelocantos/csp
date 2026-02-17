@@ -33,17 +33,21 @@ A C++ microthreading library with typed, synchronous channels inspired by
 int main() {
     using namespace csp;
 
-    chan<int> ch;
+    spawn([]{
+        chan<int> ch;
 
-    // Producer — move the writer into the spawned microthread
-    spawn([w = std::move(ch.w)] {
-        for (int i = 0; i < 10; ++i)
-            w << i;
+        // Producer — move the writer into the spawned microthread
+        spawn([w = std::move(ch.w)] {
+            for (int i = 0; i < 10; ++i)
+                w << i;
+        });
+
+        // Consumer — read until the writer dies
+        for (int n; ch.r >> n;)
+            std::cout << n << "\n";
     });
 
-    // Consumer — read until the writer dies
-    for (int n; ch.r >> n;)
-        std::cout << n << "\n";
+    schedule();
 }
 ```
 
@@ -106,29 +110,30 @@ case -2: /* timed out */     break;
 
 ```cpp
 #include <csp/io.h>
+#include <csp/part/io.h>
 #include <csp/signal.h>
 
 // Non-blocking file descriptor read (requires init_runtime)
-auto bytes = csp::io::read_fd(fd);  // reader<std::vector<uint8_t>>
+auto bytes = csp::part::byte_reader(fd).spawn();  // reader<vector<uint8_t>>
 
 // Non-blocking DNS resolution (runs on blocking thread pool)
-auto addr = csp::io::resolve("example.com", "80");
+auto result = csp::io::resolve("example.com", "80", &hints);
 
 // Unix signal channels (requires init_runtime)
-auto sigs = csp::signal::watch({SIGINT, SIGTERM});  // reader<int>
+auto sigs = csp::signal::notify({SIGINT, SIGTERM});  // reader<int>
 ```
 
 ## M:N Threading
 
 ```cpp
-csp::init_runtime(4);  // 4 OS threads (default = 0 = auto-detect)
+csp::init_runtime(4);  // 4 OS threads (default = single-threaded)
 
 // ... spawn microthreads as usual ...
 // They are automatically distributed across OS threads
 // with work stealing for load balancing.
 
-csp::schedule();           // run until all microthreads complete
-csp::shutdown_runtime();   // clean up worker threads
+csp::schedule();          // run until all microthreads complete
+csp::shutdown_runtime();  // stop workers, join threads
 ```
 
 ## Spawning patterns
@@ -274,9 +279,22 @@ make clean  # remove build artifacts
 
 ## Documentation
 
-- [`docs/overview.md`](docs/overview.md) — user guide with examples
-- [`docs/architecture.md`](docs/architecture.md) — internal design and
-  implementation details
+### Guide
+- [Getting Started](docs/guide/01-getting-started.md)
+- [Channels](docs/guide/02-channels.md)
+- [Multiplexing](docs/guide/03-multiplexing.md)
+- [Timers](docs/guide/04-timers.md)
+- [Combinators & Parts](docs/guide/05-combinators.md)
+- [I/O](docs/guide/06-io.md)
+- [Blocking Calls](docs/guide/07-blocking.md)
+- [Signals](docs/guide/08-signals.md)
+- [Concurrency & M:N Runtime](docs/guide/09-concurrency.md)
+- [Error Handling](docs/guide/10-error-handling.md)
+- [Common Pitfalls](docs/guide/11-pitfalls.md)
+
+### Reference
+- [Parts Catalog](docs/reference/parts.md) — all 50+ stream combinators
+- [Architecture](docs/architecture.md) — internal design
 
 ## License
 
