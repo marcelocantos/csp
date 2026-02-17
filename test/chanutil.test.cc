@@ -1,5 +1,6 @@
 #include "testutil.h"
 
+#include <csp/part/batch.h>
 #include <csp/part/blackhole.h>
 #include <csp/part/chain.h>
 #include <csp/part/count.h>
@@ -17,6 +18,47 @@
 
 using namespace csp;
 using namespace csp::part;
+
+TEST_CASE("ChanUtil - Batch") {
+    // 10 elements in batches of 3 → [1,2,3], [4,5,6], [7,8,9], [10]
+    auto r = batch<int>(3).spawn(count(1, 11).spawn());
+
+    auto v = r.read();
+    CHECK_EQ(3, v.size());
+    CHECK_EQ(1, v[0]); CHECK_EQ(2, v[1]); CHECK_EQ(3, v[2]);
+
+    v = r.read();
+    CHECK_EQ(3, v.size());
+    CHECK_EQ(4, v[0]); CHECK_EQ(5, v[1]); CHECK_EQ(6, v[2]);
+
+    v = r.read();
+    CHECK_EQ(3, v.size());
+    CHECK_EQ(7, v[0]); CHECK_EQ(8, v[1]); CHECK_EQ(9, v[2]);
+
+    // Partial final batch.
+    v = r.read();
+    CHECK_EQ(1, v.size());
+    CHECK_EQ(10, v[0]);
+
+    std::vector<int> _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Batch exact") {
+    // 6 elements in batches of 3 → two full batches, no partial.
+    auto r = batch<int>(3).spawn(count(1, 7).spawn());
+
+    auto v = r.read();
+    CHECK_EQ(3, v.size());
+    CHECK_EQ(1, v[0]);
+
+    v = r.read();
+    CHECK_EQ(3, v.size());
+    CHECK_EQ(4, v[0]);
+
+    std::vector<int> _;
+    CHECK_FALSE(bool(r >> _));
+}
 
 TEST_CASE("ChanUtil - Blackhole") {
     auto w = blackhole<int>.spawn();
