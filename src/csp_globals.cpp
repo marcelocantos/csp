@@ -1,3 +1,4 @@
+#include <csp/internal/blocking_pool.h>
 #include <csp/internal/reactor.h>
 #include <csp/internal/runtime.h>
 
@@ -52,6 +53,7 @@ namespace csp {
     }
 
     void shutdown_runtime() {
+        detail::BlockingPool::instance().shutdown();
         detail::Reactor::instance().shutdown();
         detail::Runtime::instance().shutdown();
         detail::runtime_initialized_ = false;

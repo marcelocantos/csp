@@ -11,12 +11,14 @@
 #include <csp/part/enumerate.h>
 #include <csp/part/first_last.h>
 #include <csp/part/flat_map.h>
+#include <csp/part/interleave.h>
 #include <csp/part/killswitch.h>
 #include <csp/part/latch.h>
 #include <csp/part/map.h>
 #include <csp/part/merge.h>
 #include <csp/part/sample.h>
 #include <csp/part/mute.h>
+#include <csp/part/round_robin.h>
 #include <csp/part/scan.h>
 #include <csp/part/sink.h>
 #include <csp/part/tee.h>
@@ -990,4 +992,110 @@ TEST_CASE("ChanUtil - FlatMap type change") {
     std::sort(got.begin(), got.end());
     std::vector<std::string> expect = {"1", "2", "3"};
     CHECK_EQ(expect, got);
+}
+
+TEST_CASE("ChanUtil - RoundRobin") {
+    RunStats stats;
+
+    // Distribute 1..9 across 3 outputs. Must drain concurrently since
+    // channels are synchronous and round_robin writes in strict order.
+    auto outs = round_robin(count(1, 10).spawn(), 3);
+    CHECK_EQ(3, outs.size());
+
+    std::vector<int> g0, g1, g2;
+    stats.spawn([r = std::move(outs[0]), &g0]{
+        for (int n; r >> n;) g0.push_back(n);
+    });
+    stats.spawn([r = std::move(outs[1]), &g1]{
+        for (int n; r >> n;) g1.push_back(n);
+    });
+    stats.spawn([r = std::move(outs[2]), &g2]{
+        for (int n; r >> n;) g2.push_back(n);
+    });
+    csp::schedule();
+
+    CHECK_EQ(std::vector<int>({1, 4, 7}), g0);
+    CHECK_EQ(std::vector<int>({2, 5, 8}), g1);
+    CHECK_EQ(std::vector<int>({3, 6, 9}), g2);
+}
+
+TEST_CASE("ChanUtil - RoundRobin single output") {
+    auto outs = round_robin(count(1, 4).spawn(), 1);
+    CHECK_EQ(1, outs.size());
+
+    CHECK_EQ(1, outs[0].read());
+    CHECK_EQ(2, outs[0].read());
+    CHECK_EQ(3, outs[0].read());
+    int _;
+    CHECK_FALSE(bool(outs[0] >> _));
+}
+
+TEST_CASE("ChanUtil - RoundRobin output death") {
+    RunStats stats;
+
+    auto outs = round_robin(count_forever(0).spawn(), 3);
+
+    // Read concurrently then drop — round_robin should terminate.
+    for (auto& r : outs) {
+        stats.spawn([r = std::move(r)]{
+            for (int i = 0; i < 3; ++i) r.read();
+        });
+    }
+    outs.clear();
+    csp::schedule();
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - Interleave") {
+    // Interleave three streams in round-robin order.
+    std::vector<reader<int>> rs;
+    rs.push_back(count(10, 13).spawn());
+    rs.push_back(count(20, 23).spawn());
+    rs.push_back(count(30, 33).spawn());
+    auto r = interleave(std::move(rs)).spawn();
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    // Strict interleaving: 10,20,30, 11,21,31, 12,22,32.
+    std::vector<int> expect = {10, 20, 30, 11, 21, 31, 12, 22, 32};
+    CHECK_EQ(expect, got);
+}
+
+TEST_CASE("ChanUtil - Interleave single") {
+    std::vector<reader<int>> rs;
+    rs.push_back(count(1, 4).spawn());
+    auto r = interleave(std::move(rs)).spawn();
+
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(2, r.read());
+    CHECK_EQ(3, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - Interleave uneven") {
+    // First stream has 2 elements, second has 4.
+    std::vector<reader<int>> rs;
+    rs.push_back(count(1, 3).spawn());
+    rs.push_back(count(10, 14).spawn());
+    auto r = interleave(std::move(rs)).spawn();
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    // 1, 10, 2, 11, <first dies>, 12, 13
+    CHECK_EQ(std::vector<int>({1, 10, 2, 11, 12, 13}), got);
+}
+
+TEST_CASE("ChanUtil - Interleave output death") {
+    RunStats stats;
+
+    std::vector<reader<int>> rs;
+    rs.push_back(count_forever(0).spawn());
+    rs.push_back(count_forever(0).spawn());
+    auto r = interleave(std::move(rs)).spawn();
+
+    // Read a few then drop.
+    for (int i = 0; i < 10; ++i) r.read();
+    r = {};
+    while (csp::internal::run()) { }
 }

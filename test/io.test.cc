@@ -1,5 +1,6 @@
 #include "testutil.h"
 
+#include <csp/blocking.h>
 #include <csp/io.h>
 #include <csp/part/io.h>
 #include <csp/timer.h>
@@ -7,6 +8,7 @@
 #include <atomic>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace csp;
@@ -359,5 +361,52 @@ TEST_CASE("IO - Multiple concurrent waiters") {
 
     csp::schedule();
     CHECK_EQ(N, count.load());
+    csp::shutdown_runtime();
+}
+
+// --- csp::blocking ---
+
+TEST_CASE("IO - Blocking offload") {
+    csp::init_runtime(2);
+
+    std::atomic<bool> ran{false};
+    std::atomic<std::thread::id> pool_tid{};
+
+    csp::spawn([&] {
+        auto main_tid = std::this_thread::get_id();
+        int result = csp::blocking([&] {
+            pool_tid.store(std::this_thread::get_id(), std::memory_order_relaxed);
+            ran.store(true, std::memory_order_relaxed);
+            return 42;
+        });
+        CHECK_EQ(42, result);
+        // The blocking lambda ran on a different thread.
+        CHECK_NE(main_tid, pool_tid.load());
+    });
+
+    csp::schedule();
+    CHECK(ran.load());
+    csp::shutdown_runtime();
+}
+
+// --- DNS resolution ---
+
+TEST_CASE("IO - Resolve localhost") {
+    csp::init_runtime(2);
+
+    std::atomic<bool> resolved{false};
+
+    csp::spawn([&] {
+        struct addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        auto r = io::resolve("localhost", "80", &hints);
+        CHECK_EQ(0, r.error);
+        CHECK(r.info != nullptr);
+        resolved.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(resolved.load());
     csp::shutdown_runtime();
 }

@@ -1,13 +1,19 @@
 #pragma once
 
+#include <csp/blocking.h>
 #include <csp/csp.h>
 
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <fcntl.h>
+#include <netdb.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace csp::internal {
 
@@ -99,6 +105,38 @@ inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
     if (err != 0) { errno = err; return -1; }
     return 0;
+}
+
+// --- DNS resolution ---
+// Offloads getaddrinfo to the blocking thread pool so the calling
+// microthread suspends cooperatively instead of blocking its processor.
+
+struct addrinfo_deleter {
+    void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }
+};
+using addrinfo_ptr = std::unique_ptr<struct addrinfo, addrinfo_deleter>;
+
+struct resolve_result {
+    int error = 0;                    // 0 on success, EAI_* on failure
+    addrinfo_ptr info;                // linked list of results
+    const char* error_string() const { return gai_strerror(error); }
+};
+
+// Resolve host/service. hints may be nullptr for defaults.
+// Runs getaddrinfo on the blocking pool — never stalls the processor.
+inline resolve_result resolve(const std::string& host,
+                              const std::string& service = {},
+                              const struct addrinfo* hints = nullptr) {
+    resolve_result r;
+    struct addrinfo* raw = nullptr;
+    r.error = csp::blocking([&] {
+        return ::getaddrinfo(
+            host.c_str(),
+            service.empty() ? nullptr : service.c_str(),
+            hints, &raw);
+    });
+    r.info.reset(raw);
+    return r;
 }
 
 }
