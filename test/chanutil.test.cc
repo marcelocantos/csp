@@ -10,6 +10,7 @@
 #include <csp/part/distinct.h>
 #include <csp/part/enumerate.h>
 #include <csp/part/first_last.h>
+#include <csp/part/flat_map.h>
 #include <csp/part/killswitch.h>
 #include <csp/part/latch.h>
 #include <csp/part/map.h>
@@ -918,4 +919,75 @@ TEST_CASE("ChanUtil - Unique bounded FIFO") {
     });
 
     csp::schedule();
+}
+
+TEST_CASE("ChanUtil - FlatMap") {
+    // Each int n maps to a sub-stream of [n*10, n*10+1, n*10+2].
+    auto r = flat_map<int, int>([](int n) {
+                 return count(n * 10, n * 10 + 3).spawn();
+             })
+                 .spawn(count(1, 4).spawn());
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+    std::sort(got.begin(), got.end());
+    std::vector<int> expect = {10, 11, 12, 20, 21, 22, 30, 31, 32};
+    CHECK_EQ(expect, got);
+}
+
+TEST_CASE("ChanUtil - FlatMap single") {
+    auto r = flat_map<int, int>([](int n) {
+                 return count(n, n + 2).spawn();
+             })
+                 .spawn(count(5, 6).spawn());
+
+    CHECK_EQ(5, r.read());
+    CHECK_EQ(6, r.read());
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - FlatMap empty input") {
+    // Input is immediately exhausted — output should close.
+    std::vector<reader<int>> empty;
+    auto input = merge(std::move(empty)).spawn();
+    auto r = flat_map<int, int>([](int n) {
+                 return count(n, n + 1).spawn();
+             })
+                 .spawn(std::move(input));
+
+    int _;
+    CHECK_FALSE(bool(r >> _));
+}
+
+TEST_CASE("ChanUtil - FlatMap output death") {
+    RunStats stats;
+
+    auto r = flat_map<int, int>([](int n) {
+                 return count_forever(n).spawn();
+             })
+                 .spawn(count_forever(0).spawn());
+
+    // Read a few then drop — flat_map should terminate.
+    for (int i = 0; i < 10; ++i) r.read();
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - FlatMap type change") {
+    // int -> string sub-streams.
+    auto r = flat_map<int, std::string>([](int n) {
+                 chan<std::string> ch;
+                 csp::spawn([n, w = std::move(ch.w)]() mutable {
+                     w << std::to_string(n);
+                 });
+                 return std::move(ch.r);
+             })
+                 .spawn(count(1, 4).spawn());
+
+    std::vector<std::string> got;
+    for (std::string s; r >> s;) got.push_back(std::move(s));
+    std::sort(got.begin(), got.end());
+    std::vector<std::string> expect = {"1", "2", "3"};
+    CHECK_EQ(expect, got);
 }
