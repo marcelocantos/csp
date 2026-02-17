@@ -10,14 +10,19 @@
 #include <csp/part/distinct.h>
 #include <csp/part/enumerate.h>
 #include <csp/part/first_last.h>
+#include <csp/part/first_wins.h>
 #include <csp/part/flat_map.h>
+#include <csp/part/gate.h>
 #include <csp/part/interleave.h>
+#include <csp/part/join.h>
 #include <csp/part/killswitch.h>
 #include <csp/part/latch.h>
 #include <csp/part/map.h>
 #include <csp/part/merge.h>
 #include <csp/part/sample.h>
 #include <csp/part/mute.h>
+#include <csp/part/partition.h>
+#include <csp/part/reduce.h>
 #include <csp/part/round_robin.h>
 #include <csp/part/scan.h>
 #include <csp/part/slide.h>
@@ -1233,4 +1238,244 @@ TEST_CASE("ChanUtil - Window output death") {
     for (int i = 0; i < 5; ++i) r.read();
     r = {};
     while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - Partition N-way") {
+    RunStats stats;
+
+    // Classify 0..8 into 3 buckets by modulo.
+    auto outs = partition<int>(count(0, 9).spawn(), 3,
+        [](const int& n) -> size_t { return n % 3; });
+    CHECK_EQ(3, outs.size());
+
+    std::vector<int> g0, g1, g2;
+    stats.spawn([r = std::move(outs[0]), &g0]{
+        for (int n; r >> n;) g0.push_back(n);
+    });
+    stats.spawn([r = std::move(outs[1]), &g1]{
+        for (int n; r >> n;) g1.push_back(n);
+    });
+    stats.spawn([r = std::move(outs[2]), &g2]{
+        for (int n; r >> n;) g2.push_back(n);
+    });
+    csp::schedule();
+
+    CHECK_EQ(std::vector<int>({0, 3, 6}), g0);
+    CHECK_EQ(std::vector<int>({1, 4, 7}), g1);
+    CHECK_EQ(std::vector<int>({2, 5, 8}), g2);
+}
+
+TEST_CASE("ChanUtil - Partition binary") {
+    RunStats stats;
+
+    // Split into even/odd.
+    auto outs = partition<int>(count(1, 7).spawn(),
+        [](const int& n) { return n % 2 != 0; });
+    CHECK_EQ(2, outs.size());
+
+    std::vector<int> evens, odds;
+    stats.spawn([r = std::move(outs[0]), &evens]{
+        for (int n; r >> n;) evens.push_back(n);
+    });
+    stats.spawn([r = std::move(outs[1]), &odds]{
+        for (int n; r >> n;) odds.push_back(n);
+    });
+    csp::schedule();
+
+    CHECK_EQ(std::vector<int>({2, 4, 6}), evens);
+    CHECK_EQ(std::vector<int>({1, 3, 5}), odds);
+}
+
+TEST_CASE("ChanUtil - Partition output death") {
+    RunStats stats;
+
+    auto outs = partition<int>(count_forever(0).spawn(), 2,
+        [](const int& n) -> size_t { return n % 2; });
+
+    // Read a few from each then drop.
+    stats.spawn([r = std::move(outs[0])]{
+        for (int i = 0; i < 3; ++i) r.read();
+    });
+    stats.spawn([r = std::move(outs[1])]{
+        for (int i = 0; i < 3; ++i) r.read();
+    });
+    csp::schedule();
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - Reduce sum") {
+    auto result = reduce<int, int>(count(1, 6).spawn(), 0,
+        [](int acc, int v) { return acc + v; });
+    CHECK_EQ(15, result);  // 1+2+3+4+5
+}
+
+TEST_CASE("ChanUtil - Reduce string concat") {
+    auto r = map<int, std::string>([](int n) { return std::to_string(n); })
+                 .spawn(count(1, 4).spawn());
+    auto result = reduce<std::string, std::string>(std::move(r), "",
+        [](std::string acc, const std::string& v) { return acc + v; });
+    CHECK_EQ("123", result);
+}
+
+TEST_CASE("ChanUtil - Reduce empty") {
+    std::vector<reader<int>> empty;
+    auto r = merge(std::move(empty)).spawn();
+    auto result = reduce<int, int>(std::move(r), 42,
+        [](int acc, int v) { return acc + v; });
+    CHECK_EQ(42, result);  // init returned unchanged
+}
+
+TEST_CASE("ChanUtil - Gate") {
+    RunStats stats;
+
+    chan<bool> ctrl;
+    auto r = gate(count(1, 100).spawn(), std::move(ctrl.r));
+
+    std::vector<int> got;
+    stats.spawn([r = std::move(r), &got]{
+        for (int n; r >> n;) got.push_back(n);
+    });
+
+    // Gate starts open — first 3 values pass.
+    stats.spawn([w = std::move(ctrl.w)]{
+        csp::yield(); csp::yield(); csp::yield();
+        // Close the gate.
+        w << false;
+        // Re-open.
+        csp::yield(); csp::yield();
+        w << true;
+        csp::yield(); csp::yield(); csp::yield();
+        // Close permanently by dropping control.
+    });
+
+    csp::schedule();
+
+    // Values should flow while open, pause while closed.
+    CHECK(got.size() > 0);
+    // First value should be 1 (gate starts open).
+    CHECK_EQ(1, got.front());
+}
+
+TEST_CASE("ChanUtil - Gate control dies open") {
+    RunStats stats;
+
+    chan<bool> ctrl;
+    // Control dies immediately — gate stays open (default), forwards all.
+    ctrl.w = {};
+    auto r = gate(count(1, 4).spawn(), std::move(ctrl.r));
+
+    std::vector<int> got;
+    for (int n; r >> n;) got.push_back(n);
+
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - Gate output death") {
+    RunStats stats;
+
+    chan<bool> ctrl;
+    auto r = gate(count_forever(0).spawn(), std::move(ctrl.r));
+
+    for (int i = 0; i < 5; ++i) r.read();
+    r = {};
+    ctrl.w = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("ChanUtil - FirstWins") {
+    RunStats stats;
+
+    // Three delayed sources; the first to produce wins.
+    chan<int> fast, slow1, slow2;
+    stats.spawn([w = std::move(fast.w)]{
+        w << 42;
+    });
+    stats.spawn([w = std::move(slow1.w)]{
+        csp::yield(); csp::yield();
+        w << 100;
+    });
+    stats.spawn([w = std::move(slow2.w)]{
+        csp::yield(); csp::yield(); csp::yield();
+        w << 200;
+    });
+
+    std::vector<reader<int>> rs;
+    rs.push_back(std::move(fast.r));
+    rs.push_back(std::move(slow1.r));
+    rs.push_back(std::move(slow2.r));
+
+    int result = -1;
+    stats.spawn([rs = std::move(rs), &result]() mutable {
+        result = first_wins(std::move(rs));
+    });
+    csp::schedule();
+
+    CHECK_EQ(42, result);
+}
+
+TEST_CASE("ChanUtil - FirstWins with dead readers") {
+    RunStats stats;
+
+    // Two dead readers and one live.
+    chan<int> live;
+    stats.spawn([w = std::move(live.w)]{
+        w << 7;
+    });
+
+    std::vector<reader<int>> rs;
+    // Two immediately-dead readers.
+    rs.push_back(merge(std::vector<reader<int>>{}).spawn());
+    rs.push_back(merge(std::vector<reader<int>>{}).spawn());
+    rs.push_back(std::move(live.r));
+
+    int result = -1;
+    stats.spawn([rs = std::move(rs), &result]() mutable {
+        result = first_wins(std::move(rs));
+    });
+    csp::schedule();
+
+    CHECK_EQ(7, result);
+}
+
+TEST_CASE("ChanUtil - FirstWins all dead") {
+    // All readers dead — should throw.
+    std::vector<reader<int>> rs;
+    rs.push_back(merge(std::vector<reader<int>>{}).spawn());
+    rs.push_back(merge(std::vector<reader<int>>{}).spawn());
+
+    CHECK_THROWS_AS(first_wins(std::move(rs)), std::runtime_error);
+}
+
+TEST_CASE("ChanUtil - Join") {
+    RunStats stats;
+
+    chan<int> a, b, c;
+    stats.spawn([w = std::move(a.w)]{
+        w << 1; w << 2;
+    });
+    stats.spawn([w = std::move(b.w)]{
+        w << 10; w << 20; w << 30;
+    });
+    stats.spawn([w = std::move(c.w)]{
+        w << 100;
+    });
+
+    std::vector<reader<int>> rs;
+    rs.push_back(std::move(a.r));
+    rs.push_back(std::move(b.r));
+    rs.push_back(std::move(c.r));
+
+    bool done = false;
+    stats.spawn([rs = std::move(rs), &done]() mutable {
+        join(std::move(rs));
+        done = true;
+    });
+    csp::schedule();
+
+    CHECK(done);
+}
+
+TEST_CASE("ChanUtil - Join empty") {
+    std::vector<reader<int>> empty;
+    join(std::move(empty));  // Should return immediately.
 }
