@@ -50,20 +50,20 @@ auto unzip(reader<std::tuple<Ts...>> in) {
     return readers;
 }
 
-// Unzip through a decomposing function: f(In) → tuple<A, B, ...>.
+// Unzip through a decomposing function: f(In) → tuple-like<A, B, ...>.
 // reader<In> → tuple<reader<A>, reader<B>, ...>
 template <typename In, typename F>
-auto unzipf(reader<In> in, F&& f) {
-    using Tup = std::invoke_result_t<std::decay_t<F>&, In>;
-    constexpr auto N = std::tuple_size_v<Tup>;
+auto unzip(reader<In> in, F&& f) {
+    using Ret = std::invoke_result_t<std::decay_t<F>&, In>;
+    constexpr auto N = std::tuple_size_v<Ret>;
     auto seq = std::make_index_sequence<N>{};
 
-    auto chans = detail::make_chans<Tup>(seq);
+    auto chans = detail::make_chans<Ret>(seq);
     auto readers = detail::extract_readers(chans, seq);
 
     csp::spawn([in = std::move(in), f = std::forward<F>(f),
                 chans = std::move(chans)]() mutable {
-        internal::descr("unzipf");
+        internal::descr("unzip");
         constexpr auto seq = std::make_index_sequence<N>{};
         for (In v; in >> v;) {
             auto t = f(std::move(v));
@@ -72,53 +72,6 @@ auto unzipf(reader<In> in, F&& f) {
     });
 
     return readers;
-}
-
-// Unzip a reader of pairs into two readers.
-// reader<pair<A, B>> → pair<reader<A>, reader<B>>
-template <typename A, typename B>
-auto unzip2(reader<std::pair<A, B>> in) {
-    auto ca = csp::chan<A>{};
-    auto cb = csp::chan<B>{};
-    auto ra = std::move(ca.r);
-    auto rb = std::move(cb.r);
-
-    csp::spawn([in = std::move(in), wa = std::move(ca.w),
-                wb = std::move(cb.w)]() mutable {
-        internal::descr("unzip2");
-        for (std::pair<A, B> p; in >> p;) {
-            wa << std::move(p.first);
-            wb << std::move(p.second);
-        }
-    });
-
-    return std::make_pair(std::move(ra), std::move(rb));
-}
-
-// Unzip through a two-output decomposing function.
-// f(In) → pair<A, B>; reader<In> → pair<reader<A>, reader<B>>
-template <typename In, typename F>
-auto unzip2f(reader<In> in, F&& f) {
-    using P = std::invoke_result_t<std::decay_t<F>&, In>;
-    using A = typename P::first_type;
-    using B = typename P::second_type;
-
-    auto ca = csp::chan<A>{};
-    auto cb = csp::chan<B>{};
-    auto ra = std::move(ca.r);
-    auto rb = std::move(cb.r);
-
-    csp::spawn([in = std::move(in), f = std::forward<F>(f),
-                wa = std::move(ca.w), wb = std::move(cb.w)]() mutable {
-        internal::descr("unzip2f");
-        for (In v; in >> v;) {
-            auto p = f(std::move(v));
-            wa << std::move(p.first);
-            wb << std::move(p.second);
-        }
-    });
-
-    return std::make_pair(std::move(ra), std::move(rb));
 }
 
 }

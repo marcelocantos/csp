@@ -149,4 +149,68 @@ filter<In, Out, std::decay_t<F>> make_filter(F&& f) {
     return {std::forward<F>(f)};
 }
 
+// --- Composition via | ---
+
+// filter | filter → filter
+template <typename In, typename Mid, typename F1, typename Out, typename F2>
+auto operator|(filter<In, Mid, F1> lhs, filter<Mid, Out, F2> rhs) {
+    return make_filter<In, Out>(
+        [lhs = std::move(lhs), rhs = std::move(rhs)]
+        (reader<In> in, writer<Out> out) mutable {
+            rhs(lhs.spawn(std::move(in)), std::move(out));
+        });
+}
+
+// producer | filter → producer
+template <typename T, typename F1, typename Out, typename F2>
+auto operator|(producer<T, F1> lhs, filter<T, Out, F2> rhs) {
+    return make_producer<Out>(
+        [lhs = std::move(lhs), rhs = std::move(rhs)]
+        (writer<Out> out) mutable {
+            rhs(lhs.spawn(), std::move(out));
+        });
+}
+
+// filter | consumer → consumer
+template <typename In, typename Out, typename F1, typename F2>
+auto operator|(filter<In, Out, F1> lhs, consumer<Out, F2> rhs) {
+    return make_consumer<In>(
+        [lhs = std::move(lhs), rhs = std::move(rhs)]
+        (reader<In> in) mutable {
+            rhs(lhs.spawn(std::move(in)));
+        });
+}
+
+// producer | consumer → callable
+template <typename T, typename F1, typename F2>
+auto operator|(producer<T, F1> lhs, consumer<T, F2> rhs) {
+    return [lhs = std::move(lhs), rhs = std::move(rhs)]() mutable {
+        rhs(lhs.spawn());
+    };
+}
+
+// reader | filter → reader (spawns immediately)
+template <typename In, typename Out, typename F>
+reader<Out> operator|(reader<In> r, filter<In, Out, F> f) {
+    return std::move(f).spawn(std::move(r));
+}
+
+// reader | consumer → callable
+template <typename T, typename F>
+auto operator|(reader<T> r, consumer<T, F> c) {
+    return std::move(c).bind(std::move(r));
+}
+
+// filter | writer → writer (spawns immediately)
+template <typename In, typename Out, typename F>
+writer<In> operator|(filter<In, Out, F> f, writer<Out> w) {
+    return std::move(f).spawn(std::move(w));
+}
+
+// producer | writer → callable
+template <typename T, typename F>
+auto operator|(producer<T, F> p, writer<T> w) {
+    return std::move(p).bind(std::move(w));
+}
+
 }

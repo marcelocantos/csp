@@ -29,6 +29,7 @@
 #include <csp/part/reduce.h>
 #include <csp/part/round_robin.h>
 #include <csp/part/scan.h>
+#include <csp/part/share.h>
 #include <csp/part/slide.h>
 #include <csp/part/sink.h>
 #include <csp/part/tee.h>
@@ -329,6 +330,127 @@ TEST_CASE("ChanUtil - Scan type change") {
     CHECK_FALSE(bool(r >> _));
 }
 
+TEST_CASE("ChanUtil - Share single subscriber") {
+    RunStats stats;
+
+    std::vector<int> got;
+    stats.spawn([&]{
+        auto subs = share(count(1, 4).spawn());
+        auto r = subs.read();
+        subs = {};  // Done subscribing.
+        for (int n; r >> n;) got.push_back(n);
+    });
+
+    csp::schedule();
+    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - Share multiple subscribers") {
+    RunStats stats;
+
+    std::vector<int> got_a, got_b;
+    stats.spawn([&]{
+        chan<int> in;
+        auto subs = share(std::move(in.r));
+
+        auto a = subs.read();
+        auto b = subs.read();
+        subs = {};
+
+        csp::spawn([&got_b, b = std::move(b)]() mutable {
+            for (int n; b >> n;) got_b.push_back(n);
+        });
+
+        in.w << 10; in.w << 20; in.w << 30;
+        in.w = {};
+
+        for (int n; a >> n;) got_a.push_back(n);
+    });
+
+    csp::schedule();
+    CHECK_EQ(std::vector<int>({10, 20, 30}), got_a);
+    CHECK_EQ(std::vector<int>({10, 20, 30}), got_b);
+}
+
+TEST_CASE("ChanUtil - Share late subscriber gets current value") {
+    RunStats stats;
+
+    int first_val = 0;
+    stats.spawn([&]{
+        chan<int> in;
+        auto subs = share(std::move(in.r));
+
+        auto a = subs.read();
+
+        // Publish two values; subscriber a reads them.
+        in.w << 1;
+        CHECK_EQ(1, a.read());
+        in.w << 2;
+        CHECK_EQ(2, a.read());
+
+        // Late subscriber joins — should get current value (2).
+        auto b = subs.read();
+        first_val = b.read();
+
+        in.w << 3;
+        CHECK_EQ(3, a.read());
+        CHECK_EQ(3, b.read());
+
+        in.w = {};
+        subs = {};
+    });
+
+    csp::schedule();
+    CHECK_EQ(2, first_val);
+}
+
+TEST_CASE("ChanUtil - Share subscriber dropped") {
+    RunStats stats;
+
+    std::vector<int> got;
+    stats.spawn([&]{
+        chan<int> in;
+        auto subs = share(std::move(in.r));
+
+        auto a = subs.read();
+        auto b = subs.read();
+        subs = {};
+
+        // Both get first value.
+        in.w << 1;
+        CHECK_EQ(1, a.read());
+        CHECK_EQ(1, b.read());
+
+        // Drop b.
+        b = {};
+
+        // a should still work.
+        in.w << 2; in.w << 3;
+        in.w = {};
+        for (int n; a >> n;) got.push_back(n);
+    });
+
+    csp::schedule();
+    CHECK_EQ(std::vector<int>({2, 3}), got);
+}
+
+TEST_CASE("ChanUtil - Share source dies") {
+    RunStats stats;
+
+    stats.spawn([]{
+        auto subs = share(count(1, 3).spawn());
+        auto r = subs.read();
+        subs = {};
+
+        CHECK_EQ(1, r.read());
+        CHECK_EQ(2, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
+}
+
 TEST_CASE("ChanUtil - Metrics basic") {
     auto [data, stats] = metrics(count(1, 6).spawn());
 
@@ -573,8 +695,8 @@ TEST_CASE("ChanUtil - LatchRepeat") {
     while (csp::internal::run()) { }
 }
 
-TEST_CASE("ChanUtil - Zip2") {
-    auto r = zip2(count(1, 4).spawn(), count(10, 40, 10).spawn()).spawn();
+TEST_CASE("ChanUtil - Zip binary") {
+    auto r = zip(count(1, 4).spawn(), count(10, 40, 10).spawn()).spawn();
 
     auto [a, b] = r.read();
     CHECK_EQ(1, a); CHECK_EQ(10, b);
@@ -582,26 +704,26 @@ TEST_CASE("ChanUtil - Zip2") {
     CHECK_EQ(2, a); CHECK_EQ(20, b);
     std::tie(a, b) = r.read();
     CHECK_EQ(3, a); CHECK_EQ(30, b);
-    std::pair<int, int> _;
+    std::tuple<int, int> _;
     CHECK_FALSE(bool(r >> _));
 }
 
-TEST_CASE("ChanUtil - Zip2 early termination") {
-    // Second stream is shorter — zip2 terminates when it dies.
-    auto r = zip2(count(0, 100).spawn(), count(0, 3).spawn()).spawn();
+TEST_CASE("ChanUtil - Zip early termination") {
+    // Second stream is shorter — zip terminates when it dies.
+    auto r = zip(count(0, 100).spawn(), count(0, 3).spawn()).spawn();
 
     for (int i = 0; i < 3; ++i) {
         auto [a, b] = r.read();
         CHECK_EQ(i, a);
         CHECK_EQ(i, b);
     }
-    std::pair<int, int> _;
+    std::tuple<int, int> _;
     CHECK_FALSE(bool(r >> _));
 }
 
-TEST_CASE("ChanUtil - Zip2f") {
-    auto r = zip2f(count(1, 5).spawn(), count(10, 50, 10).spawn(),
-                   [](int a, int b) { return a * b; }).spawn();
+TEST_CASE("ChanUtil - Zip binary with function") {
+    auto r = zip<int, int>(count(1, 5).spawn(), count(10, 50, 10).spawn(),
+                           [](int a, int b) { return a * b; }).spawn();
 
     CHECK_EQ(10, r.read());
     CHECK_EQ(40, r.read());
@@ -625,8 +747,8 @@ TEST_CASE("ChanUtil - Zip") {
     CHECK_FALSE(bool(r >> _));
 }
 
-TEST_CASE("ChanUtil - Zipf") {
-    auto r = zipf<int, int, int>(
+TEST_CASE("ChanUtil - Zip ternary with function") {
+    auto r = zip<int, int, int>(
                   count(1, 4).spawn(), count(10, 40, 10).spawn(),
                   count(100, 400, 100).spawn(),
                   [](int a, int b, int c) { return a + b + c; }).spawn();
@@ -1180,11 +1302,11 @@ TEST_CASE("ChanUtil - Interleave output death") {
     while (csp::internal::run()) { }
 }
 
-TEST_CASE("ChanUtil - SlideFixed") {
+TEST_CASE("ChanUtil - Slide fixed") {
     RunStats stats;
 
     // Window of 3 over 1..6. Both channels must be drained concurrently.
-    auto [in, out] = slide_fixed<int>(count(1, 7).spawn(), 3);
+    auto [in, out] = slide<int>(count(1, 7).spawn(), size_t(3));
 
     std::vector<int> ins, outs;
     stats.spawn([r = std::move(in), &ins]{
@@ -1201,10 +1323,10 @@ TEST_CASE("ChanUtil - SlideFixed") {
     CHECK_EQ(std::vector<int>({1, 2, 3}), outs);
 }
 
-TEST_CASE("ChanUtil - SlideFixed no slide_in") {
+TEST_CASE("ChanUtil - Slide fixed no slide_in") {
     RunStats stats;
 
-    auto [in, out] = slide_fixed<int>(count(1, 7).spawn(), 3, false);
+    auto [in, out] = slide<int>(count(1, 7).spawn(), size_t(3), false);
 
     std::vector<int> ins, outs;
     stats.spawn([r = std::move(in), &ins]{
@@ -1221,10 +1343,10 @@ TEST_CASE("ChanUtil - SlideFixed no slide_in") {
     CHECK_EQ(std::vector<int>({1, 2, 3}), outs);
 }
 
-TEST_CASE("ChanUtil - SlideFixed window larger than input") {
+TEST_CASE("ChanUtil - Slide fixed window larger than input") {
     RunStats stats;
 
-    auto [in, out] = slide_fixed<int>(count(1, 4).spawn(), 10);
+    auto [in, out] = slide<int>(count(1, 4).spawn(), size_t(10));
 
     std::vector<int> ins, outs;
     stats.spawn([r = std::move(in), &ins]{
@@ -1266,7 +1388,7 @@ TEST_CASE("ChanUtil - Slide predicate") {
 TEST_CASE("ChanUtil - Slide output death") {
     RunStats stats;
 
-    auto [in, out] = slide_fixed<int>(count_forever(0).spawn(), 3);
+    auto [in, out] = slide<int>(count_forever(0).spawn(), size_t(3));
 
     // Read a few from each then drop.
     stats.spawn([r = std::move(in)]{
@@ -1882,9 +2004,9 @@ TEST_CASE("ChanUtil - Flatten empty vectors") {
 
 // --- unzip ---
 
-TEST_CASE("ChanUtil - Unzip2") {
-    auto src = zip2(count(1, 4).spawn(), count(10, 40, 10).spawn()).spawn();
-    auto [ra, rb] = unzip2(std::move(src));
+TEST_CASE("ChanUtil - Unzip binary") {
+    auto src = zip(count(1, 4).spawn(), count(10, 40, 10).spawn()).spawn();
+    auto [ra, rb] = unzip(std::move(src));
 
     std::vector<int> as, bs;
     csp::spawn([ra = std::move(ra), &as]{
@@ -1899,9 +2021,9 @@ TEST_CASE("ChanUtil - Unzip2") {
     CHECK_EQ(std::vector<int>({10, 20, 30}), bs);
 }
 
-TEST_CASE("ChanUtil - Unzip2f") {
+TEST_CASE("ChanUtil - Unzip with function (binary)") {
     // Decompose int into quotient and remainder.
-    auto [rq, rr] = unzip2f<int>(count(0, 5).spawn(),
+    auto [rq, rr] = unzip(count(0, 5).spawn(),
         [](int n) { return std::make_pair(n / 2, n % 2); });
 
     std::vector<int> qs, rs;
@@ -1940,9 +2062,9 @@ TEST_CASE("ChanUtil - Unzip tuple") {
     CHECK_EQ(std::vector<int>({100, 200, 300}), cs);
 }
 
-TEST_CASE("ChanUtil - Unzipf") {
+TEST_CASE("ChanUtil - Unzip with function (ternary)") {
     // Decompose int into three fields via function.
-    auto readers = unzipf<int>(count(0, 4).spawn(),
+    auto readers = unzip(count(0, 4).spawn(),
         [](int n) { return std::make_tuple(n, n * 10, n * 100); });
     auto& [ra, rb, rc] = readers;
 

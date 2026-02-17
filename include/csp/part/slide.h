@@ -3,6 +3,7 @@
 #include <csp/part/part.h>
 
 #include <deque>
+#include <type_traits>
 
 namespace csp::part {
 
@@ -17,7 +18,8 @@ struct window_pair {
 // expired(older, current) returns true when older should leave the window.
 // Per input element: expire from front (send on out), then send new on in.
 // slide_in=true emits during growth; false suppresses until first expiry.
-template <typename T, typename Pred>
+template <typename T, typename Pred,
+          std::enable_if_t<std::is_invocable_v<Pred&, const T&, const T&>, int> = 0>
 window_pair<T> slide(reader<T> src, Pred expired, bool slide_in = true) {
     chan<T> in_ch, out_ch;
     window_pair<T> result{std::move(in_ch.r), std::move(out_ch.r)};
@@ -53,13 +55,13 @@ window_pair<T> slide(reader<T> src, Pred expired, bool slide_in = true) {
 
 // Fixed-size sliding window. Expires oldest when window exceeds n elements.
 template <typename T>
-window_pair<T> slide_fixed(reader<T> src, size_t n, bool slide_in = true) {
+window_pair<T> slide(reader<T> src, size_t n, bool slide_in = true) {
     chan<T> in_ch, out_ch;
     window_pair<T> result{std::move(in_ch.r), std::move(out_ch.r)};
 
     csp::spawn([src = std::move(src), in_w = std::move(in_ch.w),
                 out_w = std::move(out_ch.w), n, slide_in]() mutable {
-        internal::descr("slide_fixed");
+        internal::descr("slide");
 
         std::deque<T> win;
         bool started = slide_in;

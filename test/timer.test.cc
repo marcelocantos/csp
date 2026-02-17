@@ -1,9 +1,11 @@
 #include "testutil.h"
 #include "testscale.h"
 
+#include <csp/part/timer.h>
 #include <csp/timer.h>
 
 using namespace csp;
+using namespace csp::part;
 using namespace std::chrono_literals;
 
 static Logger g_log("Timer.Test");
@@ -128,4 +130,72 @@ TEST_CASE("Timer - TimeoutPattern") {
     csp::schedule();
     CHECK_EQ(1, which_result);
     CHECK_EQ(42, val);
+}
+
+TEST_CASE("Timer - Controlled duration") {
+    RunStats stats;
+
+    auto threshold = CSP_TEST_SANITIZER ? 8ms : 4ms;
+    std::vector<clock::duration> intervals;
+
+    stats.spawn([&]{
+        chan<clock::duration> ctl;
+        auto t = timer(std::move(ctl.r));
+
+        csp::spawn([w = std::move(ctl.w)]() mutable {
+            w << 10ms; w << 20ms; w << 10ms;
+        });
+
+        clock::time_point prev = clock::now();
+        for (clock::time_point tp; t >> tp;) {
+            intervals.push_back(tp - prev);
+            prev = tp;
+        }
+    });
+
+    csp::schedule();
+    REQUIRE_EQ(3, intervals.size());
+    CHECK_GE(intervals[0], threshold);
+    CHECK_GE(intervals[1], threshold * 2);
+    CHECK_GE(intervals[2], threshold);
+}
+
+TEST_CASE("Timer - Controlled time_point") {
+    RunStats stats;
+
+    int fires = 0;
+
+    stats.spawn([&]{
+        chan<clock::time_point> ctl;
+        auto t = timer(std::move(ctl.r));
+
+        auto now = clock::now();
+        csp::spawn([w = std::move(ctl.w), now]() mutable {
+            w << now + 10ms;
+            w << now + 30ms;
+        });
+
+        for (clock::time_point tp; t >> tp;) fires++;
+    });
+
+    csp::schedule();
+    CHECK_EQ(2, fires);
+}
+
+TEST_CASE("Timer - Controlled cancellation") {
+    RunStats stats;
+
+    stats.spawn([]{
+        chan<clock::duration> ctl;
+        auto t = timer(std::move(ctl.r));
+
+        csp::spawn([w = std::move(ctl.w)]() mutable {
+            w << 5ms;
+        });
+
+        t.read();
+        t = {};
+    });
+
+    csp::schedule();
 }
