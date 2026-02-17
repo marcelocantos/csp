@@ -14,7 +14,7 @@ TEST_CASE("Fanout - Simple") {
     CSP_LOG(g_log, "new_out{}");
     auto [new_out_w, new_out_r] = chan<writer<int>>{};
     CSP_LOG(g_log, "spawn_fanout");
-    auto new_in = fanout<int>().spawn(std::move(new_out_r));
+    auto new_in = fanout<int>.spawn(std::move(new_out_r));
     CSP_LOG(g_log, "out{}");
     auto [out_w, out_r] = chan<int>{};
 
@@ -44,7 +44,7 @@ TEST_CASE("Fanout - Complex") {
 
     auto [new_out_w, new_out_r] = chan<writer<int>>{};
 
-    auto new_in = fanout<int>().spawn(std::move(new_out_r));
+    auto new_in = fanout<int>.spawn(std::move(new_out_r));
 
     struct {
         chan<int> ch;
@@ -93,7 +93,7 @@ TEST_CASE("Fanout - Waves") {
     auto [new_out_w, new_out_r] = chan<writer<int>>{};
     chan<> keepalive;
 
-    auto new_in = fanout<int>().spawn(std::move(new_out_r));
+    auto new_in = fanout<int>.spawn(std::move(new_out_r));
 
     struct {
         chan<int> ch;
@@ -155,14 +155,14 @@ TEST_CASE("Fanout - Chain") {
 
     auto [new_out_w, new_out_r] = chan<writer<int>>{};
 
-    auto new_in = fanout<int>().spawn(std::move(new_out_r));
+    auto new_in = fanout<int>.spawn(std::move(new_out_r));
 
     constexpr int m = 2, n = 1;
     int total = 0;
 
     for (int i = 0; i < m; ++i) {
         auto [new_out2_w, new_out2_r] = chan<writer<int>>{};
-        stats.spawn(fanout<int>().bind(std::move(new_out2_r), new_out_w.copy()));
+        stats.spawn(fanout<int>.bind(std::move(new_out2_r), new_out_w.copy()));
 
         for (int j = 0; j < n; ++j) {
             new_out2_w << spawn_consumer<int>([&](auto r) {

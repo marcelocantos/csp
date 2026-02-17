@@ -32,7 +32,7 @@ int main() {
         printf("Live configuration reload:\n");
 
         // Latch: holds the most recent Config and serves it to readers.
-        auto [w, r] = latch<Config>().spawn();
+        auto [w, r] = latch<Config>.spawn();
 
         // Config producer: updates config periodically
         spawn([w = std::move(w)]{

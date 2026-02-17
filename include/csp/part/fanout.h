@@ -8,8 +8,7 @@ namespace csp::part {
     // New subscribers register by sending their writer<T> endpoint via a
     // control channel. Dead subscribers are automatically removed.
     template <typename T>
-    auto fanout() {
-        return make_filter<writer<T>>([](reader<writer<T>> new_out, writer<writer<T>> new_in) {
+    inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, writer<writer<T>> new_in) {
             internal::descr("fanout");
 
             static Logger scope("chan/fanout/scope");
@@ -104,6 +103,5 @@ namespace csp::part {
                 }
             }
         });
-    }
 
 }

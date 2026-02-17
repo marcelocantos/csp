@@ -7,15 +7,13 @@ namespace csp::part {
     // A writer endpoint that never accepts values.
     // Useful as a default or placeholder in alt/prialt expressions.
     template <typename T>
-    auto deaf() {
-        return make_consumer<T>([](reader<T> in) {
-            internal::descr("deaf");
+    inline auto const deaf = make_consumer<T>([](reader<T> in) {
+        internal::descr("deaf");
 
-            static Logger scope("chan/deaf/scope");
-            BRAC_SCOPE(scope, "deaf", "");
+        static Logger scope("chan/deaf/scope");
+        BRAC_SCOPE(scope, "deaf", "");
 
-            alt(~in);
-        });
-    }
+        alt(~in);
+    });
 
 }

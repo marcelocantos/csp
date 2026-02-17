@@ -124,7 +124,7 @@ TEST_CASE("ChanUtil - CountForever") {
 TEST_CASE("ChanUtil - Deaf") {
     RunStats stats;
 
-    auto w = deaf<int>().spawn();
+    auto w = deaf<int>.spawn();
     auto [give_up_w, give_up_r] = chan<>{};
 
     stats.spawn([w = std::move(w), give_up = std::move(give_up_r)]{
@@ -171,7 +171,7 @@ TEST_CASE("ChanUtil - KillSwitch") {
 TEST_CASE("ChanUtil - Latch") {
     RunStats stats;
 
-    auto lat = latch<int>().spawn();
+    auto lat = latch<int>.spawn();
 
     stats.spawn([in = lat.r.copy()]{
         CHECK_EQ(1, in.read());
@@ -304,7 +304,7 @@ TEST_CASE("ChanUtil - Scan type change") {
 TEST_CASE("ChanUtil - Mute") {
     RunStats stats;
 
-    auto r = mute<int>().spawn();
+    auto r = mute<int>.spawn();
     auto [give_up_w, give_up_r] = chan<>{};
 
     stats.spawn([r = r.copy(), give_up = std::move(give_up_r)]{
@@ -462,7 +462,7 @@ TEST_CASE("ChanUtil - TeeSideChannelDeath") {
 TEST_CASE("ChanUtil - LatchRepeat") {
     RunStats stats;
 
-    auto lat = latch<int>().spawn();
+    auto lat = latch<int>.spawn();
 
     stats.spawn([out = std::move(lat.w)]{
         for (int n = 1; n <= 5; ++n) {

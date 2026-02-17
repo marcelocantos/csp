@@ -29,7 +29,7 @@ int main() {
 
         // Spawn fanout: it reads new subscriber endpoints from new_sub,
         // and returns a reader from which we get input channels.
-        auto new_in = fanout<std::string>().spawn(--new_sub);
+        auto new_in = fanout<std::string>.spawn(--new_sub);
 
         // Helper to add a user
         auto add_user = [&](const char* name) {
