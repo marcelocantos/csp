@@ -2,6 +2,8 @@
 # Usage: make                              (build + run tests)
 #        make build                        (compile only)
 #        make bench                        (build + run benchmarks)
+#        make check                       (run TLA+ model checker)
+#        make amalg                       (generate amalgamation files)
 #        make clean                        (remove artifacts)
 #        make SANITIZE=address,undefined   (ASan + UBSan)
 #        make SANITIZE=thread              (TSan)
@@ -71,7 +73,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench examples run-examples clean
+.PHONY: test build bench check examples run-examples amalg clean
 
 test: $(TARGET)
 	./$(TARGET)
@@ -121,8 +123,29 @@ $(BUILDDIR)/examples/%: examples/%.cc $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) $(LDFLAGS) -o $@ $< $(LIB_OBJS) $(LDLIBS)
 
+# --- TLA+ model checking ---
+
+TLA_JAR    := formal/tla2tools.jar
+TLA_SPECS  := $(wildcard formal/*.tla)
+# Exclude TLC-generated trace-exploration specs.
+TLA_SPECS  := $(foreach s,$(TLA_SPECS),$(if $(findstring _TTrace,$(s)),,$(s)))
+# Exclude _Bug specs from the default check (they demonstrate known violations).
+TLA_CHECK  := $(filter-out %_Bug.tla,$(TLA_SPECS))
+
+check: $(TLA_JAR)
+	@fail=0; \
+	for spec in $(TLA_CHECK); do \
+		echo "=== TLC: $$spec ==="; \
+		java -XX:+UseParallelGC -jar $(TLA_JAR) -workers auto $$spec || fail=1; \
+		echo; \
+	done; \
+	exit $$fail
+
+amalg:
+	python3 scripts/amalgamate.py
+
 clean:
-	rm -rf build build-*
+	rm -rf build build-* amalg
 
 # Pull in generated dependency files (silently ignored on first build).
 -include $(ALL_DEPS)

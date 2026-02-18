@@ -2,8 +2,6 @@
 #include <csp/internal/runtime.h>
 #include <csp/ringbuffer.h>
 
-#include <boost/range/iterator_range_core.hpp>
-
 #include <algorithm>
 #include <atomic>
 #include <cassert>

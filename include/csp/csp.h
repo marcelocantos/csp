@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include <boost/iterator/iterator_facade.hpp>
+#include <iterator>
 
 
 namespace csp::internal {
@@ -377,32 +377,37 @@ public:
         return t;
     }
 
-    class iterator : public boost::iterator_facade<iterator, T const, boost::forward_traversal_tag> {
+    class iterator {
     public:
+        using iterator_category = std::input_iterator_tag;
+        using value_type = T;
+        using difference_type = std::ptrdiff_t;
+        using pointer = T const *;
+        using reference = T const &;
+
         iterator() : source_(nullptr) {}
         iterator(reader<T> const & source) : source_(source ? &source : nullptr) {
-            if (source_) {
-                increment();
-            }
+            if (source_) advance();
         }
+
+        reference operator*() const { return t_; }
+        pointer operator->() const { return &t_; }
+
+        iterator & operator++() { advance(); return *this; }
+        iterator operator++(int) { auto tmp = *this; advance(); return tmp; }
+
+        friend bool operator==(iterator const & a, iterator const & b) { return a.source_ == b.source_; }
+        friend bool operator!=(iterator const & a, iterator const & b) { return a.source_ != b.source_; }
 
     private:
         reader<T> const * source_;
         T t_;
 
-        void increment() {
+        void advance() {
             if (!(*source_ >> t_)) {
                 source_ = nullptr;
             }
         }
-
-        bool equal(iterator const & i) const {
-            return source_ == i.source_;
-        }
-
-        T const & dereference() const { return t_; }
-
-        friend class boost::iterator_core_access;
     };
 
     iterator begin() const { return {*this}; }
@@ -591,33 +596,39 @@ chan<T> spawn_filter(F && f) {
 template <typename T>
 class range {
 public:
-    class iterator : public boost::iterator_facade<iterator, T const, boost::forward_traversal_tag> {
+    class iterator {
     public:
+        using iterator_category = std::input_iterator_tag;
+        using value_type = T;
+        using difference_type = std::ptrdiff_t;
+        using pointer = T const *;
+        using reference = T const &;
+
         iterator(range<T> const * source = {}) : source_(source) {
             if (source_ && source_->r_) {
-                increment();
+                advance();
             }
         }
+
+        reference operator*() const { return t_; }
+        pointer operator->() const { return &t_; }
+
+        iterator & operator++() { advance(); return *this; }
+        iterator operator++(int) { auto tmp = *this; advance(); return tmp; }
+
+        friend bool operator==(iterator const & a, iterator const & b) { return a.source_ == b.source_; }
+        friend bool operator!=(iterator const & a, iterator const & b) { return a.source_ != b.source_; }
 
     private:
         range<T> const * source_;
         T t_;
 
-        void increment() {
+        void advance() {
             if (!(source_->r_ >> t_)) {
                 join(source_->ex_);
                 source_ = {};
             }
-            static Logger log("xxx");
         }
-
-        bool equal(iterator const & i) const {
-            return source_ == i.source_;
-        }
-
-        T const & dereference() const { return t_; }
-
-        friend class boost::iterator_core_access;
     };
 
     range(reader<T> r, reader<std::exception_ptr> ex) : r_(std::move(r)), ex_(std::move(ex)) { }
