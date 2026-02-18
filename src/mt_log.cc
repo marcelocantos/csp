@@ -3,10 +3,8 @@
 #include <csp/csp.h>
 #include <csp/internal/on_scope_exit.h>
 
-#include <cxxabi.h>
 #include <errno.h>
 #include <execinfo.h>
-#include <sys/syslimits.h>
 
 #include <algorithm>
 #include <chrono>
@@ -17,7 +15,6 @@
 #include <map>
 #include <regex>
 #include <set>
-#include <sstream>
 #include <unordered_map>
 #include <utility>
 #include <vector>

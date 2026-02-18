@@ -10,6 +10,8 @@ Communicating Sequential Processes. Namespace: `csp`.
 ```bash
 make        # build and run all tests
 make build  # compile only
+make amalg  # generate amalgamation files (amalg/)
+make iwyu   # remove unused includes (clang-tidy misc-include-cleaner)
 make clean  # remove build/
 ```
 
@@ -80,5 +82,11 @@ with `.test.cc` extension. 281 tests.
 
 ## Dependencies
 
-- **Boost.Context** (linked: `-lboost_context`)
+- **Boost.Context** (vendored as git submodule in `third_party/boost-context/`;
+  only the fcontext assembly files are compiled)
 - **doctest** (vendored, header-only)
+
+### Optional tools
+
+- **clang-tidy**: Used by `make iwyu` (include cleaner). Ships with Xcode
+  Command Line Tools; standalone: `brew install llvm`.

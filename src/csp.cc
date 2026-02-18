@@ -1,6 +1,5 @@
 #include <csp/internal/runtime.h>
 #include <csp/internal/hamt.h>
-#include <csp/stack_analysis.h>
 
 #include <pthread.h>
 
@@ -9,7 +8,6 @@
 #include <cstdarg>
 #include <cstring>
 #include <exception>
-#include <stdexcept>
 #include <thread>
 
 #include <stdlib.h>

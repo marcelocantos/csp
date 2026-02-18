@@ -1,6 +1,5 @@
 #include <csp/internal/hamt.h>
 
-#include <new>
 
 namespace csp::internal {
 

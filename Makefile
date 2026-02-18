@@ -4,6 +4,7 @@
 #        make bench                        (build + run benchmarks)
 #        make check                       (run TLA+ model checker)
 #        make amalg                       (generate amalgamation files)
+#        make iwyu                        (remove unused includes)
 #        make clean                        (remove artifacts)
 #        make SANITIZE=address,undefined   (ASan + UBSan)
 #        make SANITIZE=thread              (TSan)
@@ -98,7 +99,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench check examples run-examples amalg clean
+.PHONY: test build bench check examples run-examples amalg iwyu clean
 
 test: $(TARGET)
 	./$(TARGET)
@@ -173,6 +174,19 @@ check: $(TLA_JAR)
 
 amalg:
 	python3 scripts/amalgamate.py
+
+# --- include cleaner (clang-tidy) ---
+
+TIDY_SYSROOT :=
+ifneq ($(shell xcrun --show-sdk-path 2>/dev/null),)
+TIDY_SYSROOT := -isysroot $(shell xcrun --show-sdk-path)
+endif
+
+TIDY_SRCS := $(filter-out src/stack_analysis_arm64.cc,$(LIB_SRCS))
+
+iwyu: amalg
+	@python3 scripts/clean_includes.py $(TIDY_SRCS) amalg/csp.cpp \
+		-- -std=c++17 -stdlib=libc++ $(TIDY_SYSROOT) $(INCLUDES)
 
 clean:
 	rm -rf build build-* amalg

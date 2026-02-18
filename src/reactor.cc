@@ -1,6 +1,5 @@
 #include <csp/internal/reactor.h>
 #include <csp/internal/csp_internal.h>
-#include <csp/internal/runtime.h>
 
 #include <sys/event.h>
 #include <unistd.h>
