@@ -252,15 +252,15 @@ for (;;) {
     case 1:
         process(n);
         break;
-    case -2:
+    case ~2:
         // quit channel's writer was dropped -- time to exit
         return;
     }
 }
 ```
 
-Death-watch results are reported as negative indices: if the `k`-th operation
-(1-indexed) is a death event, `alt`/`prialt` returns `-k`.
+Death-watch results are reported as bitwise-complemented indices: if the `k`-th
+operation (1-indexed) is a death event, `alt`/`prialt` returns `~k`.
 
 ## Signal-only channels
 

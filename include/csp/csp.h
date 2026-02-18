@@ -656,7 +656,7 @@ typed_alt(Ops &&... ops) {
     internal::AltMatch m;
     begin_f(&m, chanops, N, false);
     if (m.src && m.dst) {
-        int idx = (m.result > 0 ? m.result : -m.result) - 1;
+        int idx = (m.result > 0 ? m.result : ~m.result) - 1;
         transfer_at<0>(idx, m.src, m.dst, ops...);
     }
     internal::alt_end(&m);

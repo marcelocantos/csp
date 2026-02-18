@@ -26,7 +26,7 @@ auto sample(reader<T> source, reader<Trigger> trigger) {
                 case 2:  // Trigger — emit latest if any.
                     if (has_value && !(out << latest)) return;
                     break;
-                case -1:  // Source died — emit on remaining triggers.
+                case ~1:  // Source died — emit on remaining triggers.
                     if (has_value) {
                         Trigger tr;
                         while (csp::alt(trigger >> tr, ~out) == 1) {

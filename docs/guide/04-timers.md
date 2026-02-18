@@ -143,7 +143,7 @@ for (;;) {
     csp::clock::time_point t;
     switch (csp::alt(data >> n, heartbeat >> t)) {
     case  1: process(n);      break;
-    case -1: goto done;       // data channel closed
+    case ~1: goto done;       // data channel closed
     case  2: send_heartbeat(); break;
     }
 }

@@ -29,7 +29,7 @@ T first_wins(std::vector<reader<T>> inputs) {
             return std::move(t);
         }
         // Reader died — remove it.
-        size_t slot = static_cast<size_t>(-m.result - 1);
+        size_t slot = static_cast<size_t>(~m.result - 1);
         inputs[slot] = std::move(inputs.back());
         inputs.pop_back();
         chanops[slot] = chanops.back();

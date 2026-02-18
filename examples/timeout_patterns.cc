@@ -67,7 +67,7 @@ int main() {
                     printf("  Work item: %d\n", n);
                     work_count++;
                     break;
-                case -1:
+                case ~1:
                     goto done;
                 case 2:
                     printf("  Heartbeat #%d\n", ++heartbeats);

@@ -55,7 +55,7 @@ reader<reader<T>> share(reader<T> source) {
                                     return;
                                 }
                                 break;
-                            case -1:  // Feed dead — deliver last value.
+                            case ~1:  // Feed dead — deliver last value.
                                 out << std::move(val);
                                 return;
                             default:  // Subscriber dead.
@@ -67,7 +67,7 @@ reader<reader<T>> share(reader<T> source) {
                     if (has_value) feed.w << latest;
                     feeds.push_back(std::move(feed.w));
                     continue;
-                case -1:  // Source died.
+                case ~1:  // Source died.
                     return;
                 default:  // Subscription channel dead.
                     accepting = false;

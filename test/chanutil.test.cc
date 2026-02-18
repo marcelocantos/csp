@@ -157,7 +157,7 @@ TEST_CASE("ChanUtil - Deaf") {
     auto [give_up_w, give_up_r] = chan<>{};
 
     stats.spawn([w = std::move(w), give_up = std::move(give_up_r)]{
-        CHECK_EQ(-2, prialt(w << 42, ~give_up));
+        CHECK_EQ(~2, prialt(w << 42, ~give_up));
     });
 
     while (csp::internal::run()) { }

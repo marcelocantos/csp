@@ -133,7 +133,7 @@ namespace {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_ + 1);
-                                cw.thread->signal_ = -idx;
+                                cw.thread->signal_ = ~idx;
                                 cw.thread->schedule();
                             }
                         }
@@ -142,7 +142,7 @@ namespace {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cv.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
                                 int idx = int(cv.chanop - cv.thread->chanops_ + 1);
-                                cv.thread->signal_ = -idx;
+                                cv.thread->signal_ = ~idx;
                                 cv.thread->schedule();
                             }
                         }
@@ -247,11 +247,11 @@ namespace {
                         if (flags & ready_flag) {
                             // Data chanop on dead channel: defer until
                             // after scanning for ready peers elsewhere.
-                            if (!dead_data_result) dead_data_result = -(i + 1);
+                            if (!dead_data_result) dead_data_result = ~(i + 1);
                         } else {
                             // Vulture: dead is the expected signal.
                             unlock_all();
-                            out->result = -(i + 1);
+                            out->result = ~(i + 1);
                             return;
                         }
                         continue;

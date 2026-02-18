@@ -44,10 +44,10 @@ transfer, and returns the **1-based index** of the matched operation.
 | Return value | Meaning |
 |---|---|
 | positive `i` | Data operation `i` matched (1-based) |
-| negative `-i` | Death event for operation `i` (1-based) |
+| complement `~i` | Death event for operation `i` (1-based) |
 
 For example, with three operations, the possible returns are `1`, `2`, `3`,
-`-1`, `-2`, `-3`.
+`~1`, `~2`, `~3`.
 
 ## Vultures: detecting dead endpoints
 
@@ -59,13 +59,13 @@ is the tilde operator on an endpoint:
 - `~r` -- fires when no writers remain on the channel (the reader will never
   receive again).
 
-Vultures return **negative** indices:
+Vultures return **bitwise-complemented** indices:
 
 ```cpp
 int n;
 switch (alt(r >> n, ~w)) {
 case  1: /* got data from r */ break;
-case -2: /* w's reader died */ break;
+case ~2: /* w's reader died */ break;
 }
 ```
 
@@ -76,7 +76,7 @@ the scheduler tells you what happened.
 ```mermaid
 graph LR
     A[reader r] -->|"r >> n (case 1)"| ALT((alt))
-    B[writer w] -->|"~w (case -2)"| ALT
+    B[writer w] -->|"~w (case ~2)"| ALT
     ALT --> handler["switch on result"]
 ```
 
@@ -99,7 +99,7 @@ pattern is checking for shutdown before doing work:
 int n;
 for (;;) {
     switch (prialt(~quit, in >> n)) {
-    case -1: return;          // quit channel died -- exit
+    case ~1: return;          // quit channel died -- exit
     case  2: process(n); break;
     }
 }
@@ -120,12 +120,12 @@ for (T t; prialt(~out, in >> t) > 0 && out << t;) { }
 This is dense, so here is what each piece does:
 
 1. **`prialt(~out, in >> t)`** -- first check whether `out`'s reader has
-   died (`~out`, index -1). If it has, `prialt` returns `-1` which is `<= 0`,
+   died (`~out`, index `~1`). If it has, `prialt` returns `~1` which is `< 0`,
    the loop condition is false, and we stop. Otherwise, read from `in` into
    `t` (index 2, which is `> 0`).
 
 2. **`> 0`** -- if the return is positive, a data operation matched and `t`
-   holds a value. If negative (vulture) or if `in` has no more writers (the
+   holds a value. If complemented (vulture) or if `in` has no more writers (the
    read would never fire, so `prialt` returns `0` -- though in practice the
    `~out` vulture or input exhaustion handles this), the loop exits.
 
@@ -161,7 +161,7 @@ with `prialt` gives you a non-blocking poll:
 int n;
 switch (prialt(r >> n, ~skip)) {
 case  1: /* r had data ready -- n is set */ break;
-case -2: /* no data available right now  */ break;
+case ~2: /* no data available right now  */ break;
 }
 ```
 
@@ -176,7 +176,7 @@ implementing try-send patterns:
 // Try to send without blocking.
 switch (prialt(w << value, ~skip)) {
 case  1: /* sent successfully */ break;
-case -2: /* receiver not ready */ break;
+case ~2: /* receiver not ready */ break;
 }
 ```
 
@@ -213,7 +213,7 @@ clock::time_point t;
 for (;;) {
     switch (alt(work >> n, heartbeat >> t)) {
     case  1: process(n); break;
-    case -1: return;  // work channel closed
+    case ~1: return;  // work channel closed
     case  2: send_heartbeat(); break;
     }
 }
@@ -237,7 +237,7 @@ not a practical limitation: dynamic-count alt arises when fanning out to or
 in from a runtime-determined set of channels, and those channels are always
 the same type.
 
-The return value follows the same convention (1-based index, negative for
+The return value follows the same convention (1-based index, complemented for
 vultures).
 
 ## Disabling operations at runtime
@@ -271,11 +271,11 @@ spawn([out = std::move(out), in0 = std::move(in0), in1 = std::move(in1)] {
     int t;
     for (;;) {
         switch (prialt(~out, in0 >> t, in1 >> t)) {
-        case -1: return;             // output reader died
+        case ~1: return;             // output reader died
         case  2: out << t; break;    // forward from in0
         case  3: out << t; break;    // forward from in1
-        case -2:                     // in0 writer died
-        case -3: return;             // in1 writer died
+        case ~2:                     // in0 writer died
+        case ~3: return;             // in1 writer died
         }
     }
 });

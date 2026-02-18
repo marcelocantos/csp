@@ -302,7 +302,7 @@ TEST_CASE("Channel - AltDead") {
                 CHECK(bool(out << n));
                 ++reqs;
                 break;
-            case -2:
+            case ~2:
                 return;
             }
         }

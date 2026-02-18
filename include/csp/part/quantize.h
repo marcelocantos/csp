@@ -49,13 +49,13 @@ auto quantize(reader<T> source,  // incoming units
                 q = 0;
                 break;
             default:
-                CSP_LOG(log, "quantize: -%d", -rc);
-                if (rc == -1) { // Dead source; deliver quantum, if any.
+                CSP_LOG(log, "quantize: ~%d", ~rc);
+                if (rc == ~1) { // Dead source; deliver quantum, if any.
                     if (q && q <= acc && sink << q) {
                         CSP_LOG(log, "quantize[~source]: sink << %d", q);
                         acc -= q;
                     }
-                } else if (rc == -2) { // Dead quanta; drain source.
+                } else if (rc == ~2) { // Dead quanta; drain source.
                     while (q) {
                         switch (int rc = alt(acc < q ? source >> t : ~source,
                                              q <= acc ? sink << q : ~sink)) {
@@ -68,10 +68,10 @@ auto quantize(reader<T> source,  // incoming units
                             acc -= q;
                             return;
                         default:
-                            CSP_LOG(log, "quantize[~quanta]: ~%d", -rc);
+                            CSP_LOG(log, "quantize[~quanta]: ~%d", ~rc);
                             if (q && q <= acc && sink << q) {
                                 CSP_LOG(log, "quantize[~quanta,~%s]: sink << %d",
-                                         rc == -1 ? "source" : "sink", q);
+                                         rc == ~1 ? "source" : "sink", q);
                                 acc -= q;
                             }
                             return;

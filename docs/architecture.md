@@ -314,7 +314,7 @@ Return signal_
 ```
 
 The `signal_` field was set by the waker during the match. Positive values
-indicate which chanop matched; negative values indicate endpoint closure.
+indicate which chanop matched; bitwise-complemented values indicate endpoint closure.
 
 ### Lock Ordering
 

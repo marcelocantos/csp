@@ -43,7 +43,7 @@ auto flat_map(F&& f) {
 
             internal::alt_end(&m);
 
-            if (m.result == -1) {
+            if (m.result == ~1) {
                 // Output died.
                 return;
             } else if (input_alive && m.result == 2) {
@@ -51,7 +51,7 @@ auto flat_map(F&& f) {
                 reader<B> sub = f(std::move(a));
                 chanops.push_back({internal::wait(sub.internal_reader()), &b});
                 subs.push_back(std::move(sub));
-            } else if (input_alive && m.result == -2) {
+            } else if (input_alive && m.result == ~2) {
                 // Input exhausted — remove input slot.
                 chanops.erase(chanops.begin() + 1);
                 input_alive = false;
@@ -60,7 +60,7 @@ auto flat_map(F&& f) {
                 if (!(out << std::move(b))) return;
             } else {
                 // Sub-stream died — swap-and-pop.
-                size_t slot = static_cast<size_t>(-m.result - 1);
+                size_t slot = static_cast<size_t>(~m.result - 1);
                 size_t i = slot - sub_base;
                 subs[i] = std::move(subs.back());
                 subs.pop_back();

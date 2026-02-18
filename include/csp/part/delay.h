@@ -44,7 +44,7 @@ auto delay(csp::clock::duration d) {
                     if (!(out << std::move(q.front().first))) return;
                     q.pop_front();
                     break;
-                case -1:  // Input died — drain remaining with delays.
+                case ~1:  // Input died — drain remaining with delays.
                     for (auto& [val, dl] : q) {
                         csp::sleep_until(dl);
                         if (!(out << std::move(val))) return;

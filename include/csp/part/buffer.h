@@ -29,7 +29,7 @@ auto buffer(size_t capacity = size_t(-1)) {
                 buf.push();
                 CSP_LOG(log, "PUSH%s", buf.full() ? " (full)" : "");
                 break;
-            case -1:
+            case ~1:
                 CSP_LOG(log, "DRAIN");
                 while (!buf.empty() && out << std::move(buf.front())) {
                     buf.pop();
@@ -40,7 +40,7 @@ auto buffer(size_t capacity = size_t(-1)) {
                 buf.pop();
                 CSP_LOG(log, "POP %s", buf.empty() ? " (empty)": "");
                 break;
-            case -2:
+            case ~2:
                 CSP_LOG(log, "~OUT");
                 return;
             default:

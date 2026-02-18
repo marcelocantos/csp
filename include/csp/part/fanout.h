@@ -49,7 +49,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
             internal::AltMatch m;
             internal::prialt_begin(&m, chanops.data(), chanops.size(), 0);
             if (m.src && m.dst) {
-                int idx = (m.result > 0 ? m.result : -m.result) - 1;
+                int idx = (m.result > 0 ? m.result : ~m.result) - 1;
                 if (idx == 0 || idx == 2)
                     *static_cast<writer<T>*>(m.dst) = std::move(*static_cast<writer<T>*>(m.src));
                 else if (idx == 1)
@@ -63,7 +63,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
                 chanops[0] = {{}, nullptr};
                 chanops[1] = {internal::wait(in.internal_reader()), &t};
                 break;
-            case -1:
+            case ~1:
                 CSP_LOG(log, "~new_in");
                 return;
             case 2:
@@ -77,7 +77,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
                     }
                 }
                 break;
-            case -2:
+            case ~2:
                 CSP_LOG(log, "~in");
                 in = {};
                 in_val = ++in;
@@ -89,13 +89,13 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
                 chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr});
                 outs.push_back(std::move(out_val));
                 break;
-            case -3:
+            case ~3:
                 CSP_LOG(log, "~new_out");
                 // No more new outs.
                 chanops[2] = {{}, nullptr};
                 break;
             default: {  // ~outs
-                auto i = -4 - m.result;
+                auto i = ~m.result - 4;
                 CSP_LOG(log, "~outs[%d]", i);
                 drop(i);
             }

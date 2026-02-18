@@ -30,9 +30,9 @@ reader<T> gate(reader<T> data, reader<bool> control) {
                 case 2:  // Control update.
                     open = b;
                     break;
-                case -1:  // Data died.
+                case ~1:  // Data died.
                     return;
-                case -2:  // Control died while open — keep forwarding.
+                case ~2:  // Control died while open — keep forwarding.
                     for (T v; csp::alt(data >> v, ~out) > 0;) {
                         if (!(out << std::move(v))) return;
                     }
@@ -45,7 +45,7 @@ reader<T> gate(reader<T> data, reader<bool> control) {
                 case 1:  // Control update.
                     open = b;
                     break;
-                case -1:  // Control died while closed — permanently closed.
+                case ~1:  // Control died while closed — permanently closed.
                     return;
                 default:  // Output died.
                     return;

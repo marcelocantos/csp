@@ -31,15 +31,15 @@ auto merge(std::vector<reader<T>> inputs) {
                     *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
                 internal::alt_end(&m);
 
-                if (m.result == -1) {
+                if (m.result == ~1) {
                     // Output peer died.
                     return;
                 } else if (m.result > 0) {
                     // Read succeeded — forward to output.
                     if (!(out << std::move(t))) return;
                 } else {
-                    // A reader died. Slot index = -result - 1 (1-based).
-                    size_t slot = static_cast<size_t>(-m.result - 1);
+                    // A reader died. Slot index from complement.
+                    size_t slot = static_cast<size_t>(~m.result - 1);
                     size_t i = slot - 1; // 0-based index into inputs.
                     inputs[i] = std::move(inputs.back());
                     inputs.pop_back();

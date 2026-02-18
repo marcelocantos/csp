@@ -30,7 +30,7 @@ auto debounce(csp::clock::duration d) {
                     if (!(out << std::move(pending))) return;
                     timer = {};
                     break;
-                case -1:  // Input died — emit pending, done.
+                case ~1:  // Input died — emit pending, done.
                     out << std::move(pending);
                     return;
                 default:  // Output or timer died.

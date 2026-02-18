@@ -38,7 +38,7 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
                 break;
             case 2:  // Stats pulled — already sent.
                 break;
-            case -1:  // Data died — close output, serve remaining stats.
+            case ~1:  // Data died — close output, serve remaining stats.
                 out = {};
                 for (;;) {
                     auto final_snap = metrics_snapshot{
@@ -46,7 +46,7 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
                     if (!(stats << final_snap)) return;
                 }
                 return;
-            case -2:  // Stats reader dropped — keep forwarding.
+            case ~2:  // Stats reader dropped — keep forwarding.
                 for (T v; csp::alt(data >> v, ~out) > 0;) {
                     if (!(out << std::move(v))) return;
                 }
