@@ -1,5 +1,4 @@
 build*/
-amalg/
 *.d
 .DS_Store
 .claude/

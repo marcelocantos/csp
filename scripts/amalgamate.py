@@ -8,6 +8,18 @@ from pathlib import Path
 INCLUDE_RE = re.compile(r'^(\s*#\s*include\s+)([<"])([^>"]+)[>"](.*)$')
 PRAGMA_ONCE_RE = re.compile(r'^\s*#\s*pragma\s+once\s*$')
 
+# Preprocessor symbols treated as undefined when converting fcontext .S files.
+FCONTEXT_UNDEF = {
+    '__CET__', 'BOOST_USE_TSX', 'BOOST_CONTEXT_SHADOW_STACK',
+    'BOOST_CONTEXT_TLS_STACK_PROTECTOR', '__i386__', '_ILP32',
+    'SHSTK_ENABLED', 'SHADOW_STACK_SYSCALL',
+}
+
+PP_DIRECTIVES = {
+    'if', 'ifdef', 'ifndef', 'elif', 'else', 'endif',
+    'define', 'undef', 'include', 'pragma', 'error', 'warning', 'line',
+}
+
 
 def is_under(path, parent):
     try:
@@ -115,6 +127,221 @@ def amalgamate_sources(src_files, output, header, banner):
     print(f'  {output}  ({sum(1 for l in lines if l.strip())} non-blank lines)')
 
 
+# ---------------------------------------------------------------------------
+# fcontext .S → inline asm() conversion
+# ---------------------------------------------------------------------------
+
+def _parse_pp(line):
+    """Parse preprocessor directive. Returns (directive, rest) or None."""
+    m = re.match(r'^#\s*(\w+)(.*)', line.strip())
+    if m and m.group(1) in PP_DIRECTIVES:
+        return m.group(1), m.group(2).strip()
+    return None
+
+
+def _eval_pp(directive, rest, undef):
+    """Evaluate condition against undef set. Returns True/False/None."""
+    rest = rest.strip()
+    if directive == 'ifdef':
+        return False if rest in undef else None
+    if directive == 'ifndef':
+        return True if rest in undef else None
+    if directive == 'if':
+        # !defined(X)
+        m = re.match(r'^!\s*defined\s*\(?\s*(\w+)\s*\)?\s*$', rest)
+        if m:
+            return True if m.group(1) in undef else None
+        # defined(X) ...
+        m = re.match(r'^defined\s*\(?\s*(\w+)\s*\)?', rest)
+        if m and m.group(1) in undef:
+            return False
+        # bare symbol
+        m = re.match(r'^(\w+)\s*$', rest)
+        if m and m.group(1) in undef:
+            return False
+        return None
+    return None
+
+
+def _preprocess(lines, undef):
+    """Evaluate known #if conditions, stripping resolved blocks."""
+    result = []
+    stack = []  # entries: [active, determined, seen_true]
+
+    def active():
+        return all(e[0] for e in stack)
+
+    for line in lines:
+        pp = _parse_pp(line)
+        if pp:
+            d, rest = pp
+            if d in ('if', 'ifdef', 'ifndef'):
+                if not active():
+                    stack.append([False, True, False])
+                else:
+                    val = _eval_pp(d, rest, undef)
+                    if val is True:
+                        stack.append([True, True, True])
+                    elif val is False:
+                        stack.append([False, True, False])
+                    else:
+                        result.append(line)
+                        stack.append([True, False, True])
+            elif d == 'else':
+                if stack:
+                    _, det, seen = stack[-1]
+                    if det:
+                        stack[-1] = [not seen, True, True]
+                    elif active():
+                        result.append(line)
+            elif d == 'endif':
+                if stack:
+                    _, det, _ = stack.pop()
+                    if not det and active():
+                        result.append(line)
+            # Strip #define, #include inside .S
+            continue
+
+        if active():
+            result.append(line)
+
+    return result
+
+
+def _strip_leading_comments(lines):
+    """Strip leading C-style comment blocks and blank lines."""
+    i, in_comment = 0, False
+    while i < len(lines):
+        s = lines[i].strip()
+        if not s:
+            i += 1
+            continue
+        if in_comment:
+            if '*/' in s:
+                in_comment = False
+            i += 1
+            continue
+        if s.startswith('/*'):
+            in_comment = '*/' not in s[2:]
+            i += 1
+            continue
+        break
+    return lines[i:]
+
+
+def _should_strip(line):
+    """Lines to remove from assembly output."""
+    s = line.strip()
+    if s.startswith('.file ') or s.startswith('.file\t'):
+        return True
+    if '.note.GNU-stack' in s:
+        return True
+    if s == '_CET_ENDBR':
+        return True
+    return False
+
+
+def _format_asm(buf):
+    """Format assembly lines as a C++ asm() statement."""
+    while buf and not buf[-1].strip():
+        buf.pop()
+    if not buf:
+        return ''
+    escaped = []
+    for line in buf:
+        raw = line.rstrip().replace('\\', '\\\\').replace('"', '\\"')
+        escaped.append(f'"{raw}\\n"')
+    return 'asm(\n' + '\n'.join(escaped) + '\n);'
+
+
+_ADR_RE = re.compile(r'^(\s*)adr\s+(x\d+|lr|fp)\s*,\s*(\w+)\s*$')
+
+
+def _fixup_adr(lines, is_macho):
+    """Replace adr with adrp+add (adr relocations fail in inline asm)."""
+    result = []
+    for line in lines:
+        m = _ADR_RE.match(line)
+        if m:
+            indent, reg, label = m.group(1), m.group(2), m.group(3)
+            if is_macho:
+                result.append(f'{indent}adrp {reg}, {label}@PAGE')
+                result.append(f'{indent}add  {reg}, {reg}, {label}@PAGEOFF')
+            else:
+                result.append(f'{indent}adrp {reg}, {label}')
+                result.append(f'{indent}add  {reg}, {reg}, :lo12:{label}')
+        else:
+            result.append(line)
+    return result
+
+
+def _convert_s(filepath, undef, is_macho=False):
+    """Convert one .S file to C++ inline asm() blocks."""
+    lines = filepath.read_text().splitlines()
+    lines = _strip_leading_comments(lines)
+    lines = _preprocess(lines, undef)
+    lines = _fixup_adr(lines, is_macho)
+
+    parts, buf = [], []
+    for line in lines:
+        if _should_strip(line):
+            continue
+        pp = _parse_pp(line)
+        if pp:
+            if buf:
+                parts.append(_format_asm(buf))
+                buf = []
+            parts.append(line)
+        else:
+            buf.append(line)
+    if buf:
+        parts.append(_format_asm(buf))
+
+    return '\n'.join(p for p in parts if p)
+
+
+def amalgamate_fcontext(fcontext_dir, output):
+    """Append fcontext inline assembly to csp.cpp."""
+    variants = [
+        ('__aarch64__', '_M_ARM64', '__APPLE__',
+         'jump_arm64_aapcs_macho_gas.S', 'make_arm64_aapcs_macho_gas.S',
+         'jump_arm64_aapcs_elf_gas.S',   'make_arm64_aapcs_elf_gas.S'),
+        ('__x86_64__',  '_M_X64',  '__APPLE__',
+         'jump_x86_64_sysv_macho_gas.S', 'make_x86_64_sysv_macho_gas.S',
+         'jump_x86_64_sysv_elf_gas.S',   'make_x86_64_sysv_elf_gas.S'),
+    ]
+
+    sections = ['\n/* fcontext — context-switching primitives (from Boost.Context) */']
+
+    for idx, (arch, arch_alt, plat, mj, mm, ej, em) in enumerate(variants):
+        guard = f'#{"if" if idx == 0 else "elif"} defined({arch}) || defined({arch_alt})'
+        sections.append(guard)
+
+        sections.append(f'#if defined({plat})')
+        sections.append(f'/* {mj} */')
+        sections.append(_convert_s(fcontext_dir / mj, FCONTEXT_UNDEF, is_macho=True))
+        sections.append(f'/* {mm} */')
+        sections.append(_convert_s(fcontext_dir / mm, FCONTEXT_UNDEF, is_macho=True))
+
+        sections.append('#else /* ELF */')
+        sections.append(f'/* {ej} */')
+        sections.append(_convert_s(fcontext_dir / ej, FCONTEXT_UNDEF, is_macho=False))
+        sections.append(f'/* {em} */')
+        sections.append(_convert_s(fcontext_dir / em, FCONTEXT_UNDEF, is_macho=False))
+        sections.append(f'#endif /* {plat} */')
+
+    sections.append('#else')
+    sections.append('#error "Unsupported architecture for CSP fcontext"')
+    sections.append('#endif')
+
+    text = '\n'.join(sections) + '\n'
+    with open(output, 'a') as f:
+        f.write(text)
+
+    count = sum(1 for line in text.splitlines() if line.strip())
+    print(f'  (appended fcontext assembly: {count} non-blank lines)')
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     include_dir = root / 'include'
@@ -156,6 +383,11 @@ def main():
         src_files, out_dir / 'csp.cpp', 'csp.h',
         'CSP — amalgamated source',
     )
+
+    # --- Append fcontext inline assembly to csp.cpp ---
+    fcontext_dir = root / 'third_party' / 'boost-context' / 'src' / 'asm'
+    if fcontext_dir.exists():
+        amalgamate_fcontext(fcontext_dir, out_dir / 'csp.cpp')
 
 
 if __name__ == '__main__':

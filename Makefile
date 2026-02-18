@@ -16,8 +16,8 @@
 BUILDDIR := build
 CXX      := c++ -std=c++17 -stdlib=libc++
 CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter
-LDFLAGS  := -L/opt/homebrew/lib
-LDLIBS   := -lboost_context
+LDFLAGS  :=
+LDLIBS   :=
 
 # --- Sanitizer support ---
 # Each sanitizer mode gets its own build directory so you can switch
@@ -37,8 +37,32 @@ endif
 DEPFLAGS = -MMD -MP
 
 INCLUDES := -Iinclude \
-            -Ithird_party \
-            -I/opt/homebrew/include
+            -Ithird_party
+
+# --- fcontext (vendored from Boost.Context) ---
+
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
+ifeq ($(UNAME_S),Darwin)
+  FCONTEXT_FMT := macho
+else
+  FCONTEXT_FMT := elf
+endif
+
+ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+  FCONTEXT_ARCH := arm64
+  FCONTEXT_ABI  := aapcs
+else
+  FCONTEXT_ARCH := x86_64
+  FCONTEXT_ABI  := sysv
+endif
+
+FCONTEXT_DIR    := third_party/boost-context/src/asm
+FCONTEXT_SUFFIX := $(FCONTEXT_ARCH)_$(FCONTEXT_ABI)_$(FCONTEXT_FMT)_gas.S
+FCONTEXT_SRCS   := $(FCONTEXT_DIR)/jump_$(FCONTEXT_SUFFIX) \
+                   $(FCONTEXT_DIR)/make_$(FCONTEXT_SUFFIX)
+FCONTEXT_OBJS   := $(patsubst $(FCONTEXT_DIR)/%.S,$(BUILDDIR)/fcontext/%.o,$(FCONTEXT_SRCS))
 
 # --- Sources ---
 
@@ -61,6 +85,7 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 # --- Objects ---
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
+LIB_OBJS   += $(FCONTEXT_OBJS)
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
 
@@ -97,6 +122,11 @@ $(BUILDDIR)/src/%.o: src/%.cc
 $(BUILDDIR)/src/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
+
+# Vendored fcontext assembly
+$(BUILDDIR)/fcontext/%.o: $(FCONTEXT_DIR)/%.S
+	@mkdir -p $(dir $@)
+	$(CXX) -c -o $@ $<
 
 # Test sources
 $(BUILDDIR)/test/%.o: test/%.cc

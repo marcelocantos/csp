@@ -1,18 +1,8 @@
-#ifndef BOOST_CONTEXT_SIMPLE_STACK_ALLOCATOR_H
-#define BOOST_CONTEXT_SIMPLE_STACK_ALLOCATOR_H
+#ifndef SIMPLE_STACK_ALLOCATOR_H
+#define SIMPLE_STACK_ALLOCATOR_H
 
 #include <cassert>
 #include <cstddef>
-#include <cstdlib>
-#include <stdexcept>
-
-#include <boost/config.hpp>
-
-#include <boost/context/detail/config.hpp>
-
-#ifdef BOOST_HAS_ABI_HEADERS
-#  include BOOST_ABI_PREFIX
-#endif
 
 namespace boost {
 namespace context {
@@ -42,8 +32,4 @@ public:
 
 }}
 
-#ifdef BOOST_HAS_ABI_HEADERS
-#  include BOOST_ABI_SUFFIX
-#endif
-
-#endif // BOOST_CONTEXT_SIMPLE_STACK_ALLOCATOR_H
+#endif // SIMPLE_STACK_ALLOCATOR_H
