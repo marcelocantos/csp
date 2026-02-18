@@ -9,7 +9,7 @@
 // (An OS thread typically needs 1-8 MB of stack; a CSP microthread
 // uses a few hundred bytes.)
 
-#include <csp/csp.h>
+#include "csp.h"
 
 #include <cstdio>
 #include <chrono>

@@ -9,7 +9,7 @@
 // With mutexes you'd need thread-safe queues, worker pools, and
 // careful shutdown logic. Here it's 30 lines of straight-line code.
 
-#include <csp/csp.h>
+#include "csp.h"
 
 #include <cstdio>
 

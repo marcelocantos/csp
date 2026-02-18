@@ -6,13 +6,7 @@
 // The combinators (map, where, buffer, tee, sink, enumerate) are
 // all provided by the library — you just snap them together.
 
-#include <csp/csp.h>
-#include <csp/part/enumerate.h>
-#include <csp/part/map.h>
-#include <csp/part/where.h>
-#include <csp/part/buffer.h>
-#include <csp/part/tee.h>
-#include <csp/part/sink.h>
+#include "csp.h"
 
 #include <cstdio>
 #include <vector>

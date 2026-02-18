@@ -7,7 +7,7 @@
 // produced by pure message passing — no shared state,
 // no mutable variables outside each microthread's scope.
 
-#include <csp/csp.h>
+#include "csp.h"
 
 #include <cstdio>
 #include <cstdint>

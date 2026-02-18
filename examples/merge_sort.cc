@@ -9,8 +9,7 @@
 // The parallelism is natural — no explicit thread management, no
 // barriers, no shared mutable state.
 
-#include <csp/csp.h>
-#include <csp/part/enumerate.h>
+#include "csp.h"
 
 #include <cstdio>
 #include <vector>

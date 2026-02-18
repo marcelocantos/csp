@@ -9,8 +9,7 @@
 // the request/response plumbing. Compare to the boilerplate of
 // futures + promises, or callback-based async patterns.
 
-#include <csp/csp.h>
-#include <csp/part/rpc.h>
+#include "csp.h"
 
 #include <cstdio>
 #include <tuple>

@@ -5,3 +5,4 @@ build*/
 formal/tla2tools.jar
 formal/*_TTrace*
 formal/states/
+states/

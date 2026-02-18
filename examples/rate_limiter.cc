@@ -9,9 +9,7 @@
 // careful edge-case handling. In CSP, it's a natural composition
 // of existing primitives.
 
-#include <csp/csp.h>
-#include <csp/timer.h>
-#include <csp/part/buffer.h>
+#include "csp.h"
 
 #include <cstdio>
 #include <chrono>

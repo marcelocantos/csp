@@ -8,7 +8,7 @@
 //
 // Compare to thread pool + mutex + condition variable boilerplate.
 
-#include <csp/csp.h>
+#include "csp.h"
 
 #include <cstdio>
 #include <cmath>
