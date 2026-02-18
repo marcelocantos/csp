@@ -1,8 +1,5 @@
 #include "testutil.h"
 
-#include <csp/part/count.h>
-#include <csp/part/fanout.h>
-
 using namespace csp;
 using namespace csp::part;
 

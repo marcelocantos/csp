@@ -2,8 +2,6 @@
 
 #include <doctest/doctest.h>
 
-#include <csp/csp.h>
-
 #include <algorithm>
 #include <stdexcept>
 #include <string>

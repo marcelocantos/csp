@@ -1,50 +1,5 @@
 #include "testutil.h"
 
-#include <csp/part/batch.h>
-#include <csp/part/blackhole.h>
-#include <csp/part/chain.h>
-#include <csp/part/count.h>
-#include <csp/part/deaf.h>
-#include <csp/part/debounce.h>
-#include <csp/part/delay.h>
-#include <csp/part/distinct.h>
-#include <csp/part/enumerate.h>
-#include <csp/part/first_last.h>
-#include <csp/part/first_wins.h>
-#include <csp/part/flat_map.h>
-#include <csp/part/gate.h>
-#include <csp/part/group_by.h>
-#include <csp/part/interleave.h>
-#include <csp/part/join.h>
-#include <csp/part/killswitch.h>
-#include <csp/part/latch.h>
-#include <csp/part/map.h>
-#include <csp/part/merge.h>
-#include <csp/part/metrics.h>
-#include <csp/part/sample.h>
-#include <csp/part/nwise.h>
-#include <csp/part/pairwise.h>
-#include <csp/part/partition.h>
-#include <csp/part/reduce.h>
-#include <csp/part/round_robin.h>
-#include <csp/part/scan.h>
-#include <csp/part/share.h>
-#include <csp/part/slide.h>
-#include <csp/part/sink.h>
-#include <csp/part/tee.h>
-#include <csp/part/throttle.h>
-#include <csp/part/timeout.h>
-#include <csp/part/default_if_empty.h>
-#include <csp/part/flatten.h>
-#include <csp/part/skip_while.h>
-#include <csp/part/stride.h>
-#include <csp/part/take_while.h>
-#include <csp/part/unique.h>
-#include <csp/part/unzip.h>
-#include <csp/part/where.h>
-#include <csp/part/window.h>
-#include <csp/part/zip.h>
-
 using namespace csp;
 using namespace csp::part;
 

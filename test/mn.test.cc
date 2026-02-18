@@ -3,9 +3,6 @@
 
 #include <doctest/doctest.h>
 
-#include <csp/csp.h>
-#include <csp/timer.h>
-
 #include <atomic>
 #include <mutex>
 #include <set>

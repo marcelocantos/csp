@@ -1,6 +1,6 @@
-#include <doctest/doctest.h>
+#include "csp.h"
 
-#include <csp/ringbuffer.h>
+#include <doctest/doctest.h>
 
 #include <set>
 

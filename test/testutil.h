@@ -2,7 +2,7 @@
 
 #include <doctest/doctest.h>
 
-#include <csp/csp.h>
+#include "csp.h"
 
 #include <exception>
 #include <mutex>

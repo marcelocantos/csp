@@ -1,9 +1,6 @@
 #include "testutil.h"
 #include "testscale.h"
 
-#include <csp/part/timer.h>
-#include <csp/timer.h>
-
 using namespace csp;
 using namespace csp::part;
 using namespace std::chrono_literals;

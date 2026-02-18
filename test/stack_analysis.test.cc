@@ -1,5 +1,6 @@
+#include "csp.h"
+
 #include <doctest/doctest.h>
-#include <csp/stack_analysis.h>
 
 #if defined(__aarch64__)
 

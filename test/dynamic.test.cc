@@ -1,9 +1,6 @@
-#include <doctest/doctest.h>
-
-#include <csp/csp.h>
-#include <csp/dynamic.h>
-
 #include "testutil.h"
+
+#include <doctest/doctest.h>
 
 TEST_CASE("dynamic: basic read/write") {
     RunStats stats;

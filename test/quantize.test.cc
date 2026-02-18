@@ -1,8 +1,5 @@
 #include "testutil.h"
 
-#include <csp/part/enumerate.h>
-#include <csp/part/quantize.h>
-
 using namespace csp;
 using namespace csp::part;
 

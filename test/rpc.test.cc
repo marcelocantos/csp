@@ -1,7 +1,5 @@
 #include "testutil.h"
 
-#include <csp/part/rpc.h>
-
 using namespace csp;
 using namespace csp::part;
 

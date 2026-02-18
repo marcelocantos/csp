@@ -1,7 +1,5 @@
 #include "testutil.h"
 
-#include <csp/part/buffer.h>
-
 using namespace csp;
 using namespace csp::part;
 

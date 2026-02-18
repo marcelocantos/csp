@@ -1,9 +1,7 @@
+#include "csp.h"
 #include "testscale.h"
 
 #include <doctest/doctest.h>
-
-#include <csp/csp.h>
-#include <csp/timer.h>
 
 #include <atomic>
 #include <chrono>

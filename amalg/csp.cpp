@@ -201,14 +201,19 @@ namespace {
             ++counterses()[endpt].refs;
             endpts_[endpt].refcount.fetch_add(1, std::memory_order_relaxed);
         }
+        // TLA:ChannelLifecycle.CloserWDecRef TLA:ChannelLifecycle.CloserRDecRef (shared: endpt selects W or R)
         void release(int endpt) {
             ++counterses()[endpt].derefs;
             if (endpts_[endpt].refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 {
+                    // TLA:ChannelLifecycle.CloserWAcquire TLA:ChannelLifecycle.CloserRAcquire
                     std::lock_guard<std::mutex> lock(mu_);
                     --counterses()[endpt].active;
                     auto & ep = endpts_[1 - endpt];
                     if (ep.refcount.load(std::memory_order_acquire) > 0) {
+                        // TLA:ChannelLifecycle.CloserWWakeWaiters TLA:ChannelLifecycle.CloserRWakeWaiters
+                        // TLA:AltStateCAS.WakerCAS TLA:AltStateCAS.WakerSetSignal TLA:AltStateCAS.WakerSchedule TLA:AltStateCAS.LoserDone
+                        // TLA:DrainSuspended.StartWake
                         // Wake waiters via CAS. Don't remove from queues —
                         // woken threads clean up their own registrations.
                         for (auto const & cw : ep.waiters) {
@@ -230,7 +235,8 @@ namespace {
                         }
                         // Don't clear — woken threads clean up their own registrations.
                     }
-                }
+                } // TLA:ChannelLifecycle.CloserWReleaseMu TLA:ChannelLifecycle.CloserRReleaseMu
+                // TLA:ChannelLifecycle.CloserWDecAlive TLA:ChannelLifecycle.CloserRDecAlive
                 // Both endpoint sides decrement alive_. The last one
                 // (fetch_sub returns 1) deletes. This avoids a race
                 // when both endpoints reach refcount 0 concurrently
@@ -309,8 +315,9 @@ namespace {
             auto lock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.lock(); };
             auto unlock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock(); };
 
-            lock_all();
+            lock_all(); // TLA:ChannelLifecycle.WaiterAcquire
 
+            // TLA:ChannelLifecycle.WaiterPhase1
             // Phase 1: Scan for ready peer (priority order, rotated by offset).
             // For data chanops (ready_flag), a ready peer takes priority
             // over dead-channel detection on other channels.  For vultures
@@ -341,6 +348,7 @@ namespace {
 
                     auto & them = ch->endpts_[1 - endpt].waiters;
                     if ((flags & ready_flag)) {
+                        // TLA:AltStateCAS.WakerStart TLA:AltStateCAS.WakerCAS
                         for (auto & cw : them) {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
@@ -382,6 +390,7 @@ namespace {
             }
 
             // Phase 2: Register on all channels and sleep.
+            // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
             g_self->alt_state.store(Microthread::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
@@ -400,13 +409,14 @@ namespace {
             // before do_switch completes, a waker could push us to
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
+            // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
             g_self->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            g_self->suspending_.store(false, std::memory_order_release);
+            g_self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
-            lock_all();
+            lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
             for (int i = 0; i < g_self->n_chanops_; ++i) {
                 auto const & chop = g_self->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
@@ -414,9 +424,9 @@ namespace {
                     ch->endpts_[flags & endpt_flag].remove(&chop, g_self);
                 }
             }
-            unlock_all();
+            unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
 
-            g_self->alt_state.store(Microthread::ALT_IDLE, std::memory_order_release);
+            g_self->alt_state.store(Microthread::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
             out->result = g_self->signal_;
             g_self->chanops_ = nullptr;
             g_self->n_chanops_ = 0;
@@ -587,7 +597,8 @@ namespace csp {
             if (rt.mn_mode_) {
                 bool need_unpark = false;
                 {
-                    std::lock_guard<std::mutex> lk(rt.global_mu);
+                    std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
+                    // TLA:DrainSuspended.Drain
                     suspended->suspending_.store(false, std::memory_order_release);
                     if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                         if (!suspended->in_global_) {
@@ -663,12 +674,14 @@ namespace csp {
             // In M:N mode, push to the global run queue so any worker
             // can pick it up, preventing stranding on a P whose worker
             // is about to park.
+            // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
             if (rt.mn_mode_) {
                 {
                     std::lock_guard<std::mutex> lk(rt.global_mu);
                     if (in_global_) {
                         return;
                     }
+                    // TLA:DrainSuspended.DoSchedule
                     // If the microthread is in the unlock_all→do_switch
                     // window, it's still running and can't be safely
                     // pushed to the global queue.  Set wake_pending_
@@ -677,7 +690,7 @@ namespace csp {
                         wake_pending_.store(true, std::memory_order_release);
                         return;
                     }
-                    rt.push_to_global(this);
+                    rt.push_to_global(this); // TLA:StealWork.WPush
                 }
                 rt.unpark_one();
                 return;
@@ -731,7 +744,7 @@ namespace csp {
                         busy = busy->next_;
                     }
                     break;
-                case Status::detach:
+                case Status::detach: // TLA:StealWork.VDeschedule
                 case Status::exit:
                     // Inline deschedule without re-acquiring run_mu.
                     assert(g_self->next_);
@@ -743,6 +756,7 @@ namespace csp {
                     g_self->next_ = nullptr;
                     g_self->prev_ = nullptr;
 
+                    // TLA:DrainSuspended.CheckWP
                     if (status == Status::detach &&
                         g_self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                         if (busy) {
@@ -781,6 +795,7 @@ namespace csp {
             }
         }
 
+        // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
             // Reclaim unused stack pages before suspending.
             if (g_self->stk_) {
@@ -939,9 +954,9 @@ void sleep_until(int64_t deadline_ns) {
         std::lock_guard<std::mutex> lk(current_p().run_mu);
         current_p().timer_heap.push({deadline, g_self});
     }
-    g_self->suspending_.store(true, std::memory_order_release);
+    g_self->suspending_.store(true, std::memory_order_release); // TLA:DrainSuspended.BeginSuspend
     do_switch(Status::detach);
-    g_self->suspending_.store(false, std::memory_order_release);
+    g_self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 }
 
 int run() {
@@ -1622,14 +1637,14 @@ namespace csp {
         }
 
         void Runtime::shutdown() {
-            stopping.store(true, std::memory_order_release);
+            stopping.store(true, std::memory_order_release); // TLA:WorkerParking.ShutdownSetFlag
             // Acquire-release park_mu to synchronize with workers'
             // park_cv.wait() — ensures any worker that has already
             // checked the predicate (seeing stopping==false) has
             // entered wait() before we notify, preventing lost
             // notifications.
-            { std::lock_guard<std::mutex> lk(park_mu); }
-            park_cv.notify_all();
+            { std::lock_guard<std::mutex> lk(park_mu); } // TLA:WorkerParking.ShutdownAcquireMu TLA:WorkerParking.ShutdownReleaseMu
+            park_cv.notify_all(); // TLA:WorkerParking.ShutdownNotify
 
             if (watchdog_.joinable()) {
                 watchdog_.join();
@@ -1662,6 +1677,7 @@ namespace csp {
         void Runtime::worker_loop() {
             auto& p = current_p();
 
+            // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
 
@@ -1687,7 +1703,7 @@ namespace csp {
 
                 // Park: wait for work or shutdown.
                 {
-                    std::unique_lock<std::mutex> lk(park_mu);
+                    std::unique_lock<std::mutex> lk(park_mu); // TLA:WorkerParking.WorkerAcquirePark
                     p.parked.store(true, std::memory_order_release);
 
                     auto deadline = next_timer_deadline(p);
@@ -1704,6 +1720,7 @@ namespace csp {
                         if (wd < *deadline) deadline = wd;
                     }
 
+                    // TLA:WorkerParking.WorkerEvalPred TLA:WorkerParking.WorkerEnterWait TLA:WorkerParking.WorkerWoken
                     if (deadline) {
                         park_cv.wait_until(lk, *deadline, [this, &p] {
                             return stopping.load(std::memory_order_acquire)
@@ -1716,7 +1733,7 @@ namespace csp {
                         });
                     }
 
-                    p.parked.store(false, std::memory_order_release);
+                    p.parked.store(false, std::memory_order_release); // TLA:WorkerParking.WorkerWake
                 }
 
                 // Surplus P wind-down: exit if still idle after timeout.
@@ -1784,6 +1801,7 @@ namespace csp {
             unpark_one();
         }
 
+        // TLA:StealWork.VLocalNext
         Microthread* Runtime::local_next(Processor& p) {
             std::lock_guard<std::mutex> lk(p.run_mu);
             auto& busy = p.busy;
@@ -1806,6 +1824,7 @@ namespace csp {
             return candidate;
         }
 
+        // TLA:StealWork.TkAcquireGlobal TLA:StealWork.TkPopAndSchedule
         bool Runtime::take_from_global(Processor& p) {
             std::lock_guard<std::mutex> lk(global_mu);
             if (global_run_queue.empty()) {
@@ -1858,23 +1877,25 @@ namespace csp {
 
                 Microthread* stolen = nullptr;
                 {
-                    std::lock_guard<std::mutex> lk(victim.run_mu);
+                    std::lock_guard<std::mutex> lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
 
                     // Try to acquire global_mu without blocking to avoid
                     // deadlock (take_from_global holds global_mu then
                     // acquires run_mu via schedule_local).
-                    std::unique_lock<std::mutex> glk(global_mu, std::try_to_lock);
+                    std::unique_lock<std::mutex> glk(global_mu, std::try_to_lock); // TLA:StealWork.TStealTryGlobalOK TLA:StealWork.TStealTryGlobalFail
                     if (!glk) continue;
 
                     if (!victim.busy) continue;
 
+                    // TLA:StealWork.TStealCheck
                     auto* candidate = victim.busy->prev_;
                     if (!candidate || candidate == &victim.main
                         || candidate == victim.busy
                         || candidate == victim.running) {
-                        continue;
+                        continue; // TLA:StealWork.TStealReleaseFail
                     }
 
+                    // TLA:StealWork.TStealDelinkPush
                     // Delink from victim's DLL and push to global
                     // atomically (both locks held) so schedule() cannot
                     // see the MT with next_==null / in_global_==false.
@@ -1884,7 +1905,7 @@ namespace csp {
                     candidate->prev_ = nullptr;
                     push_to_global(candidate);
                     stolen = candidate;
-                }
+                } // TLA:StealWork.TStealReleaseOK
                 if (stolen) {
                     unpark_one();
                     return true;

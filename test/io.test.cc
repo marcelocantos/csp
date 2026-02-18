@@ -1,11 +1,5 @@
 #include "testutil.h"
 
-#include <csp/blocking.h>
-#include <csp/io.h>
-#include <csp/part/io.h>
-#include <csp/signal.h>
-#include <csp/timer.h>
-
 #include <atomic>
 #include <csignal>
 #include <cstring>
