@@ -342,6 +342,30 @@ def amalgamate_fcontext(fcontext_dir, output):
     print(f'  (appended fcontext assembly: {count} non-blank lines)')
 
 
+def dedup_includes(filepath):
+    """Remove duplicate #include lines from an amalgamated file."""
+    with open(filepath) as f:
+        lines = f.readlines()
+
+    seen = set()
+    out = []
+    removed = 0
+    for line in lines:
+        m = INCLUDE_RE.match(line)
+        if m:
+            key = m.group(2) + m.group(3)
+            if key in seen:
+                removed += 1
+                continue
+            seen.add(key)
+        out.append(line)
+
+    if removed:
+        with open(filepath, 'w') as f:
+            f.writelines(out)
+        print(f'  {filepath}: removed {removed} duplicate include(s)')
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     include_dir = root / 'include'
@@ -388,6 +412,10 @@ def main():
     fcontext_dir = root / 'third_party' / 'boost-context' / 'src' / 'asm'
     if fcontext_dir.exists():
         amalgamate_fcontext(fcontext_dir, out_dir / 'csp.cpp')
+
+    # --- Remove duplicate #include lines ---
+    for f in sorted(out_dir.glob('*')):
+        dedup_includes(f)
 
 
 if __name__ == '__main__':

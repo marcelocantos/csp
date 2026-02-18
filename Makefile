@@ -185,7 +185,7 @@ endif
 TIDY_SRCS := $(filter-out src/stack_analysis_arm64.cc,$(LIB_SRCS))
 
 iwyu: amalg
-	@python3 scripts/clean_includes.py $(TIDY_SRCS) amalg/csp.cpp \
+	@python3 scripts/clean_includes.py $(TIDY_SRCS) \
 		-- -std=c++17 -stdlib=libc++ $(TIDY_SYSROOT) $(INCLUDES)
 
 clean:
