@@ -35,9 +35,8 @@ struct apply_message<poke_t> {
 
 template <typename... Args, typename Rep>
 auto rpc_client(writer<std::tuple<Args...>> req, reader<Rep> rep) {
-    // TODO: perfect forwarding
     return [req = std::move(req), rep = std::move(rep)](Args... args) {
-        if (alt(req << std::make_tuple(std::forward<Args>(args)...), ~rep) == 0) {
+        if (alt(req << std::make_tuple(std::move(args)...), ~rep) == 0) {
             return rep.read();
         }
         throw std::runtime_error("rpc dead");

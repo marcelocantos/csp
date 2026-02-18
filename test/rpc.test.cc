@@ -5,8 +5,6 @@ using namespace csp::part;
 
 static Logger g_log("Rpc.Test");
 
-// TODO: test more buffer edge-cases.
-
 TEST_CASE("Rpc - ChanPair") {
     RunStats stats;
 

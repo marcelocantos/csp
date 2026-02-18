@@ -1186,7 +1186,7 @@ namespace {
 
     char g_vendor[256];
     char g_appname[256];
-    bool g_registered = true;  // TODO: Fix/use regapp.
+    bool g_registered = true;
 
 }
 

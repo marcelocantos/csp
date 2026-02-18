@@ -27,7 +27,6 @@ public:
 
         while (csp::internal::run()) { }
 
-        // TODO: Use alt to drain as many as possible.
         if (!running()) {
             for (auto & ex : exs_) {
                 std::exception_ptr ep;

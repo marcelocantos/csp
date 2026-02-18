@@ -3,8 +3,6 @@
 using namespace csp;
 using namespace csp::part;
 
-// TODO: test more buffer edge-cases.
-
 TEST_CASE("ChanUtil - BufferBounded") {
     RunStats stats;
 
