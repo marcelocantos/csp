@@ -79,10 +79,11 @@ route them to different handlers:
 auto interrupt = csp::signal::notify({SIGINT, SIGTERM});
 auto reload    = csp::signal::notify({SIGUSR1});
 
-prialt(
-    interrupt >> [](int s) { shutdown(s); },
-    reload    >> [](int)   { reload_config(); }
-);
+int s;
+switch (csp::prialt(interrupt >> s, reload >> s)) {
+case 1: shutdown(s);     break;
+case 2: reload_config(); break;
+}
 ```
 
 ## Cleanup on reader drop

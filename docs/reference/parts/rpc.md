@@ -156,8 +156,8 @@ spawn(rpc_server(req_r.copy(),
 
 auto f = rpc_client(req_w.copy());
 
-f(0);   // 1
-f(10);  // 21
+f(std::tuple{0});   // 1
+f(std::tuple{10});  // 21
 ```
 
 ## See Also

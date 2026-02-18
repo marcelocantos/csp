@@ -111,7 +111,7 @@ output reader:
 
 ```cpp
 auto nums = count<int>(0, 10, 1).spawn();
-auto doubled = map<int>([](int n) { return n * 2; }).spawn(nums);
+auto doubled = map<int>([](int n) { return n * 2; }).spawn(std::move(nums));
 // doubled is a reader<int>
 ```
 
@@ -127,7 +127,7 @@ input writer:
 
 ```cpp
 auto dest = blackhole<int>.spawn();
-auto input = map<int>([](int n) { return n * 2; }).spawn(dest);
+auto input = map<int>([](int n) { return n * 2; }).spawn(std::move(dest));
 // input is a writer<int> — write raw values, the filter doubles them
 ```
 

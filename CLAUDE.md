@@ -19,8 +19,8 @@ Build artifacts go to `build/`. Compiler: Clang, C++17, libc++, `-O2 -g`.
 
 All code lives in `namespace csp`. Internal implementation details live in
 `namespace csp::internal` (type-erased channel operations, scheduler
-primitives) and `namespace csp::detail` (microthread struct, context
-switching).
+primitives) and `namespace csp::detail` (runtime, processor, channels, reactor,
+blocking pool, stack pool, HAMT, and other implementation machinery).
 
 ### Key modules
 
@@ -28,12 +28,15 @@ switching).
   `yield`, `chan`, `writer`, `reader`, `alt`/`prialt`, `chan_op` RAII class,
   and the `csp::internal` type-erased API.
 - **include/csp/internal/** — Internal headers (csp_internal.h for
-  Microthread struct, runtime.h, processor.h) and vendored utilities.
+  Microthread struct, runtime.h, processor.h, stack_pool.h, hamt.h,
+  reactor.h, blocking_pool.h) and vendored utilities.
 - **include/csp/timer.h** — Timer primitives: `sleep`, `sleep_until`,
   `after` (one-shot), `tick` (periodic). Timers are channels; composable
   with `alt`/`prialt` for timeout patterns.
-- **include/csp/io.h** — Non-blocking I/O: `read_fd` (fd→reader via kqueue
-  reactor), `resolve` (DNS via blocking thread pool).
+- **include/csp/io.h** — Non-blocking I/O: `read`/`write`/`accept`/`connect`
+  (fd operations via kqueue reactor), `resolve` (DNS via blocking thread pool).
+- **include/csp/dynamic.h** — `csp::dynamic<T>` dynamic-scoped variables
+  via persistent HAMT, with `context`/`context_scope` for snapshot/restore.
 - **include/csp/signal.h** — Unix signal channels via self-pipe trick.
 - **include/csp/blocking.h** — Blocking thread pool for offloading
   OS-blocking calls from microthreads.
@@ -49,7 +52,9 @@ switching).
 - **src/** — Implementation files for microthread scheduler (`csp.cc`),
   channels (`channel.cc`), M:N runtime (`runtime.cpp`), globals
   (`csp_globals.cpp`), logging (`mt_log.cc`), I/O reactor (`reactor.cc`),
-  blocking pool (`blocking_pool.cc`), signal handling (`signal.cc`).
+  blocking pool (`blocking_pool.cc`), signal handling (`signal.cc`),
+  stack pool (`stack_pool.cc`), HAMT (`hamt.cc`), stack analysis
+  (`stack_analysis_arm64.cc`).
 
 ### Key design points
 
@@ -71,7 +76,7 @@ switching).
 ## Tests
 
 doctest (vendored in `third_party/doctest/`). Test files in `test/`
-with `.test.cc` extension. 271 tests.
+with `.test.cc` extension. 281 tests.
 
 ## Dependencies
 

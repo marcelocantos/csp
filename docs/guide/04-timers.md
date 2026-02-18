@@ -184,8 +184,9 @@ auto tokens = csp::tick(100ms);
 auto bucket = csp::part::buffer<csp::clock::time_point>(3)
                   .spawn(std::move(tokens));
 
+csp::clock::time_point token;
 for (int req; requests >> req;) {
-    bucket >> nullptr;   // wait for a token
+    bucket >> token;     // wait for a token
     handle(req);
 }
 ```

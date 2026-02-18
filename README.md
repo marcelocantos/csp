@@ -5,8 +5,8 @@ A C++ microthreading library with typed, synchronous channels inspired by
 
 ## Features
 
-- **Stackful coroutines** — lightweight microthreads (32 KB stacks) via
-  [Boost.Context](https://www.boost.org/doc/libs/release/libs/context/).
+- **Stackful coroutines** — lightweight microthreads (demand-paged 1 MB stacks)
+  via [Boost.Context](https://www.boost.org/doc/libs/release/libs/context/).
 - **Typed synchronous channels** — unbuffered, blocking send/receive with
   compile-time type safety.
 - **Per-endpoint lifecycle** — channels can be closed from either end. Endpoint
@@ -104,7 +104,7 @@ auto heartbeat = csp::tick(100ms);  // periodic: fires every 100ms
 int n;
 switch (alt(r >> n, timeout >> poke)) {
 case 1:  /* data arrived */  break;
-case -2: /* timed out */     break;
+case 2:  /* timed out */     break;
 }
 ```
 

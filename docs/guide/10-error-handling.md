@@ -121,10 +121,10 @@ Death propagates in both directions through the pipeline without any special
 error-handling code:
 
 ```cpp
-auto r = map([](int n) -> int {
+auto r = csp::part::map<int>([](int n) -> int {
     if (n < 0) throw std::domain_error("negative");
     return n * 2;
-}).spawn(source);
+}).spawn(std::move(source));
 
 // Iteration stops at the first negative value.
 // The map MT's exception goes to global_exception_handler

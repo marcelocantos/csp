@@ -21,26 +21,34 @@ distributes work across OS threads.
 12. [I/O Reactor](#12-io-reactor)
 13. [Blocking Pool](#13-blocking-pool)
 14. [Signal Delivery](#14-signal-delivery)
+15. [Stack Pool](#15-stack-pool)
+16. [Dynamic Scoping](#16-dynamic-scoping)
 
 ---
 
 ## 1. Microthread Representation
 
 Each microthread is a `Microthread` struct (`csp_internal.h`)
-allocated at the top of its own 32 KB stack:
+allocated at the top of its own stack:
 
 ```
 Low address                                          High address
-┌──────────────────────────────────────────┬──────────────────┐
-│               Stack space                │   Microthread    │
-│           (grows downward)               │    struct        │
-└──────────────────────────────────────────┴──────────────────┘
+┌──────────┬───────────────────────────────┬──────────────────┐
+│  Guard   │         Stack space           │   Microthread    │
+│  page    │       (grows downward)        │    struct        │
+└──────────┴───────────────────────────────┴──────────────────┘
                                            ↑ 16-byte aligned
 ```
 
-The stack is an array of 16-byte-aligned `StackSlot` values, heap-allocated
-via `new`. The `Microthread` is placement-constructed at the end of this
-array, ensuring 16-byte alignment as required by ARM64 and Boost.Context.
+Stacks are allocated from a per-process `StackPool` (`stack_pool.h`) which
+mmaps 1 MB virtual regions with a guard page at the bottom. Pages are
+demand-faulted by the kernel, so physical memory usage matches actual stack
+depth. The pool caches up to 256 freed stacks and uses `MADV_FREE` on
+release for lazy page reclamation. Under sanitizers (ASan/TSan), the pool
+falls back to heap allocation (128 KB) to avoid shadow-memory bloat.
+
+The `Microthread` is placement-constructed at the end of the stack region,
+ensuring 16-byte alignment as required by ARM64 and Boost.Context.
 
 Key fields:
 
@@ -48,7 +56,8 @@ Key fields:
 |------------------|---------------------------|------------------------------------------|
 | `prev_`, `next_` | `Microthread*`            | Circular doubly-linked run queue          |
 | `ctx_`           | `atomic<fcontext_t>`      | Saved execution context (SP, registers)   |
-| `stk_`           | `StackSlot*`              | Pointer to base of stack allocation       |
+| `stk_`           | `StackRegion`             | Stack region (base pointer + total size)  |
+| `dyn_ctx_`       | `uintptr_t`               | Dynamic scoping HAMT root (0 = empty)     |
 | `alt_state`      | `atomic<uint32_t>`        | ALT_IDLE / ALT_WAITING / ALT_CLAIMED     |
 | `in_global_`     | `bool`                    | Currently in the global run queue         |
 | `suspending_`    | `atomic<bool>`            | In the unlock-to-switch window            |
@@ -198,9 +207,8 @@ A `Channel` (`channel.cc`) contains:
   - `refcount`: Atomic reference count for that endpoint.
   - `waiters`: `RingBuffer<ChanopWaiter>` of microthreads ready to
     send/receive.
-  - `vultures`: `unordered_set<ChanopWaiter>` of microthreads waiting
+  - `vultures`: `RingBuffer<ChanopWaiter>` of microthreads waiting
     for endpoint closure.
-- **`tx_`**: The copy/move function for transferring messages.
 
 ### Endpoint Encoding
 
@@ -247,22 +255,29 @@ Lock all channels
 For each chanop (in priority order, rotated by offset for alt):
     If opposite-side waiters queue is non-empty:
         CAS peer.alt_state: ALT_WAITING → ALT_CLAIMED
-        Transfer message via tx_()
-        Schedule the peer (push to global queue or run directly)
-        Unlock all
-        Return index
+        Record match in AltMatch (src/dst pointers, peer, index)
+        Return AltMatch (locks still held)
 ```
 
 The CAS on `alt_state` ensures that exactly one waker can claim a sleeping
 microthread. If the CAS fails, another thread already claimed it.
 
-When a ready peer is found, message transfer happens directly between the
-two microthreads' message slots, under the channel locks. The waking
-microthread is then scheduled and the locks are released.
+This is a **two-phase protocol**: `prialt_begin` returns an `AltMatch` with
+source and destination pointers while the channel locks are still held. The
+caller then performs the typed inline transfer (e.g.,
+`*static_cast<T*>(match.dst) = std::move(*static_cast<T*>(match.src))`),
+and calls `alt_end` to unlock the channels and schedule the woken peer.
+This eliminates the need for a type-erased transfer function pointer
+(`tx_`) on the Channel, removing indirect calls from the hot path.
 
 In single-processor mode, the woken peer is run immediately via
 `run(Status::run)`, giving synchronous rendez-vous semantics. In M:N mode,
 the peer is pushed to the global run queue via `schedule()`.
+
+Dead-channel handling: data chanops on dead channels defer reporting until
+after scanning all channels for ready peers (ensuring a ready peer on
+another channel is not missed). Vulture chanops (`~ch`) still fire
+immediately.
 
 ### Phase 2: Register and Sleep
 
@@ -298,8 +313,8 @@ Set alt_state = ALT_IDLE
 Return signal_
 ```
 
-The `signal_` field was set by the waker in Phase 1. Positive values indicate
-which chanop matched; negative values indicate endpoint closure.
+The `signal_` field was set by the waker during the match. Positive values
+indicate which chanop matched; negative values indicate endpoint closure.
 
 ### Lock Ordering
 
@@ -324,6 +339,9 @@ threads, following the GMP model (similar to Go's runtime).
   timer heap, and mutex.
 - **P-1 worker threads**, each bound to a processor (P1..Pn). P0 is the
   main thread.
+- **A watchdog thread** that monitors per-processor heartbeats and calls
+  `add_processor()` when workers are stalled, enabling dynamic processor
+  pool expansion.
 - The main thread's scheduler is set to `main_loop()`, which parks until
   `live_gs` reaches zero.
 
@@ -333,6 +351,7 @@ Each worker thread runs `worker_loop()`:
 
 ```
 while not stopping:
+    p.heartbeat++                     // watchdog liveness signal
     fire_timers(p)                    // reschedule expired timers
     if mt = local_next(p):            // try local run queue
         mt->run()
@@ -341,6 +360,8 @@ while not stopping:
         continue
     if steal_work(p):                 // try stealing from another P
         continue
+    if p is surplus:                  // dynamic pool wind-down
+        break
     park(p)                           // sleep until work arrives
 ```
 
@@ -391,6 +412,7 @@ steal_work(thief):
         try_lock global_mu              // non-blocking to avoid deadlock
         if !locked: skip
 
+        if !victim.alive: skip           // dynamic pool: skip dead P
         candidate = victim.busy->prev_  // steal from tail
         if candidate is sentinel or busy or running:
             skip
@@ -514,12 +536,15 @@ struct TimerEntry {
 // std::priority_queue with std::greater<> for min-heap
 ```
 
-**`csp_sleep_until(deadline_ns)`**: Pushes the current microthread onto the
-local processor's timer heap, sets `suspending_ = true`, and calls
+**`internal::sleep_until(deadline_ns)`**: Pushes the current microthread
+onto the local processor's timer heap, sets `suspending_ = true`, and calls
 `do_switch(Status::detach)`. On wakeup, clears `suspending_`.
 
 **`fire_timers()`**: Called at the top of the worker loop. Pops all expired
-entries from the timer heap and calls `schedule_local()` for each.
+entries from the timer heap and reschedules them. In single-processor mode,
+this uses `schedule_local()`; in M:N mode, expired timers are collected
+under `run_mu` and rescheduled via `schedule()` (pushing to the global
+queue).
 
 **Parking integration**: When a worker parks, it uses `wait_until` with the
 next timer deadline (if any), ensuring timers fire even when there is no
@@ -537,7 +562,7 @@ sleep and then write to a channel, making timers composable with `alt`.
 
 ```
 csp_spawn(entry_f, data):
-    Allocate 32KB stack
+    Allocate stack from StackPool (1MB mmap region with guard page)
     Placement-construct Microthread at top of stack
     make_fcontext(start, stack_top)     // create initial context
     switch_to(mt, &start_data)          // warmup handshake
@@ -590,42 +615,54 @@ naturally adapts to its new host thread.
 
 ## 11. Stream Combinators
 
-Stream combinators are header-only templates that spawn internal
-microthreads pre-wired to channel endpoints. Each combinator follows a
-consistent pattern:
+Stream combinators are header-only templates in `namespace csp::part` that
+spawn internal microthreads pre-wired to channel endpoints. The system is
+built on three wrapper types defined in `part.h`:
+
+- **`producer<T, F>`**: Wraps `F(writer<T>)`. `.spawn()` returns `reader<T>`.
+- **`consumer<T, F>`**: Wraps `F(reader<T>)`. `.spawn()` returns `writer<T>`.
+- **`filter<In, Out, F>`**: Wraps `F(reader<In>, writer<Out>)`. `.spawn()`
+  overloads bind one or both endpoints.
+
+Factory functions (`make_producer`, `make_consumer`, `make_filter`) deduce
+the callable type `F` automatically. Most filters follow the canonical
+death-aware loop:
 
 ```cpp
-// Core function: takes input reader, output writer, and parameters.
-template<typename T, typename F>
-auto map(reader<T> in, writer<U> out, F&& f) {
-    for (T v; prialt(~out, in >> v) > 0;) {
-        out << f(v);
-    }
+template <typename T>
+auto map(F&& f) {
+    return make_filter<T>([f = std::move(f)](reader<T> in, writer<T> out) {
+        for (T v; prialt(~out, in >> v) > 0;)
+            out << f(v);
+    });
 }
-
-// Spawn variants: create channels and spawn the core function.
-reader<U> spawn_map(reader<T> in, F&& f);   // downstream
-writer<T> spawn_map(writer<U> out, F&& f);  // upstream
-channel<T> spawn_map(F&& f);                // bidirectional
 ```
 
-The `prialt(~out, in >> v)` pattern is idiomatic: it blocks until either
-the output writer dies (downstream closed, returns non-positive) or input
-data arrives (returns positive). This gives each combinator automatic
-cleanup when either side of the pipeline is torn down.
+The `prialt(~out, in >> v)` pattern blocks until either the output writer
+dies (downstream closed, returns non-positive) or input data arrives
+(returns positive). This gives each combinator automatic cleanup when
+either side of the pipeline is torn down.
 
-Combinators compose naturally because their interfaces are just channels:
+### Operator| Composition
+
+`part.h` provides 8 overloads of `operator|` for all pairwise combinations
+of parts and concrete endpoints:
 
 ```cpp
-auto r = spawn_producer<int>([](writer<int> w) { ... });
-r = spawn_where(std::move(r), predicate);
-r = spawn_map(std::move(r), transform);
-r = spawn_buffer(std::move(r), 16);
+auto pipeline = count(1, 100)
+    | map<int, int>([](int n){ return n * n; })
+    | where<int>([](int n){ return n % 2 == 0; });
+auto r = pipeline.spawn();  // reader<int>
 ```
 
-Each `spawn_*` call adds a microthread to the pipeline. The microthreads
-coordinate through synchronous channel operations, with backpressure
-propagating naturally through the blocking send/receive semantics.
+When both operands are parts (filter|filter, producer|filter, etc.), the
+result is a new part capturing both stages—no microthread is spawned yet.
+When a concrete endpoint (reader or writer) appears, the microthread
+spawns immediately.
+
+Each stage is an independent microthread. The microthreads coordinate
+through synchronous channel operations, with backpressure propagating
+naturally through the blocking send/receive semantics.
 
 ---
 
@@ -932,3 +969,86 @@ Signal handlers are installed via `sigaction` with `SA_RESTART` (to avoid
 number and protected by `g_sig_mu` (a regular mutex, used only outside the
 handler). Handlers remain installed after the pipe is cleaned up; they
 become harmless no-ops since no pipe's `sig_mask` includes the signal.
+
+---
+
+## 15. Stack Pool
+
+The stack pool (`stack_pool.h`, `stack_pool.cc`) provides efficient stack
+allocation for microthreads using virtual memory and demand paging.
+
+### Design
+
+`StackPool` is a per-process singleton that allocates 1 MB virtual regions
+via `mmap` with `PROT_READ | PROT_WRITE`. Each region has a guard page
+(`PROT_NONE`) at the low end to catch stack overflow. Physical pages are
+demand-faulted by the kernel, so a microthread that uses only a few KB of
+stack consumes only a few KB of physical memory.
+
+### Pooling
+
+Freed stacks are cached in a free list (up to `kMaxPooled = 256`). On
+release, the pool calls `madvise(MADV_FREE)` (or `MADV_DONTNEED` on
+Linux) on the usable portion of the stack, allowing the kernel to reclaim
+physical pages lazily. When a new stack is requested, the pool returns a
+cached region if available, avoiding the syscall overhead of `mmap`.
+
+### API Boundary Shrink
+
+`maybe_shrink()` is called at API boundaries (e.g., channel operations)
+to reclaim unused stack pages below the current stack pointer. It keeps
+a 2-page headroom above the current SP and calls `madvise` on everything
+below that, releasing physical pages for stack space that is no longer
+needed. This prevents microthreads that had a deep call stack transiently
+from holding physical memory indefinitely.
+
+### Sanitizer Fallback
+
+Under ASan or TSan (`#if defined(__SANITIZE_ADDRESS__) || ...`), the
+pool falls back to heap allocation (128 KB stacks via `new`) because
+mmap'd regions cause shadow-memory bloat under sanitizers.
+
+---
+
+## 16. Dynamic Scoping
+
+Dynamic scoping (`dynamic.h`, `hamt.h`, `hamt.cc`) provides microthread-
+local variables with copy-on-write isolation, inherited by child
+microthreads on spawn.
+
+### Data Structure
+
+Each microthread stores a HAMT (Hash Array Mapped Trie) root in its
+`dyn_ctx_` field (`uintptr_t`). The HAMT is a persistent data structure:
+writes create new path-copied nodes, leaving existing references intact.
+Nodes use intrusive reference counting for memory management.
+
+```
+dyn_ctx_ (uintptr_t) → HAMT root
+                         ├── key_0 → value_0
+                         ├── key_1 → value_1
+                         └── ...
+```
+
+Tagged pointers distinguish internal nodes (branches) from leaf nodes
+(key-value pairs) using the low bit. Lookups are O(log32 N) with 5-bit
+hash chunks per level.
+
+### Public API
+
+- **`dynamic<T>`**: A typed dynamic-scoped variable. Each instance has a
+  unique auto-incrementing `context_key`. Dereferencing (`*var`) looks up
+  the current microthread's HAMT. Assignment (`var = val`) path-copies.
+- **`context`**: A copyable handle to a HAMT root snapshot. Can be sent
+  over channels to transfer scope state between microthreads.
+  `context::current()` captures the calling microthread's current context.
+- **`context_scope`**: RAII guard that saves the current `dyn_ctx_` on
+  construction and restores it on destruction. Optionally installs a
+  foreign `context`.
+
+### Inheritance
+
+When `spawn()` creates a new microthread, the child's `dyn_ctx_` is
+initialised from the parent's `dyn_ctx_` (with a HAMT root retain). This
+gives the child a snapshot of the parent's dynamic variables. Subsequent
+writes by either parent or child are isolated via path-copying.

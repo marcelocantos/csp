@@ -61,7 +61,7 @@ for (int n; r >> n; ) {
     // process n
 }
 
-// 0, 11, 22, 33, ... forever (until reader closes)
+// 2, 13, 24, 35, ... forever (until reader closes)
 auto r2 = count_forever(2, 11).spawn();
 for (int i = 0; i < 100; ++i) {
     int n = r2.read();

@@ -27,8 +27,8 @@ the main output and the side channel.
 ## Semantics
 
 - Exits when the input is exhausted or the main output reader is dropped.
-- Each value is written to the side channel first, then moved to the main
-  output.
+- Each value is written to the main output first, then moved to the side
+  channel.
 - If the side channel's reader is dropped (side channel dies), the tee
   enters a fallback loop that forwards remaining values only to the main
   output. No values are lost.

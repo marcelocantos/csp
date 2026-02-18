@@ -44,7 +44,7 @@ transfer, and returns the **1-based index** of the matched operation.
 | Return value | Meaning |
 |---|---|
 | positive `i` | Data operation `i` matched (1-based) |
-| negative `-i` | Vulture operation `i` fired (1-based) |
+| negative `-i` | Death event for operation `i` (1-based) |
 
 For example, with three operations, the possible returns are `1`, `2`, `3`,
 `-1`, `-2`, `-3`.
