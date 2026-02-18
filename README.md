@@ -18,13 +18,13 @@ A C++ microthreading library with typed, synchronous channels inspired by
 
 ## Quick start
 
-CSP is distributed as three files. Copy them into your project from `amalg/`:
+CSP is distributed as three files. Copy them into your project from `dist/`:
 
 | File | Notes |
 |---|---|
 | `csp.h` | Single header — all public API |
 | `csp.cpp` | Implementation + fcontext assembly |
-| `csp_globals.cpp` | Thread-local state — **must be a separate translation unit** ([why](docs/amalg-tls-bug.md)) |
+| `csp_globals.cpp` | Thread-local state — **must be a separate translation unit** ([why](docs/tls-caching-bug.md)) |
 
 No external dependencies. Compile both `.cpp` files alongside your code:
 
@@ -94,7 +94,7 @@ microthreads to completion.
 ```bash
 make        # build and run tests
 make build  # compile only
-make amalg  # regenerate amalgamation from source
+make dist   # regenerate distribution files from source
 make check  # run TLA+ model checker
 make clean  # remove build artifacts
 ```

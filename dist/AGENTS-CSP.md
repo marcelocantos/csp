@@ -417,12 +417,23 @@ All in `namespace csp::part` (included via `csp.h`).
     COW (path-copy HAMT). Changes are invisible to other microthreads
     unless explicitly shared via `context::current()` + `context_scope`.
 
-## Build
+## Integration
+
+Copy these files into your project:
+
+| File | Purpose |
+|---|---|
+| `csp.h` | Single header (all public API) |
+| `csp.cpp` | Implementation + context-switching assembly |
+| `csp_globals.cpp` | Thread-local state (**must** be a separate translation unit — see [docs/tls-caching-bug.md](https://github.com/marcelocantos/csp/blob/master/docs/tls-caching-bug.md)) |
+| `AGENTS-CSP.md` | This file — agent reference for CSP |
+
+Compile with C++17 and libc++:
 
 ```bash
-make        # build + run all tests
-make build  # compile only
-make clean  # remove build/
+c++ -std=c++17 -O2 -c csp.cpp -o csp.o
+c++ -std=c++17 -O2 -c csp_globals.cpp -o csp_globals.o
 ```
 
-Compiler: Clang, C++17, libc++, `-O2 -g`. Boost.Context required.
+Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to
+give coding agents CSP expertise.

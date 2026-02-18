@@ -1,9 +1,9 @@
-# Amalgamation TLS Caching Bug: Investigation Report
+# TLS Caching Bug: Investigation Report
 
 ## Problem
 
-When the CSP library's source files are merged into a single-file amalgamation
-for distribution, all M:N multi-threading tests crash. The crashes manifest as
+When all of the CSP library's source files are compiled in a single translation
+unit, all M:N multi-threading tests crash. The crashes manifest as
 segfaults and assertion failures deep in the context-switching code, occurring
 non-deterministically but reliably within the first few test cases.
 
@@ -79,7 +79,7 @@ unit. All other source files can be freely combined without issue.
 ### Disassembly comparison
 
 The breakthrough came from comparing the ARM64 disassembly of `start()` between
-the separate-TU build and the amalgamated build.
+the separate-TU build and the single-TU build.
 
 **Separate build** (`csp_globals.cpp` is a different TU):
 
@@ -101,7 +101,7 @@ Each `g_self` access calls the opaque TLS wrapper function
 scratch on each invocation. After `switch_to()` resumes on a different OS
 thread, the second wrapper call returns that thread's `&g_self`.
 
-**Amalgamated build** (`csp_globals.cpp` merged into same TU):
+**Single-TU build** (`csp_globals.cpp` merged into same TU):
 
 ```asm
 ; g_self = self;                    (first write)
@@ -165,17 +165,17 @@ that might have side effects.
 ## Resolution
 
 The fix is to keep `csp_globals.cpp` as a separate translation unit in the
-amalgamated output. The amalgamation script (`scripts/amalgamate.py`) was
-modified to emit four files instead of three:
+distribution output. The build script (`scripts/amalgamate.py`) was
+modified to emit the globals as a separate file:
 
 | File | Contents |
 |---|---|
-| `amalg/csp.h` | All headers under `include/csp/` (core + part/) |
-| `amalg/csp.cpp` | All source files **except** `csp_globals.cpp`, plus fcontext inline asm |
-| `amalg/csp_globals.cpp` | Only `csp_globals.cpp` (thread-local definitions) |
+| `dist/csp.h` | All headers under `include/csp/` (core + part/) |
+| `dist/csp.cpp` | All source files **except** `csp_globals.cpp`, plus fcontext inline asm |
+| `dist/csp_globals.cpp` | Only `csp_globals.cpp` (thread-local definitions) |
 
-Users of the amalgamation must compile both `csp.cpp` and `csp_globals.cpp` as
-separate compilation units. The comment in the script explains why:
+Users must compile both `csp.cpp` and `csp_globals.cpp` as separate
+compilation units. The comment in the script explains why:
 
 ```python
 # csp_globals.cpp MUST be a separate TU.  It defines the
@@ -193,6 +193,6 @@ separate compilation units. The comment in the script explains why:
 ## Verification
 
 - Normal build: 298/298 tests pass (unchanged).
-- Amalgamated build with separate `csp_globals.cpp`: M:N tests pass
+- Distribution build with separate `csp_globals.cpp`: M:N tests pass
   20/20 consecutive iterations (23 test cases, 166 assertions each).
   Previously crashed on the first iteration every time.

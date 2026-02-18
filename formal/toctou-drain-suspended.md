@@ -1,7 +1,7 @@
 # A TOCTOU Race in M:N Microthread Suspension and its Verification with TLA+
 
 > **Note:** Source file references (e.g. `src/csp.cc`) refer to the development
-> source tree. In the amalgamated distribution, these live in `csp.cpp`.
+> source tree. In the distribution (`dist/`), these live in `csp.cpp`.
 
 ## Abstract
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate CSP amalgamation files: csp.h, csp.cpp, csp_globals.cpp"""
+"""Generate CSP distribution files: csp.h, csp.cpp, csp_globals.cpp, AGENTS-CSP.md"""
 
 import re
 import sys
@@ -31,7 +31,7 @@ def is_under(path, parent):
 
 def amalgamate_headers(include_dir, seeds, output, banner, inline_pred, skip_pred):
     """
-    Build an amalgamated header from seed files via DFS include resolution.
+    Build a single header from seed files via DFS include resolution.
 
     inline_pred(resolved_path) → True: recursively inline this file
     skip_pred(resolved_path)   → True: silently drop the #include line
@@ -100,7 +100,7 @@ def amalgamate_headers(include_dir, seeds, output, banner, inline_pred, skip_pre
 
 
 def amalgamate_sources(src_files, output, header, banner):
-    """Build source amalgamation from .cc/.cpp files."""
+    """Build combined source from .cc/.cpp files."""
     lines = []
 
     for src in src_files:
@@ -343,7 +343,7 @@ def amalgamate_fcontext(fcontext_dir, output):
 
 
 def dedup_includes(filepath):
-    """Remove duplicate #include lines from an amalgamated file."""
+    """Remove duplicate #include lines from a generated file."""
     with open(filepath) as f:
         lines = f.readlines()
 
@@ -382,11 +382,56 @@ def generate_gateway(include_dir, csp_dir):
     print(f'  {gateway}  ({len(headers)} headers)')
 
 
+AGENTS_INTEGRATION = """\
+## Integration
+
+Copy these files into your project:
+
+| File | Purpose |
+|---|---|
+| `csp.h` | Single header (all public API) |
+| `csp.cpp` | Implementation + context-switching assembly |
+| `csp_globals.cpp` | Thread-local state (**must** be a separate translation unit — see [docs/tls-caching-bug.md](https://github.com/marcelocantos/csp/blob/master/docs/tls-caching-bug.md)) |
+| `AGENTS-CSP.md` | This file — agent reference for CSP |
+
+Compile with C++17 and libc++:
+
+```bash
+c++ -std=c++17 -O2 -c csp.cpp -o csp.o
+c++ -std=c++17 -O2 -c csp_globals.cpp -o csp_globals.o
+```
+
+Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to
+give coding agents CSP expertise.
+"""
+
+
+def generate_agents_guide(docs_dir, out_dir):
+    """Generate AGENTS-CSP.md from docs/agent-guide.md with Build section replaced."""
+    source = docs_dir / 'agent-guide.md'
+    output = out_dir / 'AGENTS-CSP.md'
+
+    with open(source) as f:
+        content = f.read()
+
+    # Replace the Build section (## Build ... to end of file or next ## heading)
+    # The Build section is at the end of agent-guide.md.
+    build_re = re.compile(r'\n## Build\n.*', re.DOTALL)
+    content = build_re.sub('\n' + AGENTS_INTEGRATION, content)
+
+    with open(output, 'w') as f:
+        f.write(content)
+
+    lines = sum(1 for line in content.splitlines() if line.strip())
+    print(f'  {output}  ({lines} non-blank lines)')
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     include_dir = root / 'include'
     src_dir = root / 'src'
-    out_dir = root / 'amalg'
+    docs_dir = root / 'docs'
+    out_dir = root / 'dist'
 
     csp_dir = include_dir / 'csp'
     part_dir = csp_dir / 'part'
@@ -400,7 +445,7 @@ def main():
     print('csp.h:')
     amalgamate_headers(
         include_dir, all_seeds,
-        out_dir / 'csp.h', 'CSP — amalgamated header',
+        out_dir / 'csp.h', 'CSP — single header',
         inline_pred=lambda p: is_under(p, csp_dir),
         skip_pred=lambda p: False,
     )
@@ -424,7 +469,7 @@ def main():
     print('csp.cpp:')
     amalgamate_sources(
         src_files, out_dir / 'csp.cpp', 'csp.h',
-        'CSP — amalgamated source',
+        'CSP — implementation source',
     )
 
     # --- csp_globals.cpp: thread-local state (separate TU) ---
@@ -440,8 +485,12 @@ def main():
         amalgamate_fcontext(fcontext_dir, out_dir / 'csp.cpp')
 
     # --- Remove duplicate #include lines ---
-    for f in sorted(out_dir.glob('*')):
+    for f in sorted(out_dir.glob('*.cpp')) + sorted(out_dir.glob('*.h')):
         dedup_includes(f)
+
+    # --- AGENTS-CSP.md: agent reference guide ---
+    print('AGENTS-CSP.md:')
+    generate_agents_guide(docs_dir, out_dir)
 
 
 if __name__ == '__main__':

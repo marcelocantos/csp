@@ -10,7 +10,7 @@ Communicating Sequential Processes. Namespace: `csp`.
 ```bash
 make        # build and run all tests
 make build  # compile only
-make amalg  # generate amalgamation files (amalg/)
+make dist   # generate distribution files (dist/)
 make iwyu   # remove unused includes (clang-tidy misc-include-cleaner)
 make clean  # remove build/
 ```
@@ -24,18 +24,18 @@ All code lives in `namespace csp`. Internal implementation details live in
 primitives) and `namespace csp::detail` (runtime, processor, channels, reactor,
 blocking pool, stack pool, HAMT, and other implementation machinery).
 
-### Amalgamated distribution
+### Distribution
 
-CSP is distributed as three files in `amalg/`:
+CSP is distributed as three files in `dist/`:
 
 | File | Contents |
 |---|---|
 | `csp.h` | Single header (all public API, combinators, internals) |
 | `csp.cpp` | All implementation source + fcontext inline assembly |
-| `csp_globals.cpp` | Thread-local state (must be a separate TU — see `docs/amalg-tls-bug.md`) |
+| `csp_globals.cpp` | Thread-local state (must be a separate TU — see `docs/tls-caching-bug.md`) |
 
 These are generated from the development sources by `scripts/amalgamate.py`
-(`make amalg`).
+(`make dist`).
 
 ### Development source layout
 

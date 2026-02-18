@@ -7,7 +7,7 @@ distributes work across OS threads.
 
 > **Note:** File references below (e.g. `csp_internal.h`, `channel.cc`) refer
 > to the development source tree under `include/` and `src/`. For distribution,
-> all headers are amalgamated into `csp.h` and all sources into `csp.cpp` +
+> all headers are combined into `csp.h` and all sources into `csp.cpp` +
 > `csp_globals.cpp`. See the [README](../README.md) for details.
 
 ## Table of Contents

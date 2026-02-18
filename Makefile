@@ -2,9 +2,9 @@
 # Usage: make                              (build + run tests)
 #        make build                        (compile only)
 #        make bench                        (build + run benchmarks)
-#        make test-amalg                   (test against amalgamated build)
+#        make test-dist                    (test against distribution build)
 #        make check                       (run TLA+ model checker)
-#        make amalg                       (generate amalgamation files)
+#        make dist                        (generate distribution files)
 #        make iwyu                        (remove unused includes)
 #        make clean                        (remove artifacts)
 #        make SANITIZE=address,undefined   (ASan + UBSan)
@@ -23,7 +23,7 @@ LDLIBS   :=
 
 # --- Include path ---
 # CSP_INCLUDE selects header source: 'include' for development,
-# 'amalg' for amalgamated.  test-amalg uses recursive make to switch.
+# 'dist' for distribution.  test-dist uses recursive make to switch.
 
 CSP_INCLUDE ?= include
 
@@ -78,9 +78,9 @@ FCONTEXT_OBJS   := $(patsubst $(FCONTEXT_DIR)/%.S,$(BUILDDIR)/fcontext/%.o,$(FCO
 
 # --- Sources ---
 
-ifeq ($(CSP_INCLUDE),amalg)
-LIB_SRCS := amalg/csp.cpp \
-            amalg/csp_globals.cpp
+ifeq ($(CSP_INCLUDE),dist)
+LIB_SRCS := dist/csp.cpp \
+            dist/csp_globals.cpp
 else
 LIB_SRCS := src/csp.cc \
             src/csp_globals.cpp \
@@ -102,7 +102,7 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 # --- Objects ---
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
-ifneq ($(CSP_INCLUDE),amalg)
+ifneq ($(CSP_INCLUDE),dist)
 LIB_OBJS   += $(FCONTEXT_OBJS)
 endif
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
@@ -117,7 +117,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench test-amalg check check-tla-tags check-md-links examples run-examples amalg iwyu clean
+.PHONY: test build bench test-dist check check-tla-tags check-md-links examples run-examples dist iwyu clean
 
 test: $(TARGET) check-md-links
 	./$(TARGET)
@@ -150,8 +150,8 @@ $(BUILDDIR)/fcontext/%.o: $(FCONTEXT_DIR)/%.S
 	@mkdir -p $(dir $@)
 	$(CXX) -c -o $@ $<
 
-# Amalgamated sources (self-contained, no -Iinclude needed)
-$(BUILDDIR)/amalg/%.o: amalg/%.cpp
+# Distribution sources (self-contained, no -Iinclude needed)
+$(BUILDDIR)/dist/%.o: dist/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
 
@@ -201,11 +201,11 @@ check: check-tla-tags $(TLA_JAR)
 	done; \
 	exit $$fail
 
-amalg:
+dist:
 	python3 scripts/amalgamate.py
 
-test-amalg: amalg
-	$(MAKE) CSP_INCLUDE=amalg test
+test-dist: dist
+	$(MAKE) CSP_INCLUDE=dist test
 
 # --- include cleaner (clang-tidy) ---
 
@@ -216,12 +216,12 @@ endif
 
 TIDY_SRCS := $(filter-out src/stack_analysis_arm64.cc,$(LIB_SRCS))
 
-iwyu: amalg
+iwyu: dist
 	@python3 scripts/clean_includes.py $(TIDY_SRCS) \
 		-- -std=c++17 -stdlib=libc++ $(TIDY_SYSROOT) $(INCLUDES)
 
 clean:
-	rm -rf build build-* amalg
+	rm -rf build build-* dist
 
 # Pull in generated dependency files (silently ignored on first build).
 -include $(ALL_DEPS)
