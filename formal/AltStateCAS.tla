@@ -61,7 +61,9 @@ Init ==
  * This is one atomic step because the store and suspend happen before
  * any channel lock is released — wakers can only see the waiter on
  * the wait queue after unlock_all, at which point alt_state is already
- * WAITING. *)
+ * WAITING.
+ *
+ * TLA:AltStateCAS.WaiterRegister *)
 WaiterRegister ==
     /\ pc_waiter = "will_register"
     /\ alt_state' = "waiting"
@@ -72,7 +74,9 @@ WaiterRegister ==
  * In the real code this is: wake from do_switch, lock_all, cleanup
  * registrations, set alt_state = IDLE.
  *
- * Code: alt_state.store(ALT_IDLE, release)  [channel.cc:335] *)
+ * Code: alt_state.store(ALT_IDLE, release)  [channel.cc:335]
+ *
+ * TLA:AltStateCAS.WaiterDone *)
 WaiterDone ==
     /\ pc_waiter = "suspended"
     /\ on_queue = TRUE
@@ -94,7 +98,9 @@ WaiterDone ==
 (* Waker becomes active — models a peer arriving on a channel where
  * the waiter is registered. Only enabled after waiter has registered.
  *
- * Code: release() iterating waiters, or prialt_begin_impl scanning peers *)
+ * Code: release() iterating waiters, or prialt_begin_impl scanning peers
+ *
+ * TLA:AltStateCAS.WakerStart *)
 WakerStart(w) ==
     /\ pc_waker[w] = "idle"
     /\ alt_state = "waiting"
@@ -106,7 +112,9 @@ WakerStart(w) ==
  * Failure: alt_state is not WAITING (already claimed), skip.
  *
  * Code: alt_state.compare_exchange_strong(expected=ALT_WAITING, ALT_CLAIMED)
- *       [channel.cc:131-132] *)
+ *       [channel.cc:131-132]
+ *
+ * TLA:AltStateCAS.WakerCAS *)
 WakerCAS(w) ==
     /\ pc_waker[w] = "try_cas"
     /\ IF alt_state = "waiting"
@@ -119,7 +127,9 @@ WakerCAS(w) ==
 (* Winning waker sets signal to identify which channel won.
  *
  * Code: cw.thread->signal_ = ~idx  [channel.cc:133-134]
- * This is a plain store — safe because only the CAS winner reaches here. *)
+ * This is a plain store — safe because only the CAS winner reaches here.
+ *
+ * TLA:AltStateCAS.WakerSetSignal *)
 WakerSetSignal(w) ==
     /\ pc_waker[w] = "set_signal"
     /\ signal' = w
@@ -128,7 +138,9 @@ WakerSetSignal(w) ==
 
 (* Winning waker calls schedule() to put waiter on a run queue.
  *
- * Code: cw.thread->schedule()  [channel.cc:135] *)
+ * Code: cw.thread->schedule()  [channel.cc:135]
+ *
+ * TLA:AltStateCAS.WakerSchedule *)
 WakerSchedule(w) ==
     /\ pc_waker[w] = "schedule"
     /\ on_queue' = TRUE
@@ -137,7 +149,9 @@ WakerSchedule(w) ==
 
 (* Losing waker: CAS failed, move on. No further action for this waiter.
  *
- * Code: CAS returns false, loop continues to next waiter/channel *)
+ * Code: CAS returns false, loop continues to next waiter/channel
+ *
+ * TLA:AltStateCAS.LoserDone *)
 LoserDone(w) ==
     /\ pc_waker[w] = "loser"
     /\ pc_waker' = [pc_waker EXCEPT ![w] = "done_waker"]

@@ -262,7 +262,7 @@ public:
     writer() = default;
     writer(writer const &) = delete;
     writer(writer && w) : w_(w.w_) { w.w_ = {}; }
-    ~writer() {
+    ~writer() { // TLA:ChannelLifecycle.WaiterReleaseRef
         if (w_) {
             internal::writer_release(w_);
         }
@@ -321,7 +321,7 @@ public:
     reader() = default;
     reader(reader const &) = delete;
     reader(reader && r) : r_(r.r_) { r.r_ = {}; }
-    ~reader() {
+    ~reader() { // TLA:ChannelLifecycle.WaiterReleaseRef
         if (r_) {
             internal::reader_release(r_);
         }

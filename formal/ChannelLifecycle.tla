@@ -81,7 +81,9 @@ Init ==
  ******************************************************************************)
 
 (* Waiter acquires channel mutex.
- * Code: channel.cc:228 lock_all() *)
+ * Code: channel.cc:228 lock_all()
+ *
+ * TLA:ChannelLifecycle.WaiterAcquire *)
 WaiterAcquire ==
     /\ pc_waiter = "start"
     /\ channel_live
@@ -97,7 +99,9 @@ WaiterAcquire ==
  *
  * If channel is alive, proceed to phase 2 (register).
  *
- * Code: channel.cc:244 if (!*ch) { ... unlock_all(); return; } *)
+ * Code: channel.cc:244 if (!*ch) { ... unlock_all(); return; }
+ *
+ * TLA:ChannelLifecycle.WaiterPhase1 *)
 WaiterPhase1 ==
     /\ pc_waiter = "phase1"
     /\ IF endpt_dead["W"]
@@ -116,7 +120,9 @@ WaiterPhase1 ==
  *
  * Code: channel.cc:301-308
  *   g_self->alt_state.store(ALT_WAITING, release);
- *   ch->endpts_[endpt].wait(&chop); *)
+ *   ch->endpts_[endpt].wait(&chop);
+ *
+ * TLA:ChannelLifecycle.RegisterWaiter *)
 RegisterWaiter ==
     /\ pc_waiter = "registering"
     /\ alt_state' = "WAITING"
@@ -131,7 +137,9 @@ RegisterWaiter ==
  * Code: channel.cc:319-321
  *   g_self->suspending_.store(true, release);
  *   unlock_all();
- *   do_switch(Status::detach); *)
+ *   do_switch(Status::detach);
+ *
+ * TLA:ChannelLifecycle.WaiterSleep *)
 WaiterSleep ==
     /\ pc_waiter = "sleeping"
     /\ ch_mu' = "none"
@@ -143,7 +151,9 @@ WaiterSleep ==
 (* Waiter wakes up (scheduled by closer). Re-acquires lock for cleanup.
  * Enabled only after being claimed (on_queue) and channel still exists.
  *
- * Code: channel.cc:325 lock_all() *)
+ * Code: channel.cc:325 lock_all()
+ *
+ * TLA:ChannelLifecycle.WaiterWakeAcquire *)
 WaiterWakeAcquire ==
     /\ pc_waiter = "asleep"
     /\ on_queue
@@ -160,7 +170,9 @@ WaiterWakeAcquire ==
  * Code: channel.cc:326-335
  *   ch->endpts_[endpt].remove(&chop, g_self);
  *   unlock_all();
- *   g_self->alt_state.store(ALT_IDLE, release); *)
+ *   g_self->alt_state.store(ALT_IDLE, release);
+ *
+ * TLA:ChannelLifecycle.WaiterCleanup *)
 WaiterCleanup ==
     /\ pc_waiter = "cleaning"
     /\ waiter_set' = waiter_set \ {"wa"}
@@ -174,7 +186,9 @@ WaiterCleanup ==
  * Models the chan_op destructor calling reader_release after
  * prialt_begin_impl returns.
  *
- * Code: csp.h chan_op<T>::~chan_op() → reader_release / writer_release *)
+ * Code: csp.h chan_op<T>::~chan_op() → reader_release / writer_release
+ *
+ * TLA:ChannelLifecycle.WaiterReleaseRef *)
 WaiterReleaseRef ==
     /\ pc_waiter = "release_ref"
     /\ pc_waiter' = "done_w"
@@ -192,7 +206,9 @@ WaiterReleaseRef ==
  ******************************************************************************)
 
 (* CloserW decrements writer refcount to zero (atomic).
- * Code: channel.cc:122 *)
+ * Code: channel.cc:122
+ *
+ * TLA:ChannelLifecycle.CloserWDecRef *)
 CloserWDecRef ==
     /\ pc_cw = "start"
     /\ channel_live
@@ -202,7 +218,9 @@ CloserWDecRef ==
                    alt_state, on_queue, pc_cr, pc_waiter>>
 
 (* CloserW acquires mu_.
- * Code: channel.cc:124 *)
+ * Code: channel.cc:124
+ *
+ * TLA:ChannelLifecycle.CloserWAcquire *)
 CloserWAcquire ==
     /\ pc_cw = "want_mu"
     /\ ch_mu = "none"
@@ -212,7 +230,9 @@ CloserWAcquire ==
                    alt_state, on_queue, pc_cr, pc_waiter>>
 
 (* CloserW wakes waiters under mu_ via CAS WAITING→CLAIMED.
- * Code: channel.cc:130-146 *)
+ * Code: channel.cc:130-146
+ *
+ * TLA:ChannelLifecycle.CloserWWakeWaiters *)
 CloserWWakeWaiters ==
     /\ pc_cw = "waking"
     /\ IF "wa" \in waiter_set /\ alt_state = "WAITING"
@@ -224,7 +244,9 @@ CloserWWakeWaiters ==
                    waiter_set, pc_cr, pc_waiter>>
 
 (* CloserW releases mu_.
- * Code: channel.cc:149 *)
+ * Code: channel.cc:149
+ *
+ * TLA:ChannelLifecycle.CloserWReleaseMu *)
 CloserWReleaseMu ==
     /\ pc_cw = "unlock_mu"
     /\ ch_mu' = "none"
@@ -233,7 +255,9 @@ CloserWReleaseMu ==
                    alt_state, on_queue, pc_cr, pc_waiter>>
 
 (* CloserW decrements alive_. If it was 1, delete channel.
- * Code: channel.cc:154-156 *)
+ * Code: channel.cc:154-156
+ *
+ * TLA:ChannelLifecycle.CloserWDecAlive *)
 CloserWDecAlive ==
     /\ pc_cw = "dec_alive"
     /\ channel_live
@@ -252,7 +276,9 @@ CloserWDecAlive ==
  ******************************************************************************)
 
 (* CloserR decrements reader refcount to zero.
- * Code: channel.cc:122 *)
+ * Code: channel.cc:122
+ *
+ * TLA:ChannelLifecycle.CloserRDecRef *)
 CloserRDecRef ==
     /\ pc_cr = "start"
     /\ channel_live
@@ -262,7 +288,9 @@ CloserRDecRef ==
                    alt_state, on_queue, pc_cw, pc_waiter>>
 
 (* CloserR acquires mu_.
- * Code: channel.cc:124 *)
+ * Code: channel.cc:124
+ *
+ * TLA:ChannelLifecycle.CloserRAcquire *)
 CloserRAcquire ==
     /\ pc_cr = "want_mu"
     /\ ch_mu = "none"
@@ -273,7 +301,9 @@ CloserRAcquire ==
 
 (* CloserR wakes waiters under mu_ (but waiter has already cleaned up
  * by this point, so normally no-one to wake).
- * Code: channel.cc:130-146 *)
+ * Code: channel.cc:130-146
+ *
+ * TLA:ChannelLifecycle.CloserRWakeWaiters *)
 CloserRWakeWaiters ==
     /\ pc_cr = "waking"
     /\ IF "wa" \in waiter_set /\ alt_state = "WAITING"
@@ -285,7 +315,9 @@ CloserRWakeWaiters ==
                    waiter_set, pc_cw, pc_waiter>>
 
 (* CloserR releases mu_.
- * Code: channel.cc:149 *)
+ * Code: channel.cc:149
+ *
+ * TLA:ChannelLifecycle.CloserRReleaseMu *)
 CloserRReleaseMu ==
     /\ pc_cr = "unlock_mu"
     /\ ch_mu' = "none"
@@ -294,7 +326,9 @@ CloserRReleaseMu ==
                    alt_state, on_queue, pc_cw, pc_waiter>>
 
 (* CloserR decrements alive_. If it was 1, delete channel.
- * Code: channel.cc:154-156 *)
+ * Code: channel.cc:154-156
+ *
+ * TLA:ChannelLifecycle.CloserRDecAlive *)
 CloserRDecAlive ==
     /\ pc_cr = "dec_alive"
     /\ channel_live

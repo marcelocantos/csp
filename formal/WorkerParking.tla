@@ -76,7 +76,9 @@ Init ==
  * Otherwise proceed to park (we abstract away work availability since
  * the bug is about shutdown, not work distribution).
  *
- * Code: while (!stopping.load(acquire)) { ... if no work: park } *)
+ * Code: while (!stopping.load(acquire)) { ... if no work: park }
+ *
+ * TLA:WorkerParking.WorkerCheckWork *)
 WorkerCheckWork(w) ==
     /\ pc_worker[w] = "check_work"
     /\ IF stopping
@@ -87,7 +89,9 @@ WorkerCheckWork(w) ==
 
 (* Worker acquires park_mu to enter the cv.wait region.
  *
- * Code: unique_lock<mutex> lk(park_mu)  [line 127] *)
+ * Code: unique_lock<mutex> lk(park_mu)  [line 127]
+ *
+ * TLA:WorkerParking.WorkerAcquirePark *)
 WorkerAcquirePark(w) ==
     /\ pc_worker[w] = "acquire_park"
     /\ park_mu = "none"
@@ -104,7 +108,9 @@ WorkerAcquirePark(w) ==
  * The lock is STILL HELD after this step — the worker hasn't entered
  * cv.wait(lk) yet. This is the critical gap where the bug manifests.
  *
- * Code: [this, &p]{ return stopping.load(acquire) || has_work(p); } *)
+ * Code: [this, &p]{ return stopping.load(acquire) || has_work(p); }
+ *
+ * TLA:WorkerParking.WorkerEvalPred *)
 WorkerEvalPred(w) ==
     /\ pc_worker[w] = "eval_pred"
     /\ park_mu = w
@@ -124,7 +130,9 @@ WorkerEvalPred(w) ==
  * We clear the worker's woken flag here — any stale wakeup from
  * a previous cycle is consumed.
  *
- * Code: cv.wait(lk) inside park_cv.wait(lk, pred) *)
+ * Code: cv.wait(lk) inside park_cv.wait(lk, pred)
+ *
+ * TLA:WorkerParking.WorkerEnterWait *)
 WorkerEnterWait(w) ==
     /\ pc_worker[w] = "will_wait"
     /\ park_mu = w
@@ -135,7 +143,9 @@ WorkerEnterWait(w) ==
 
 (* Worker is blocked on park_cv. When woken (by notify), reacquire lock.
  *
- * Code: cv wakes -> pthread_cond_wait reacquires mutex *)
+ * Code: cv wakes -> pthread_cond_wait reacquires mutex
+ *
+ * TLA:WorkerParking.WorkerWoken *)
 WorkerWoken(w) ==
     /\ pc_worker[w] = "blocked"
     /\ woken[w]
@@ -146,7 +156,9 @@ WorkerWoken(w) ==
 
 (* Worker wakes up (pred was true): release lock, back to work loop.
  *
- * Code: park_cv.wait returns; p.parked.store(false); } [line 156] *)
+ * Code: park_cv.wait returns; p.parked.store(false); } [line 156]
+ *
+ * TLA:WorkerParking.WorkerWake *)
 WorkerWake(w) ==
     /\ pc_worker[w] = "wake"
     /\ park_mu = w
@@ -170,7 +182,9 @@ WorkerWake(w) ==
 
 (* Shutdown sets the stopping flag.
  *
- * Code: stopping.store(true, release)  [line 62] *)
+ * Code: stopping.store(true, release)  [line 62]
+ *
+ * TLA:WorkerParking.ShutdownSetFlag *)
 ShutdownSetFlag ==
     /\ pc_shutdown = "idle"
     /\ stopping' = TRUE
@@ -179,7 +193,9 @@ ShutdownSetFlag ==
 
 (* Shutdown acquires park_mu (empty critical section).
  *
- * Code: { lock_guard<mutex> lk(park_mu); }  [line 68] *)
+ * Code: { lock_guard<mutex> lk(park_mu); }  [line 68]
+ *
+ * TLA:WorkerParking.ShutdownAcquireMu *)
 ShutdownAcquireMu ==
     /\ pc_shutdown = "acquire_mu"
     /\ park_mu = "none"
@@ -189,7 +205,9 @@ ShutdownAcquireMu ==
 
 (* Shutdown releases park_mu.
  *
- * Code: } // end of lock_guard scope  [line 68] *)
+ * Code: } // end of lock_guard scope  [line 68]
+ *
+ * TLA:WorkerParking.ShutdownReleaseMu *)
 ShutdownReleaseMu ==
     /\ pc_shutdown = "release_mu"
     /\ park_mu = "shutdown"
@@ -201,7 +219,9 @@ ShutdownReleaseMu ==
  * Only workers currently in "blocked" state receive the wake signal.
  * This correctly models CV notify semantics: only waiting threads are woken.
  *
- * Code: park_cv.notify_all()  [line 69] *)
+ * Code: park_cv.notify_all()  [line 69]
+ *
+ * TLA:WorkerParking.ShutdownNotify *)
 ShutdownNotify ==
     /\ pc_shutdown = "notify"
     /\ woken' = [w \in Workers |->

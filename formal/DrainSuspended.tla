@@ -57,7 +57,9 @@ Init ==
  * other thread can observe the intermediate state.
  *
  * Code: suspending_.store(true, release); unlock_all();
- *       enter do_switch → run() *)
+ *       enter do_switch → run()
+ *
+ * TLA:DrainSuspended.BeginSuspend *)
 BeginSuspend ==
     /\ pc_mt = "running"
     /\ suspending' = TRUE
@@ -77,7 +79,9 @@ BeginSuspend ==
  *
  * Code: if (g_self->wake_pending_.exchange(false, acq_rel)) {
  *           re-add to queue; return;
- *       } else { jump_fcontext(...); } *)
+ *       } else { jump_fcontext(...); }
+ *
+ * TLA:DrainSuspended.CheckWP *)
 CheckWP ==
     /\ pc_mt = "check_wp"
     /\ IF wake_pending
@@ -94,7 +98,9 @@ CheckWP ==
  * could observe suspending=TRUE in between.
  *
  * Code: do_switch(Status::detach);
- *       g_self->suspending_.store(false, release);  // after return *)
+ *       g_self->suspending_.store(false, release);  // after return
+ *
+ * TLA:DrainSuspended.ClearSusp *)
 ClearSusp ==
     /\ pc_mt = "clear_susp"
     /\ suspending' = FALSE
@@ -104,7 +110,9 @@ ClearSusp ==
 (* After context switch: another thread runs drain_suspended for this
  * MT. First, acquire global_mu.
  *
- * Code: std::lock_guard<std::mutex> lk(rt.global_mu); *)
+ * Code: std::lock_guard<std::mutex> lk(rt.global_mu);
+ *
+ * TLA:DrainSuspended.AcquireDrain *)
 AcquireDrain ==
     /\ pc_mt = "switched_out"
     /\ global_mu = "none"
@@ -124,7 +132,9 @@ AcquireDrain ==
  *       if (suspended->wake_pending_.exchange(false, acq_rel)) {
  *           if (!suspended->in_global_)
  *               rt.push_to_global(suspended);
- *       } *)
+ *       }
+ *
+ * TLA:DrainSuspended.Drain *)
 Drain ==
     /\ pc_mt = "draining"
     /\ suspending' = FALSE
@@ -147,14 +157,18 @@ Drain ==
 
 (* Waker decides to call schedule(). Only enabled after MT starts
  * suspending (pc_mt != "running"), modeling the fact that the MT must
- * first register on channel wait queues before a peer can find it. *)
+ * first register on channel wait queues before a peer can find it.
+ *
+ * TLA:DrainSuspended.StartWake *)
 StartWake ==
     /\ pc_waker = "idle"
     /\ pc_mt /= "running"
     /\ pc_waker' = "want_lock"
     /\ UNCHANGED <<suspending, wake_pending, on_queue, global_mu, pc_mt>>
 
-(* Waker acquires global_mu. *)
+(* Waker acquires global_mu.
+ *
+ * TLA:DrainSuspended.AcquireWake *)
 AcquireWake ==
     /\ pc_waker = "want_lock"
     /\ global_mu = "none"
@@ -173,7 +187,9 @@ AcquireWake ==
  *           wake_pending_.store(true, release);
  *           return;
  *       }
- *       rt.push_to_global(this); *)
+ *       rt.push_to_global(this);
+ *
+ * TLA:DrainSuspended.DoSchedule *)
 DoSchedule ==
     /\ pc_waker = "scheduling"
     /\ IF suspending

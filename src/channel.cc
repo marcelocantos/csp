@@ -112,14 +112,19 @@ namespace {
             ++counterses()[endpt].refs;
             endpts_[endpt].refcount.fetch_add(1, std::memory_order_relaxed);
         }
+        // TLA:ChannelLifecycle.CloserWDecRef TLA:ChannelLifecycle.CloserRDecRef (shared: endpt selects W or R)
         void release(int endpt) {
             ++counterses()[endpt].derefs;
             if (endpts_[endpt].refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 {
+                    // TLA:ChannelLifecycle.CloserWAcquire TLA:ChannelLifecycle.CloserRAcquire
                     std::lock_guard<std::mutex> lock(mu_);
                     --counterses()[endpt].active;
                     auto & ep = endpts_[1 - endpt];
                     if (ep.refcount.load(std::memory_order_acquire) > 0) {
+                        // TLA:ChannelLifecycle.CloserWWakeWaiters TLA:ChannelLifecycle.CloserRWakeWaiters
+                        // TLA:AltStateCAS.WakerCAS TLA:AltStateCAS.WakerSetSignal TLA:AltStateCAS.WakerSchedule TLA:AltStateCAS.LoserDone
+                        // TLA:DrainSuspended.StartWake
                         // Wake waiters via CAS. Don't remove from queues —
                         // woken threads clean up their own registrations.
                         for (auto const & cw : ep.waiters) {
@@ -141,7 +146,8 @@ namespace {
                         }
                         // Don't clear — woken threads clean up their own registrations.
                     }
-                }
+                } // TLA:ChannelLifecycle.CloserWReleaseMu TLA:ChannelLifecycle.CloserRReleaseMu
+                // TLA:ChannelLifecycle.CloserWDecAlive TLA:ChannelLifecycle.CloserRDecAlive
                 // Both endpoint sides decrement alive_. The last one
                 // (fetch_sub returns 1) deletes. This avoids a race
                 // when both endpoints reach refcount 0 concurrently
@@ -220,8 +226,9 @@ namespace {
             auto lock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.lock(); };
             auto unlock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock(); };
 
-            lock_all();
+            lock_all(); // TLA:ChannelLifecycle.WaiterAcquire
 
+            // TLA:ChannelLifecycle.WaiterPhase1
             // Phase 1: Scan for ready peer (priority order, rotated by offset).
             // For data chanops (ready_flag), a ready peer takes priority
             // over dead-channel detection on other channels.  For vultures
@@ -252,6 +259,7 @@ namespace {
 
                     auto & them = ch->endpts_[1 - endpt].waiters;
                     if ((flags & ready_flag)) {
+                        // TLA:AltStateCAS.WakerStart TLA:AltStateCAS.WakerCAS
                         for (auto & cw : them) {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
@@ -293,6 +301,7 @@ namespace {
             }
 
             // Phase 2: Register on all channels and sleep.
+            // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
             g_self->alt_state.store(Microthread::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
@@ -311,13 +320,14 @@ namespace {
             // before do_switch completes, a waker could push us to
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
+            // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
             g_self->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            g_self->suspending_.store(false, std::memory_order_release);
+            g_self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
-            lock_all();
+            lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
             for (int i = 0; i < g_self->n_chanops_; ++i) {
                 auto const & chop = g_self->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
@@ -325,9 +335,9 @@ namespace {
                     ch->endpts_[flags & endpt_flag].remove(&chop, g_self);
                 }
             }
-            unlock_all();
+            unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
 
-            g_self->alt_state.store(Microthread::ALT_IDLE, std::memory_order_release);
+            g_self->alt_state.store(Microthread::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
             out->result = g_self->signal_;
             g_self->chanops_ = nullptr;
             g_self->n_chanops_ = 0;

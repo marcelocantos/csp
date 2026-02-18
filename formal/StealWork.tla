@@ -93,7 +93,9 @@ Init ==
  *   std::lock_guard<std::mutex> lk(p.run_mu);
  *   ... candidate = busy; ...
  *   p.running = candidate;
- *   return candidate; *)
+ *   return candidate;
+ *
+ * TLA:StealWork.VLocalNext *)
 VLocalNext ==
     /\ pc_victim = "v_local_next"
     /\ run_mu[Victim] = "none"
@@ -117,7 +119,9 @@ VLocalNext ==
  *   current_p().running = g_self;
  *   ... busy = busy->next_;
  *   target = busy;
- *   ... target->run(); *)
+ *   ... target->run();
+ *
+ * TLA:StealWork.VDoSwitch *)
 VDoSwitch ==
     /\ pc_victim = "v_running"
     /\ run_mu[Victim] = "none"
@@ -131,7 +135,9 @@ VDoSwitch ==
  * from the DLL and running is cleared. The MT becomes unplaced.
  *
  * Code: src/csp.cc:176-216 (run with Status::detach)
- *   Under run_mu: deschedule g_self (remove from DLL, next_=nullptr) *)
+ *   Under run_mu: deschedule g_self (remove from DLL, next_=nullptr)
+ *
+ * TLA:StealWork.VDeschedule *)
 VDeschedule ==
     /\ pc_victim = "v_running"
     /\ run_mu[Victim] = "none"
@@ -151,7 +157,9 @@ VDeschedule ==
  ******************************************************************************)
 
 (* Acquire victim.run_mu.
- * Code: runtime.cpp:298 *)
+ * Code: runtime.cpp:298
+ *
+ * TLA:StealWork.TStealAcquireRunMu *)
 TStealAcquireRunMu ==
     /\ pc_thief = "t_idle"
     /\ run_mu[Victim] = "none"
@@ -161,7 +169,9 @@ TStealAcquireRunMu ==
                    pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
 
 (* try_to_lock on global_mu succeeds.
- * Code: runtime.cpp:303 *)
+ * Code: runtime.cpp:303
+ *
+ * TLA:StealWork.TStealTryGlobalOK *)
 TStealTryGlobalOK ==
     /\ pc_thief = "t_try_global"
     /\ global_mu = "none"
@@ -171,7 +181,9 @@ TStealTryGlobalOK ==
                    pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
 
 (* try_to_lock fails — release run_mu, back off.
- * Code: runtime.cpp:304 *)
+ * Code: runtime.cpp:304
+ *
+ * TLA:StealWork.TStealTryGlobalFail *)
 TStealTryGlobalFail ==
     /\ pc_thief = "t_try_global"
     /\ global_mu /= "none"
@@ -185,7 +197,9 @@ TStealTryGlobalFail ==
  * Code: runtime.cpp:306-313
  *   if (!victim.busy) continue;
  *   auto* candidate = victim.busy->prev_;
- *   if (candidate == victim.running) continue; *)
+ *   if (candidate == victim.running) continue;
+ *
+ * TLA:StealWork.TStealCheck *)
 TStealCheck ==
     /\ pc_thief = "t_check_busy"
     /\ LET candidates == local[Victim] \ (IF running[Victim] /= "none"
@@ -200,7 +214,9 @@ TStealCheck ==
     /\ UNCHANGED <<local, global, running, in_global, run_mu, global_mu,
                    pc_victim, pc_waker, pc_taker, waker_mt>>
 
-(* Release both locks — no candidate found. *)
+(* Release both locks — no candidate found.
+ *
+ * TLA:StealWork.TStealReleaseFail *)
 TStealReleaseFail ==
     /\ pc_thief = "t_release_fail"
     /\ run_mu' = [run_mu EXCEPT ![Victim] = "none"]
@@ -210,7 +226,9 @@ TStealReleaseFail ==
                    pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
 
 (* Delink from victim DLL + push to global. Both locks held — atomic.
- * Code: runtime.cpp:318-322 *)
+ * Code: runtime.cpp:318-322
+ *
+ * TLA:StealWork.TStealDelinkPush *)
 TStealDelinkPush ==
     /\ pc_thief = "t_delink_push"
     /\ steal_cand /= "none"
@@ -222,7 +240,9 @@ TStealDelinkPush ==
     /\ UNCHANGED <<running, run_mu, global_mu,
                    pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
 
-(* Release both locks after successful steal. *)
+(* Release both locks after successful steal.
+ *
+ * TLA:StealWork.TStealReleaseOK *)
 TStealReleaseOK ==
     /\ pc_thief = "t_release_ok"
     /\ run_mu' = [run_mu EXCEPT ![Victim] = "none"]
@@ -238,7 +258,9 @@ TStealReleaseOK ==
  ******************************************************************************)
 
 (* Choose an unplaced MT to schedule. An MT is unplaced when it has been
- * descheduled (removed from DLL, not running, not on global). *)
+ * descheduled (removed from DLL, not running, not on global).
+ *
+ * TLA:StealWork.WStartSchedule *)
 WStartSchedule ==
     /\ pc_waker = "w_idle"
     /\ \E mt \in MTs :
@@ -252,7 +274,9 @@ WStartSchedule ==
                    pc_victim, pc_thief, pc_taker, steal_cand>>
 
 (* Acquire global_mu.
- * Code: src/csp.cc:128 *)
+ * Code: src/csp.cc:128
+ *
+ * TLA:StealWork.WAcquireLock *)
 WAcquireLock ==
     /\ pc_waker = "w_want_lock"
     /\ global_mu = "none"
@@ -262,7 +286,9 @@ WAcquireLock ==
                    pc_victim, pc_thief, pc_taker, steal_cand, waker_mt>>
 
 (* Push MT to global queue under global_mu. Release lock.
- * Code: src/csp.cc:140 *)
+ * Code: src/csp.cc:140
+ *
+ * TLA:StealWork.WPush *)
 WPush ==
     /\ pc_waker = "w_push"
     /\ waker_mt /= "none"
@@ -279,7 +305,9 @@ WPush ==
  ******************************************************************************)
 
 (* Acquire global_mu.
- * Code: runtime.cpp:247 *)
+ * Code: runtime.cpp:247
+ *
+ * TLA:StealWork.TkAcquireGlobal *)
 TkAcquireGlobal ==
     /\ pc_taker = "tk_idle"
     /\ global /= {}
@@ -292,7 +320,9 @@ TkAcquireGlobal ==
 (* Pop from global, schedule_local on thief's P. global_mu held
  * throughout (opposite lock order from steal_work — try_to_lock
  * prevents deadlock).
- * Code: runtime.cpp:257-261 *)
+ * Code: runtime.cpp:257-261
+ *
+ * TLA:StealWork.TkPopAndSchedule *)
 TkPopAndSchedule ==
     /\ pc_taker = "tk_pop"
     /\ run_mu[Thief] = "none"

@@ -99,7 +99,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench check examples run-examples amalg iwyu clean
+.PHONY: test build bench check check-tla-tags examples run-examples amalg iwyu clean
 
 test: $(TARGET)
 	./$(TARGET)
@@ -163,7 +163,10 @@ TLA_SPECS  := $(foreach s,$(TLA_SPECS),$(if $(findstring _TTrace,$(s)),,$(s)))
 # Exclude _Bug specs from the default check (they demonstrate known violations).
 TLA_CHECK  := $(filter-out %_Bug.tla,$(TLA_SPECS))
 
-check: $(TLA_JAR)
+check-tla-tags:
+	@python3 scripts/check_tla_tags.py
+
+check: check-tla-tags $(TLA_JAR)
 	@fail=0; \
 	for spec in $(TLA_CHECK); do \
 		echo "=== TLC: $$spec ==="; \

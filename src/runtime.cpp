@@ -59,14 +59,14 @@ namespace csp {
         }
 
         void Runtime::shutdown() {
-            stopping.store(true, std::memory_order_release);
+            stopping.store(true, std::memory_order_release); // TLA:WorkerParking.ShutdownSetFlag
             // Acquire-release park_mu to synchronize with workers'
             // park_cv.wait() — ensures any worker that has already
             // checked the predicate (seeing stopping==false) has
             // entered wait() before we notify, preventing lost
             // notifications.
-            { std::lock_guard<std::mutex> lk(park_mu); }
-            park_cv.notify_all();
+            { std::lock_guard<std::mutex> lk(park_mu); } // TLA:WorkerParking.ShutdownAcquireMu TLA:WorkerParking.ShutdownReleaseMu
+            park_cv.notify_all(); // TLA:WorkerParking.ShutdownNotify
 
             if (watchdog_.joinable()) {
                 watchdog_.join();
@@ -99,6 +99,7 @@ namespace csp {
         void Runtime::worker_loop() {
             auto& p = current_p();
 
+            // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
 
@@ -124,7 +125,7 @@ namespace csp {
 
                 // Park: wait for work or shutdown.
                 {
-                    std::unique_lock<std::mutex> lk(park_mu);
+                    std::unique_lock<std::mutex> lk(park_mu); // TLA:WorkerParking.WorkerAcquirePark
                     p.parked.store(true, std::memory_order_release);
 
                     auto deadline = next_timer_deadline(p);
@@ -141,6 +142,7 @@ namespace csp {
                         if (wd < *deadline) deadline = wd;
                     }
 
+                    // TLA:WorkerParking.WorkerEvalPred TLA:WorkerParking.WorkerEnterWait TLA:WorkerParking.WorkerWoken
                     if (deadline) {
                         park_cv.wait_until(lk, *deadline, [this, &p] {
                             return stopping.load(std::memory_order_acquire)
@@ -153,7 +155,7 @@ namespace csp {
                         });
                     }
 
-                    p.parked.store(false, std::memory_order_release);
+                    p.parked.store(false, std::memory_order_release); // TLA:WorkerParking.WorkerWake
                 }
 
                 // Surplus P wind-down: exit if still idle after timeout.
@@ -221,6 +223,7 @@ namespace csp {
             unpark_one();
         }
 
+        // TLA:StealWork.VLocalNext
         Microthread* Runtime::local_next(Processor& p) {
             std::lock_guard<std::mutex> lk(p.run_mu);
             auto& busy = p.busy;
@@ -243,6 +246,7 @@ namespace csp {
             return candidate;
         }
 
+        // TLA:StealWork.TkAcquireGlobal TLA:StealWork.TkPopAndSchedule
         bool Runtime::take_from_global(Processor& p) {
             std::lock_guard<std::mutex> lk(global_mu);
             if (global_run_queue.empty()) {
@@ -295,23 +299,25 @@ namespace csp {
 
                 Microthread* stolen = nullptr;
                 {
-                    std::lock_guard<std::mutex> lk(victim.run_mu);
+                    std::lock_guard<std::mutex> lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
 
                     // Try to acquire global_mu without blocking to avoid
                     // deadlock (take_from_global holds global_mu then
                     // acquires run_mu via schedule_local).
-                    std::unique_lock<std::mutex> glk(global_mu, std::try_to_lock);
+                    std::unique_lock<std::mutex> glk(global_mu, std::try_to_lock); // TLA:StealWork.TStealTryGlobalOK TLA:StealWork.TStealTryGlobalFail
                     if (!glk) continue;
 
                     if (!victim.busy) continue;
 
+                    // TLA:StealWork.TStealCheck
                     auto* candidate = victim.busy->prev_;
                     if (!candidate || candidate == &victim.main
                         || candidate == victim.busy
                         || candidate == victim.running) {
-                        continue;
+                        continue; // TLA:StealWork.TStealReleaseFail
                     }
 
+                    // TLA:StealWork.TStealDelinkPush
                     // Delink from victim's DLL and push to global
                     // atomically (both locks held) so schedule() cannot
                     // see the MT with next_==null / in_global_==false.
@@ -321,7 +327,7 @@ namespace csp {
                     candidate->prev_ = nullptr;
                     push_to_global(candidate);
                     stolen = candidate;
-                }
+                } // TLA:StealWork.TStealReleaseOK
                 if (stolen) {
                     unpark_one();
                     return true;

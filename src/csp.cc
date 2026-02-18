@@ -45,7 +45,8 @@ namespace csp {
             if (rt.mn_mode_) {
                 bool need_unpark = false;
                 {
-                    std::lock_guard<std::mutex> lk(rt.global_mu);
+                    std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
+                    // TLA:DrainSuspended.Drain
                     suspended->suspending_.store(false, std::memory_order_release);
                     if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                         if (!suspended->in_global_) {
@@ -121,12 +122,14 @@ namespace csp {
             // In M:N mode, push to the global run queue so any worker
             // can pick it up, preventing stranding on a P whose worker
             // is about to park.
+            // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
             if (rt.mn_mode_) {
                 {
                     std::lock_guard<std::mutex> lk(rt.global_mu);
                     if (in_global_) {
                         return;
                     }
+                    // TLA:DrainSuspended.DoSchedule
                     // If the microthread is in the unlock_all→do_switch
                     // window, it's still running and can't be safely
                     // pushed to the global queue.  Set wake_pending_
@@ -135,7 +138,7 @@ namespace csp {
                         wake_pending_.store(true, std::memory_order_release);
                         return;
                     }
-                    rt.push_to_global(this);
+                    rt.push_to_global(this); // TLA:StealWork.WPush
                 }
                 rt.unpark_one();
                 return;
@@ -189,7 +192,7 @@ namespace csp {
                         busy = busy->next_;
                     }
                     break;
-                case Status::detach:
+                case Status::detach: // TLA:StealWork.VDeschedule
                 case Status::exit:
                     // Inline deschedule without re-acquiring run_mu.
                     assert(g_self->next_);
@@ -201,6 +204,7 @@ namespace csp {
                     g_self->next_ = nullptr;
                     g_self->prev_ = nullptr;
 
+                    // TLA:DrainSuspended.CheckWP
                     if (status == Status::detach &&
                         g_self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                         if (busy) {
@@ -239,6 +243,7 @@ namespace csp {
             }
         }
 
+        // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
             // Reclaim unused stack pages before suspending.
             if (g_self->stk_) {
@@ -397,9 +402,9 @@ void sleep_until(int64_t deadline_ns) {
         std::lock_guard<std::mutex> lk(current_p().run_mu);
         current_p().timer_heap.push({deadline, g_self});
     }
-    g_self->suspending_.store(true, std::memory_order_release);
+    g_self->suspending_.store(true, std::memory_order_release); // TLA:DrainSuspended.BeginSuspend
     do_switch(Status::detach);
-    g_self->suspending_.store(false, std::memory_order_release);
+    g_self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 }
 
 int run() {
