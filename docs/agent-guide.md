@@ -115,17 +115,18 @@ switch (prialt(w << 42, r >> v, ~some_reader)) {
     case 1:  /* read into v */       break;
     case ~0: /* w's reader died */   break;
     case ~1: /* r's writer died */   break;
-    case 2:  /* ~some_reader: writer of some_reader died */ break;
+    case ~2: /* ~some_reader: writer of some_reader died */ break;
 }
 ```
 
 Key: `~endpoint` is a death-watch operation. When it fires, the return
-value is **non-negative** (it's a "data" match on the death event), not
-complemented. Complemented values only occur for implicit death detection on
-regular read/write operations.
+value is **complemented** (`~k` for the `k`-th operation). All death
+events — both explicit vultures and implicit death on data operations —
+return complemented indices.
 
 **`after()` returns non-negative**: `after(d)` sends a `poke` then dies, so
-`prialt(ch >> v, after(1s) >> nullptr)` returns `1` on timeout, not `~1`.
+`prialt(ch >> v, after(1s) >> nullptr)` returns `1` on timeout (data match
+on the poke value), not `~1`.
 
 ```cpp
 // Vector overload (all ops must be same type T).
@@ -388,9 +389,9 @@ All in `namespace csp::part`. Include `csp/part/<name>.h`.
    prialt, the timeout case is a non-negative match (e.g., `case 1:`), not a
    death event (`case ~1:`).
 
-3. **`~endpoint` is non-negative too**: Death-watch operations (`~w`, `~r`)
-   return non-negative case numbers when they fire. Complemented return values
-   only come from implicit death on regular read/write ops.
+3. **`~endpoint` returns complemented**: Death-watch operations (`~w`, `~r`)
+   return complemented indices (`~k`) when they fire, just like implicit death
+   on regular read/write ops. All death events are complemented.
 
 4. **chan_op blocks in destructor**: `w << val;` as a statement blocks
    because `chan_op`'s destructor calls `prialt`. To avoid blocking, capture
