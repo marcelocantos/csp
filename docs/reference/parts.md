@@ -27,7 +27,7 @@ Each entry below documents:
 3. [Windowing](#windowing) -- batch, window, slide, nwise, pairwise, quantize
 4. [Filtering](#filtering) -- distinct, unique, take_while, skip_while, first/last/skip_first/skip_last, stride, default_if_empty
 5. [Timing](#timing) -- delay, debounce, throttle, sample, timeout, gate, timer
-6. [Fan-out / Fan-in](#fan-out--fan-in) -- tee, fanout, chain, merge, zip, unzip
+6. [Fan-out / Fan-in](#fan-out-fan-in) -- tee, fanout, chain, merge, zip, unzip
 7. [Routing](#routing) -- round_robin, interleave, partition, group_by
 8. [Advanced](#advanced) -- share, first_wins, join, latch, killswitch, metrics
 9. [Lifecycle](#lifecycle) -- buffer, sink, blackhole, deaf, mute
@@ -56,7 +56,7 @@ template <typename T>
 auto count_forever(T start, T step = 1);
 ```
 
-**Header:** `#include <csp/part/count.h>`
+**Header:** `#include "csp.h"`
 
 Both return a `producer<T>`.
 
@@ -90,8 +90,7 @@ output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 
@@ -141,7 +140,7 @@ template <typename T>
 auto cycle(std::initializer_list<T> c);
 ```
 
-**Header:** `#include <csp/part/enumerate.h>`
+**Header:** `#include "csp.h"`
 
 All overloads return a `producer<T>`.
 
@@ -176,8 +175,7 @@ to its output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/enumerate.h>
+#include "csp.h"
 
 using namespace csp::part;
 
@@ -239,9 +237,7 @@ result to the output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/map.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -300,9 +296,7 @@ and writes matching values to the output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/where.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -358,9 +352,7 @@ One internal microthread maintains the accumulator, reads each input, applies
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/scan.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -430,9 +422,7 @@ concurrently via `alt`, and their values are forwarded to the single output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/flat_map.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -495,10 +485,7 @@ over its elements and writes them individually to the output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/flatten.h>
-#include <csp/part/batch.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -552,9 +539,7 @@ context, consuming the entire input stream before returning.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/reduce.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -620,9 +605,7 @@ vector to the output channel.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/batch.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -686,9 +669,7 @@ output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/window.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -773,9 +754,7 @@ writes to both output channels.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/slide.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -846,9 +825,7 @@ the input.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/nwise.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -909,9 +886,7 @@ pair to the output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/pairwise.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -1015,8 +990,7 @@ and writes.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/quantize.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -1084,8 +1058,7 @@ previously emitted value, and forwards it only when it differs.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/distinct.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -1153,8 +1126,7 @@ values not previously seen.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/unique.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -1220,9 +1192,7 @@ and writes it to the output. On the first failure, the output is closed.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/take_while.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -1279,9 +1249,7 @@ and all remaining elements are forwarded to the output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/skip_while.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -1449,9 +1417,7 @@ discards the rest.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/stride.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -1510,9 +1476,7 @@ output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/default_if_empty.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -1576,9 +1540,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/delay.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 using namespace std::chrono_literals;
@@ -1649,9 +1611,7 @@ out: -----------------3----------------4---
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/debounce.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 using namespace std::chrono_literals;
@@ -1717,9 +1677,7 @@ out: --1--2------------5--6---------
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/throttle.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 using namespace std::chrono_literals;
@@ -1798,9 +1756,7 @@ stream. It cannot be composed with `|` as a filter stage.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/sample.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 
@@ -1874,9 +1830,7 @@ out: --1--2-------------------X (closed)
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/timeout.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 using namespace std::chrono_literals;
@@ -1944,9 +1898,7 @@ composed with `|`.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/gate.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 
@@ -2043,8 +1995,7 @@ sleep completes.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/timer.h>
+#include "csp.h"
 
 using namespace csp::part;
 using namespace std::chrono_literals;
@@ -2116,9 +2067,7 @@ the main output and the side channel.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/tee.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2189,9 +2138,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/fanout.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2268,9 +2215,7 @@ writing every value to the single output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/chain.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2334,9 +2279,7 @@ is ready first, then writes the value to the single output.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/merge.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2407,9 +2350,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/zip.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2482,10 +2423,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/unzip.h>
-#include <csp/part/zip.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2556,9 +2494,7 @@ strict cyclic order.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/round_robin.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2616,9 +2552,7 @@ value to a single output channel.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/interleave.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2686,9 +2620,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/partition.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2757,9 +2689,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/group_by.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2837,9 +2767,7 @@ Each call to `.read()` on the returned meta-reader creates a new subscription.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/share.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2909,8 +2837,7 @@ No microthreads are spawned. `first_wins` blocks the calling microthread using
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/first_wins.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -2969,8 +2896,7 @@ draining and discarding all values until every reader is dead.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/join.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3036,9 +2962,7 @@ simultaneously accept new writes and serve reads, with writes taking priority.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/latch.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3108,9 +3032,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/killswitch.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3181,9 +3103,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/metrics.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3247,8 +3167,7 @@ channels.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/buffer.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3318,9 +3237,7 @@ One internal microthread reads every value from the input channel and invokes
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/sink.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3384,8 +3301,7 @@ One internal microthread reads and discards every value until the input closes.
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/blackhole.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3439,8 +3355,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/deaf.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3500,8 +3415,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/mute.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3562,8 +3476,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/io.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3628,8 +3541,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/io.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3690,8 +3602,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/io.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3752,8 +3663,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/io.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -3860,8 +3770,7 @@ graph LR
 #### Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/rpc.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

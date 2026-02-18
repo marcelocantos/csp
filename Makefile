@@ -2,6 +2,7 @@
 # Usage: make                              (build + run tests)
 #        make build                        (compile only)
 #        make bench                        (build + run benchmarks)
+#        make test-amalg                   (test against amalgamated build)
 #        make check                       (run TLA+ model checker)
 #        make amalg                       (generate amalgamation files)
 #        make iwyu                        (remove unused includes)
@@ -20,6 +21,12 @@ CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter
 LDFLAGS  :=
 LDLIBS   :=
 
+# --- Include path ---
+# CSP_INCLUDE selects header source: 'include' for development,
+# 'amalg' for amalgamated.  test-amalg uses recursive make to switch.
+
+CSP_INCLUDE ?= include
+
 # --- Sanitizer support ---
 # Each sanitizer mode gets its own build directory so you can switch
 # without cleaning.  ASan + UBSan and TSan are mutually exclusive.
@@ -30,6 +37,10 @@ LDFLAGS  += -fsanitize=$(SANITIZE)
 BUILDDIR := build-$(subst $(,),-,$(SANITIZE))
 endif
 
+ifneq ($(CSP_INCLUDE),include)
+BUILDDIR := $(BUILDDIR)-$(CSP_INCLUDE)
+endif
+
 # --- Auto-dependencies ---
 # -MMD generates .d files alongside .o files listing header deps.
 # -MP adds phony targets for each header, preventing errors when
@@ -37,7 +48,7 @@ endif
 
 DEPFLAGS = -MMD -MP
 
-INCLUDES := -Iinclude \
+INCLUDES := -I$(CSP_INCLUDE) \
             -Ithird_party
 
 # --- fcontext (vendored from Boost.Context) ---
@@ -67,6 +78,10 @@ FCONTEXT_OBJS   := $(patsubst $(FCONTEXT_DIR)/%.S,$(BUILDDIR)/fcontext/%.o,$(FCO
 
 # --- Sources ---
 
+ifeq ($(CSP_INCLUDE),amalg)
+LIB_SRCS := amalg/csp.cpp \
+            amalg/csp_globals.cpp
+else
 LIB_SRCS := src/csp.cc \
             src/csp_globals.cpp \
             src/channel.cc \
@@ -78,6 +93,7 @@ LIB_SRCS := src/csp.cc \
             src/blocking_pool.cc \
             src/signal.cc \
             src/stack_pool.cc
+endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
@@ -86,7 +102,9 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 # --- Objects ---
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
+ifneq ($(CSP_INCLUDE),amalg)
 LIB_OBJS   += $(FCONTEXT_OBJS)
+endif
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
 
@@ -99,10 +117,13 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench check check-tla-tags examples run-examples amalg iwyu clean
+.PHONY: test build bench test-amalg check check-tla-tags check-md-links examples run-examples amalg iwyu clean
 
-test: $(TARGET)
+test: $(TARGET) check-md-links
 	./$(TARGET)
+
+check-md-links:
+	@python3 scripts/check_md_links.py
 
 build: $(TARGET)
 
@@ -128,6 +149,11 @@ $(BUILDDIR)/src/%.o: src/%.cpp
 $(BUILDDIR)/fcontext/%.o: $(FCONTEXT_DIR)/%.S
 	@mkdir -p $(dir $@)
 	$(CXX) -c -o $@ $<
+
+# Amalgamated sources (self-contained, no -Iinclude needed)
+$(BUILDDIR)/amalg/%.o: amalg/%.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 # Test sources
 $(BUILDDIR)/test/%.o: test/%.cc
@@ -177,6 +203,9 @@ check: check-tla-tags $(TLA_JAR)
 
 amalg:
 	python3 scripts/amalgamate.py
+
+test-amalg: amalg
+	$(MAKE) CSP_INCLUDE=amalg test
 
 # --- include cleaner (clang-tidy) ---
 
