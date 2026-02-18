@@ -46,7 +46,9 @@ private:
     void munmap_region(StackRegion region);
 
     size_t page_size_;
+#if CSP_USE_MMAP_STACKS
     size_t stack_size_;     // total mmap size (guard + usable)
+#endif
 
     std::mutex mu_;
     std::vector<StackRegion> free_list_;

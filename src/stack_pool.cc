@@ -23,7 +23,9 @@ StackPool::StackPool()
         4096
 #endif
     )
+#if CSP_USE_MMAP_STACKS
     , stack_size_(kDefaultStackSize)
+#endif
 {}
 
 #if CSP_USE_MMAP_STACKS
