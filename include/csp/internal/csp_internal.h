@@ -5,7 +5,6 @@
 #include <csp/internal/stack_pool.h>
 
 #include <atomic>
-#include <cstdlib>
 #include <cstddef>
 
 // TSan fiber annotations: tell TSan about user-mode context switches

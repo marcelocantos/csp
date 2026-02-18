@@ -1,7 +1,6 @@
 #pragma once
 
 #include <csp/blocking.h>
-#include <csp/csp.h>
 
 #include <cerrno>
 #include <cstddef>
@@ -13,7 +12,6 @@
 
 #include <memory>
 #include <string>
-#include <vector>
 
 namespace csp::internal {
 

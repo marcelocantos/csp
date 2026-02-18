@@ -2,16 +2,11 @@
 
 #include <csp/internal/mt_log.h>
 
-#include <cassert>
 #include <exception>
 #include <stdint.h>
 
-#include <array>
 #include <functional>
-#include <initializer_list>
 #include <stdexcept>
-#include <string>
-#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>

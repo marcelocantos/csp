@@ -22,7 +22,6 @@
 #include <csp/part/merge.h>
 #include <csp/part/metrics.h>
 #include <csp/part/sample.h>
-#include <csp/part/mute.h>
 #include <csp/part/nwise.h>
 #include <csp/part/pairwise.h>
 #include <csp/part/partition.h>

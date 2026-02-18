@@ -3,8 +3,6 @@
 #include <csp/csp.h>
 #include <csp/internal/on_scope_exit.h>
 
-#include <sstream>
-
 namespace csp::part {
 
 // Batch an incoming stream of additive values into variable-size quanta.

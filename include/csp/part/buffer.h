@@ -4,7 +4,6 @@
 #include <csp/ringbuffer.h>
 
 #include <cassert>
-#include <algorithm>
 
 namespace csp::part {
 
