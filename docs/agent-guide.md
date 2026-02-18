@@ -1,0 +1,429 @@
+# CSP Agent Guide
+
+Token-efficient reference for coding agents. Covers the full API surface,
+common idioms, and critical gotchas. For narrative explanations see `guide/`.
+
+## Headers
+
+| Header | Content |
+|---|---|
+| `csp/csp.h` | Core: `chan`, `writer`, `reader`, `chan_op`, `spawn`, `alt`/`prialt`, `yield`, `schedule` |
+| `csp/timer.h` | `clock`, `sleep`, `sleep_until`, `after`, `tick` |
+| `csp/io.h` | `wait_readable`/`wait_writable`, `read`/`write`/`accept`/`connect`, `resolve` |
+| `csp/signal.h` | `signal::notify` |
+| `csp/blocking.h` | `blocking<Fn>` — offload blocking calls to thread pool |
+| `csp/dynamic.h` | `context_key`, `context`, `context_scope`, `dynamic<T>` |
+| `csp/part/part.h` | `filter`, `producer`, `consumer` wrappers + `operator\|` composition |
+| `csp/part/*.h` | 50+ stream combinators (see table below) |
+
+## Core Types
+
+```cpp
+namespace csp {
+
+// Synchronous typed channel. Default T = poke_t (empty message).
+template <typename T = poke_t> struct chan { writer<T> w; reader<T> r; };
+
+// Move-only endpoints. Use .copy() for shared ownership.
+template <typename T = poke_t> class writer;  // w << val  → chan_op<T>
+template <typename T = poke_t> class reader;  // r >> var  → chan_op<T>
+
+// RAII channel operation. Destructor blocks (calls prialt).
+// operator bool() blocks and returns true if data transferred, false if dead.
+template <typename T> class chan_op;
+
+// Empty-message sentinel. chan<> is shorthand for chan<poke_t>.
+extern struct poke_t {} poke;
+
+// Dead-channel reader (always matches immediately as dead). Useful for
+// non-blocking alt: prialt(ch >> val, ~skip)
+extern reader<> const skip;
+}
+```
+
+## Lifecycle
+
+```cpp
+// Spawn a microthread. Returns reader<exception_ptr> (join handle).
+// f is taken BY VALUE (moved into the microthread).
+template <typename F> reader<std::exception_ptr> spawn(F&& f);
+
+// Block until spawned microthread finishes; rethrows its exception.
+void join(reader<std::exception_ptr> const& r);
+
+// Run the scheduler (blocks until all microthreads complete).
+void schedule();
+
+// M:N runtime (required for I/O, timers, signals, blocking).
+void init_runtime(int num_procs = 0);  // 0 = hardware_concurrency
+void shutdown_runtime();
+
+// Cooperative yield (no-op outside a microthread).
+void yield();
+```
+
+## Channel Operations
+
+```cpp
+// Create a channel.
+auto [w, r] = chan<int>{};
+
+// Shorthand: create channel from endpoint reference.
+reader<int> r = --w;   // w must be unattached
+writer<int> w = ++r;   // r must be unattached
+
+// Write (blocks until reader accepts or channel dies).
+w << 42;                     // statement: blocks via chan_op destructor
+if (w << 42) { /* sent */ }  // expression: blocks, tests success
+
+// Read (blocks until writer sends or channel dies).
+int v;
+r >> v;                      // statement: blocks
+if (r >> v) { /* got v */ }  // expression: blocks, tests success
+
+// Read and return (throws microthread_error if dead).
+int v = r.read();
+
+// Range-for over reader (reads until channel dies).
+for (int v : r) { process(v); }
+
+// Pipe reader directly to writer (blocks until either dies).
+spawn(r.stream_to(std::move(w)));
+
+// Shared ownership (endpoints are move-only by default).
+auto w2 = w.copy();   // increments refcount
+auto r2 = r.copy();
+
+// Death watch (fires when the other endpoint is dropped).
+chan_op<T> op = ~w;    // fires when all readers of w's channel die
+chan_op<T> op = ~r;    // fires when all writers of r's channel die
+```
+
+## Alt / Prialt
+
+Select over multiple channel operations. `prialt` tries in order; `alt`
+randomizes. Both block until one operation completes.
+
+```cpp
+// Return value:
+//   positive n → operation n matched (1-based)
+//   negative n → death event for operation |n| (1-based)
+//   0          → should-not-happen (internal)
+
+int v;
+switch (prialt(w << 42, r >> v, ~some_reader)) {
+    case 1:  /* wrote 42 */          break;
+    case 2:  /* read into v */       break;
+    case -1: /* w's reader died */   break;
+    case -2: /* r's writer died */   break;
+    case 3:  /* ~some_reader: writer of some_reader died */ break;
+}
+```
+
+Key: `~endpoint` is a death-watch operation. When it fires, the return
+value is **positive** (it's a "data" match on the death event), not
+negative. Negative values only occur for implicit death detection on
+regular read/write operations.
+
+**`after()` returns positive**: `after(d)` sends a `poke` then dies, so
+`prialt(ch >> v, after(1s) >> nullptr)` returns `2` on timeout, not `-2`.
+
+```cpp
+// Vector overload (all ops must be same type T).
+std::vector<chan_op<int>> ops;
+ops.push_back(r1 >> v);
+ops.push_back(r2 >> v);
+int result = alt(ops);  // or prialt(ops)
+
+// Non-blocking try: use skip (dead reader, always ready).
+poke_t p;
+if (prialt(r >> v, skip >> p) > 0) { /* got v */ }
+else { /* would block */ }
+```
+
+## Spawn Helpers
+
+```cpp
+// Spawn a producer microthread, return its output reader.
+template <typename T, typename F>
+reader<T> spawn_producer(F&& f);
+// f signature: void(writer<T>)
+
+// Spawn a consumer microthread, return its input writer.
+template <typename T, typename F>
+writer<T> spawn_consumer(F&& f);
+// f signature: void(reader<T>)
+
+// Spawn a filter microthread, return {input_writer, output_reader}.
+template <typename T, typename F>
+chan<T> spawn_filter(F&& f);
+// f signature: void(reader<T>, writer<T>)
+
+// Spawn a producer with exception propagation via range iterator.
+template <typename T, typename F>
+range<T> spawn_range(F&& f);
+// for (auto& v : spawn_range<int>(f)) { ... }  // rethrows on iteration
+```
+
+## Timers (`csp/timer.h`)
+
+Requires `init_runtime()`.
+
+```cpp
+using clock = std::chrono::steady_clock;
+
+void sleep(clock::duration d);
+void sleep_until(clock::time_point tp);
+
+// One-shot: reader<> that receives poke after duration, then dies.
+reader<> after(clock::duration d);
+
+// Periodic: reader<clock::time_point> that fires at interval (drift-free).
+reader<clock::time_point> tick(clock::duration interval);
+```
+
+Timeout idiom:
+```cpp
+int v;
+switch (prialt(r >> v, after(100ms) >> nullptr)) {
+    case 1:  handle(v);  break;
+    case 2:  timeout();  break;   // after() sent poke → positive match
+}
+```
+
+## I/O (`csp/io.h`)
+
+Requires `init_runtime()`. Uses kqueue reactor (macOS).
+
+```cpp
+namespace csp::io {
+// Layer 1: suspend until fd ready.
+void wait_readable(int fd);
+void wait_writable(int fd);
+
+// Layer 2: auto-retry on EAGAIN/EINTR.
+ssize_t read(int fd, void* buf, size_t len);   // 0=EOF, -1=error
+ssize_t write(int fd, const void* buf, size_t len); // writes ALL, -1=error
+int accept(int listen_fd, sockaddr* addr, socklen_t* addrlen);
+int connect(int fd, const sockaddr* addr, socklen_t addrlen); // 0=ok
+
+// Utility.
+int set_nonblock(int fd);
+
+// DNS (runs on blocking pool).
+resolve_result resolve(const std::string& host,
+                       const std::string& service = {},
+                       const addrinfo* hints = nullptr);
+// resolve_result { int error; addrinfo_ptr info; const char* error_string(); }
+}
+```
+
+Layer 3 parts (`csp/part/io.h`):
+```cpp
+// byte_reader: fd → reader<vector<uint8_t>>. Owns fd, closes on exit.
+auto r = csp::part::byte_reader(fd).spawn();          // 4096 chunks
+auto r = csp::part::byte_reader(fd, 65536).spawn();   // custom size
+
+// byte_writer: writer<vector<uint8_t>> → fd. Owns fd, closes on exit.
+auto w = csp::part::byte_writer(fd).spawn();
+
+// lines: byte stream → string stream (LF-delimited).
+auto lr = csp::part::lines().spawn(std::move(byte_reader));
+
+// fixed: byte stream → fixed-size frames.
+auto fr = csp::part::fixed(512).spawn(std::move(byte_reader));
+
+// Pipeline composition:
+auto lr = csp::part::byte_reader(fd) | csp::part::lines();
+auto line_reader = lr.spawn();
+```
+
+## Signals (`csp/signal.h`)
+
+```cpp
+// Returns reader<int> emitting signal numbers. Requires init_runtime().
+auto sig = csp::signal::notify({SIGINT, SIGTERM});
+int s;
+switch (prialt(data >> v, sig >> s)) {
+    case 1: process(v);  break;
+    case 2: shutdown(s);  break;
+}
+```
+
+## Blocking (`csp/blocking.h`)
+
+```cpp
+// Run fn on OS thread pool; suspend calling microthread until done.
+template <typename Fn> auto blocking(Fn&& fn) -> invoke_result_t<Fn>;
+
+// Example:
+auto result = csp::blocking([]{ return expensive_syscall(); });
+```
+
+## Dynamic Scoping (`csp/dynamic.h`)
+
+```cpp
+// Typed dynamic variable. *var reads, var = val writes (COW HAMT).
+csp::dynamic<int> depth(0);
+depth = *depth + 1;    // path-copy, visible only to this microthread
+
+// context_scope: RAII save/restore of HAMT root.
+{ csp::context_scope guard;
+  depth = 42;
+}  // depth restored to previous value
+
+// context: snapshot + transfer across channels.
+auto ctx = csp::context::current();
+spawn([ctx] {
+    csp::context_scope scope(ctx);  // install foreign context
+    // *depth == 42 here
+});
+
+// Spawned microthreads inherit parent's context automatically.
+```
+
+## Parts System (`csp/part/part.h`)
+
+Three wrapper types for composable stream stages:
+
+| Type | Wraps | `spawn()` returns | Bound endpoint |
+|---|---|---|---|
+| `producer<T,F>` | `void(writer<T>)` | `reader<T>` | output |
+| `consumer<T,F>` | `void(reader<T>)` | `writer<T>` | input |
+| `filter<In,Out,F>` | `void(reader<In>, writer<Out>)` | `spawn(reader<In>)→reader<Out>`, `spawn(writer<Out>)→writer<In>` | either |
+
+Factories: `make_producer<T>(f)`, `make_consumer<T>(f)`, `make_filter<In,Out>(f)`.
+
+### Composition with `|`
+
+```cpp
+// filter | filter → filter     producer | filter → producer
+// filter | consumer → consumer producer | consumer → callable
+// reader | filter → reader     filter | writer → writer
+// reader | consumer → callable producer | writer → callable
+
+auto pipeline = csp::part::map<int>([](int x){ return x*2; })
+              | csp::part::where<int>([](int x){ return x > 5; });
+auto r = pipeline.spawn(std::move(source_reader));
+```
+
+### Canonical combinator loop
+
+Most filters follow this pattern:
+```cpp
+auto f = csp::part::make_filter<In, Out>([](reader<In> r, writer<Out> w) {
+    for (In v; r >> v;) {
+        if (!(w << transform(v))) break;
+    }
+});
+```
+
+## Combinator Reference
+
+All in `namespace csp::part`. Include `csp/part/<name>.h`.
+
+| Combinator | Kind | Description |
+|---|---|---|
+| `batch<T>(n)` | filter | Collect n elements into `vector<T>` |
+| `blackhole<T>()` | consumer | Discard all values |
+| `buffer<T>(n)` | filter | Bounded async FIFO buffer (size n) |
+| `chain<T>(readers...)` | producer | Concatenate readers sequentially |
+| `count<T>(start,stop,step)` | producer | Numeric sequence [start,stop) |
+| `count_forever<T>(start,step)` | producer | Unbounded numeric sequence |
+| `deaf<T>()` | consumer | Never-accepting endpoint |
+| `debounce<T>(dur)` | filter | Emit after quiet period, suppress rapid fire |
+| `default_if_empty<T>(val)` | filter | Emit default if input closes empty |
+| `delay<T>(dur)` | filter | Delay each value independently |
+| `distinct<T>()` | filter | Suppress consecutive duplicates |
+| `enumerate<T>(container)` | producer | Stream container elements |
+| `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
+| `first<T>(n)` | filter | Take first n elements |
+| `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
+| `flatten<T>()` | filter | Flatten `vector<T>` → T |
+| `gate<T>()` | function | Pause/resume via control channel |
+| `group_by<T,K>(f)` | producer | Partition by key, emit (key, reader) pairs |
+| `interleave<T>(readers...)` | producer | Strict round-robin interleave |
+| `join<T>(readers...)` | function | Block until all channels close |
+| `killswitch<T>()` | filter | Forward until keepalive dies |
+| `last<T>(n)` | filter | Buffer; emit last n on close |
+| `latch<T>()` | filter | Serve most recent value on demand |
+| `map<In,Out>(f)` | filter | Transform each element |
+| `merge<T>(readers...)` | producer | Non-deterministic merge |
+| `metrics<T>()` | function | Passthrough with stats reporting |
+| `mute<T>()` | producer | Never-producing endpoint |
+| `nwise<T>(n)` | filter | Sliding n-element window as tuple |
+| `pairwise<T>()` | filter | Consecutive pairs (a,b), (b,c)... |
+| `partition<T>(n,f)` | function | Route to N outputs by classifier |
+| `quantize<T>(f)` | function | Variable-size batching |
+| `reduce<T,A>(init,f)` | function | Fold to single value |
+| `round_robin<T>(n)` | function | Distribute across N outputs |
+| `rpc_client` | function | Request/reply client (two variants) |
+| `rpc_server` | function | Request/reply server (two variants) |
+| `sample<T,S>(trigger)` | producer | Emit latest value on trigger |
+| `scan<In,Out>(init,f)` | filter | Running accumulator |
+| `share<T>(n)` | producer | Multicast with latch semantics |
+| `sink<T>(f)` | consumer | Consume with side-effect function |
+| `skip_first<T>(n)` | filter | Drop first n elements |
+| `skip_last<T>(n)` | filter | Emit all but last n |
+| `skip_while<T>(pred)` | filter | Drop while predicate true |
+| `slide<T>(params)` | function | Sliding window with expiry |
+| `stride<T>(n)` | filter | Every Nth element |
+| `take_while<T>(pred)` | filter | Forward while predicate true |
+| `tee<T>(side_writer)` | filter | Duplicate: main first, then side |
+| `throttle<T>(n,dur)` | filter | Rate-limit: n per interval |
+| `timeout<T>(dur)` | filter | Close if no value within duration |
+| `timer(control)` | producer | Sleep per control, emit fire times |
+| `unique<T>(cap)` | filter | All-time dedup with optional eviction |
+| `unzip<Tuple>()` | function | Split tuple stream into N streams |
+| `where<T>(pred)` | filter | Filter by predicate |
+| `window<T>(n)` | filter | Sliding window as `vector<T>` |
+| `zip<Ts...>(readers...)` | producer | Element-wise zip |
+
+## Gotchas
+
+1. **Move-only endpoints**: `writer<T>` and `reader<T>` have deleted copy
+   constructors. Use `std::move()` when passing to spawn/lambdas. Use
+   `.copy()` for deliberate shared ownership.
+
+2. **`after()` is positive**: `after(d)` sends a `poke` before dying. In
+   prialt, the timeout case is a positive match (e.g., `case 2:`), not a
+   death event (`case -2:`).
+
+3. **`~endpoint` is positive too**: Death-watch operations (`~w`, `~r`)
+   return positive case numbers when they fire. Negative return values only
+   come from implicit death on regular read/write ops.
+
+4. **chan_op blocks in destructor**: `w << val;` as a statement blocks
+   because `chan_op`'s destructor calls `prialt`. To avoid blocking, capture
+   the return: `auto op = w << val; op.disarm();`.
+
+5. **`spawn(f)` takes f by value**: The callable is moved into the
+   microthread. Ensure captured state is either moved or intentionally
+   shared (via `shared_ptr` or `.copy()`).
+
+6. **Reader range-for copies**: `for (T v : reader)` copies each value.
+   Use `for (T& v : reader)` only for const access (iterator stores T).
+
+7. **M:N runtime required**: Timers, I/O, signals, and `blocking()` all
+   require `init_runtime()` before use.
+
+8. **Part spawn() consumes endpoints**: `filter.spawn(std::move(r))`
+   takes the reader by value. Forgetting `std::move()` won't compile.
+
+9. **stream_to checks writer death**: `r.stream_to(w)` uses
+   `prialt(~out, in >> t)` internally, so it stops when the writer's
+   reader dies — not just when the input reader dies.
+
+10. **Dynamic scoping is per-microthread**: Writes to `dynamic<T>` use
+    COW (path-copy HAMT). Changes are invisible to other microthreads
+    unless explicitly shared via `context::current()` + `context_scope`.
+
+## Build
+
+```bash
+make        # build + run all tests
+make build  # compile only
+make clean  # remove build/
+```
+
+Compiler: Clang, C++17, libc++, `-O2 -g`. Boost.Context required.
