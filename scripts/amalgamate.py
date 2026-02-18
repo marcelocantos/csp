@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate CSP amalgamation files: csp.h, csp.cpp, csp_parts.h"""
+"""Generate CSP amalgamation files: csp.h, csp.cpp, csp_globals.cpp"""
 
 import re
 import sys
@@ -375,37 +375,43 @@ def main():
     csp_dir = include_dir / 'csp'
     part_dir = csp_dir / 'part'
 
-    # --- csp.h: all headers under include/csp/ except part/ ---
-    core_seeds = sorted(
-        p for p in csp_dir.rglob('*.h')
-        if not is_under(p, part_dir)
-    )
+    # --- csp.h: all headers under include/csp/ (core + part/) ---
+    all_seeds = sorted(csp_dir.rglob('*.h'))
     print('csp.h:')
     amalgamate_headers(
-        include_dir, core_seeds,
+        include_dir, all_seeds,
         out_dir / 'csp.h', 'CSP — amalgamated header',
-        inline_pred=lambda p: is_under(p, csp_dir) and not is_under(p, part_dir),
+        inline_pred=lambda p: is_under(p, csp_dir),
         skip_pred=lambda p: False,
     )
 
-    # --- csp_parts.h: all part/ headers ---
-    part_seeds = sorted(part_dir.glob('*.h'))
-    print('csp_parts.h:')
-    amalgamate_headers(
-        include_dir, part_seeds,
-        out_dir / 'csp_parts.h', 'CSP parts — amalgamated header',
-        inline_pred=lambda p: is_under(p, part_dir),
-        skip_pred=lambda p: is_under(p, csp_dir),
-    )
-
-    # --- csp.cpp: all source files ---
+    # --- csp.cpp: all source files except csp_globals.cpp ---
+    # csp_globals.cpp MUST be a separate TU.  It defines the
+    # thread_local variable g_self.  When the definition and the
+    # extern declaration (from csp_internal.h) are in the same TU,
+    # Clang generates direct TLV-descriptor access and may cache the
+    # resolved TLS address across jump_fcontext calls.  Because
+    # jump_fcontext can resume a microthread on a different OS thread,
+    # the cached address becomes stale and writes to the wrong TLS
+    # slot — corrupting g_self and crashing the M:N scheduler.
+    # Keeping csp_globals.cpp separate forces the wrapper-call
+    # pattern, which re-resolves the TLS address on every access.
+    globals_file = src_dir / 'csp_globals.cpp'
     src_files = sorted(
-        list(src_dir.glob('*.cc')) + list(src_dir.glob('*.cpp'))
+        p for p in (list(src_dir.glob('*.cc')) + list(src_dir.glob('*.cpp')))
+        if p.resolve() != globals_file.resolve()
     )
     print('csp.cpp:')
     amalgamate_sources(
         src_files, out_dir / 'csp.cpp', 'csp.h',
         'CSP — amalgamated source',
+    )
+
+    # --- csp_globals.cpp: thread-local state (separate TU) ---
+    print('csp_globals.cpp:')
+    amalgamate_sources(
+        [globals_file], out_dir / 'csp_globals.cpp', 'csp.h',
+        'CSP — globals (separate TU for TLS correctness)',
     )
 
     # --- Append fcontext inline assembly to csp.cpp ---
