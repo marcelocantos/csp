@@ -91,9 +91,7 @@ csp::spawn([w = std::move(ch.w)] {
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/debounce.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 using namespace std::chrono_literals;

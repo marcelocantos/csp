@@ -56,9 +56,7 @@ stateDiagram-v2
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/latch.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

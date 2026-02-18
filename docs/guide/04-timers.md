@@ -7,7 +7,7 @@ and the full combinator library. No special cancellation API is needed:
 dropping the reader endpoint cancels the timer, just like any other channel.
 
 ```
-#include <csp/timer.h>
+#include "csp.h"
 ```
 
 ## sleep / sleep_until
@@ -72,7 +72,7 @@ control channel becomes the next sleep. When the control channel closes, the
 timer stops.
 
 ```cpp
-#include <csp/part/timer.h>
+#include "csp.h"
 
 csp::chan<csp::clock::duration> ctl;
 auto t = csp::part::timer(std::move(ctl.r));
@@ -177,7 +177,7 @@ int which = csp::alt(slow >> poke, fast >> poke);
 A token-bucket rate limiter in three lines of CSP plumbing:
 
 ```cpp
-#include <csp/part/buffer.h>
+#include "csp.h"
 
 // 10 tokens/sec, burst capacity of 3
 auto tokens = csp::tick(100ms);
@@ -208,7 +208,7 @@ graph LR
 Kill an entire pipeline after a duration using `killswitch`:
 
 ```cpp
-#include <csp/part/killswitch.h>
+#include "csp.h"
 
 auto source = csp::spawn_producer<int>([](csp::writer<int> w) {
     for (int i = 1; w << i; ++i)

@@ -80,8 +80,7 @@ and writes.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/quantize.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

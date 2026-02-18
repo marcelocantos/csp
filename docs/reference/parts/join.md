@@ -39,8 +39,7 @@ draining and discarding all values until every reader is dead.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/join.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

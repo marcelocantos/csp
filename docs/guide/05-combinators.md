@@ -7,16 +7,13 @@ through channels. You snap parts together to build pipelines without writing
 any scheduling or lifecycle code yourself.
 
 ```cpp
-#include <csp/part/map.h>
-#include <csp/part/where.h>
-#include <csp/part/enumerate.h>
-#include <csp/part/sink.h>
+#include "csp.h"
 ```
 
 ## The three part types
 
 Every combinator is one of three wrapper types defined in
-`include/csp/part/part.h`:
+`csp.h`:
 
 | Type | Wraps | `spawn()` returns |
 |------|-------|-------------------|
@@ -293,7 +290,7 @@ that restricts values to a range:
 ```cpp
 #pragma once
 
-#include <csp/part/part.h>
+#include "csp.h"
 #include <algorithm>
 
 namespace csp::part {
@@ -332,13 +329,7 @@ sum above 10, buffers the results, taps them to a side channel, and
 collects a final total:
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/enumerate.h>
-#include <csp/part/map.h>
-#include <csp/part/where.h>
-#include <csp/part/buffer.h>
-#include <csp/part/tee.h>
-#include <csp/part/sink.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

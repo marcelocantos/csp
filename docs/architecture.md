@@ -5,6 +5,11 @@ library: how microthreads are represented, how context switching works, how
 channels synchronise communicating microthreads, and how the M:N scheduler
 distributes work across OS threads.
 
+> **Note:** File references below (e.g. `csp_internal.h`, `channel.cc`) refer
+> to the development source tree under `include/` and `src/`. For distribution,
+> all headers are amalgamated into `csp.h` and all sources into `csp.cpp` +
+> `csp_globals.cpp`. See the [README](../README.md) for details.
+
 ## Table of Contents
 
 1. [Microthread Representation](#1-microthread-representation)
@@ -615,9 +620,9 @@ naturally adapts to its new host thread.
 
 ## 11. Stream Combinators
 
-Stream combinators are header-only templates in `namespace csp::part` that
-spawn internal microthreads pre-wired to channel endpoints. The system is
-built on three wrapper types defined in `part.h`:
+Stream combinators are templates in `namespace csp::part` that spawn internal
+microthreads pre-wired to channel endpoints. The system is built on three
+wrapper types:
 
 - **`producer<T, F>`**: Wraps `F(writer<T>)`. `.spawn()` returns `reader<T>`.
 - **`consumer<T, F>`**: Wraps `F(reader<T>)`. `.spawn()` returns `writer<T>`.

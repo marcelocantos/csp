@@ -56,9 +56,7 @@ The fanout microthread manages a two-phase lifecycle:
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/fanout.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

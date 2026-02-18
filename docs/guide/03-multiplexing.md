@@ -15,7 +15,7 @@ is systematically starved, while `prialt` always picks the first match.
 ## Basic syntax
 
 ```cpp
-#include <csp/csp.h>
+#include "csp.h"
 using namespace csp;
 
 int x, y;
@@ -187,7 +187,7 @@ timeouts compose naturally with `alt` and `prialt` -- no special timeout API,
 no callback registration, just another channel in the multiplex set.
 
 ```cpp
-#include <csp/timer.h>
+#include "csp.h"
 using namespace std::chrono_literals;
 
 // Wait for data, but give up after 100ms.

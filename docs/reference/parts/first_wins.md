@@ -44,8 +44,7 @@ dropped when the function returns.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/first_wins.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

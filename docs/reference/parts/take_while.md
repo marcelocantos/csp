@@ -37,9 +37,7 @@ and writes it to the output. On the first failure, the output is closed.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/take_while.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

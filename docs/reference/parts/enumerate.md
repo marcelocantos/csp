@@ -23,7 +23,7 @@ template <typename T>
 auto cycle(std::initializer_list<T> c);
 ```
 
-**Header:** `#include <csp/part/enumerate.h>`
+**Header:** `#include "csp.h"`
 
 All overloads return a `producer<T>`.
 
@@ -58,8 +58,7 @@ to its output.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/enumerate.h>
+#include "csp.h"
 
 using namespace csp::part;
 

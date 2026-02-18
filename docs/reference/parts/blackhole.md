@@ -34,8 +34,7 @@ One internal microthread reads and discards every value until the input closes.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/blackhole.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

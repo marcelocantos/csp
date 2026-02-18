@@ -26,7 +26,7 @@ The program below spawns a producer microthread that sends the numbers 0--9
 over a channel, and a main microthread that reads and prints them.
 
 ```cpp
-#include <csp/csp.h>
+#include "csp.h"
 #include <iostream>
 
 int main() {

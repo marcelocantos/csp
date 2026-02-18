@@ -90,9 +90,7 @@ auto r = sample<int, std::string>(source, request_reader).spawn();
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/sample.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 

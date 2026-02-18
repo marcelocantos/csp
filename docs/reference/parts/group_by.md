@@ -49,9 +49,7 @@ forwarded to the existing sub-stream.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/group_by.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

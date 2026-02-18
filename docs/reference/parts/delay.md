@@ -79,9 +79,7 @@ for (int v; ch.r >> v;) { /* ... */ }
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/delay.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 using namespace std::chrono_literals;

@@ -45,8 +45,7 @@ characters, and emits one `std::string` per complete line.
 ### Standalone (synthetic data)
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/io.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -66,8 +65,7 @@ csp::spawn([w = std::move(w)] {
 ### Composed with byte_reader
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/io.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

@@ -59,9 +59,7 @@ writes to both output channels.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/slide.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

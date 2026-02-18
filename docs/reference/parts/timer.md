@@ -66,8 +66,7 @@ sleep completes.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/timer.h>
+#include "csp.h"
 
 using namespace csp::part;
 using namespace std::chrono_literals;

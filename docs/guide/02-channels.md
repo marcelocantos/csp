@@ -14,7 +14,7 @@ intermediate storage.
 A channel is created by constructing a `chan<T>`:
 
 ```cpp
-#include <csp/csp.h>
+#include "csp.h"
 
 auto ch = csp::chan<int>{};
 ```
@@ -287,7 +287,7 @@ Here is a complete example that demonstrates channel creation, sending,
 receiving, and death detection:
 
 ```cpp
-#include <csp/csp.h>
+#include "csp.h"
 #include <iostream>
 
 int main() {

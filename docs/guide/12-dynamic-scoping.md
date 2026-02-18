@@ -9,7 +9,7 @@ copy-on-write isolation.
 ## Basic usage
 
 ```cpp
-#include <csp/dynamic.h>
+#include "csp.h"
 
 static csp::dynamic<int> request_id;
 static csp::dynamic<std::string> user("anonymous");

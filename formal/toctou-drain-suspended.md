@@ -1,5 +1,8 @@
 # A TOCTOU Race in M:N Microthread Suspension and its Verification with TLA+
 
+> **Note:** Source file references (e.g. `src/csp.cc`) refer to the development
+> source tree. In the amalgamated distribution, these live in `csp.cpp`.
+
 ## Abstract
 
 We describe a time-of-check-to-time-of-use (TOCTOU) race that arises in

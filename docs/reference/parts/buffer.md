@@ -40,8 +40,7 @@ whether the buffer is full, empty, or neither.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/buffer.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

@@ -24,39 +24,35 @@ All code lives in `namespace csp`. Internal implementation details live in
 primitives) and `namespace csp::detail` (runtime, processor, channels, reactor,
 blocking pool, stack pool, HAMT, and other implementation machinery).
 
-### Key modules
+### Amalgamated distribution
 
-- **include/csp/csp.h** — Main public header: `spawn`, `schedule`,
-  `yield`, `chan`, `writer`, `reader`, `alt`/`prialt`, `chan_op` RAII class,
-  and the `csp::internal` type-erased API.
-- **include/csp/internal/** — Internal headers (csp_internal.h for
-  Microthread struct, runtime.h, processor.h, stack_pool.h, hamt.h,
-  reactor.h, blocking_pool.h) and vendored utilities.
-- **include/csp/timer.h** — Timer primitives: `sleep`, `sleep_until`,
-  `after` (one-shot), `tick` (periodic). Timers are channels; composable
-  with `alt`/`prialt` for timeout patterns.
-- **include/csp/io.h** — Non-blocking I/O: `read`/`write`/`accept`/`connect`
-  (fd operations via kqueue reactor), `resolve` (DNS via blocking thread pool).
-- **include/csp/dynamic.h** — `csp::dynamic<T>` dynamic-scoped variables
-  via persistent HAMT, with `context`/`context_scope` for snapshot/restore.
-- **include/csp/signal.h** — Unix signal channels via self-pipe trick.
-- **include/csp/blocking.h** — Blocking thread pool for offloading
-  OS-blocking calls from microthreads.
-- **include/csp/part/** — 50+ header-only stream combinators in
-  `namespace csp::part`. Three wrapper types (`filter`, `producer`,
-  `consumer`) with `operator|` composition. Key combinators: map, where,
-  scan, flat_map, batch, window, slide, merge, zip, unzip, round_robin,
-  interleave, partition, group_by, share, debounce, throttle, gate,
-  metrics, reduce, and more.
-- **include/csp/part/part.h** — Combinator infrastructure: `filter`,
-  `producer`, `consumer` wrapper types and `operator|` composition
-  (8 overloads for all pairwise combinations including concrete endpoints).
-- **src/** — Implementation files for microthread scheduler (`csp.cc`),
-  channels (`channel.cc`), M:N runtime (`runtime.cpp`), globals
-  (`csp_globals.cpp`), logging (`mt_log.cc`), I/O reactor (`reactor.cc`),
-  blocking pool (`blocking_pool.cc`), signal handling (`signal.cc`),
-  stack pool (`stack_pool.cc`), HAMT (`hamt.cc`), stack analysis
-  (`stack_analysis_arm64.cc`).
+CSP is distributed as three files in `amalg/`:
+
+| File | Contents |
+|---|---|
+| `csp.h` | Single header (all public API, combinators, internals) |
+| `csp.cpp` | All implementation source + fcontext inline assembly |
+| `csp_globals.cpp` | Thread-local state (must be a separate TU — see `docs/amalg-tls-bug.md`) |
+
+These are generated from the development sources by `scripts/amalgamate.py`
+(`make amalg`).
+
+### Development source layout
+
+- **include/csp/csp.h** — Core API: `spawn`, `schedule`, `yield`, `chan`,
+  `writer`, `reader`, `alt`/`prialt`, `chan_op`, `csp::internal` type-erased API.
+- **include/csp/timer.h** — Timer primitives (`sleep`, `after`, `tick`).
+- **include/csp/io.h** — Non-blocking I/O (kqueue reactor, DNS resolution).
+- **include/csp/signal.h** — Unix signal channels.
+- **include/csp/blocking.h** — Blocking thread pool.
+- **include/csp/dynamic.h** — `dynamic<T>` dynamic-scoped variables (HAMT).
+- **include/csp/part/** — 50+ stream combinators (`filter`, `producer`,
+  `consumer` with `operator|` composition).
+- **include/csp/internal/** — Microthread struct, runtime, processor,
+  stack pool, HAMT, reactor, blocking pool.
+- **src/** — Implementation files (`csp.cc`, `channel.cc`, `runtime.cpp`,
+  `csp_globals.cpp`, `reactor.cc`, `blocking_pool.cc`, `signal.cc`,
+  `stack_pool.cc`, `hamt.cc`, `stack_analysis_arm64.cc`, `mt_log.cc`).
 
 ### Key design points
 

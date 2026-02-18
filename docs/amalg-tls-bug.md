@@ -170,10 +170,9 @@ modified to emit four files instead of three:
 
 | File | Contents |
 |---|---|
-| `amalg/csp.h` | All headers under `include/csp/` (except `part/`) |
+| `amalg/csp.h` | All headers under `include/csp/` (core + part/) |
 | `amalg/csp.cpp` | All source files **except** `csp_globals.cpp`, plus fcontext inline asm |
 | `amalg/csp_globals.cpp` | Only `csp_globals.cpp` (thread-local definitions) |
-| `amalg/csp_parts.h` | All headers under `include/csp/part/` |
 
 Users of the amalgamation must compile both `csp.cpp` and `csp_globals.cpp` as
 separate compilation units. The comment in the script explains why:

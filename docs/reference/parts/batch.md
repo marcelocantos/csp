@@ -38,9 +38,7 @@ vector to the output channel.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/batch.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

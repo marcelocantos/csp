@@ -45,9 +45,7 @@ concurrently via `alt`, and their values are forwarded to the single output.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/flat_map.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

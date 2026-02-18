@@ -39,8 +39,7 @@ channel to close (all reader copies dropped), then exits.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/mute.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

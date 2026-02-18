@@ -36,9 +36,7 @@ and all remaining elements are forwarded to the output.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/skip_while.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

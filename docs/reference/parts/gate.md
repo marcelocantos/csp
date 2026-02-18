@@ -98,9 +98,7 @@ csp::spawn([w = std::move(ctrl.w)] {
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/gate.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 

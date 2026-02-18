@@ -28,7 +28,7 @@ runtime, one DNS lookup blocks 25% of the scheduler's capacity.
 microthread suspends cooperatively, keeping its processor free for other work.
 
 ```cpp
-#include <csp/blocking.h>
+#include "csp.h"
 
 csp::spawn([] {
     int result = csp::blocking([] {
@@ -89,7 +89,7 @@ DNS lookups are the most common blocking syscall in network programs.
 to think about it:
 
 ```cpp
-#include <csp/io.h>
+#include "csp.h"
 
 csp::spawn([] {
     struct addrinfo hints{};
@@ -146,7 +146,7 @@ Rules of thumb:
 ## Example: blocking file read
 
 ```cpp
-#include <csp/blocking.h>
+#include "csp.h"
 #include <fstream>
 #include <string>
 

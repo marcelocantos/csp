@@ -37,8 +37,7 @@ channel to close (all writer copies dropped), then exits.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/deaf.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

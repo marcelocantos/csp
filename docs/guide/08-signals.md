@@ -12,7 +12,7 @@ friends with the same `alt`/`prialt` patterns you already use for data flow.
 `reader<int>` that emits the signal number each time one is delivered:
 
 ```cpp
-#include <csp/signal.h>
+#include "csp.h"
 
 auto sig = csp::signal::notify({SIGINT, SIGTERM});
 

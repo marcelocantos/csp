@@ -49,10 +49,7 @@ its corresponding output channel.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/unzip.h>
-#include <csp/part/zip.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

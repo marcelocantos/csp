@@ -81,7 +81,7 @@ blocking read never returns.
 
 The solution is a *sentinel* -- a helper microthread that watches for channel
 death and closes the resource, causing the blocked read to return an error or
-EOF. The signal handler in `src/signal.cc` demonstrates this pattern:
+EOF. The signal handler demonstrates this pattern:
 
 ```cpp
 csp::spawn([rfd, wfd, out = std::move(out)] {

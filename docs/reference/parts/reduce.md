@@ -34,9 +34,7 @@ context, consuming the entire input stream before returning.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/reduce.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

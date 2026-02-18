@@ -53,9 +53,7 @@ stats pull requests, and output reader death.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/metrics.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

@@ -37,8 +37,7 @@ values not previously seen.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/unique.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

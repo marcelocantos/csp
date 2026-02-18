@@ -3,18 +3,17 @@
 Token-efficient reference for coding agents. Covers the full API surface,
 common idioms, and critical gotchas. For narrative explanations see `guide/`.
 
-## Headers
+## Files
 
-| Header | Content |
+CSP is distributed as three amalgamated files:
+
+| File | Content |
 |---|---|
-| `csp/csp.h` | Core: `chan`, `writer`, `reader`, `chan_op`, `spawn`, `alt`/`prialt`, `yield`, `schedule` |
-| `csp/timer.h` | `clock`, `sleep`, `sleep_until`, `after`, `tick` |
-| `csp/io.h` | `wait_readable`/`wait_writable`, `read`/`write`/`accept`/`connect`, `resolve` |
-| `csp/signal.h` | `signal::notify` |
-| `csp/blocking.h` | `blocking<Fn>` — offload blocking calls to thread pool |
-| `csp/dynamic.h` | `context_key`, `context`, `context_scope`, `dynamic<T>` |
-| `csp/part/part.h` | `filter`, `producer`, `consumer` wrappers + `operator\|` composition |
-| `csp/part/*.h` | 50+ stream combinators (see table below) |
+| `csp.h` | Single header: core API, timers, I/O, signals, blocking, dynamic scoping, 50+ stream combinators |
+| `csp.cpp` | Implementation source + fcontext inline assembly |
+| `csp_globals.cpp` | Thread-local state (must be a separate TU) |
+
+All user code needs only `#include "csp.h"`.
 
 ## Core Types
 
@@ -165,7 +164,7 @@ range<T> spawn_range(F&& f);
 // for (auto& v : spawn_range<int>(f)) { ... }  // rethrows on iteration
 ```
 
-## Timers (`csp/timer.h`)
+## Timers
 
 Requires `init_runtime()`.
 
@@ -191,7 +190,7 @@ switch (prialt(r >> v, after(100ms) >> nullptr)) {
 }
 ```
 
-## I/O (`csp/io.h`)
+## I/O
 
 Requires `init_runtime()`. Uses kqueue reactor (macOS).
 
@@ -218,7 +217,7 @@ resolve_result resolve(const std::string& host,
 }
 ```
 
-Layer 3 parts (`csp/part/io.h`):
+Layer 3 parts:
 ```cpp
 // byte_reader: fd → reader<vector<uint8_t>>. Owns fd, closes on exit.
 auto r = csp::part::byte_reader(fd).spawn();          // 4096 chunks
@@ -238,7 +237,7 @@ auto lr = csp::part::byte_reader(fd) | csp::part::lines();
 auto line_reader = lr.spawn();
 ```
 
-## Signals (`csp/signal.h`)
+## Signals
 
 ```cpp
 // Returns reader<int> emitting signal numbers. Requires init_runtime().
@@ -250,7 +249,7 @@ switch (prialt(data >> v, sig >> s)) {
 }
 ```
 
-## Blocking (`csp/blocking.h`)
+## Blocking
 
 ```cpp
 // Run fn on OS thread pool; suspend calling microthread until done.
@@ -260,7 +259,7 @@ template <typename Fn> auto blocking(Fn&& fn) -> invoke_result_t<Fn>;
 auto result = csp::blocking([]{ return expensive_syscall(); });
 ```
 
-## Dynamic Scoping (`csp/dynamic.h`)
+## Dynamic Scoping
 
 ```cpp
 // Typed dynamic variable. *var reads, var = val writes (COW HAMT).
@@ -282,7 +281,7 @@ spawn([ctx] {
 // Spawned microthreads inherit parent's context automatically.
 ```
 
-## Parts System (`csp/part/part.h`)
+## Parts System
 
 Three wrapper types for composable stream stages:
 
@@ -320,7 +319,7 @@ auto f = csp::part::make_filter<In, Out>([](reader<In> r, writer<Out> w) {
 
 ## Combinator Reference
 
-All in `namespace csp::part`. Include `csp/part/<name>.h`.
+All in `namespace csp::part` (included via `csp.h`).
 
 | Combinator | Kind | Description |
 |---|---|---|

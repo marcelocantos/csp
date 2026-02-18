@@ -35,8 +35,7 @@ previously emitted value, and forwards it only when it differs.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/distinct.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

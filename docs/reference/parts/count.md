@@ -16,7 +16,7 @@ template <typename T>
 auto count_forever(T start, T step = 1);
 ```
 
-**Header:** `#include <csp/part/count.h>`
+**Header:** `#include "csp.h"`
 
 Both return a `producer<T>`.
 
@@ -50,8 +50,7 @@ output.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/count.h>
+#include "csp.h"
 
 using namespace csp::part;
 

@@ -45,8 +45,7 @@ into frames of exactly `frame_size` bytes, and emits each complete frame.
 ### Standalone (synthetic data)
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/io.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

@@ -44,8 +44,7 @@ produces one channel message containing the bytes that were available.
 ## Example
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/io.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;

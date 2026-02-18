@@ -109,8 +109,7 @@ immediately or after accepting further requests.
 ### Basic channel-pair RPC
 
 ```cpp
-#include <csp/csp.h>
-#include <csp/part/rpc.h>
+#include "csp.h"
 
 using namespace csp;
 using namespace csp::part;
