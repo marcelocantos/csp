@@ -174,6 +174,12 @@ namespace {
         static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
+            // Reclaim unused stack pages at this API boundary.
+            if (g_self->stk_) {
+                StackPool::instance().maybe_shrink(
+                    g_self->stk_, __builtin_frame_address(0));
+            }
+
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
             mi->heap_alloc = nullptr;
             mi->peer = nullptr;

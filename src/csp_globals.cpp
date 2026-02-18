@@ -1,6 +1,7 @@
 #include <csp/internal/blocking_pool.h>
 #include <csp/internal/reactor.h>
 #include <csp/internal/runtime.h>
+#include <csp/internal/stack_pool.h>
 
 namespace csp {
 
@@ -56,6 +57,7 @@ namespace csp {
         detail::BlockingPool::instance().shutdown();
         detail::Reactor::instance().shutdown();
         detail::Runtime::instance().shutdown();
+        detail::StackPool::instance().drain();
         detail::runtime_initialized_ = false;
         detail::tl_proc_ = nullptr;
 

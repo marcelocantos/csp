@@ -2,6 +2,7 @@
 
 #include <csp/csp.h>
 #include <csp/fcontext.h>
+#include <csp/internal/stack_pool.h>
 
 #include <atomic>
 #include <cstdlib>
@@ -44,7 +45,7 @@ struct alignas(16) Microthread {
     Microthread * prev_;
     Microthread * next_;
     std::atomic<fcontext_t> ctx_;
-    StackSlot * stk_;
+    StackRegion stk_;
     char status_[32];
     internal::ChanOp const * chanops_;
     int n_chanops_, signal_;
@@ -54,7 +55,7 @@ struct alignas(16) Microthread {
         return next_++;
     }();
 
-    Microthread(fcontext_t ctx, StackSlot * stk);
+    Microthread(fcontext_t ctx, StackRegion stk);
     Microthread();
     ~Microthread();
     Microthread(Microthread const &) = delete;

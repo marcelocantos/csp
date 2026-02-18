@@ -85,12 +85,12 @@ namespace csp {
             return (intptr_t)t.data;
         }
 
-        Microthread::Microthread(fcontext_t ctx, StackSlot * stk) : ctx_(ctx), stk_(stk) {
+        Microthread::Microthread(fcontext_t ctx, StackRegion stk) : ctx_(ctx), stk_(stk) {
             prev_ = next_ = nullptr;
             snprintf(status_, sizeof(status_), "§%lu", id_);
         }
 
-        Microthread::Microthread() : Microthread(nullptr, nullptr) {
+        Microthread::Microthread() : Microthread(nullptr, {}) {
             prev_ = next_ = this;
             snprintf(status_, sizeof(status_), "§main");
         }
@@ -159,6 +159,20 @@ namespace csp {
             prev_ = nullptr;
         }
 
+        static void destroy_microthread(Microthread* mt) {
+#if CSP_TSAN
+            if (mt->tsan_fiber_) __tsan_destroy_fiber(mt->tsan_fiber_);
+#endif
+            auto region = mt->stk_;
+            mt->~Microthread();
+            StackPool::instance().release(region);
+            auto& rt = Runtime::instance();
+            if (rt.live_gs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                { std::lock_guard<std::mutex> lk(rt.park_mu); }
+                rt.park_cv.notify_all();
+            }
+        }
+
         void Microthread::run(Status status) {
             auto& p = current_p();
             auto& busy = p.busy;
@@ -219,19 +233,7 @@ namespace csp {
             auto killme = status == Status::exit ? g_self : nullptr;
             auto killyou = reinterpret_cast<Microthread *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
             if (killyou) {
-#if CSP_TSAN
-                if (killyou->tsan_fiber_) __tsan_destroy_fiber(killyou->tsan_fiber_);
-#endif
-                auto stk = killyou->stk_;
-                killyou->~Microthread();
-                delete [] stk;
-                auto& rt = Runtime::instance();
-                if (rt.live_gs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    // Lock park_mu briefly to synchronize with main_loop's
-                    // wait, preventing missed notifications.
-                    { std::lock_guard<std::mutex> lk(rt.park_mu); }
-                    rt.park_cv.notify_all();
-                }
+                destroy_microthread(killyou);
             }
 
             if (!killme) {
@@ -240,6 +242,11 @@ namespace csp {
         }
 
         void do_switch(Status status) {
+            // Reclaim unused stack pages before suspending.
+            if (g_self->stk_) {
+                StackPool::instance().maybe_shrink(
+                    g_self->stk_, __builtin_frame_address(0));
+            }
             Microthread* target;
             {
                 std::lock_guard<std::mutex> lk(current_p().run_mu);
@@ -308,17 +315,7 @@ static void start(transfer_t t) {
     // dying microthread that exited and chained into us via run(exit).
     // Clean it up before running our own function.
     if (auto* killyou = reinterpret_cast<Microthread*>(killyou_val)) {
-#if CSP_TSAN
-        if (killyou->tsan_fiber_) __tsan_destroy_fiber(killyou->tsan_fiber_);
-#endif
-        auto stk = killyou->stk_;
-        killyou->~Microthread();
-        delete [] stk;
-        auto& rt = Runtime::instance();
-        if (rt.live_gs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            { std::lock_guard<std::mutex> lk(rt.park_mu); }
-            rt.park_cv.notify_all();
-        }
+        destroy_microthread(killyou);
     }
 
     try {
@@ -333,41 +330,32 @@ namespace csp::internal {
 
 int spawn(EntryFn start_f, void * data) {
     (void)current_p(); // Ensure g_self is bound before use.
+    // Reclaim unused stack pages at this API boundary.
+    if (g_self->stk_) {
+        StackPool::instance().maybe_shrink(
+            g_self->stk_, __builtin_frame_address(0));
+    }
     try {
-        // Analyze stack depth to right-size the allocation.
-        // Disabled under sanitizers: instrumented code has shadow-memory
-        // checking branches that cause the walker to explode.
-        size_t S = Microthread::stack_size / 16; // default: full 32KB
-#if !defined(__SANITIZE_ADDRESS__) && !defined(__SANITIZE_THREAD__) && \
-    !(defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
-        {
-            csp::stack_analysis_options spawn_opts;
-            spawn_opts.max_instructions = 10000;
-            spawn_opts.max_call_depth = 16;
-            auto fn_ptr = reinterpret_cast<const void*>(start_f);
-            csp::stack_analysis analysis;
-            if (!g_self->stk_) {
-                // System thread (8MB stack): run full analysis directly.
-                analysis = csp::analyze_stack_depth(fn_ptr, data, spawn_opts);
-            } else {
-                // Microthread: cache-only lookup (the analyzer itself
-                // needs deep stack space, so we can't run it here).
-                analysis = csp::analyze_stack_depth_cached(
-                    fn_ptr, data, spawn_opts);
-            }
-            if (analysis.is_exact) {
-                size_t stack_bytes = analysis.max_depth + 4096;
-                stack_bytes = std::max(stack_bytes, size_t{8192});
-                stack_bytes = std::min(stack_bytes, Microthread::stack_size);
-                S = (stack_bytes + 15) / 16;
-            }
-        }
+#if CSP_USE_MMAP_STACKS
+        auto& pool = StackPool::instance();
+        auto region = pool.allocate();
+        auto page_sz = pool.page_size();
+        auto* top = static_cast<char*>(region.base) + region.total_size;
+        auto* mt = reinterpret_cast<Microthread*>(top) - 1;
+        assert(((uintptr_t)mt % 16) == 0);
+        auto* usable_base = static_cast<char*>(region.base) + page_sz;
+        auto ctx = make_fcontext(mt, (char*)mt - usable_base, start);
+        new (mt) Microthread(ctx, region);
+#else
+        // Under sanitizers: heap-allocate with stack analyzer right-sizing.
+        auto region = StackPool::instance().allocate();
+        size_t S = region.total_size / 16;
+        auto* stk = static_cast<Microthread::StackSlot*>(region.base);
+        auto* mt = reinterpret_cast<Microthread*>(stk + S) - 1;
+        assert(((uintptr_t)mt % 16) == 0);
+        auto ctx = make_fcontext(mt, (char*)mt - (char*)stk, start);
+        new (mt) Microthread(ctx, region);
 #endif
-        auto stk = new Microthread::StackSlot[S];
-        auto mt = (Microthread *)(stk + S) - 1;
-        assert(((uintptr_t)mt % 16) == 0); // Must be 16-byte aligned.
-        auto ctx = make_fcontext(mt, (char *)mt - (char *)stk, start);
-        new (mt) Microthread(ctx, stk);
 #if CSP_TSAN
         mt->tsan_fiber_ = __tsan_create_fiber(0);
 #endif

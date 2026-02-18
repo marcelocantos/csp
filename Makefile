@@ -49,7 +49,8 @@ LIB_SRCS := src/csp.cc \
             src/stack_analysis_arm64.cc \
             src/reactor.cc \
             src/blocking_pool.cc \
-            src/signal.cc
+            src/signal.cc \
+            src/stack_pool.cc
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
