@@ -22,7 +22,7 @@ auto delay(csp::clock::duration d) {
             if (q.empty()) {
                 // Nothing pending — wait for input.
                 T t;
-                if (csp::alt(in >> t, ~out) != 1) return;
+                if (csp::alt(in >> t, ~out) != 0) return;
                 q.emplace_back(std::move(t), csp::clock::now() + d);
             } else {
                 // Emit any items already past their deadline.
@@ -37,14 +37,14 @@ auto delay(csp::clock::duration d) {
                 T t;
                 poke_t p;
                 switch (csp::alt(in >> t, timer >> p, ~out)) {
-                case 1:  // New value — enqueue.
+                case 0:  // New value — enqueue.
                     q.emplace_back(std::move(t), csp::clock::now() + d);
                     break;
-                case 2:  // Timer fired — emit front.
+                case 1:  // Timer fired — emit front.
                     if (!(out << std::move(q.front().first))) return;
                     q.pop_front();
                     break;
-                case ~1:  // Input died — drain remaining with delays.
+                case ~0:  // Input died — drain remaining with delays.
                     for (auto& [val, dl] : q) {
                         csp::sleep_until(dl);
                         if (!(out << std::move(val))) return;

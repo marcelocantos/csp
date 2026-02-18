@@ -34,11 +34,11 @@ reader<reader<T>> share(reader<T> source) {
                 chan<T> ext;
                 switch (csp::alt(source >> new_val,
                                  sub_out << std::move(ext.r))) {
-                case 1:  // Source value.
+                case 0:  // Source value.
                     latest = std::move(new_val);
                     has_value = true;
                     break;
-                case 2:  // New subscriber took ext.r.
+                case 1:  // New subscriber took ext.r.
                     // Spawn per-subscriber latch.
                     csp::spawn([fr = std::move(feed.r),
                                 out = std::move(ext.w)]() mutable {
@@ -47,15 +47,15 @@ reader<reader<T>> share(reader<T> source) {
                         for (;;) {
                             T update;
                             switch (csp::alt(fr >> update, out << val)) {
-                            case 1:  // New value overwrites pending.
+                            case 0:  // New value overwrites pending.
                                 val = std::move(update);
                                 break;
-                            case 2:  // Subscriber read — wait for next.
+                            case 1:  // Subscriber read — wait for next.
                                 if (!(fr >> val)) {
                                     return;
                                 }
                                 break;
-                            case ~1:  // Feed dead — deliver last value.
+                            case ~0:  // Feed dead — deliver last value.
                                 out << std::move(val);
                                 return;
                             default:  // Subscriber dead.
@@ -67,7 +67,7 @@ reader<reader<T>> share(reader<T> source) {
                     if (has_value) feed.w << latest;
                     feeds.push_back(std::move(feed.w));
                     continue;
-                case ~1:  // Source died.
+                case ~0:  // Source died.
                     return;
                 default:  // Subscription channel dead.
                     accepting = false;

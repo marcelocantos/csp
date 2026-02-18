@@ -32,13 +32,13 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
             auto snap = metrics_snapshot{
                 count, std::chrono::steady_clock::now() - start};
             switch (csp::alt(data >> t, stats << snap, ~out)) {
-            case 1:  // Data — forward.
+            case 0:  // Data — forward.
                 count++;
                 if (!(out << std::move(t))) return;
                 break;
-            case 2:  // Stats pulled — already sent.
+            case 1:  // Stats pulled — already sent.
                 break;
-            case ~1:  // Data died — close output, serve remaining stats.
+            case ~0:  // Data died — close output, serve remaining stats.
                 out = {};
                 for (;;) {
                     auto final_snap = metrics_snapshot{
@@ -46,8 +46,8 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
                     if (!(stats << final_snap)) return;
                 }
                 return;
-            case ~2:  // Stats reader dropped — keep forwarding.
-                for (T v; csp::alt(data >> v, ~out) > 0;) {
+            case ~1:  // Stats reader dropped — keep forwarding.
+                for (T v; csp::alt(data >> v, ~out) >= 0;) {
                     if (!(out << std::move(v))) return;
                 }
                 return;

@@ -24,23 +24,23 @@ auto buffer(size_t capacity = size_t(-1)) {
             CSP_LOG(log, "buffer state: %s", buf.empty() ? "EMPTY" : buf.full() ? "FULL" : "JUST RIGHT");
             switch (auto slot = alt(buf.full()  ? ~in  : in  >> buf.next(),
                                     buf.empty() ? ~out : out << buf.front())) {
-            case 1:
+            case 0:
                 CSP_LOG(log, "IN");
                 buf.push();
                 CSP_LOG(log, "PUSH%s", buf.full() ? " (full)" : "");
                 break;
-            case ~1:
+            case ~0:
                 CSP_LOG(log, "DRAIN");
                 while (!buf.empty() && out << std::move(buf.front())) {
                     buf.pop();
                 }
                 return;
-            case 2:
+            case 1:
                 CSP_LOG(log, "OUT");
                 buf.pop();
                 CSP_LOG(log, "POP %s", buf.empty() ? " (empty)": "");
                 break;
-            case ~2:
+            case ~1:
                 CSP_LOG(log, "~OUT");
                 return;
             default:

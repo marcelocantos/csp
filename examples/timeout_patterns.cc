@@ -36,10 +36,10 @@ int main() {
             // Wait up to 100ms
             auto deadline = after(100ms);
             switch (prialt(r >> nullptr, deadline >> nullptr)) {
-            case 1:
+            case 0:
                 printf("  Got result (this shouldn't happen)\n");
                 break;
-            case 2:
+            case 1:
                 printf("  Timed out after 100ms (expected)\n");
                 break;
             }
@@ -63,13 +63,13 @@ int main() {
                 int n;
                 clock::time_point t;
                 switch (alt(r >> n, heartbeat >> t)) {
-                case 1:
+                case 0:
                     printf("  Work item: %d\n", n);
                     work_count++;
                     break;
-                case ~1:
+                case ~0:
                     goto done;
-                case 2:
+                case 1:
                     printf("  Heartbeat #%d\n", ++heartbeats);
                     break;
                 }

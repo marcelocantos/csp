@@ -24,7 +24,7 @@ auto unique(size_t max_remembered = 0, Hash hash = {}, Eq eq = {}) {
             if (max_remembered > 0)
                 order.emplace(max_remembered);
 
-            for (T t; csp::alt(in >> t, ~out) == 1;) {
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
                 if (seen.insert(t)) {
                     if (order) {
                         if (order->full()) {

@@ -25,11 +25,11 @@ T first_wins(std::vector<reader<T>> inputs) {
             *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
         internal::alt_end(&m);
 
-        if (m.result > 0) {
+        if (m.result >= 0) {
             return std::move(t);
         }
         // Reader died — remove it.
-        size_t slot = static_cast<size_t>(~m.result - 1);
+        size_t slot = static_cast<size_t>(~m.result);
         inputs[slot] = std::move(inputs.back());
         inputs.pop_back();
         chanops[slot] = chanops.back();

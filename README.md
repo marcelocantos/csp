@@ -77,9 +77,9 @@ silent deadlock. Use `.copy()` when you need shared ownership.
 // alt — fair (random) selection among ready channels
 int n;
 switch (alt(r1 >> n, r2 >> n, ~w)) {
-case 1:  /* r1 ready */  break;
-case 2:  /* r2 ready */  break;
-case ~3: /* w died */    break;
+case 0:  /* r1 ready */  break;
+case 1:  /* r2 ready */  break;
+case ~2: /* w died */    break;
 }
 
 // prialt — priority selection (first match wins)
@@ -87,7 +87,7 @@ prialt(r1 >> n, r2 >> n);
 ```
 
 Positive results indicate data operations; bitwise-complemented results
-indicate endpoint death (e.g., `~2` means the second channel's endpoint died).
+indicate endpoint death (e.g., `~1` means the second channel's endpoint died).
 
 ## Timers
 
@@ -103,8 +103,8 @@ auto heartbeat = csp::tick(100ms);  // periodic: fires every 100ms
 // Compose with alt for timeout patterns
 int n;
 switch (alt(r >> n, timeout >> poke)) {
-case 1:  /* data arrived */  break;
-case 2:  /* timed out */     break;
+case 0:  /* data arrived */  break;
+case 1:  /* timed out */     break;
 }
 ```
 

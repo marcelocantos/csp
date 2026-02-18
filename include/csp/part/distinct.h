@@ -14,7 +14,7 @@ auto distinct(Eq eq = {}) {
         internal::descr("distinct");
         T prev;
         bool has_prev = false;
-        for (T t; csp::alt(in >> t, ~out) == 1;) {
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
             if (!has_prev || !eq(prev, t)) {
                 has_prev = true;
                 prev = t;

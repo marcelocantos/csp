@@ -19,8 +19,8 @@ auto tee(writer<T> side) {
 
         static Logger log("chan/tee/log");
 
-        for (T t; prialt(~out, in >> t) > 0 && out << t && side << std::move(t);) { }
-        for (T t; prialt(~out, in >> t) > 0 && out << std::move(t);) { }
+        for (T t; prialt(~out, in >> t) >= 0 && out << t && side << std::move(t);) { }
+        for (T t; prialt(~out, in >> t) >= 0 && out << std::move(t);) { }
     });
 }
 

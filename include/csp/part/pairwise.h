@@ -14,8 +14,8 @@ auto pairwise() {
         [](reader<T> in, writer<std::pair<T, T>> out) {
             internal::descr("pairwise");
             T prev;
-            if (csp::alt(in >> prev, ~out) != 1) return;
-            for (T t; csp::alt(in >> t, ~out) == 1;) {
+            if (csp::alt(in >> prev, ~out) != 0) return;
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
                 auto p = std::make_pair(std::move(prev), t);
                 prev = std::move(t);
                 if (!(out << std::move(p))) return;

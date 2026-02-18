@@ -11,7 +11,7 @@ auto killswitch(reader<> keepalive) {
     return make_filter<A>([keepalive = std::move(keepalive)](reader<A> in, writer<A> out) {
         internal::descr("killswitch");
 
-        for (A a; prialt(~keepalive, ~out, in >> a) > 0 && prialt(~keepalive, out << std::move(a)) > 0;) { }
+        for (A a; prialt(~keepalive, ~out, in >> a) >= 0 && prialt(~keepalive, out << std::move(a)) >= 0;) { }
     });
 }
 

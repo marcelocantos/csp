@@ -22,7 +22,7 @@ auto chain(R rr) {
         static Logger log("chan/chain/log");
 
         for (auto & r : rr) {
-            for (T n; csp::alt(r >> n, ~w) == 1;) {
+            for (T n; csp::alt(r >> n, ~w) == 0;) {
                 CSP_LOG(log, "loop");
                 if (!(w << std::move(n))) {
                     break;

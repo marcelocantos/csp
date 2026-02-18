@@ -55,7 +55,7 @@ inline auto lines() {
 
             std::string pending;
             for (std::vector<uint8_t> chunk;
-                 csp::alt(in >> chunk, ~out) > 0;) {
+                 csp::alt(in >> chunk, ~out) >= 0;) {
                 size_t start = 0;
                 for (size_t i = 0; i < chunk.size(); ++i) {
                     if (chunk[i] == '\n') {
@@ -90,7 +90,7 @@ inline auto fixed(size_t frame_size) {
             std::vector<uint8_t> frame;
             frame.reserve(frame_size);
             for (std::vector<uint8_t> chunk;
-                 csp::alt(in >> chunk, ~out) > 0;) {
+                 csp::alt(in >> chunk, ~out) >= 0;) {
                 size_t i = 0;
                 while (i < chunk.size()) {
                     size_t need = frame_size - frame.size();

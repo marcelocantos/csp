@@ -12,7 +12,7 @@ auto map(F&& f) {
     return make_filter<A, B>([f = std::forward<F>(f)](reader<A> in, writer<B> out) {
         internal::descr("map");
 
-        for (A a; alt(in >> a, ~out) > 0 && out << f(a);) { }
+        for (A a; alt(in >> a, ~out) >= 0 && out << f(a);) { }
     });
 }
 

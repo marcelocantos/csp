@@ -13,7 +13,7 @@ namespace detail {
 template <typename Readers, typename Vals, typename Out, size_t... Is>
 bool zip_read_all(Readers& readers, Vals& vals,
                   writer<Out> const& out, std::index_sequence<Is...>) {
-    return (... && (csp::alt(std::get<Is>(readers) >> std::get<Is>(vals), ~out) == 1));
+    return (... && (csp::alt(std::get<Is>(readers) >> std::get<Is>(vals), ~out) == 0));
 }
 
 // Core zip implementation with combining function (f first, fully deducible).

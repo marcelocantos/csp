@@ -13,8 +13,8 @@ inline auto const latch = make_filter<T>([](reader<T> in, writer<T> out) {
     internal::descr("latch");
 
     T t;
-    if (prialt(~out, in >> t) > 0) {
-        while (prialt(in >> t, out << t) > 0) { }
+    if (prialt(~out, in >> t) >= 0) {
+        while (prialt(in >> t, out << t) >= 0) { }
         while (out << t) { }
     }
 });

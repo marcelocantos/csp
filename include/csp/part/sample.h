@@ -20,16 +20,16 @@ auto sample(reader<T> source, reader<Trigger> trigger) {
 
             for (;;) {
                 switch (csp::alt(source >> latest, trigger >> trig, ~out)) {
-                case 1:  // Source value — latch.
+                case 0:  // Source value — latch.
                     has_value = true;
                     break;
-                case 2:  // Trigger — emit latest if any.
+                case 1:  // Trigger — emit latest if any.
                     if (has_value && !(out << latest)) return;
                     break;
-                case ~1:  // Source died — emit on remaining triggers.
+                case ~0:  // Source died — emit on remaining triggers.
                     if (has_value) {
                         Trigger tr;
-                        while (csp::alt(trigger >> tr, ~out) == 1) {
+                        while (csp::alt(trigger >> tr, ~out) == 0) {
                             if (!(out << latest)) return;
                         }
                     }

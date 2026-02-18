@@ -132,7 +132,7 @@ TEST_CASE("MN - TimerAfterInAlt") {
             auto timeout = csp::after(10ms);
             int val = 0;
             int which = csp::alt(r >> val, timeout >> csp::poke);
-            if (which == 2) {
+            if (which == 1) {
                 timeouts.fetch_add(1, std::memory_order_relaxed);
             }
         });
@@ -187,7 +187,7 @@ TEST_CASE("MN - ConcurrentTimersAndChannels") {
         auto timeout = csp::after(200ms);
         int val = 0;
         int which = csp::alt(r >> val, timeout >> csp::poke);
-        if (which == 1) {
+        if (which == 0) {
             result.store(val, std::memory_order_relaxed);
         }
     });
@@ -462,11 +462,11 @@ TEST_CASE("MN Volume - AltSelectStress") {
         csp::spawn([&total, ra = std::move(a_r), rb = std::move(b_r)] {
             int va = 0, vb = 0;
             int which = csp::alt(ra >> va, rb >> vb);
-            if (which == 1) total.fetch_add(va, std::memory_order_relaxed);
+            if (which == 0) total.fetch_add(va, std::memory_order_relaxed);
             else            total.fetch_add(vb, std::memory_order_relaxed);
 
             // Drain the other channel.
-            if (which == 1) {
+            if (which == 0) {
                 if (rb >> vb) total.fetch_add(vb, std::memory_order_relaxed);
             } else {
                 if (ra >> va) total.fetch_add(va, std::memory_order_relaxed);

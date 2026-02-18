@@ -56,7 +56,7 @@ TEST_CASE("Timer - AfterInAlt") {
 
     csp::schedule();
     idle_writer = {};
-    CHECK_EQ(2, which_result);
+    CHECK_EQ(1, which_result);
 }
 
 TEST_CASE("Timer - Tick") {
@@ -106,7 +106,7 @@ TEST_CASE("Timer - MultipleTimersOrdering") {
     });
 
     csp::schedule();
-    CHECK_EQ(2, which_result);
+    CHECK_EQ(1, which_result);
 }
 
 TEST_CASE("Timer - TimeoutPattern") {
@@ -128,7 +128,7 @@ TEST_CASE("Timer - TimeoutPattern") {
 
     ch.release();
     csp::schedule();
-    CHECK_EQ(1, which_result);
+    CHECK_EQ(0, which_result);
     CHECK_EQ(42, val);
 }
 

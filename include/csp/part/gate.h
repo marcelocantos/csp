@@ -24,16 +24,16 @@ reader<T> gate(reader<T> data, reader<bool> control) {
         for (;;) {
             if (open) {
                 switch (csp::alt(data >> t, control >> b, ~out)) {
-                case 1:  // Data — forward.
+                case 0:  // Data — forward.
                     if (!(out << std::move(t))) return;
                     break;
-                case 2:  // Control update.
+                case 1:  // Control update.
                     open = b;
                     break;
-                case ~1:  // Data died.
+                case ~0:  // Data died.
                     return;
-                case ~2:  // Control died while open — keep forwarding.
-                    for (T v; csp::alt(data >> v, ~out) > 0;) {
+                case ~1:  // Control died while open — keep forwarding.
+                    for (T v; csp::alt(data >> v, ~out) >= 0;) {
                         if (!(out << std::move(v))) return;
                     }
                     return;
@@ -42,10 +42,10 @@ reader<T> gate(reader<T> data, reader<bool> control) {
                 }
             } else {
                 switch (csp::alt(control >> b, ~out)) {
-                case 1:  // Control update.
+                case 0:  // Control update.
                     open = b;
                     break;
-                case ~1:  // Control died while closed — permanently closed.
+                case ~0:  // Control died while closed — permanently closed.
                     return;
                 default:  // Output died.
                     return;

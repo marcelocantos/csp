@@ -16,7 +16,7 @@ auto batch(size_t n) {
             internal::descr("batch");
             std::vector<T> buf;
             buf.reserve(n);
-            for (T t; csp::alt(in >> t, ~out) == 1;) {
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
                 buf.push_back(std::move(t));
                 if (buf.size() == n) {
                     if (!(out << std::move(buf))) return;

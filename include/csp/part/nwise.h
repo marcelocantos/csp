@@ -35,7 +35,7 @@ auto nwise() {
 
             // Fill the initial window.
             for (size_t i = 0; i < N; ++i) {
-                if (csp::alt(in >> buf[i], ~out) != 1) return;
+                if (csp::alt(in >> buf[i], ~out) != 0) return;
             }
             if (!(out << detail::array_to_tuple(buf, std::make_index_sequence<N>{})))
                 return;
@@ -44,7 +44,7 @@ auto nwise() {
             for (;;) {
                 for (size_t i = 0; i + 1 < N; ++i)
                     buf[i] = std::move(buf[i + 1]);
-                if (csp::alt(in >> buf[N - 1], ~out) != 1) return;
+                if (csp::alt(in >> buf[N - 1], ~out) != 0) return;
                 if (!(out << detail::array_to_tuple(buf, std::make_index_sequence<N>{})))
                     return;
             }

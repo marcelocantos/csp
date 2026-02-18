@@ -17,7 +17,7 @@ auto window(size_t n) {
 
             std::deque<T> win;
 
-            for (T t; alt(in >> t, ~out) > 0;) {
+            for (T t; alt(in >> t, ~out) >= 0;) {
                 if (win.size() >= n)
                     win.pop_front();
                 win.push_back(std::move(t));

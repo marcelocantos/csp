@@ -14,7 +14,7 @@ auto where(Pred&& pred) {
         static Logger log("chan/where");
         CSP_LOG(log, "start");
 
-        for (T t; csp::alt(in >> t, ~out) == 1;) {
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
             CSP_LOG(log, "loop");
             if (pred(t) && !(out << std::move(t))) {
                 break;

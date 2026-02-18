@@ -132,7 +132,7 @@ namespace {
                         for (auto const & cw : ep.waiters) {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
-                                int idx = int(cw.chanop - cw.thread->chanops_ + 1);
+                                int idx = int(cw.chanop - cw.thread->chanops_);
                                 cw.thread->signal_ = ~idx;
                                 cw.thread->schedule();
                             }
@@ -141,7 +141,7 @@ namespace {
                         for (auto const & cv : ep.vultures) {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cv.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
-                                int idx = int(cv.chanop - cv.thread->chanops_ + 1);
+                                int idx = int(cv.chanop - cv.thread->chanops_);
                                 cv.thread->signal_ = ~idx;
                                 cv.thread->schedule();
                             }
@@ -235,7 +235,7 @@ namespace {
             // (~ch, dead_flag only), dead is the expected signal — fire
             // immediately.
             bool all_null = true;
-            int dead_data_result = 0;  // first dead data-chanop, 0 = none
+            int dead_data_result = 0;  // first dead data-chanop, 0 = none yet
             for (int k = 0 ; k < count ; ++k) {
                 int i = (offset + k) % count;
                 auto const & chop = chanops[i];
@@ -247,11 +247,11 @@ namespace {
                         if (flags & ready_flag) {
                             // Data chanop on dead channel: defer until
                             // after scanning for ready peers elsewhere.
-                            if (!dead_data_result) dead_data_result = ~(i + 1);
+                            if (!dead_data_result) dead_data_result = ~i;
                         } else {
                             // Vulture: dead is the expected signal.
                             unlock_all();
-                            out->result = ~(i + 1);
+                            out->result = ~i;
                             return;
                         }
                         continue;
@@ -262,7 +262,7 @@ namespace {
                         for (auto & cw : them) {
                             uint32_t expected = Microthread::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
-                                int idx = int(cw.chanop - cw.thread->chanops_ + 1);
+                                int idx = int(cw.chanop - cw.thread->chanops_);
                                 cw.thread->signal_ = idx;
 
                                 // Set up match: src is always writer's
@@ -277,7 +277,7 @@ namespace {
                                 }
 
 
-                                out->result = i + 1;
+                                out->result = i;
                                 mi->peer = cw.thread;
                                 mi->needs_unlock = true;
                                 return;  // locks held

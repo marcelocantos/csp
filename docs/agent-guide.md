@@ -106,27 +106,26 @@ randomizes. Both block until one operation completes.
 
 ```cpp
 // Return value:
-//   positive n → operation n matched (1-based)
-//   negative n → death event for operation |n| (1-based)
-//   0          → should-not-happen (internal)
+//   non-negative n → operation n matched (0-based)
+//   complement ~n  → death event for operation n (0-based)
 
 int v;
 switch (prialt(w << 42, r >> v, ~some_reader)) {
-    case 1:  /* wrote 42 */          break;
-    case 2:  /* read into v */       break;
-    case -1: /* w's reader died */   break;
-    case -2: /* r's writer died */   break;
-    case 3:  /* ~some_reader: writer of some_reader died */ break;
+    case 0:  /* wrote 42 */          break;
+    case 1:  /* read into v */       break;
+    case ~0: /* w's reader died */   break;
+    case ~1: /* r's writer died */   break;
+    case 2:  /* ~some_reader: writer of some_reader died */ break;
 }
 ```
 
 Key: `~endpoint` is a death-watch operation. When it fires, the return
-value is **positive** (it's a "data" match on the death event), not
-negative. Negative values only occur for implicit death detection on
+value is **non-negative** (it's a "data" match on the death event), not
+complemented. Complemented values only occur for implicit death detection on
 regular read/write operations.
 
-**`after()` returns positive**: `after(d)` sends a `poke` then dies, so
-`prialt(ch >> v, after(1s) >> nullptr)` returns `2` on timeout, not `-2`.
+**`after()` returns non-negative**: `after(d)` sends a `poke` then dies, so
+`prialt(ch >> v, after(1s) >> nullptr)` returns `1` on timeout, not `~1`.
 
 ```cpp
 // Vector overload (all ops must be same type T).
@@ -137,7 +136,7 @@ int result = alt(ops);  // or prialt(ops)
 
 // Non-blocking try: use skip (dead reader, always ready).
 poke_t p;
-if (prialt(r >> v, skip >> p) > 0) { /* got v */ }
+if (prialt(r >> v, skip >> p) >= 0) { /* got v */ }
 else { /* would block */ }
 ```
 
@@ -186,8 +185,8 @@ Timeout idiom:
 ```cpp
 int v;
 switch (prialt(r >> v, after(100ms) >> nullptr)) {
-    case 1:  handle(v);  break;
-    case 2:  timeout();  break;   // after() sent poke → positive match
+    case 0:  handle(v);  break;
+    case 1:  timeout();  break;   // after() sent poke → non-negative match
 }
 ```
 
@@ -245,8 +244,8 @@ auto line_reader = lr.spawn();
 auto sig = csp::signal::notify({SIGINT, SIGTERM});
 int s;
 switch (prialt(data >> v, sig >> s)) {
-    case 1: process(v);  break;
-    case 2: shutdown(s);  break;
+    case 0: process(v);  break;
+    case 1: shutdown(s);  break;
 }
 ```
 
@@ -385,13 +384,13 @@ All in `namespace csp::part`. Include `csp/part/<name>.h`.
    constructors. Use `std::move()` when passing to spawn/lambdas. Use
    `.copy()` for deliberate shared ownership.
 
-2. **`after()` is positive**: `after(d)` sends a `poke` before dying. In
-   prialt, the timeout case is a positive match (e.g., `case 2:`), not a
-   death event (`case -2:`).
+2. **`after()` is non-negative**: `after(d)` sends a `poke` before dying. In
+   prialt, the timeout case is a non-negative match (e.g., `case 1:`), not a
+   death event (`case ~1:`).
 
-3. **`~endpoint` is positive too**: Death-watch operations (`~w`, `~r`)
-   return positive case numbers when they fire. Negative return values only
-   come from implicit death on regular read/write ops.
+3. **`~endpoint` is non-negative too**: Death-watch operations (`~w`, `~r`)
+   return non-negative case numbers when they fire. Complemented return values
+   only come from implicit death on regular read/write ops.
 
 4. **chan_op blocks in destructor**: `w << val;` as a statement blocks
    because `chan_op`'s destructor calls `prialt`. To avoid blocking, capture

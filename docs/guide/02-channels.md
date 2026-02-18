@@ -249,10 +249,10 @@ auto [quit_w, quit_r] = csp::chan<>{};
 int n;
 for (;;) {
     switch (csp::alt(data_r >> n, ~quit_r)) {
-    case 1:
+    case 0:
         process(n);
         break;
-    case ~2:
+    case ~1:
         // quit channel's writer was dropped -- time to exit
         return;
     }
@@ -260,7 +260,7 @@ for (;;) {
 ```
 
 Death-watch results are reported as bitwise-complemented indices: if the `k`-th
-operation (1-indexed) is a death event, `alt`/`prialt` returns `~k`.
+operation (0-indexed) is a death event, `alt`/`prialt` returns `~k`.
 
 ## Signal-only channels
 

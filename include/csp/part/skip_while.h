@@ -10,7 +10,7 @@ auto skip_while(Pred&& pred) {
     return make_filter<T>([pred = std::forward<Pred>(pred)](reader<T> in, writer<T> out) {
         internal::descr("skip_while");
         bool skipping = true;
-        for (T t; csp::alt(in >> t, ~out) == 1;) {
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
             if (skipping) {
                 if (pred(t)) continue;
                 skipping = false;

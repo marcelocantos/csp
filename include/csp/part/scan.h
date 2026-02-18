@@ -16,7 +16,7 @@ auto scan(S init, F&& f) {
         (reader<T> in, writer<S> out) {
             internal::descr("scan");
             S acc = init;
-            for (T t; csp::alt(in >> t, ~out) == 1;) {
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
                 acc = f(std::move(acc), std::move(t));
                 if (!(out << acc)) return;
             }

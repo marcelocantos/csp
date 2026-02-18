@@ -81,8 +81,8 @@ auto reload    = csp::signal::notify({SIGUSR1});
 
 int s;
 switch (csp::prialt(interrupt >> s, reload >> s)) {
-case 1: shutdown(s);     break;
-case 2: reload_config(); break;
+case 0: shutdown(s);     break;
+case 1: reload_config(); break;
 }
 ```
 

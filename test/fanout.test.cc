@@ -106,7 +106,7 @@ TEST_CASE("Fanout - Waves") {
             stats.spawn([&, down = std::move(s.ch.r), result = &s.result, keepalive = keepalive.w.copy()]{
                 csp::internal::descr("R%d", &s - std::begin(receivers));
                 int n;
-                while (alt(down >> n, ~keepalive) > 0) {
+                while (alt(down >> n, ~keepalive) >= 0) {
                     *result += n;
                 }
                 CSP_LOG(g_log, "reader exit");

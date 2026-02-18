@@ -298,11 +298,11 @@ TEST_CASE("Channel - AltDead") {
         for (;;) {
             int n;
             switch (alt(in >> n, ~die)) {
-            case 1:
+            case 0:
                 CHECK(bool(out << n));
                 ++reqs;
                 break;
-            case ~2:
+            case ~1:
                 return;
             }
         }
@@ -352,11 +352,11 @@ TEST_CASE("Channel - AltNull") {
         actions.push_back(down >> n);
         for (int i = 0; i < 2; ++i) {
             auto a = alt(actions);
-            CHECK_NE(a, 2);
-            CHECK_NE(a, -2);
-            if (a == 1) {
+            CHECK_NE(a, 1);
+            CHECK_NE(a, ~1);
+            if (a == 0) {
                 actions[0] = {};
-            } else if (a == 3) {
+            } else if (a == 2) {
                 CHECK_EQ(11, n);
                 actions[2] = {};
             } else {
@@ -432,7 +432,7 @@ TEST_CASE("Channel - ActionBig") {
         r >> big3;
     });
 
-    CHECK_EQ(1, csp::alt(a));
+    CHECK_EQ(0, csp::alt(a));
     CHECK_EQ(big2.a, big3.a);
     CHECK_EQ(big2.b, big3.b);
     CHECK_EQ(big2.c, big3.c);
@@ -479,8 +479,8 @@ TEST_CASE("Channel - String") {
     // merger
     stats.spawn([r0 = std::move(merge[0].r), r1 = std::move(merge[1].r), w = ++out]{
             for (std::string a, b;
-                 (alt(r0 >> a, ~r1, ~w) > 0 &&
-                  alt(r1 >> b, ~r0, ~w) > 0 &&
+                 (alt(r0 >> a, ~r1, ~w) >= 0 &&
+                  alt(r1 >> b, ~r0, ~w) >= 0 &&
                   w << a + ' ' + b);)
                 { }
         });
@@ -575,7 +575,7 @@ static void spawn_inward_tree(RunStats & stats, reader<T> * ins, size_t n_ins, w
         spawn_inward_tree(stats, ins + n_ins / 2, n_ins - n_ins / 2, ++inner1);
         stats.spawn([out = std::move(out), inner0 = std::move(inner0), inner1 = std::move(inner1)] {
             // alt
-            for (T t; prialt(~out, inner0 >> t, inner1 >> t) > 0 && out << t;) { }
+            for (T t; prialt(~out, inner0 >> t, inner1 >> t) >= 0 && out << t;) { }
         });
     }
 }
@@ -743,8 +743,8 @@ TEST_CASE("Channel - AltFairness") {
         int n;
         for (int i = 0; i < trials; ++i) {
             switch (alt(ra >> n, rb >> n)) {
-            case 1: ++count_a; break;
-            case 2: ++count_b; break;
+            case 0: ++count_a; break;
+            case 1: ++count_b; break;
             default: FAIL_CHECK("unexpected alt result"); return;
             }
         }
@@ -773,7 +773,7 @@ TEST_CASE("Channel - PrialtOrder") {
 
     int n = -1;
     // prialt scans in order: channel a (with pending writer) is found first.
-    CHECK_EQ(1, prialt(ra >> n, rb >> n));
+    CHECK_EQ(0, prialt(ra >> n, rb >> n));
     CHECK_EQ(42, n);
 
     ra = {};
@@ -798,7 +798,7 @@ TEST_CASE("Channel - NonBlocking") {
     while (csp::internal::run()) { }
 
     // Writer is waiting; read should succeed.
-    CHECK_EQ(1, prialt(r >> n, ~skip));
+    CHECK_EQ(0, prialt(r >> n, ~skip));
     CHECK_EQ(42, n);
 
     r = {};

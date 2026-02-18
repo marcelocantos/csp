@@ -632,7 +632,7 @@ death-aware loop:
 template <typename T>
 auto map(F&& f) {
     return make_filter<T>([f = std::move(f)](reader<T> in, writer<T> out) {
-        for (T v; prialt(~out, in >> v) > 0;)
+        for (T v; prialt(~out, in >> v) >= 0;)
             out << f(v);
     });
 }

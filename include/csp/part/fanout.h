@@ -16,7 +16,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
 
     static Logger log("chan/fanout/log");
 
-    for (writer<T> out; prialt(~new_in, new_out >> out) > 0;) {
+    for (writer<T> out; prialt(~new_in, new_out >> out) >= 0;) {
         CSP_LOG(log, "first new_out");
 
         reader<T> in;
@@ -24,7 +24,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
         T t{};                     // slot 1 read buffer
         writer<T> out_val;         // slot 2 read buffer
 
-        // Slot layout (indices are 1-based in prialt results):
+        // Slot layout (0-based prialt results):
         //   0: new_in << in_val   (writer<T> transfer)
         //   1: in >> t             (T transfer) — initially empty
         //   2: new_out >> out_val  (writer<T> transfer)
@@ -49,7 +49,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
             internal::AltMatch m;
             internal::prialt_begin(&m, chanops.data(), chanops.size(), 0);
             if (m.src && m.dst) {
-                int idx = (m.result > 0 ? m.result : ~m.result) - 1;
+                int idx = (m.result >= 0 ? m.result : ~m.result);
                 if (idx == 0 || idx == 2)
                     *static_cast<writer<T>*>(m.dst) = std::move(*static_cast<writer<T>*>(m.src));
                 else if (idx == 1)
@@ -58,15 +58,15 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
             internal::alt_end(&m);
 
             switch (m.result) {
-            case 1:
+            case 0:
                 CSP_LOG(log, "new_in");
                 chanops[0] = {{}, nullptr};
                 chanops[1] = {internal::wait(in.internal_reader()), &t};
                 break;
-            case ~1:
+            case ~0:
                 CSP_LOG(log, "~new_in");
                 return;
-            case 2:
+            case 1:
                 CSP_LOG(log, "in");
                 // Traverse backwards in case of in-situ deletions.
                 for (auto oi = end(outs); oi-- != begin(outs);) {
@@ -77,25 +77,25 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
                     }
                 }
                 break;
-            case ~2:
+            case ~1:
                 CSP_LOG(log, "~in");
                 in = {};
                 in_val = ++in;
                 chanops[0] = {internal::wait(new_in.internal_writer()), &in_val};
                 chanops[1] = {{}, nullptr};
                 break;
-            case 3:  // new_out
+            case 2:  // new_out
                 CSP_LOG(log, "new_out");
                 chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr});
                 outs.push_back(std::move(out_val));
                 break;
-            case ~3:
+            case ~2:
                 CSP_LOG(log, "~new_out");
                 // No more new outs.
                 chanops[2] = {{}, nullptr};
                 break;
             default: {  // ~outs
-                auto i = ~m.result - 4;
+                auto i = ~m.result - 3;
                 CSP_LOG(log, "~outs[%d]", i);
                 drop(i);
             }

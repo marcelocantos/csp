@@ -48,7 +48,7 @@ auto printer = make_consumer<int>([](reader<int> in) {
 
 // A filter that doubles each value
 auto doubler = make_filter<int>([](reader<int> in, writer<int> out) {
-    for (int n; csp::alt(in >> n, ~out) == 1;) {
+    for (int n; csp::alt(in >> n, ~out) == 0;) {
         if (!(out << n * 2)) return;
     }
 });
@@ -60,7 +60,7 @@ For type-changing filters, specify both input and output types:
 // int -> string
 auto to_string = make_filter<int, std::string>(
     [](reader<int> in, writer<std::string> out) {
-        for (int n; csp::alt(in >> n, ~out) == 1;) {
+        for (int n; csp::alt(in >> n, ~out) == 0;) {
             if (!(out << std::to_string(n))) return;
         }
     });
@@ -227,7 +227,7 @@ Almost every filter follows the same pattern -- the *death-aware forwarding
 loop*:
 
 ```cpp
-for (T t; prialt(~out, in >> t) > 0 && out << t;) { }
+for (T t; prialt(~out, in >> t) >= 0 && out << t;) { }
 ```
 
 This single line handles three concerns:
@@ -240,11 +240,11 @@ This single line handles three concerns:
    (output closed between the `prialt` and the write), the loop exits.
 
 Some filters use `alt` instead of `prialt` when priority does not matter,
-and some check `== 1` instead of `> 0` for clarity:
+and some check `== 0` instead of `>= 0` for clarity:
 
 ```cpp
-// Equivalent — alt returns the 1-based index of the matched arm
-for (T t; csp::alt(in >> t, ~out) == 1;) {
+// Equivalent — alt returns the 0-based index of the matched arm
+for (T t; csp::alt(in >> t, ~out) == 0;) {
     if (!(out << std::move(t))) return;
 }
 ```
@@ -303,7 +303,7 @@ auto clamp(T lo, T hi) {
     return make_filter<T>(
         [lo, hi](reader<T> in, writer<T> out) {
             internal::descr("clamp");
-            for (T t; csp::alt(in >> t, ~out) == 1;) {
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
                 if (!(out << std::clamp(t, lo, hi))) return;
             }
         });

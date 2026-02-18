@@ -20,8 +20,8 @@ using namespace csp;
 
 int x, y;
 switch (alt(r1 >> x, r2 >> y)) {
-case 1: /* r1 delivered a value into x */ break;
-case 2: /* r2 delivered a value into y */ break;
+case 0: /* r1 delivered a value into x */ break;
+case 1: /* r2 delivered a value into y */ break;
 }
 ```
 
@@ -31,23 +31,23 @@ write (`w << val`). You can freely mix reads and writes:
 ```cpp
 int n;
 switch (alt(r >> n, w << 42)) {
-case 1: /* read succeeded  */ break;
-case 2: /* write succeeded */ break;
+case 0: /* read succeeded  */ break;
+case 1: /* write succeeded */ break;
 }
 ```
 
 The call blocks until one of the operations can complete, performs the
-transfer, and returns the **1-based index** of the matched operation.
+transfer, and returns the **0-based index** of the matched operation.
 
 ## Return values
 
 | Return value | Meaning |
 |---|---|
-| positive `i` | Data operation `i` matched (1-based) |
-| complement `~i` | Death event for operation `i` (1-based) |
+| non-negative `i` | Data operation `i` matched (0-based) |
+| complement `~i` | Death event for operation `i` (0-based) |
 
-For example, with three operations, the possible returns are `1`, `2`, `3`,
-`~1`, `~2`, `~3`.
+For example, with three operations, the possible returns are `0`, `1`, `2`,
+`~0`, `~1`, `~2`.
 
 ## Vultures: detecting dead endpoints
 
@@ -64,8 +64,8 @@ Vultures return **bitwise-complemented** indices:
 ```cpp
 int n;
 switch (alt(r >> n, ~w)) {
-case  1: /* got data from r */ break;
-case ~2: /* w's reader died */ break;
+case  0: /* got data from r */ break;
+case ~1: /* w's reader died */ break;
 }
 ```
 
@@ -75,8 +75,8 @@ the scheduler tells you what happened.
 
 ```mermaid
 graph LR
-    A[reader r] -->|"r >> n (case 1)"| ALT((alt))
-    B[writer w] -->|"~w (case ~2)"| ALT
+    A[reader r] -->|"r >> n (case 0)"| ALT((alt))
+    B[writer w] -->|"~w (case ~1)"| ALT
     ALT --> handler["switch on result"]
 ```
 
@@ -87,7 +87,7 @@ Use **`alt`** when all channels are equally important and you want fairness:
 ```cpp
 // Merge two input streams. Neither source is favoured.
 int n;
-while (alt(a >> n, b >> n) > 0) {
+while (alt(a >> n, b >> n) >= 0) {
     out << n;
 }
 ```
@@ -99,8 +99,8 @@ pattern is checking for shutdown before doing work:
 int n;
 for (;;) {
     switch (prialt(~quit, in >> n)) {
-    case ~1: return;          // quit channel died -- exit
-    case  2: process(n); break;
+    case ~0: return;          // quit channel died -- exit
+    case  1: process(n); break;
     }
 }
 ```
@@ -114,17 +114,17 @@ Many CSP programs need to forward data from one channel to another while
 respecting endpoint lifecycle. The idiomatic pattern is:
 
 ```cpp
-for (T t; prialt(~out, in >> t) > 0 && out << t;) { }
+for (T t; prialt(~out, in >> t) >= 0 && out << t;) { }
 ```
 
 This is dense, so here is what each piece does:
 
 1. **`prialt(~out, in >> t)`** -- first check whether `out`'s reader has
-   died (`~out`, index `~1`). If it has, `prialt` returns `~1` which is `< 0`,
+   died (`~out`, index `~0`). If it has, `prialt` returns `~0` which is `< 0`,
    the loop condition is false, and we stop. Otherwise, read from `in` into
-   `t` (index 2, which is `> 0`).
+   `t` (index 1, which is `>= 0`).
 
-2. **`> 0`** -- if the return is positive, a data operation matched and `t`
+2. **`>= 0`** -- if the return is non-negative, a data operation matched and `t`
    holds a value. If complemented (vulture) or if `in` has no more writers (the
    read would never fire, so `prialt` returns `0` -- though in practice the
    `~out` vulture or input exhaustion handles this), the loop exits.
@@ -160,8 +160,8 @@ with `prialt` gives you a non-blocking poll:
 ```cpp
 int n;
 switch (prialt(r >> n, ~skip)) {
-case  1: /* r had data ready -- n is set */ break;
-case ~2: /* no data available right now  */ break;
+case  0: /* r had data ready -- n is set */ break;
+case ~1: /* no data available right now  */ break;
 }
 ```
 
@@ -175,8 +175,8 @@ implementing try-send patterns:
 ```cpp
 // Try to send without blocking.
 switch (prialt(w << value, ~skip)) {
-case  1: /* sent successfully */ break;
-case ~2: /* receiver not ready */ break;
+case  0: /* sent successfully */ break;
+case ~1: /* receiver not ready */ break;
 }
 ```
 
@@ -195,8 +195,8 @@ auto deadline = after(100ms);
 poke_t p;
 int n;
 switch (prialt(r >> n, deadline >> p)) {
-case 1: /* got data in time  */ break;
-case 2: /* timed out         */ break;
+case 0: /* got data in time  */ break;
+case 1: /* timed out         */ break;
 }
 ```
 
@@ -212,9 +212,9 @@ int n;
 clock::time_point t;
 for (;;) {
     switch (alt(work >> n, heartbeat >> t)) {
-    case  1: process(n); break;
-    case ~1: return;  // work channel closed
-    case  2: send_heartbeat(); break;
+    case  0: process(n); break;
+    case ~0: return;  // work channel closed
+    case  1: send_heartbeat(); break;
     }
 }
 ```
@@ -237,7 +237,7 @@ not a practical limitation: dynamic-count alt arises when fanning out to or
 in from a runtime-determined set of channels, and those channels are always
 the same type.
 
-The return value follows the same convention (1-based index, complemented for
+The return value follows the same convention (0-based index, complemented for
 vultures).
 
 ## Disabling operations at runtime
@@ -252,8 +252,8 @@ ops.emplace_back();       // slot 1: inactive (skipped)
 ops.push_back(r >> n);
 
 switch (alt(ops)) {
-case 1: /* write matched */ break;
-case 3: /* read matched  */ break;
+case 0: /* write matched */ break;
+case 2: /* read matched  */ break;
 // case 2 can never fire -- slot is inactive
 }
 ```
@@ -271,11 +271,11 @@ spawn([out = std::move(out), in0 = std::move(in0), in1 = std::move(in1)] {
     int t;
     for (;;) {
         switch (prialt(~out, in0 >> t, in1 >> t)) {
-        case ~1: return;             // output reader died
-        case  2: out << t; break;    // forward from in0
-        case  3: out << t; break;    // forward from in1
-        case ~2:                     // in0 writer died
-        case ~3: return;             // in1 writer died
+        case ~0: return;             // output reader died
+        case  1: out << t; break;    // forward from in0
+        case  2: out << t; break;    // forward from in1
+        case ~1:                     // in0 writer died
+        case ~2: return;             // in1 writer died
         }
     }
 });
@@ -301,7 +301,7 @@ statement, with a few differences:
 | Non-blocking | `default:` case | `prialt(op, ~skip)` |
 | Timeout | `case <-time.After(d):` | `prialt(op, after(d) >> p)` |
 | Dynamic channel count | reflect.Select | `std::vector<chan_op<T>>` |
-| Return value | executes case body directly | returns 1-based index |
+| Return value | executes case body directly | returns 0-based index |
 | Nil channel | nil channel disables case | default-constructed `chan_op<T>{}` disables slot |
 | Write + read in one select | yes | yes |
 

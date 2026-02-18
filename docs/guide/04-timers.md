@@ -45,8 +45,8 @@ Because `after` returns an ordinary reader, it slots directly into `alt` and
 auto deadline = csp::after(100ms);
 int val;
 switch (csp::prialt(data_reader >> val, deadline >> poke)) {
-case 1: /* data arrived in time  */ break;
-case 2: /* 100ms elapsed first   */ break;
+case 0: /* data arrived in time  */ break;
+case 1: /* 100ms elapsed first   */ break;
 }
 ```
 
@@ -116,8 +116,8 @@ csp::spawn([w = std::move(w)] {
 auto deadline = csp::after(100ms);
 int val;
 switch (csp::prialt(r >> val, deadline >> poke)) {
-case 1: handle(val);          break;
-case 2: handle_timeout();     break;
+case 0: handle(val);          break;
+case 1: handle_timeout();     break;
 }
 ```
 
@@ -142,9 +142,9 @@ for (;;) {
     int n;
     csp::clock::time_point t;
     switch (csp::alt(data >> n, heartbeat >> t)) {
-    case  1: process(n);      break;
-    case ~1: goto done;       // data channel closed
-    case  2: send_heartbeat(); break;
+    case  0: process(n);      break;
+    case ~0: goto done;       // data channel closed
+    case  1: send_heartbeat(); break;
     }
 }
 done:;

@@ -237,7 +237,7 @@ public:
         if (m.src && m.dst)
             *static_cast<T *>(m.dst) = std::move(*static_cast<T *>(m.src));
         internal::alt_end(&m);
-        return m.result > 0;
+        return m.result >= 0;
     }
 
     static void transfer(void * src, void * dst) {
@@ -364,7 +364,7 @@ public:
     template <typename U>
     auto stream_to(writer<U> out) const {
         return [in = this->copy(), out = std::move(out)] {
-            for (T t; prialt(~out, in >> t) > 0 && out << t;) { }
+            for (T t; prialt(~out, in >> t) >= 0 && out << t;) { }
         };
     }
 
@@ -656,7 +656,7 @@ typed_alt(Ops &&... ops) {
     internal::AltMatch m;
     begin_f(&m, chanops, N, false);
     if (m.src && m.dst) {
-        int idx = (m.result > 0 ? m.result : ~m.result) - 1;
+        int idx = (m.result >= 0 ? m.result : ~m.result);
         transfer_at<0>(idx, m.src, m.dst, ops...);
     }
     internal::alt_end(&m);

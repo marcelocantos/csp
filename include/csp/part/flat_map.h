@@ -34,7 +34,7 @@ auto flat_map(F&& f) {
 
             // Type-aware transfer: input slot reads A, sub-stream slots read B.
             if (m.src && m.dst) {
-                if (input_alive && m.result == 2) {
+                if (input_alive && m.result == 1) {
                     *static_cast<A*>(m.dst) = std::move(*static_cast<A*>(m.src));
                 } else {
                     *static_cast<B*>(m.dst) = std::move(*static_cast<B*>(m.src));
@@ -43,24 +43,24 @@ auto flat_map(F&& f) {
 
             internal::alt_end(&m);
 
-            if (m.result == ~1) {
+            if (m.result == ~0) {
                 // Output died.
                 return;
-            } else if (input_alive && m.result == 2) {
+            } else if (input_alive && m.result == 1) {
                 // New input element — spawn sub-stream.
                 reader<B> sub = f(std::move(a));
                 chanops.push_back({internal::wait(sub.internal_reader()), &b});
                 subs.push_back(std::move(sub));
-            } else if (input_alive && m.result == ~2) {
+            } else if (input_alive && m.result == ~1) {
                 // Input exhausted — remove input slot.
                 chanops.erase(chanops.begin() + 1);
                 input_alive = false;
-            } else if (m.result > 0) {
+            } else if (m.result >= 0) {
                 // Sub-stream data — forward to output.
                 if (!(out << std::move(b))) return;
             } else {
                 // Sub-stream died — swap-and-pop.
-                size_t slot = static_cast<size_t>(~m.result - 1);
+                size_t slot = static_cast<size_t>(~m.result);
                 size_t i = slot - sub_base;
                 subs[i] = std::move(subs.back());
                 subs.pop_back();

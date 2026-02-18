@@ -9,7 +9,7 @@ template <typename T, typename Pred>
 auto take_while(Pred&& pred) {
     return make_filter<T>([pred = std::forward<Pred>(pred)](reader<T> in, writer<T> out) {
         internal::descr("take_while");
-        for (T t; csp::alt(in >> t, ~out) == 1;) {
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
             if (!pred(t)) return;
             if (!(out << std::move(t))) return;
         }

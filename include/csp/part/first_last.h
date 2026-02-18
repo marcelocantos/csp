@@ -12,7 +12,7 @@ auto first(size_t n) {
         internal::descr("first");
         for (size_t i = 0; i < n; ++i) {
             T t;
-            if (csp::alt(in >> t, ~out) != 1) return;
+            if (csp::alt(in >> t, ~out) != 0) return;
             if (!(out << std::move(t))) return;
         }
     });
@@ -24,11 +24,11 @@ auto last(size_t n) {
     return make_filter<T>([n](reader<T> in, writer<T> out) {
         internal::descr("last");
         if (n == 0) {
-            for (T t; csp::alt(in >> t, ~out) == 1;) {}
+            for (T t; csp::alt(in >> t, ~out) == 0;) {}
             return;
         }
         csp::detail::RingBuffer<T> buf(n);
-        for (T t; csp::alt(in >> t, ~out) == 1;) {
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
             if (buf.full()) buf.pop();
             buf.push(std::move(t));
         }
@@ -45,9 +45,9 @@ auto skip_first(size_t n) {
         internal::descr("skip_first");
         for (size_t i = 0; i < n; ++i) {
             T t;
-            if (csp::alt(in >> t, ~out) != 1) return;
+            if (csp::alt(in >> t, ~out) != 0) return;
         }
-        for (T t; csp::alt(in >> t, ~out) == 1;) {
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
             if (!(out << std::move(t))) return;
         }
     });
@@ -59,13 +59,13 @@ auto skip_last(size_t n) {
     return make_filter<T>([n](reader<T> in, writer<T> out) {
         internal::descr("skip_last");
         if (n == 0) {
-            for (T t; csp::alt(in >> t, ~out) == 1;) {
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
                 if (!(out << std::move(t))) return;
             }
             return;
         }
         csp::detail::RingBuffer<T> buf(n);
-        for (T t; csp::alt(in >> t, ~out) == 1;) {
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
             if (buf.full()) {
                 if (!(out << std::move(buf.front()))) return;
                 buf.pop();

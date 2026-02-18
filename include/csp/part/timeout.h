@@ -17,11 +17,11 @@ auto timeout(csp::clock::duration d) {
             T t;
             poke_t p;
             switch (csp::alt(in >> t, timer >> p, ~out)) {
-            case 1:  // Value arrived — forward and reset timer.
+            case 0:  // Value arrived — forward and reset timer.
                 if (!(out << std::move(t))) return;
                 timer = csp::after(d);
                 break;
-            case 2:  // Timeout fired — close.
+            case 1:  // Timeout fired — close.
                 return;
             default:
                 return;

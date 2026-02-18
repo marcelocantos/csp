@@ -19,13 +19,13 @@ auto throttle(csp::clock::duration d, size_t n = 1) {
             T t;
             csp::clock::time_point tp;
             switch (csp::alt(in >> t, ticker >> tp, ~out)) {
-            case 1:  // Value arrived.
+            case 0:  // Value arrived.
                 if (remaining > 0) {
                     --remaining;
                     if (!(out << std::move(t))) return;
                 }
                 break;
-            case 2:  // Tick — reset budget.
+            case 1:  // Tick — reset budget.
                 remaining = n;
                 break;
             default:  // Input, ticker, or output died.

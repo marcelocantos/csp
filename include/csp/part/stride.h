@@ -11,7 +11,7 @@ auto stride(size_t n) {
     return make_filter<T>([n](reader<T> in, writer<T> out) {
         internal::descr("stride");
         size_t i = 0;
-        for (T t; csp::alt(in >> t, ~out) == 1;) {
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
             if (i == 0) {
                 if (!(out << std::move(t))) return;
             }
