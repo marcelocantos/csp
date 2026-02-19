@@ -2657,9 +2657,11 @@ namespace csp::part {
 
 // Suppress rapid values; emit only after a quiet period elapses.
 // When input closes with a pending value, emits it immediately.
+// Optional dead_letter: superseded pending values are written here instead of
+// discarded.
 template <typename T>
-auto debounce(csp::clock::duration d) {
-    return make_filter<T>([d](reader<T> in, writer<T> out) {
+auto debounce(csp::clock::duration d, writer<T> dead_letter = {}) {
+    return make_filter<T>([d, dead_letter = std::move(dead_letter)](reader<T> in, writer<T> out) mutable {
         internal::descr("debounce");
         T pending;
         reader<> timer;
@@ -2671,9 +2673,12 @@ auto debounce(csp::clock::duration d) {
                 timer = csp::after(d);
             } else {
                 // Pending value — wait for input, timer, or death.
+                T next;
                 poke_t p;
-                switch (csp::alt(in >> pending, timer >> p, ~out)) {
-                case 0:  // New value — restart timer.
+                switch (csp::alt(in >> next, timer >> p, ~out)) {
+                case 0:  // New value supersedes pending.
+                    if (dead_letter) dead_letter << std::move(pending);
+                    pending = std::move(next);
                     timer = csp::after(d);
                     break;
                 case 1:  // Timer fired — emit.
@@ -4041,19 +4046,25 @@ namespace csp::part {
 // On each trigger, emit the most recent value from source.
 // After source dies, keeps emitting the last latched value on each trigger
 // until the trigger stream dies.
+// Optional dead_letter: overwritten latched values are written here instead of
+// discarded.
 template <typename T, typename Trigger = poke_t>
-auto sample(reader<T> source, reader<Trigger> trigger) {
+auto sample(reader<T> source, reader<Trigger> trigger, writer<T> dead_letter = {}) {
     return make_producer<T>(
-        [source = std::move(source), trigger = std::move(trigger)]
+        [source = std::move(source), trigger = std::move(trigger),
+         dead_letter = std::move(dead_letter)]
         (writer<T> out) mutable {
             internal::descr("sample");
             T latest;
             bool has_value = false;
             Trigger trig;
+            T next;
 
             for (;;) {
-                switch (csp::alt(source >> latest, trigger >> trig, ~out)) {
+                switch (csp::alt(source >> next, trigger >> trig, ~out)) {
                 case 0:  // Source value — latch.
+                    if (dead_letter && has_value) dead_letter << std::move(latest);
+                    latest = std::move(next);
                     has_value = true;
                     break;
                 case 1:  // Trigger — emit latest if any.
@@ -4412,9 +4423,10 @@ namespace csp::part {
 // Rate-limit: forward up to n values per interval, drop excess.
 // Budget starts at n (first n values pass immediately).
 // Resets every interval via tick().
+// Optional dead_letter: excess values are written here instead of discarded.
 template <typename T>
-auto throttle(csp::clock::duration d, size_t n = 1) {
-    return make_filter<T>([d, n](reader<T> in, writer<T> out) {
+auto throttle(csp::clock::duration d, size_t n = 1, writer<T> dead_letter = {}) {
+    return make_filter<T>([d, n, dead_letter = std::move(dead_letter)](reader<T> in, writer<T> out) mutable {
         internal::descr("throttle");
         auto ticker = csp::tick(d);
         size_t remaining = n;
@@ -4427,6 +4439,8 @@ auto throttle(csp::clock::duration d, size_t n = 1) {
                 if (remaining > 0) {
                     --remaining;
                     if (!(out << std::move(t))) return;
+                } else if (dead_letter) {
+                    dead_letter << std::move(t);
                 }
                 break;
             case 1:  // Tick — reset budget.
