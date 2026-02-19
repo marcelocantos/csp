@@ -55,7 +55,7 @@ Do **not** use `blocking` for operations that CSP already handles
 asynchronously, such as socket I/O (use `csp::io`) or timers (use
 `csp::sleep` / `csp::after`).
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 blocking(fn) ───────────────────➤ calling MT suspended; fn submitted to pool thread;

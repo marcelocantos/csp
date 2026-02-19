@@ -86,7 +86,8 @@ microthreads to completion.
   [Error Handling](docs/guide/10-error-handling.md) ·
   [Pitfalls](docs/guide/11-pitfalls.md) ·
   [Dynamic Scoping](docs/guide/12-dynamic-scoping.md)
-- **Reference** — [Parts Catalog](docs/reference/parts.md) (50+ stream combinators)
+- **Reference** — [Parts Catalog](docs/reference/parts.md) (50+ stream combinators) ·
+  [Transition Rules](docs/reference/transition-rules.md) (notation guide)
 - **Architecture** — [Internal Design](docs/architecture.md)
 - **Papers** — [The Engineering of CSP](docs/papers/) (TLS bugs,
   formal verification, zero-overhead channels, and more)

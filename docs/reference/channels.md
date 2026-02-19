@@ -147,7 +147,7 @@ null ──➤ live ──➤ dead
 `operator bool()` returns `true` for both live and dead states (any non-null
 writer). It does **not** distinguish live from dead.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 live.operator<<(v)  ─┤reader ready├──➤ move(v, reader.dest); true
@@ -277,7 +277,7 @@ null ──➤ live ──➤ dead
 `operator bool()` returns `true` for both live and dead states (any non-null
 reader). It does **not** distinguish live from dead.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 live.operator>>(dest)  ─┤writer ready├──➤ move(writer.val, dest); true
@@ -430,7 +430,7 @@ stateDiagram-v2
     inactive --> [*] : ~chan_op() [no-op]
 ```
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 active.~chan_op()           ─────────────────➤ prialt({this_op}); transfer if matched

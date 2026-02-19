@@ -64,7 +64,7 @@ below), `alt` returns `~index` (bitwise complement), which is always negative.
 If no operation is immediately ready, the calling microthread suspends until a
 peer becomes available or an endpoint dies.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 alt(ops...) ─┤peer ready at index i├──➤ transfer data; i
@@ -116,7 +116,7 @@ ready, the lowest-indexed match always wins.
 Use `prialt` when one channel should be preferred over another --- for
 example, checking a shutdown signal before reading data.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 prialt(ops...) ─┤peer ready at index i├──➤ transfer data; i  (lowest i wins)
@@ -177,7 +177,7 @@ This distinguishes death from a successful data transfer at the same index.
 If the peer is already dead at the time `alt`/`prialt` is called, the
 death-watch matches immediately without suspending.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 ~reader ─┤all writers dead├──➤ match; ~i
@@ -255,7 +255,7 @@ When `chan_op<T>` holds a write value, the value is stored in an inline
 aligned buffer (no heap allocation). Move semantics are used for both
 construction and transfer.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 writer << val ─────────➤ chan_op<T>{write, val}
@@ -313,7 +313,7 @@ When a `chan_op<T>` **is** passed to `alt` or `prialt`, those functions call
 `disarm()` on every operand, preventing the destructor from triggering a
 redundant `prialt`.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 (chan_op destructor) ─┤active├──────➤ prialt(this_op); transfer if matched

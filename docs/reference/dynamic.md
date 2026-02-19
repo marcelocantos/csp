@@ -120,7 +120,7 @@ assertion in `dynamic_binding`'s destructor.
 **Non-copyable.** Each `dynamic<T>` instance owns a unique key. Copying would
 create two variables sharing the same key, which is nonsensical.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 operator*()   ─┤binding exists├───➤ any_cast<T>(hamt_get(dyn_ctx_, key)); T
@@ -191,7 +191,7 @@ bare statement instead of wrapping it in `local`.
 The `[[nodiscard]]` attribute on `dynamic<T>::operator=` provides a
 compile-time warning before the runtime assertion fires.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 dynamic<T>::operator=(v) ────────➤ dynamic_binding{key, any(v)}; consumed_ = false
@@ -254,7 +254,7 @@ csp::local l{x = 1, y = 2, z = std::string("hello")};
 The SFINAE constraint ensures that only `dynamic_binding` rvalues are accepted.
 Passing anything else is a compile error.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 local(b1, b2, ...)  ────────➤ save dyn_ctx_; hamt_assoc(b1); hamt_assoc(b2); ...
@@ -324,7 +324,7 @@ This is the primary way to obtain a `context` for cross-microthread transfer.
 receiving microthread can install it via `context_scope` to temporarily adopt
 the sender's dynamic variable bindings.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 context::current()     ────────➤ retain(g_self->dyn_ctx_); context{root}
@@ -406,7 +406,7 @@ Use `context_scope` when a microthread receives a `context` over a channel and
 needs to temporarily operate under the sender's dynamic variable bindings. For
 binding variables directly, prefer `local`.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 context_scope(ctx)  ────────➤ save dyn_ctx_; retain(ctx.root); install ctx.root; release(old)
@@ -492,7 +492,7 @@ variables, regardless of the parent's state. This is the key distinction from
 `unordered_map<uint64_t, std::any>`, allocated on first write and destroyed
 with the microthread.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 operator*()   ─┤key in local_ctx_├───➤ any_cast<T>(local_ctx_[key]); T

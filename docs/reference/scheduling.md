@@ -64,7 +64,7 @@ In single-threaded mode, the new microthread runs immediately until it
 yields or blocks. In M:N mode, the new microthread is placed on the global
 run queue for any worker to pick up.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 spawn(f) ────────────────────────➤ new microthread M created; M becomes runnable;
@@ -117,7 +117,7 @@ microthread. It is typically called once after all initial `spawn` calls.
 The default scheduler loop can be replaced with `set_scheduler` for custom
 scheduling strategies.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 schedule() ─┤microthreads exist├─➤ block calling thread; run scheduler loop
@@ -162,7 +162,7 @@ microthread is runnable, `yield` returns immediately without switching.
 long-running computations without channel operations should call `yield`
 periodically to avoid starving other microthreads.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 yield() ─┤others runnable├──➤ current MT moves to back of run queue;
@@ -219,7 +219,7 @@ When `num_procs` > 1, the runtime enters M:N mode:
 never called, the runtime auto-initializes with a single processor on first
 use.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 init_runtime(0) ────────────────➤ create hardware_concurrency() Ps + workers
@@ -267,7 +267,7 @@ death.
 This is a convenience wrapper around `spawn` for the common pattern of a
 goroutine-like producer that generates a stream of values.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 spawn_producer<T>(f) ────────────➤ chan<T> created; microthread M spawned;
@@ -318,7 +318,7 @@ writer<T> spawn_consumer(F f);
 The microthread owns the reader; the caller writes values into the returned
 writer.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 spawn_consumer<T>(f) ────────────➤ chan<T> created; microthread M spawned;
@@ -371,7 +371,7 @@ member is the input writer and whose `r` member is the output reader. The
 caller writes into `.w` and reads from `.r`, with the spawned microthread
 transforming values in between.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 spawn_filter<T>(f) ──────────────➤ input chan<T> + output chan<T> created;

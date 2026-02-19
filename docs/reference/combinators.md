@@ -66,7 +66,7 @@ producer -- it wires up the channel plumbing and launches execution. The
 moves it, enabling move-only captures (e.g., a `std::vector<reader<T>>`
 captured by a merge combinator).
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 producer.spawn()  ────────────────➤ chan<T> created; microthread M spawned;
@@ -169,7 +169,7 @@ emits output.
 All `spawn` overloads launch a microthread. The `const &` overloads copy the
 body; the `&&` overloads move it.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 filter.spawn(reader<In>)   ──────➤ chan<Out> created; microthread M spawned;
@@ -253,7 +253,7 @@ The `const &` overload copies the body; the `&&` overload moves it.
 with the read end, and returns the write end. The caller writes values into the
 returned `writer<T>` and the consumer's microthread reads and processes them.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 consumer.spawn()  ────────────────➤ chan<T> created; microthread M spawned;
@@ -501,7 +501,7 @@ Creates two channels (input and output), spawns a microthread that calls
 `f(reader<T>, writer<T>)`, and returns a `chan<T>` whose `.w` is the input
 writer and `.r` is the output reader.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 spawn_producer<T>(f) ────────────➤ chan<T> created; M spawned;

@@ -3,8 +3,8 @@
 Precise specification of every public type and function in the CSP library.
 
 Each document describes its elements with C++ signatures, natural English
-prose, Mermaid state diagrams (where lifecycle warrants), and formal transition
-rules using labeled notation:
+prose, Mermaid state diagrams (where lifecycle warrants), and formal
+[transition rules](transition-rules.md) using labeled notation:
 
 ```
 state.operation(args) ─┤guard├──➤ effects; result

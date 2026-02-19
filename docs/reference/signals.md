@@ -71,7 +71,7 @@ int s = sig.read();  // s == SIGINT or s == SIGTERM
 and works in any context where readers are used: range-for loops,
 `alt`/`prialt` arms, `stream_to`, combinators, etc.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 notify(sigs)                ──────────────────➤ pipe created; handlers installed;

@@ -48,7 +48,7 @@ The higher-level wrappers (`read`, `write`, `accept`, `connect`) call these
 internally. Use them directly when building custom I/O protocols on raw file
 descriptors.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 wait_readable(fd) ─┤fd ready├──➤ return
@@ -91,7 +91,7 @@ on success, -1 on error (with `errno` set). This is a utility function -- not
 microthread-specific -- but is typically the first thing called after creating
 a socket that will be used with the `csp::io` wrappers.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 set_nonblock(fd) ────────────➤ fd.flags |= O_NONBLOCK; return 0
@@ -128,7 +128,7 @@ Returns the number of bytes read on success, 0 on EOF, or -1 on error (with
 `errno` set). A successful call may return fewer than `len` bytes -- this is
 normal for non-blocking reads.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 read(fd, buf, len) ─┤data available├──➤ read up to len bytes; return count
@@ -181,7 +181,7 @@ accept data. Interrupted calls (`EINTR`) are retried automatically.
 Returns `len` on success (all bytes written), or -1 on error (with `errno`
 set).
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 write(fd, buf, len) ─┤fd writable├────➤ write bytes; advance; repeat until all written
@@ -228,7 +228,7 @@ Returns the new socket fd on success, or -1 on error (with `errno` set). The
 caller is responsible for setting the returned fd to non-blocking mode and
 closing it when done.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 accept(fd, addr, len) ─┤connection pending├─➤ return new_fd
@@ -296,7 +296,7 @@ connection succeeded or failed.
 Returns 0 on success, or -1 on error (with `errno` set to the connection
 error).
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 connect(fd, addr, len) ─┤immediate success├──➤ return 0
@@ -371,7 +371,7 @@ The optional `hints` parameter controls the resolution behavior (address
 family, socket type, protocol, flags) -- same semantics as the `hints`
 argument to `getaddrinfo(3)`.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 resolve(host, svc, hints) ──────────➤ offload getaddrinfo to blocking pool;

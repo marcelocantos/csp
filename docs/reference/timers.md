@@ -79,7 +79,7 @@ The actual wakeup time may be slightly later than `clock::now() + d` due to
 scheduling latency -- the microthread becomes runnable after the deadline but
 must wait for a processor to pick it up.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 sleep(d) ────────────────➤ suspend; deadline = clock::now() + d
@@ -119,7 +119,7 @@ re-scheduled.
 This is the underlying primitive used by `sleep`, which computes
 `clock::now() + d` and delegates to `sleep_until`.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 sleep_until(tp) ─┤tp in future├──➤ suspend; deadline = tp
@@ -188,7 +188,7 @@ After the single value is read, the internal producer exits and the reader
 transitions to dead. If the reader is dropped before the timer fires, the
 producer microthread is unblocked (writer sees dead channel) and exits cleanly.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 after(d) ───────────────────────➤ spawn producer; → reader<>
@@ -267,7 +267,7 @@ This means the consumer never receives a burst of stale ticks after a delay.
 producer's write fails and the microthread exits. No explicit cancellation is
 needed.
 
-### Transition rules
+### Transition rules ([syntax](transition-rules.md))
 
 ```
 tick(interval) ─────────────────➤ spawn producer; next = now() + interval; → reader<time_point>
