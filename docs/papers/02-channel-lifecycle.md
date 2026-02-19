@@ -254,16 +254,20 @@ explicit cleanup, no cancellation tokens, no context objects.
 This enables composition. Combinators snap together with `operator|`:
 
 ```cpp
-auto result = (count(1)
+auto batches = (count(1)
     | map<int>([](int x) { return x * x; })
     | where<int>([](int x) { return x % 2 == 0; })
     | batch<int>(10)
 ).spawn();
+
+for (auto& vec : batches)
+    process(vec);  // each vec is a std::vector<int> of 10 elements
 ```
 
-Each `|` either creates a deferred pipeline (when both sides are
-abstract) or spawns a microthread (when a concrete endpoint is
-involved). When the final reader is dropped, death propagates
+`count(1)` is a `producer<int>`; each `|` appends a filter stage;
+`.spawn()` materializes the pipeline into running microthreads and
+returns a `reader<std::vector<int>>`. When that reader is dropped
+(here, when the for-loop exits), death propagates
 backward through the pipeline: each stage's `~out` fires, the stage
 exits, its input reader is destroyed, which fires the previous
 stage's `~out`, and so on. The entire pipeline tears down
