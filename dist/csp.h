@@ -88,6 +88,7 @@ private:
 #define BRAC_SCOPE__(logger, file, line, func, fmt, ...) \
     LogScope csp__logScope__##line(logger, CSP__DETAIL__SOURCE_ROOT, file, line, func, fmt, func, ##__VA_ARGS__);
 
+#include <cassert>
 #include <exception>
 #include <stdint.h>
 
@@ -455,6 +456,15 @@ public:
         if (!(*this >> t)) {
             throw microthread_error("reader exhausted");
         }
+        return t;
+    }
+
+    // Read exactly one value and assert the reader produces no more.
+    T single() const {
+        T t;
+        assert(static_cast<bool>(*this >> t) && "single() called on exhausted reader");
+        T discard;
+        assert(!static_cast<bool>(*this >> discard) && "single() reader produced more than one value");
         return t;
     }
 
@@ -1143,7 +1153,6 @@ void hamt_release(uintptr_t p);
 
 } // namespace csp::internal
 
-#include <cassert>
 #include <optional>
 
 namespace csp {
@@ -2147,7 +2156,7 @@ auto operator|(filter<In, Mid, F1> lhs, filter<Mid, Out, F2> rhs) {
     return make_filter<In, Out>(
         [lhs = std::move(lhs), rhs = std::move(rhs)]
         (reader<In> in, writer<Out> out) mutable {
-            rhs(lhs.spawn(std::move(in)), std::move(out));
+            rhs(std::move(lhs).spawn(std::move(in)), std::move(out));
         });
 }
 
@@ -2157,7 +2166,7 @@ auto operator|(producer<T, F1> lhs, filter<T, Out, F2> rhs) {
     return make_producer<Out>(
         [lhs = std::move(lhs), rhs = std::move(rhs)]
         (writer<Out> out) mutable {
-            rhs(lhs.spawn(), std::move(out));
+            rhs(std::move(lhs).spawn(), std::move(out));
         });
 }
 
@@ -2167,7 +2176,7 @@ auto operator|(filter<In, Out, F1> lhs, consumer<Out, F2> rhs) {
     return make_consumer<In>(
         [lhs = std::move(lhs), rhs = std::move(rhs)]
         (reader<In> in) mutable {
-            rhs(lhs.spawn(std::move(in)));
+            rhs(std::move(lhs).spawn(std::move(in)));
         });
 }
 
@@ -2175,7 +2184,7 @@ auto operator|(filter<In, Out, F1> lhs, consumer<Out, F2> rhs) {
 template <typename T, typename F1, typename F2>
 auto operator|(producer<T, F1> lhs, consumer<T, F2> rhs) {
     return [lhs = std::move(lhs), rhs = std::move(rhs)]() mutable {
-        rhs(lhs.spawn());
+        rhs(std::move(lhs).spawn());
     };
 }
 
@@ -3884,13 +3893,20 @@ writer<double> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = wri
 
 namespace csp::part {
 
-// Fold a channel to a single value. Blocks the calling microthread until
-// the input is exhausted, then returns the final accumulator.
+// Fold a channel to a single value. Consumes the entire input stream,
+// then emits the final accumulator as a single output element.
+// Composable via | — use .spawn().single() for terminal extraction.
 template <typename T, typename S, typename F>
-S reduce(reader<T> in, S init, F f) {
-    for (T t; in >> t;)
-        init = f(std::move(init), t);
-    return init;
+auto reduce(S init, F&& f) {
+    return make_filter<T, S>(
+        [init = std::move(init), f = std::forward<F>(f)]
+        (reader<T> in, writer<S> out) {
+            internal::descr("reduce");
+            S acc = init;
+            for (T t; csp::alt(in >> t, ~out) == 0;)
+                acc = f(std::move(acc), std::move(t));
+            out << std::move(acc);
+        });
 }
 
 }

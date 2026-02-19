@@ -370,7 +370,7 @@ auto r2 = scan<std::string, int>(0,
 
 #### See Also
 
-- [reduce](#reduce) -- fold to a single final value (blocks until input exhausted)
+- [reduce](#reduce) -- fold to a single final value
 - [map](#map) -- stateless element-wise transform
 
 ---
@@ -505,36 +505,35 @@ auto r = flatten<int>().spawn(
 
 ### reduce
 
-Folds a channel down to a single value. Blocks the calling microthread until the
-input is exhausted, then returns the final accumulator. Unlike `scan`, `reduce`
-does not emit intermediate results -- it is a terminal operation.
+Folds a channel down to a single value. Consumes the entire input stream, then
+emits the final accumulator as a single output element. Unlike `scan`, `reduce`
+does not emit intermediate results.
 
 #### Signature
 
 ```cpp
 template <typename T, typename S, typename F>
-S reduce(reader<T> in, S init, F f);
+auto reduce(S init, F&& f);  // returns filter<T, S>
 ```
 
 #### Topology
 
 ```mermaid
 graph LR
-    A[reader<T>] --> B["reduce(init, f)"] --> C["S (return value)"]
+    A[reader<T>] --> B["reduce(init, f)"] --> C[reader<S>]
 ```
 
-No microthread is spawned. `reduce` runs synchronously in the caller's
-context, consuming the entire input stream before returning.
+A microthread is spawned to consume the input. The output reader produces
+exactly one value (the final accumulator) when the input is exhausted.
 
 #### Semantics
 
-- Blocks until the input reader is exhausted (writer closed or dropped).
-- Returns `init` unchanged if the input is empty.
-- Applies `init = f(std::move(init), value)` for each input element.
-- `T` and `S` can be different types.
-- Because `reduce` is a blocking call that consumes the reader, it is not a
-  `filter` -- it is a free function that takes a `reader<T>` directly.
-- Not composable via `|` since it returns a value, not a part.
+- Consumes the entire input stream, then emits a single value.
+- Emits `init` unchanged if the input is empty.
+- Applies `acc = f(std::move(acc), value)` for each input element.
+- `T` (input type) and `S` (accumulator type) can be different.
+- Composable via `|` since it is a `filter<T, S>`.
+- Use `.spawn().single()` for terminal extraction of the result.
 
 #### Example
 
@@ -545,14 +544,15 @@ using namespace csp;
 using namespace csp::part;
 
 // Sum 1..5 = 15
-int total = reduce<int, int>(count(1, 6).spawn(), 0,
-                [](int acc, int v) { return acc + v; });
+int total = (count(1, 6) | reduce<int, int>(0,
+                [](int acc, int v) { return acc + v; })).spawn().single();
 
 // Concatenate strings.
-auto r = map<int, std::string>([](int n) { return std::to_string(n); })
-             .spawn(count(1, 4).spawn());
-std::string s = reduce<std::string, std::string>(std::move(r), "",
-                    [](std::string acc, const std::string& v) { return acc + v; });
+std::string s = (count(1, 4)
+    | map<int, std::string>([](int n) { return std::to_string(n); })
+    | reduce<std::string, std::string>("",
+        [](std::string acc, const std::string& v) { return acc + v; })
+).spawn().single();
 // s == "123"
 ```
 

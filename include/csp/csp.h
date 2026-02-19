@@ -2,6 +2,7 @@
 
 #include <csp/internal/mt_log.h>
 
+#include <cassert>
 #include <exception>
 #include <stdint.h>
 
@@ -369,6 +370,15 @@ public:
         if (!(*this >> t)) {
             throw microthread_error("reader exhausted");
         }
+        return t;
+    }
+
+    // Read exactly one value and assert the reader produces no more.
+    T single() const {
+        T t;
+        assert(static_cast<bool>(*this >> t) && "single() called on exhausted reader");
+        T discard;
+        assert(!static_cast<bool>(*this >> discard) && "single() reader produced more than one value");
         return t;
     }
 

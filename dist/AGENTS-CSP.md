@@ -365,7 +365,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `pairwise<T>()` | filter | Consecutive pairs (a,b), (b,c)... |
 | `partition<T>(n,f)` | function | Route to N outputs by classifier |
 | `quantize<T>(f)` | function | Variable-size batching |
-| `reduce<T,A>(init,f)` | function | Fold to single value |
+| `reduce<T,A>(init,f)` | filter | Fold to single value |
 | `round_robin<T>(n)` | function | Distribute across N outputs |
 | `rpc_client` | function | Request/reply client (two variants) |
 | `rpc_server` | function | Request/reply server (two variants) |

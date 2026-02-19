@@ -1462,24 +1462,26 @@ TEST_CASE("ChanUtil - Partition output death") {
 }
 
 TEST_CASE("ChanUtil - Reduce sum") {
-    auto result = reduce<int, int>(count(1, 6).spawn(), 0,
-        [](int acc, int v) { return acc + v; });
+    auto result = (count(1, 6) | reduce<int, int>(0,
+        [](int acc, int v) { return acc + v; })).spawn().single();
     CHECK_EQ(15, result);  // 1+2+3+4+5
 }
 
 TEST_CASE("ChanUtil - Reduce string concat") {
-    auto r = map<int, std::string>([](int n) { return std::to_string(n); })
-                 .spawn(count(1, 4).spawn());
-    auto result = reduce<std::string, std::string>(std::move(r), "",
-        [](std::string acc, const std::string& v) { return acc + v; });
+    auto result = (count(1, 4)
+        | map<int, std::string>([](int n) { return std::to_string(n); })
+        | reduce<std::string, std::string>("",
+            [](std::string acc, const std::string& v) { return acc + v; })
+    ).spawn().single();
     CHECK_EQ("123", result);
 }
 
 TEST_CASE("ChanUtil - Reduce empty") {
     std::vector<reader<int>> empty;
-    auto r = merge(std::move(empty)).spawn();
-    auto result = reduce<int, int>(std::move(r), 42,
-        [](int acc, int v) { return acc + v; });
+    auto result = (merge(std::move(empty))
+        | reduce<int, int>(42,
+            [](int acc, int v) { return acc + v; })
+    ).spawn().single();
     CHECK_EQ(42, result);  // init returned unchanged
 }
 

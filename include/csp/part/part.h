@@ -157,7 +157,7 @@ auto operator|(filter<In, Mid, F1> lhs, filter<Mid, Out, F2> rhs) {
     return make_filter<In, Out>(
         [lhs = std::move(lhs), rhs = std::move(rhs)]
         (reader<In> in, writer<Out> out) mutable {
-            rhs(lhs.spawn(std::move(in)), std::move(out));
+            rhs(std::move(lhs).spawn(std::move(in)), std::move(out));
         });
 }
 
@@ -167,7 +167,7 @@ auto operator|(producer<T, F1> lhs, filter<T, Out, F2> rhs) {
     return make_producer<Out>(
         [lhs = std::move(lhs), rhs = std::move(rhs)]
         (writer<Out> out) mutable {
-            rhs(lhs.spawn(), std::move(out));
+            rhs(std::move(lhs).spawn(), std::move(out));
         });
 }
 
@@ -177,7 +177,7 @@ auto operator|(filter<In, Out, F1> lhs, consumer<Out, F2> rhs) {
     return make_consumer<In>(
         [lhs = std::move(lhs), rhs = std::move(rhs)]
         (reader<In> in) mutable {
-            rhs(lhs.spawn(std::move(in)));
+            rhs(std::move(lhs).spawn(std::move(in)));
         });
 }
 
@@ -185,7 +185,7 @@ auto operator|(filter<In, Out, F1> lhs, consumer<Out, F2> rhs) {
 template <typename T, typename F1, typename F2>
 auto operator|(producer<T, F1> lhs, consumer<T, F2> rhs) {
     return [lhs = std::move(lhs), rhs = std::move(rhs)]() mutable {
-        rhs(lhs.spawn());
+        rhs(std::move(lhs).spawn());
     };
 }
 
