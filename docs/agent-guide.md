@@ -262,20 +262,25 @@ auto result = csp::blocking([]{ return expensive_syscall(); });
 ## Dynamic Scoping
 
 ```cpp
-// Typed dynamic variable. *var reads, var = val writes (COW HAMT).
+// Typed dynamic variable. *var reads, var = val creates a binding.
 csp::dynamic<int> depth(0);
-depth = *depth + 1;    // path-copy, visible only to this microthread
 
-// context_scope: RAII save/restore of HAMT root.
-{ csp::context_scope guard;
-  depth = 42;
-}  // depth restored to previous value
+// local: RAII scoped binding (reverts when l is destroyed).
+{ csp::local l{depth = *depth + 1};
+  // *depth == 1 here
+}  // depth restored to 0
+
+// Multiple bindings in one local.
+csp::local l{depth = 1, user = std::string("alice")};
+
+// Bare assignment asserts in debug (catches accidental unscoped mutations).
+depth = 42;  // assert failure + [[nodiscard]] warning
 
 // context: snapshot + transfer across channels.
 auto ctx = csp::context::current();
 spawn([ctx] {
     csp::context_scope scope(ctx);  // install foreign context
-    // *depth == 42 here
+    // *depth == 1 here
 });
 
 // Spawned microthreads inherit parent's context automatically.
@@ -413,7 +418,11 @@ All in `namespace csp::part` (included via `csp.h`).
    `prialt(~out, in >> t)` internally, so it stops when the writer's
    reader dies — not just when the input reader dies.
 
-10. **Dynamic scoping is per-microthread**: Writes to `dynamic<T>` use
+10. **Dynamic bindings must use `local`**: `var = val` returns a deferred
+    binding, not a mutation. Always wrap in `csp::local l{var = val}`.
+    Bare `var = val;` asserts in debug builds.
+
+11. **Dynamic scoping is per-microthread**: Bindings via `local` use
     COW (path-copy HAMT). Changes are invisible to other microthreads
     unless explicitly shared via `context::current()` + `context_scope`.
 

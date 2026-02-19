@@ -60,14 +60,11 @@ public:
 
 // --- context_scope ---
 // RAII: saves current HAMT root, restores it on destruction.
+// Use for foreign-context installation. For scoped variable bindings,
+// prefer csp::local.
 class context_scope {
     uintptr_t saved_;
 public:
-    // Save current context (for local modifications within scope).
-    context_scope() : saved_(detail::g_self->dyn_ctx_) {
-        if (saved_) internal::hamt_retain(saved_);
-    }
-
     // Save current context and install a foreign one.
     explicit context_scope(const context& ctx) : saved_(detail::g_self->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
@@ -87,9 +84,77 @@ public:
     context_scope& operator=(const context_scope&) = delete;
 };
 
+// Forward declarations for friend access.
+template <typename T> class dynamic;
+class local;
+
+// --- dynamic_binding ---
+// Deferred variable binding. Returned by dynamic<T>::operator=.
+// Only constructible by dynamic<T>, only consumable by local.
+// Asserts in destructor if not consumed (catches bare `var = val;`).
+// [[nodiscard]] on operator= provides a compile-time warning regardless.
+class dynamic_binding {
+    friend class local;
+    template <typename> friend class dynamic;
+
+    uint64_t key_id_;
+    std::any value_;
+    bool consumed_ = false;
+
+    dynamic_binding(uint64_t k, std::any v) : key_id_(k), value_(std::move(v)) {}
+    dynamic_binding(dynamic_binding&& o) noexcept
+        : key_id_(o.key_id_), value_(std::move(o.value_)) { o.consumed_ = true; }
+
+public:
+    dynamic_binding(const dynamic_binding&) = delete;
+    dynamic_binding& operator=(const dynamic_binding&) = delete;
+    dynamic_binding& operator=(dynamic_binding&&) = delete;
+
+    ~dynamic_binding() { assert(consumed_ && "dynamic_binding destroyed without csp::local"); }
+};
+
+// --- local ---
+// RAII scope for dynamic variable bindings. Saves the current HAMT root,
+// applies bindings, restores on destruction.
+//
+//   csp::local l{depth = 42};
+//   csp::local l{depth = 42, name = "x"};
+//
+class local {
+    uintptr_t saved_;
+
+    void apply(dynamic_binding&& b) {
+        b.consumed_ = true;
+        auto old = detail::g_self->dyn_ctx_;
+        detail::g_self->dyn_ctx_ = internal::hamt_assoc(
+            old, b.key_id_, std::move(b.value_));
+        if (old) internal::hamt_release(old);
+    }
+
+public:
+    template <typename... Bs,
+              std::enable_if_t<
+                  sizeof...(Bs) >= 1 &&
+                  (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...),
+                  int> = 0>
+    local(Bs&&... bindings) : saved_(detail::g_self->dyn_ctx_) {
+        if (saved_) internal::hamt_retain(saved_);
+        (apply(std::forward<Bs>(bindings)), ...);
+    }
+
+    ~local() {
+        auto current = detail::g_self->dyn_ctx_;
+        detail::g_self->dyn_ctx_ = saved_;
+        if (current) internal::hamt_release(current);
+    }
+
+    local(const local&) = delete;
+    local& operator=(const local&) = delete;
+};
+
 // --- dynamic<T> ---
 // Typed dynamic-scoped variable. Non-copyable (unique key per instance).
-// *var reads, var = val writes.
+// *var reads, var = val returns a dynamic_binding for use with local.
 template <typename T>
 class dynamic {
     context_key key_;
@@ -113,13 +178,9 @@ public:
         return *default_;
     }
 
-    // Write: path-copy HAMT with new value.
-    dynamic& operator=(T val) {
-        auto old = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = internal::hamt_assoc(
-            old, key_.id(), std::any(std::move(val)));
-        if (old) internal::hamt_release(old);
-        return *this;
+    // Bind: returns a deferred binding for use with csp::local.
+    [[nodiscard]] dynamic_binding operator=(T val) {
+        return {key_.id(), std::any(std::move(val))};
     }
 };
 

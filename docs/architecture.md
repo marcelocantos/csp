@@ -1043,13 +1043,17 @@ hash chunks per level.
 
 - **`dynamic<T>`**: A typed dynamic-scoped variable. Each instance has a
   unique auto-incrementing `context_key`. Dereferencing (`*var`) looks up
-  the current microthread's HAMT. Assignment (`var = val`) path-copies.
+  the current microthread's HAMT. Assignment (`var = val`) returns a
+  deferred `dynamic_binding` for use with `local`.
+- **`local`**: RAII scoped binding. `local l{var = val}` saves the current
+  `dyn_ctx_`, applies the binding (path-copy), and restores the saved root
+  on destruction. Accepts multiple bindings. Bare `var = val;` without
+  `local` asserts in the binding's destructor.
 - **`context`**: A copyable handle to a HAMT root snapshot. Can be sent
   over channels to transfer scope state between microthreads.
   `context::current()` captures the calling microthread's current context.
 - **`context_scope`**: RAII guard that saves the current `dyn_ctx_` on
-  construction and restores it on destruction. Optionally installs a
-  foreign `context`.
+  construction and installs a foreign `context`; restores on destruction.
 
 ### Inheritance
 

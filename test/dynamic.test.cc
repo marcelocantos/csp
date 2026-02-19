@@ -7,10 +7,13 @@ TEST_CASE("dynamic: basic read/write") {
     static csp::dynamic<int> count;
     stats.spawn([&]{
         CHECK_EQ(*count, 0);
-        count = 42;
+        csp::local l{count = 42};
         CHECK_EQ(*count, 42);
-        count = *count + 1;
-        CHECK_EQ(*count, 43);
+        {
+            csp::local l2{count = *count + 1};
+            CHECK_EQ(*count, 43);
+        }
+        CHECK_EQ(*count, 42);
     });
     csp::schedule();
 }
@@ -20,7 +23,7 @@ TEST_CASE("dynamic: explicit default") {
     static csp::dynamic<int> count(99);
     stats.spawn([&]{
         CHECK_EQ(*count, 99);
-        count = 1;
+        csp::local l{count = 1};
         CHECK_EQ(*count, 1);
     });
     csp::schedule();
@@ -31,7 +34,7 @@ TEST_CASE("dynamic: spawn inherits parent context") {
     static csp::dynamic<int> val;
     auto result = csp::chan<int>();
     stats.spawn([&]{
-        val = 42;
+        csp::local l{val = 42};
         stats.spawn([&]{
             result.w << *val;
         });
@@ -50,9 +53,9 @@ TEST_CASE("dynamic: child write isolation") {
     auto child_done = csp::chan<int>();
     auto parent_result = csp::chan<int>();
     stats.spawn([&]{
-        val = 10;
+        csp::local l{val = 10};
         stats.spawn([&]{
-            val = 99;
+            csp::local l2{val = 99};
             CHECK_EQ(*val, 99);
             child_done.w << 0;
         });
@@ -69,14 +72,13 @@ TEST_CASE("dynamic: child write isolation") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: context_scope save/restore") {
+TEST_CASE("dynamic: local scoped revert") {
     RunStats stats;
     static csp::dynamic<int> val;
     stats.spawn([&]{
-        val = 1;
+        csp::local l{val = 1};
         {
-            csp::context_scope scope;
-            val = 2;
+            csp::local l2{val = 2};
             CHECK_EQ(*val, 2);
         }
         CHECK_EQ(*val, 1);
@@ -84,17 +86,15 @@ TEST_CASE("dynamic: context_scope save/restore") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: nested scopes") {
+TEST_CASE("dynamic: nested locals") {
     RunStats stats;
     static csp::dynamic<int> val;
     stats.spawn([&]{
-        val = 1;
+        csp::local l1{val = 1};
         {
-            csp::context_scope outer;
-            val = 2;
+            csp::local l2{val = 2};
             {
-                csp::context_scope inner;
-                val = 3;
+                csp::local l3{val = 3};
                 CHECK_EQ(*val, 3);
             }
             CHECK_EQ(*val, 2);
@@ -109,13 +109,15 @@ TEST_CASE("dynamic: multiple keys") {
     static csp::dynamic<int> a;
     static csp::dynamic<int> b;
     stats.spawn([&]{
-        a = 10;
-        b = 20;
+        csp::local l{a = 10, b = 20};
         CHECK_EQ(*a, 10);
         CHECK_EQ(*b, 20);
-        a = 30;
-        CHECK_EQ(*a, 30);
-        CHECK_EQ(*b, 20);
+        {
+            csp::local l2{a = 30};
+            CHECK_EQ(*a, 30);
+            CHECK_EQ(*b, 20);
+        }
+        CHECK_EQ(*a, 10);
     });
     csp::schedule();
 }
@@ -125,7 +127,7 @@ TEST_CASE("dynamic: context transfer over channel") {
     static csp::dynamic<int> val;
     auto ch = csp::chan<csp::context>();
     stats.spawn([&]{
-        val = 42;
+        csp::local l{val = 42};
         ch.w << csp::context::current();
     });
     stats.spawn([&]{
@@ -146,7 +148,7 @@ TEST_CASE("dynamic: string type") {
     static csp::dynamic<std::string> name("default");
     stats.spawn([&]{
         CHECK_EQ(*name, "default");
-        name = std::string("hello");
+        csp::local l{name = std::string("hello")};
         CHECK_EQ(*name, "hello");
     });
     csp::schedule();
@@ -157,13 +159,13 @@ TEST_CASE("dynamic: deep spawn chain") {
     static csp::dynamic<int> depth;
     auto results = csp::chan<int>();
     stats.spawn([&]{
-        depth = 1;
+        csp::local l1{depth = 1};
         stats.spawn([&]{
             CHECK_EQ(*depth, 1);
-            depth = 2;
+            csp::local l2{depth = 2};
             stats.spawn([&]{
                 CHECK_EQ(*depth, 2);
-                depth = 3;
+                csp::local l3{depth = 3};
                 CHECK_EQ(*depth, 3);
                 results.w << *depth;
             });
@@ -176,3 +178,18 @@ TEST_CASE("dynamic: deep spawn chain") {
     });
     csp::schedule();
 }
+
+TEST_CASE("dynamic: multi-bind local") {
+    RunStats stats;
+    static csp::dynamic<int> x;
+    static csp::dynamic<int> y;
+    static csp::dynamic<std::string> z("none");
+    stats.spawn([&]{
+        csp::local l{x = 1, y = 2, z = std::string("hello")};
+        CHECK_EQ(*x, 1);
+        CHECK_EQ(*y, 2);
+        CHECK_EQ(*z, "hello");
+    });
+    csp::schedule();
+}
+

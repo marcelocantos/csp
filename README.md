@@ -86,6 +86,8 @@ microthreads to completion.
   [Dynamic Scoping](docs/guide/12-dynamic-scoping.md)
 - **Reference** — [Parts Catalog](docs/reference/parts.md) (50+ stream combinators)
 - **Architecture** — [Internal Design](docs/architecture.md)
+- **Papers** — [The Engineering of CSP](docs/papers/) (TLS bugs,
+  formal verification, zero-overhead channels, and more)
 - **Examples** — [`examples/`](examples/) (Fibonacci, prime sieve, pipelines,
   fan-out/fan-in, chat room, dining philosophers, and more)
 
