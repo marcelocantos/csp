@@ -48,36 +48,34 @@ inline auto byte_writer(int fd) {
 // transform — no I/O knowledge, testable with synthetic data.
 // Flushes any partial trailing line (no trailing newline) on input
 // close.
-inline auto split_lines() {
-    return make_filter<std::vector<uint8_t>, std::string>(
-        [](reader<std::vector<uint8_t>> in, writer<std::string> out) {
-            internal::descr("split_lines");
+inline auto const split_lines = make_filter<std::vector<uint8_t>, std::string>(
+    [](reader<std::vector<uint8_t>> in, writer<std::string> out) {
+        internal::descr("split_lines");
 
-            std::string pending;
-            for (std::vector<uint8_t> chunk;
-                 csp::alt(in >> chunk, ~out) >= 0;) {
-                size_t start = 0;
-                for (size_t i = 0; i < chunk.size(); ++i) {
-                    if (chunk[i] == '\n') {
-                        pending.append(
-                            reinterpret_cast<const char*>(chunk.data()) + start,
-                            i - start);
-                        if (!(out << std::move(pending))) return;
-                        pending.clear();
-                        start = i + 1;
-                    }
-                }
-                if (start < chunk.size()) {
+        std::string pending;
+        for (std::vector<uint8_t> chunk;
+             csp::alt(in >> chunk, ~out) >= 0;) {
+            size_t start = 0;
+            for (size_t i = 0; i < chunk.size(); ++i) {
+                if (chunk[i] == '\n') {
                     pending.append(
                         reinterpret_cast<const char*>(chunk.data()) + start,
-                        chunk.size() - start);
+                        i - start);
+                    if (!(out << std::move(pending))) return;
+                    pending.clear();
+                    start = i + 1;
                 }
             }
-            if (!pending.empty()) {
-                out << std::move(pending);
+            if (start < chunk.size()) {
+                pending.append(
+                    reinterpret_cast<const char*>(chunk.data()) + start,
+                    chunk.size() - start);
             }
-        });
-}
+        }
+        if (!pending.empty()) {
+            out << std::move(pending);
+        }
+    });
 
 // Split a byte stream into fixed-size frames. Discards any partial
 // trailing frame on input close.

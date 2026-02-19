@@ -1,6 +1,6 @@
 # pairwise
 
-Emits consecutive pairs from a stream. `pairwise<T>()` produces a
+Emits consecutive pairs from a stream. `pairwise<T>` produces a
 `std::pair<T, T>` for each pair of adjacent elements: `(a,b)`, `(b,c)`,
 `(c,d)`, and so on. This is the specialized two-element case of `nwise`.
 
@@ -10,7 +10,7 @@ If the input has fewer than two elements, no output is produced.
 
 ```cpp
 template <typename T>
-auto pairwise();
+inline auto const pairwise = /* ... */;
 // Returns: filter<T, std::pair<T, T>, ...>
 ```
 
@@ -18,7 +18,7 @@ auto pairwise();
 
 ```mermaid
 graph LR
-    A[reader&lt;T&gt;] --> B["pairwise()"] --> C["reader&lt;pair&lt;T,T&gt;&gt;"]
+    A[reader&lt;T&gt;] --> B["pairwise"] --> C["reader&lt;pair&lt;T,T&gt;&gt;"]
 ```
 
 One internal microthread reads pairs of adjacent elements and writes each
@@ -43,7 +43,7 @@ using namespace csp;
 using namespace csp::part;
 
 // Consecutive pairs from 1..5.
-auto r = pairwise<int>().spawn(count(1, 6).spawn());
+auto r = pairwise<int>.spawn(count(1, 6).spawn());
 
 r.read(); // {1, 2}
 r.read(); // {2, 3}

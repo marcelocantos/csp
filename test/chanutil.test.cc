@@ -1885,7 +1885,7 @@ TEST_CASE("ChanUtil - SkipWhile none skipped") {
 // --- pairwise ---
 
 TEST_CASE("ChanUtil - Pairwise") {
-    auto r = pairwise<int>().spawn(count(1, 6).spawn());
+    auto r = pairwise<int>.spawn(count(1, 6).spawn());
 
     CHECK_EQ(std::make_pair(1, 2), r.read());
     CHECK_EQ(std::make_pair(2, 3), r.read());
@@ -1896,14 +1896,14 @@ TEST_CASE("ChanUtil - Pairwise") {
 }
 
 TEST_CASE("ChanUtil - Pairwise single element") {
-    auto r = pairwise<int>().spawn(count(1, 2).spawn());
+    auto r = pairwise<int>.spawn(count(1, 2).spawn());
 
     std::pair<int, int> p;
     CHECK_FALSE(bool(r >> p));
 }
 
 TEST_CASE("ChanUtil - Pairwise empty") {
-    auto r = pairwise<int>().spawn(
+    auto r = pairwise<int>.spawn(
         merge(std::vector<reader<int>>{}).spawn());
 
     std::pair<int, int> p;
@@ -1943,7 +1943,7 @@ TEST_CASE("ChanUtil - Nwise too few elements") {
 // --- flatten ---
 
 TEST_CASE("ChanUtil - Flatten") {
-    auto r = flatten<int>().spawn(
+    auto r = flatten<int>.spawn(
         batch<int>(3).spawn(count(1, 8).spawn()));
 
     std::vector<int> got;
@@ -1953,7 +1953,7 @@ TEST_CASE("ChanUtil - Flatten") {
 
 TEST_CASE("ChanUtil - Flatten empty vectors") {
     auto [w, rd] = chan<std::vector<int>>{};
-    auto r = flatten<int>().spawn(std::move(rd));
+    auto r = flatten<int>.spawn(std::move(rd));
 
     csp::spawn([w = std::move(w)] {
         w << std::vector<int>{};

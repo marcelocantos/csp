@@ -29,7 +29,7 @@ into frames of exactly `frame_size` bytes, and emits each complete frame.
   incrementally. A single input chunk may produce zero, one, or many output
   frames.
 - **Partial trailing frame**: When the input channel closes, any partially
-  filled frame is discarded. Unlike `split_lines()`, there is no flush of
+  filled frame is discarded. Unlike `split_lines`, there is no flush of
   incomplete data.
 - **Output close**: Uses `csp::alt(in >> chunk, ~out)` to detect downstream
   reader drop. If the output reader is dropped, the filter exits immediately

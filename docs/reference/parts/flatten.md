@@ -7,7 +7,7 @@ Flattens a stream of containers into a stream of individual elements.
 
 ```cpp
 template <typename T, typename C = std::vector<T>>
-auto flatten();
+inline auto const flatten = /* ... */;
 // Returns: filter<C, T, ...>
 ```
 
@@ -41,7 +41,7 @@ using namespace csp;
 using namespace csp::part;
 
 // batch produces vectors; flatten unpacks them back to individual ints.
-auto r = flatten<int>().spawn(
+auto r = flatten<int>.spawn(
              batch<int>(3).spawn(count(1, 8).spawn()));
 // Reads: 1, 2, 3, 4, 5, 6, 7
 ```

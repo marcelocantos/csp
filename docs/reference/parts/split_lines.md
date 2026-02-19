@@ -6,7 +6,7 @@ with no I/O knowledge -- testable with synthetic data.
 ## Signature
 
 ```cpp
-auto split_lines();
+inline auto const split_lines = /* ... */;
 // Returns: filter<std::vector<uint8_t>, std::string, ...>
 ```
 
@@ -14,7 +14,7 @@ auto split_lines();
 
 ```mermaid
 graph LR
-    A["reader&lt;vector&lt;uint8_t&gt;&gt;"] --> L["split_lines()"] --> B["reader&lt;string&gt;"]
+    A["reader&lt;vector&lt;uint8_t&gt;&gt;"] --> L["split_lines"] --> B["reader&lt;string&gt;"]
 ```
 
 One internal microthread reads byte chunks from the input, scans for `'\n'`
@@ -36,7 +36,7 @@ characters, and emits one `std::string` per complete line.
   without draining the input.
 - **Backpressure**: The microthread blocks on each output write, so a slow
   consumer throttles the entire pipeline.
-- **No I/O dependency**: `split_lines()` operates purely on channels. It can be
+- **No I/O dependency**: `split_lines` operates purely on channels. It can be
   tested with synthetic `chan<std::vector<uint8_t>>` data or composed with
   `byte_reader` for real I/O.
 
@@ -51,7 +51,7 @@ using namespace csp;
 using namespace csp::part;
 
 auto [w, r] = chan<std::vector<uint8_t>>{};
-auto lr = io::split_lines().spawn(std::move(r));
+auto lr = io::split_lines.spawn(std::move(r));
 
 csp::spawn([w = std::move(w)] {
     std::string data = "hello\nworld\nfoo\n";
@@ -74,7 +74,7 @@ int pipefd[2];
 pipe(pipefd);
 
 // Compose: fd -> byte chunks -> lines
-auto lr = io::split_lines().spawn(io::byte_reader(pipefd[0]).spawn());
+auto lr = io::split_lines.spawn(io::byte_reader(pipefd[0]).spawn());
 
 csp::spawn([wfd = pipefd[1]] {
     const char* data = "alpha\nbeta\ngamma\n";

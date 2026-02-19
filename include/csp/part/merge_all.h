@@ -11,8 +11,7 @@ namespace csp::part {
 // Exits when input is exhausted and all sub-streams are drained,
 // or when the output reader is dropped.
 template <typename B>
-auto merge_all() {
-    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
         internal::descr("merge_all");
 
         reader<B> new_sub;
@@ -69,6 +68,5 @@ auto merge_all() {
             }
         }
     });
-}
 
 }

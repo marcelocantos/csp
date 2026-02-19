@@ -2558,17 +2558,15 @@ namespace csp::part {
 // reader<reader<B>> → reader<B>. Output preserves sub-stream order.
 // Each sub-stream is fully consumed before the next is read from input.
 template <typename B>
-auto concat_all() {
-    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
-        internal::descr("concat_all");
+inline auto const concat_all = make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+    internal::descr("concat_all");
 
-        for (reader<B> sub; csp::alt(in >> sub, ~out) == 0;) {
-            for (B b; csp::alt(sub >> b, ~out) == 0;) {
-                if (!(out << std::move(b))) return;
-            }
+    for (reader<B> sub; csp::alt(in >> sub, ~out) == 0;) {
+        for (B b; csp::alt(sub >> b, ~out) == 0;) {
+            if (!(out << std::move(b))) return;
         }
-    });
-}
+    }
+});
 
 }
 
@@ -2879,39 +2877,37 @@ namespace csp::part {
 // from input are read and discarded. When the current sub-stream dies, the next
 // sub-stream from input is accepted.
 template <typename B>
-auto exhaust_all() {
-    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
-        internal::descr("exhaust_all");
+inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+    internal::descr("exhaust_all");
 
-        reader<B> sub;
-        while (csp::alt(in >> sub, ~out) == 0) {
-            B b;
-            reader<B> discard;
-            for (;;) {
-                // ~sub vulture fires immediately on sub death (as ~1),
-                // ensuring we detect it before the alt matches a ready
-                // peer on input (data chanops defer dead-channel).
-                switch (csp::prialt(sub >> b, ~sub, in >> discard, ~out)) {
-                case 0:  // Sub data — forward.
+    reader<B> sub;
+    while (csp::alt(in >> sub, ~out) == 0) {
+        B b;
+        reader<B> discard;
+        for (;;) {
+            // ~sub vulture fires immediately on sub death (as ~1),
+            // ensuring we detect it before the alt matches a ready
+            // peer on input (data chanops defer dead-channel).
+            switch (csp::prialt(sub >> b, ~sub, in >> discard, ~out)) {
+            case 0:  // Sub data — forward.
+                if (!(out << std::move(b))) return;
+                continue;
+            case ~1:  // Sub died (vulture) — outer loop gets next.
+                break;
+            case 2:  // New sub from input — discard.
+                continue;
+            case ~2:  // Input died — drain remaining sub.
+                for (; csp::alt(sub >> b, ~out) == 0;) {
                     if (!(out << std::move(b))) return;
-                    continue;
-                case ~1:  // Sub died (vulture) — outer loop gets next.
-                    break;
-                case 2:  // New sub from input — discard.
-                    continue;
-                case ~2:  // Input died — drain remaining sub.
-                    for (; csp::alt(sub >> b, ~out) == 0;) {
-                        if (!(out << std::move(b))) return;
-                    }
-                    return;
-                default:  // Output died.
-                    return;
                 }
-                break;  // Reached only from case ~1 (sub died).
+                return;
+            default:  // Output died.
+                return;
             }
+            break;  // Reached only from case ~1 (sub died).
         }
-    });
-}
+    }
+});
 
 }
 
@@ -3220,16 +3216,14 @@ namespace csp::part {
 // Flatten a stream of containers into a stream of elements.
 // reader<Container<T>> → reader<T>
 template <typename T, typename C = std::vector<T>>
-auto flatten() {
-    return make_filter<C, T>([](reader<C> in, writer<T> out) {
-        internal::descr("flatten");
-        for (C c; csp::alt(in >> c, ~out) == 0;) {
-            for (auto& elem : c) {
-                if (!(out << std::move(elem))) return;
-            }
+inline auto const flatten = make_filter<C, T>([](reader<C> in, writer<T> out) {
+    internal::descr("flatten");
+    for (C c; csp::alt(in >> c, ~out) == 0;) {
+        for (auto& elem : c) {
+            if (!(out << std::move(elem))) return;
         }
-    });
-}
+    }
+});
 
 }
 
@@ -3408,36 +3402,34 @@ inline auto byte_writer(int fd) {
 // transform — no I/O knowledge, testable with synthetic data.
 // Flushes any partial trailing line (no trailing newline) on input
 // close.
-inline auto split_lines() {
-    return make_filter<std::vector<uint8_t>, std::string>(
-        [](reader<std::vector<uint8_t>> in, writer<std::string> out) {
-            internal::descr("split_lines");
+inline auto const split_lines = make_filter<std::vector<uint8_t>, std::string>(
+    [](reader<std::vector<uint8_t>> in, writer<std::string> out) {
+        internal::descr("split_lines");
 
-            std::string pending;
-            for (std::vector<uint8_t> chunk;
-                 csp::alt(in >> chunk, ~out) >= 0;) {
-                size_t start = 0;
-                for (size_t i = 0; i < chunk.size(); ++i) {
-                    if (chunk[i] == '\n') {
-                        pending.append(
-                            reinterpret_cast<const char*>(chunk.data()) + start,
-                            i - start);
-                        if (!(out << std::move(pending))) return;
-                        pending.clear();
-                        start = i + 1;
-                    }
-                }
-                if (start < chunk.size()) {
+        std::string pending;
+        for (std::vector<uint8_t> chunk;
+             csp::alt(in >> chunk, ~out) >= 0;) {
+            size_t start = 0;
+            for (size_t i = 0; i < chunk.size(); ++i) {
+                if (chunk[i] == '\n') {
                     pending.append(
                         reinterpret_cast<const char*>(chunk.data()) + start,
-                        chunk.size() - start);
+                        i - start);
+                    if (!(out << std::move(pending))) return;
+                    pending.clear();
+                    start = i + 1;
                 }
             }
-            if (!pending.empty()) {
-                out << std::move(pending);
+            if (start < chunk.size()) {
+                pending.append(
+                    reinterpret_cast<const char*>(chunk.data()) + start,
+                    chunk.size() - start);
             }
-        });
-}
+        }
+        if (!pending.empty()) {
+            out << std::move(pending);
+        }
+    });
 
 // Split a byte stream into fixed-size frames. Discards any partial
 // trailing frame on input close.
@@ -3646,8 +3638,7 @@ namespace csp::part {
 // Exits when input is exhausted and all sub-streams are drained,
 // or when the output reader is dropped.
 template <typename B>
-auto merge_all() {
-    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
         internal::descr("merge_all");
 
         reader<B> new_sub;
@@ -3704,7 +3695,6 @@ auto merge_all() {
             }
         }
     });
-}
 
 }
 
@@ -3830,19 +3820,17 @@ namespace csp::part {
 // Emit consecutive pairs: (a,b), (b,c), (c,d), ...
 // Input of fewer than 2 elements produces no output.
 template <typename T>
-auto pairwise() {
-    return make_filter<T, std::pair<T, T>>(
-        [](reader<T> in, writer<std::pair<T, T>> out) {
-            internal::descr("pairwise");
-            T prev;
-            if (csp::alt(in >> prev, ~out) != 0) return;
-            for (T t; csp::alt(in >> t, ~out) == 0;) {
-                auto p = std::make_pair(std::move(prev), t);
-                prev = std::move(t);
-                if (!(out << std::move(p))) return;
-            }
-        });
-}
+inline auto const pairwise = make_filter<T, std::pair<T, T>>(
+    [](reader<T> in, writer<std::pair<T, T>> out) {
+        internal::descr("pairwise");
+        T prev;
+        if (csp::alt(in >> prev, ~out) != 0) return;
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
+            auto p = std::make_pair(std::move(prev), t);
+            prev = std::move(t);
+            if (!(out << std::move(p))) return;
+        }
+    });
 
 }
 
@@ -4631,37 +4619,35 @@ namespace csp::part {
 // reader<reader<B>> → reader<B>. When a new sub-stream arrives, the previous
 // one is cancelled (reader dropped). Only the most recent sub-stream is active.
 template <typename B>
-auto switch_all() {
-    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
-        internal::descr("switch_all");
+inline auto const switch_all = make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+    internal::descr("switch_all");
 
-        reader<B> sub;
-        if (csp::alt(in >> sub, ~out) != 0) return;
+    reader<B> sub;
+    if (csp::alt(in >> sub, ~out) != 0) return;
 
-        for (;;) {
-            B b;
-            reader<B> new_sub;
-            switch (csp::alt(sub >> b, in >> new_sub, ~out)) {
-            case 0:  // Sub data — forward.
-                if (!(out << std::move(b))) return;
-                break;
-            case 1:  // New sub — switch (old sub dropped = cancelled).
-                sub = std::move(new_sub);
-                break;
-            case ~0:  // Sub died — wait for next.
-                if (csp::alt(in >> sub, ~out) != 0) return;
-                break;
-            case ~1:  // Input died — drain remaining sub.
-                for (B val; csp::alt(sub >> val, ~out) == 0;) {
-                    if (!(out << std::move(val))) return;
-                }
-                return;
-            default:  // Output died.
-                return;
+    for (;;) {
+        B b;
+        reader<B> new_sub;
+        switch (csp::alt(sub >> b, in >> new_sub, ~out)) {
+        case 0:  // Sub data — forward.
+            if (!(out << std::move(b))) return;
+            break;
+        case 1:  // New sub — switch (old sub dropped = cancelled).
+            sub = std::move(new_sub);
+            break;
+        case ~0:  // Sub died — wait for next.
+            if (csp::alt(in >> sub, ~out) != 0) return;
+            break;
+        case ~1:  // Input died — drain remaining sub.
+            for (B val; csp::alt(sub >> val, ~out) == 0;) {
+                if (!(out << std::move(val))) return;
             }
+            return;
+        default:  // Output died.
+            return;
         }
-    });
-}
+    }
+});
 
 }
 

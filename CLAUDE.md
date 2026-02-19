@@ -54,6 +54,15 @@ These are generated from the development sources by `scripts/amalgamate.py`
   `csp_globals.cpp`, `reactor.cc`, `blocking_pool.cc`, `signal.cc`,
   `stack_pool.cc`, `hamt.cc`, `stack_analysis_arm64.cc`, `mt_log.cc`).
 
+### Stream combinator conventions
+
+- **Parameterless parts are variable templates, not functions.** A part that
+  takes no runtime arguments should be declared as
+  `template <typename T> inline auto const foo = make_filter<T>(...);`, not as
+  a function returning the filter. Users write `foo<int>` not `foo<int>()`.
+  Exception: parts that need local type aliases or `static_assert` (e.g.
+  `nwise`) may remain functions.
+
 ### Key design points
 
 - **Per-endpoint lifecycle**: Channels have independent write/read endpoint

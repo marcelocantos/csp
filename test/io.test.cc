@@ -188,11 +188,11 @@ TEST_CASE("IO - ByteWriter") {
     csp::shutdown_runtime();
 }
 
-// --- Layer 3: split_lines() — pure channel test, no I/O ---
+// --- Layer 3: split_lines — pure channel test, no I/O ---
 
 TEST_CASE("IO - Lines framing") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = part::io::split_lines().spawn(std::move(r));
+    auto lr = part::io::split_lines.spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         std::string data = "hello\nworld\nfoo\n";
@@ -207,7 +207,7 @@ TEST_CASE("IO - Lines framing") {
 
 TEST_CASE("IO - Lines partial flush") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = part::io::split_lines().spawn(std::move(r));
+    auto lr = part::io::split_lines.spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         std::string data = "hello\nworld";
@@ -223,7 +223,7 @@ TEST_CASE("IO - Lines partial flush") {
 
 TEST_CASE("IO - Lines multi-chunk") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = part::io::split_lines().spawn(std::move(r));
+    auto lr = part::io::split_lines.spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         // Split "hello\nworld\n" across two chunks.
@@ -294,7 +294,7 @@ TEST_CASE("IO - Composed lines from pipe") {
     int pipefd[2];
     REQUIRE_EQ(0, pipe(pipefd));
 
-    auto lr = part::io::split_lines().spawn(part::io::byte_reader(pipefd[0]).spawn());
+    auto lr = part::io::split_lines.spawn(part::io::byte_reader(pipefd[0]).spawn());
 
     std::vector<std::string> result;
     std::atomic<bool> done{false};

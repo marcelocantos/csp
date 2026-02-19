@@ -227,13 +227,13 @@ auto r = csp::part::io::byte_reader(fd, 65536).spawn();   // custom size
 auto w = csp::part::io::byte_writer(fd).spawn();
 
 // split_lines: byte stream → string stream (LF-delimited).
-auto lr = csp::part::io::split_lines().spawn(std::move(byte_reader));
+auto lr = csp::part::io::split_lines.spawn(std::move(byte_reader));
 
 // fixed_frames: byte stream → fixed-size frames.
 auto fr = csp::part::io::fixed_frames(512).spawn(std::move(byte_reader));
 
 // Pipeline composition:
-auto lr = csp::part::io::byte_reader(fd) | csp::part::io::split_lines();
+auto lr = csp::part::io::byte_reader(fd) | csp::part::io::split_lines;
 auto line_reader = lr.spawn();
 ```
 
@@ -349,7 +349,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
 | `first<T>(n)` | filter | Take first n elements |
 | `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
-| `flatten<T>()` | filter | Flatten `vector<T>` → T |
+| `flatten<T>` | filter | Flatten `vector<T>` → T |
 | `gate<T>()` | function | Pause/resume via control channel |
 | `group_by<T,K>(f)` | producer | Partition by key, emit (key, reader) pairs |
 | `interleave<T>(readers...)` | producer | Strict round-robin interleave |
@@ -362,7 +362,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `metrics<T>()` | function | Passthrough with stats reporting |
 | `mute<T>()` | producer | Never-producing endpoint |
 | `nwise<T>(n)` | filter | Sliding n-element window as tuple |
-| `pairwise<T>()` | filter | Consecutive pairs (a,b), (b,c)... |
+| `pairwise<T>` | filter | Consecutive pairs (a,b), (b,c)... |
 | `partition<T>(n,f)` | function | Route to N outputs by classifier |
 | `quantize<T>(f)` | function | Variable-size batching |
 | `reduce<T,A>(init,f)` | filter | Fold to single value |
