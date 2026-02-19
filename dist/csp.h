@@ -2549,6 +2549,62 @@ auto chain(R rr) {
 
 }
 
+/* csp/part/concat_all.h */
+
+
+namespace csp::part {
+
+// Flatten a stream of sub-streams by draining each sequentially.
+// reader<reader<B>> → reader<B>. Output preserves sub-stream order.
+// Each sub-stream is fully consumed before the next is read from input.
+template <typename B>
+auto concat_all() {
+    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+        internal::descr("concat_all");
+
+        for (reader<B> sub; csp::alt(in >> sub, ~out) == 0;) {
+            for (B b; csp::alt(sub >> b, ~out) == 0;) {
+                if (!(out << std::move(b))) return;
+            }
+        }
+    });
+}
+
+}
+
+/* csp/part/concat_map.h */
+
+
+/* csp/part/map.h */
+
+
+namespace csp::part {
+
+// Transform each element through a function.
+// map<A, B>(f) converts reader<A> to reader<B>. When A == B, the second
+// template parameter can be omitted: map<int>([](int n) { return n + 1; }).
+template <typename A, typename B = A, typename F>
+auto map(F&& f) {
+    return make_filter<A, B>([f = std::forward<F>(f)](reader<A> in, writer<B> out) {
+        internal::descr("map");
+
+        for (A a; alt(in >> a, ~out) >= 0 && out << f(a);) { }
+    });
+}
+
+}
+
+namespace csp::part {
+
+// Maps each input to a sub-stream via f, then drains each sequentially.
+// Equivalent to map<A, reader<B>>(f) | concat_all<B>().
+template <typename A, typename B, typename F>
+auto concat_map(F&& f) {
+    return map<A, reader<B>>(std::forward<F>(f)) | concat_all<B>();
+}
+
+}
+
 /* csp/part/count.h */
 
 
@@ -2842,6 +2898,67 @@ auto cycle(C&& c) {
 template <typename T>
 auto cycle(std::initializer_list<T> c) {
     return enumerate<T>(c, true);
+}
+
+}
+
+/* csp/part/exhaust_all.h */
+
+
+namespace csp::part {
+
+// Flatten a stream of sub-streams, ignoring new arrivals while draining.
+// reader<reader<B>> → reader<B>. While a sub-stream is active, new sub-streams
+// from input are read and discarded. When the current sub-stream dies, the next
+// sub-stream from input is accepted.
+template <typename B>
+auto exhaust_all() {
+    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+        internal::descr("exhaust_all");
+
+        reader<B> sub;
+        while (csp::alt(in >> sub, ~out) == 0) {
+            B b;
+            reader<B> discard;
+            for (;;) {
+                // ~sub vulture fires immediately on sub death (as ~1),
+                // ensuring we detect it before the alt matches a ready
+                // peer on input (data chanops defer dead-channel).
+                switch (csp::prialt(sub >> b, ~sub, in >> discard, ~out)) {
+                case 0:  // Sub data — forward.
+                    if (!(out << std::move(b))) return;
+                    continue;
+                case ~1:  // Sub died (vulture) — outer loop gets next.
+                    break;
+                case 2:  // New sub from input — discard.
+                    continue;
+                case ~2:  // Input died — drain remaining sub.
+                    for (; csp::alt(sub >> b, ~out) == 0;) {
+                        if (!(out << std::move(b))) return;
+                    }
+                    return;
+                default:  // Output died.
+                    return;
+                }
+                break;  // Reached only from case ~1 (sub died).
+            }
+        }
+    });
+}
+
+}
+
+/* csp/part/exhaust_map.h */
+
+
+namespace csp::part {
+
+// Maps each input to a sub-stream via f, ignoring new inputs while draining.
+// While a sub-stream is active, new sub-streams are discarded.
+// Equivalent to map<A, reader<B>>(f) | exhaust_all<B>().
+template <typename A, typename B, typename F>
+auto exhaust_map(F&& f) {
+    return map<A, reader<B>>(std::forward<F>(f)) | exhaust_all<B>();
 }
 
 }
@@ -3297,7 +3414,7 @@ auto interleave(std::vector<reader<T>> inputs) {
 
 
 
-namespace csp::part {
+namespace csp::part::io {
 
 // Produce byte chunks from a non-blocking fd. Each message contains
 // as much data as was available from a single read() call. Owns the
@@ -3306,11 +3423,11 @@ inline auto byte_reader(int fd, size_t chunk_size = 4096) {
     return make_producer<std::vector<uint8_t>>(
         [fd, chunk_size](writer<std::vector<uint8_t>> out) {
             internal::descr("byte_reader");
-            io::set_nonblock(fd);
+            csp::io::set_nonblock(fd);
 
             std::vector<uint8_t> buf(chunk_size);
             for (;;) {
-                ssize_t n = io::read(fd, buf.data(), buf.size());
+                ssize_t n = csp::io::read(fd, buf.data(), buf.size());
                 if (n <= 0) break;
                 buf.resize(static_cast<size_t>(n));
                 if (!(out << std::move(buf))) break;
@@ -3326,10 +3443,10 @@ inline auto byte_writer(int fd) {
     return make_consumer<std::vector<uint8_t>>(
         [fd](reader<std::vector<uint8_t>> in) {
             internal::descr("byte_writer");
-            io::set_nonblock(fd);
+            csp::io::set_nonblock(fd);
 
             for (std::vector<uint8_t> chunk; in >> chunk;) {
-                if (io::write(fd, chunk.data(), chunk.size()) < 0) break;
+                if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
             }
             ::close(fd);
         });
@@ -3495,25 +3612,6 @@ inline auto const latch = make_filter<T>([](reader<T> in, writer<T> out) {
 
 }
 
-/* csp/part/map.h */
-
-
-namespace csp::part {
-
-// Transform each element through a function.
-// map<A, B>(f) converts reader<A> to reader<B>. When A == B, the second
-// template parameter can be omitted: map<int>([](int n) { return n + 1; }).
-template <typename A, typename B = A, typename F>
-auto map(F&& f) {
-    return make_filter<A, B>([f = std::forward<F>(f)](reader<A> in, writer<B> out) {
-        internal::descr("map");
-
-        for (A a; alt(in >> a, ~out) >= 0 && out << f(a);) { }
-    });
-}
-
-}
-
 /* csp/part/merge.h */
 
 
@@ -3562,6 +3660,93 @@ auto merge(std::vector<reader<T>> inputs) {
                 }
             }
         });
+}
+
+}
+
+/* csp/part/merge_all.h */
+
+
+
+namespace csp::part {
+
+// Flatten a stream of sub-streams by merging all concurrently.
+// reader<reader<B>> → reader<B>. Output order is non-deterministic.
+// Exits when input is exhausted and all sub-streams are drained,
+// or when the output reader is dropped.
+template <typename B>
+auto merge_all() {
+    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+        internal::descr("merge_all");
+
+        reader<B> new_sub;
+        B b;
+        std::vector<reader<B>> subs;
+        std::vector<internal::ChanOp> chanops;
+
+        // Slot 0: death-watch on output.
+        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+        // Slot 1: read from input (removed when input exhausted).
+        chanops.push_back({internal::wait(in.internal_reader()), &new_sub});
+
+        bool input_alive = true;
+
+        while (input_alive || !subs.empty()) {
+            size_t sub_base = input_alive ? 2 : 1;
+
+            internal::AltMatch m;
+            internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+
+            if (m.src && m.dst) {
+                if (input_alive && m.result == 1) {
+                    *static_cast<reader<B>*>(m.dst) =
+                        std::move(*static_cast<reader<B>*>(m.src));
+                } else {
+                    *static_cast<B*>(m.dst) =
+                        std::move(*static_cast<B*>(m.src));
+                }
+            }
+
+            internal::alt_end(&m);
+
+            if (m.result == ~0) {
+                return;  // Output died.
+            } else if (input_alive && m.result == 1) {
+                // New sub-reader.
+                chanops.push_back({internal::wait(new_sub.internal_reader()), &b});
+                subs.push_back(std::move(new_sub));
+            } else if (input_alive && m.result == ~1) {
+                // Input exhausted — remove input slot.
+                chanops.erase(chanops.begin() + 1);
+                input_alive = false;
+            } else if (m.result >= 0) {
+                // Sub-stream data — forward.
+                if (!(out << std::move(b))) return;
+            } else {
+                // Sub-stream died — swap-and-pop.
+                size_t slot = static_cast<size_t>(~m.result);
+                size_t i = slot - sub_base;
+                subs[i] = std::move(subs.back());
+                subs.pop_back();
+                chanops[slot] = chanops.back();
+                chanops.pop_back();
+            }
+        }
+    });
+}
+
+}
+
+/* csp/part/merge_map.h */
+
+
+namespace csp::part {
+
+// Maps each input to a sub-stream via f, then merges all concurrently.
+// Equivalent to map<A, reader<B>>(f) | merge_all<B>().
+template <typename A, typename B, typename F>
+auto merge_map(F&& f) {
+    return map<A, reader<B>>(std::forward<F>(f)) | merge_all<B>();
 }
 
 }
@@ -3889,6 +4074,116 @@ writer<double> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = wri
                               residue = std::move(residue)](auto source) mutable {
         quantize(std::move(source), quantum, std::move(sink), std::move(residue))();
     });
+}
+
+}
+
+/* csp/part/random.h */
+
+
+#include <algorithm>
+#include <random>
+
+namespace csp::part::rand {
+
+// Infinite stream of uniform random integers in [lo, hi].
+template <typename T, typename Engine = std::mt19937_64>
+auto uniform_int(T lo, T hi,
+                 Engine eng = Engine{std::random_device{}()}) {
+    return make_producer<T>(
+        [lo, hi, eng = std::move(eng)](writer<T> sink) mutable {
+            internal::descr("uniform_int");
+            std::uniform_int_distribution<T> dist(lo, hi);
+            while (sink << dist(eng)) { }
+        });
+}
+
+// Infinite stream of uniform random reals in [lo, hi).
+template <typename T, typename Engine = std::mt19937_64>
+auto uniform_real(T lo, T hi,
+                  Engine eng = Engine{std::random_device{}()}) {
+    return make_producer<T>(
+        [lo, hi, eng = std::move(eng)](writer<T> sink) mutable {
+            internal::descr("uniform_real");
+            std::uniform_real_distribution<T> dist(lo, hi);
+            while (sink << dist(eng)) { }
+        });
+}
+
+// Infinite stream of random bools with P(true) = p.
+template <typename Engine = std::mt19937_64>
+auto bernoulli(double p = 0.5,
+               Engine eng = Engine{std::random_device{}()}) {
+    return make_producer<bool>(
+        [p, eng = std::move(eng)](writer<bool> sink) mutable {
+            internal::descr("bernoulli");
+            std::bernoulli_distribution dist(p);
+            while (sink << dist(eng)) { }
+        });
+}
+
+// Infinite stream of normally distributed values.
+template <typename T = double, typename Engine = std::mt19937_64>
+auto normal(T mean = 0, T stddev = 1,
+            Engine eng = Engine{std::random_device{}()}) {
+    return make_producer<T>(
+        [mean, stddev, eng = std::move(eng)](writer<T> sink) mutable {
+            internal::descr("normal");
+            std::normal_distribution<T> dist(mean, stddev);
+            while (sink << dist(eng)) { }
+        });
+}
+
+// Infinite stream of random picks from a container.
+template <typename T, typename C, typename Engine = std::mt19937_64>
+auto choice(C&& c, Engine eng = Engine{std::random_device{}()}) {
+    return make_producer<T>(
+        [c = std::forward<C>(c), eng = std::move(eng)](
+            writer<T> sink) mutable {
+            internal::descr("choice");
+            std::uniform_int_distribution<size_t> dist(0, c.size() - 1);
+            while (sink << c[dist(eng)]) { }
+        });
+}
+
+template <typename T, typename Engine = std::mt19937_64>
+auto choice(std::initializer_list<T> c,
+            Engine eng = Engine{std::random_device{}()}) {
+    return choice<T>(std::vector<T>(c), std::move(eng));
+}
+
+// Reservoir shuffle: buffer n elements, then for each new input pick a
+// random slot, emit the displaced element, and store the new one.  On
+// input exhaustion, Fisher-Yates shuffle the remaining buffer and emit.
+template <typename T, typename Engine = std::mt19937_64>
+auto shuffle(size_t n, Engine eng = Engine{std::random_device{}()}) {
+    return make_filter<T>(
+        [n, eng = std::move(eng)](reader<T> in, writer<T> out) mutable {
+            internal::descr("shuffle");
+
+            // Fill the buffer.
+            std::vector<T> buf;
+            buf.reserve(n);
+            for (T v; buf.size() < n && (in >> v);)
+                buf.push_back(std::move(v));
+
+            // Steady state: swap-and-emit.
+            std::uniform_int_distribution<size_t> dist(0, buf.size() - 1);
+            for (T v; csp::alt(in >> v, ~out) == 0;) {
+                size_t idx = dist(eng);
+                if (!(out << std::move(buf[idx]))) return;
+                buf[idx] = std::move(v);
+            }
+
+            // Drain: Fisher-Yates shuffle remaining buffer.
+            for (size_t i = buf.size(); i > 1; --i) {
+                std::uniform_int_distribution<size_t> d(0, i - 1);
+                std::swap(buf[i - 1], buf[d(eng)]);
+            }
+            for (auto& v : buf) {
+                if (!(out << std::move(v))) return;
+            }
+        });
 }
 
 }
@@ -4366,6 +4661,64 @@ auto stride(size_t n) {
             if (++i >= n) i = 0;
         }
     });
+}
+
+}
+
+/* csp/part/switch_all.h */
+
+
+namespace csp::part {
+
+// Flatten a stream of sub-streams, switching to the latest.
+// reader<reader<B>> → reader<B>. When a new sub-stream arrives, the previous
+// one is cancelled (reader dropped). Only the most recent sub-stream is active.
+template <typename B>
+auto switch_all() {
+    return make_filter<reader<B>, B>([](reader<reader<B>> in, writer<B> out) {
+        internal::descr("switch_all");
+
+        reader<B> sub;
+        if (csp::alt(in >> sub, ~out) != 0) return;
+
+        for (;;) {
+            B b;
+            reader<B> new_sub;
+            switch (csp::alt(sub >> b, in >> new_sub, ~out)) {
+            case 0:  // Sub data — forward.
+                if (!(out << std::move(b))) return;
+                break;
+            case 1:  // New sub — switch (old sub dropped = cancelled).
+                sub = std::move(new_sub);
+                break;
+            case ~0:  // Sub died — wait for next.
+                if (csp::alt(in >> sub, ~out) != 0) return;
+                break;
+            case ~1:  // Input died — drain remaining sub.
+                for (B val; csp::alt(sub >> val, ~out) == 0;) {
+                    if (!(out << std::move(val))) return;
+                }
+                return;
+            default:  // Output died.
+                return;
+            }
+        }
+    });
+}
+
+}
+
+/* csp/part/switch_map.h */
+
+
+namespace csp::part {
+
+// Maps each input to a sub-stream via f, switching to the latest.
+// Previous sub-streams are cancelled when a new one arrives.
+// Equivalent to map<A, reader<B>>(f) | switch_all<B>().
+template <typename A, typename B, typename F>
+auto switch_map(F&& f) {
+    return map<A, reader<B>>(std::forward<F>(f)) | switch_all<B>();
 }
 
 }
