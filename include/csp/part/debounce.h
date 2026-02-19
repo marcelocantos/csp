@@ -14,7 +14,7 @@ auto debounce(csp::clock::duration d, writer<T> dead_letter = {}) {
     return make_filter<T>([d, dead_letter = std::move(dead_letter)](reader<T> in, writer<T> out) mutable {
         internal::descr("debounce");
         T pending;
-        reader<> timer;
+        reader<clock::time_point> timer;
 
         for (;;) {
             if (!timer) {
@@ -24,8 +24,8 @@ auto debounce(csp::clock::duration d, writer<T> dead_letter = {}) {
             } else {
                 // Pending value — wait for input, timer, or death.
                 T next;
-                poke_t p;
-                switch (csp::alt(in >> next, timer >> p, ~out)) {
+                clock::time_point tp;
+                switch (csp::alt(in >> next, timer >> tp, ~out)) {
                 case 0:  // New value supersedes pending.
                     if (dead_letter) dead_letter << std::move(pending);
                     pending = std::move(next);

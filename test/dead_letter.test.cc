@@ -14,7 +14,7 @@ TEST_CASE("Throttle - excess goes to dead letter") {
     auto [dl_w, dl_r] = chan<int>{};
 
     // Budget=1, interval=1s. Only first value passes; rest go to dead letter.
-    auto r = throttle<int>(1s, 1, std::move(dl_w)).spawn(count(1, 6).spawn());
+    auto r = throttle<int>(tick(1s), 1, std::move(dl_w)).spawn(count(1, 6).spawn());
 
     std::vector<int> dead;
     stats.spawn([dl_r = std::move(dl_r), &dead]{
@@ -33,7 +33,7 @@ TEST_CASE("Throttle - excess goes to dead letter") {
 
 TEST_CASE("Throttle - no dead letter, no crash") {
     // Same scenario without dead letter — existing behaviour.
-    auto r = throttle<int>(1s).spawn(count(1, 6).spawn());
+    auto r = throttle<int>(tick(1s)).spawn(count(1, 6).spawn());
 
     CHECK_EQ(1, r.read());
     int _;
@@ -44,7 +44,7 @@ TEST_CASE("Throttle - budget reset with dead letter") {
     RunStats stats;
 
     auto [dl_w, dl_r] = chan<int>{};
-    auto th = throttle<int>(100ms, 2, std::move(dl_w)).spawn();
+    auto th = throttle<int>(tick(100ms), 2, std::move(dl_w)).spawn();
 
     stats.spawn([w = std::move(th.w)]{
         // First burst: 1,2,3.

@@ -152,7 +152,7 @@ One-shot timer that fires after a duration.
 ### Signature
 
 ```cpp
-reader<> after(clock::duration d);
+reader<clock::time_point> after(clock::duration d);
 ```
 
 ### States
@@ -167,20 +167,22 @@ stateDiagram-v2
 | State | Meaning |
 |-------|---------|
 | waiting | Timer is running; the internal microthread is sleeping. |
-| fired | Duration elapsed; a `poke` is available on the reader. |
+| fired | Duration elapsed; a `time_point` is available on the reader. |
 
 ### Description
 
-`after` returns a `reader<>` (i.e. `reader<poke_t>`) that produces a single
-`poke` value after the given duration elapses. Internally, `after` spawns a
-producer microthread that sleeps for `d` and then writes `poke` to the channel.
+`after` returns a `reader<clock::time_point>` that produces a single
+`time_point` value (the actual fire time) after the given duration elapses.
+Internally, `after` spawns a producer microthread that sleeps for `d` and
+then writes `clock::now()` to the channel.
 
 The returned reader is most commonly used as a timeout arm in `alt` or `prialt`:
 
 ```cpp
+clock::time_point tp;
 csp::prialt(
-    r >> val,            // wait for data
-    csp::after(1s) >> p  // timeout after 1 second
+    r >> val,              // wait for data
+    csp::after(1s) >> tp   // timeout after 1 second
 );
 ```
 
@@ -191,9 +193,9 @@ producer microthread is unblocked (writer sees dead channel) and exits cleanly.
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-after(d) ───────────────────────➤ spawn producer; → reader<>
-         ─┤d elapses├──────────➤ producer writes poke; reader has value
-reader >> dest ─┤value ready├───➤ move(poke, dest); true; producer exits
+after(d) ───────────────────────➤ spawn producer; → reader<time_point>
+         ─┤d elapses├──────────➤ producer writes time_point; reader has value
+reader >> dest ─┤value ready├───➤ move(time_point, dest); true; producer exits
 reader >> dest ─┤waiting├───────➤ suspend until value ready
 ~reader (dropped) ──────────────➤ producer sees dead channel; exits
 ```

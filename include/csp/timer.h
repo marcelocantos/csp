@@ -18,11 +18,12 @@ inline void sleep(clock::duration d) {
     sleep_until(clock::now() + d);
 }
 
-// Return a reader that fires once after the given duration.
-inline reader<> after(clock::duration d) {
-    return spawn_producer<poke_t>([d](writer<> w) {
+// Return a reader that fires once after the given duration,
+// delivering the current time.
+inline reader<clock::time_point> after(clock::duration d) {
+    return spawn_producer<clock::time_point>([d](writer<clock::time_point> w) {
         csp::sleep(d);
-        w << poke;
+        w << clock::now();
     });
 }
 

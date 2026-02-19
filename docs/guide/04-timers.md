@@ -29,8 +29,8 @@ csp::spawn([] {
 
 ## after -- one-shot timer
 
-`after(duration)` returns a `reader<>` (shorthand for `reader<poke_t>`) that
-delivers a single `poke` value after the given duration, then closes.
+`after(duration)` returns a `reader<clock::time_point>` that delivers the
+actual fire time after the given duration, then closes.
 
 ```cpp
 auto timeout = csp::after(500ms);
@@ -44,7 +44,8 @@ Because `after` returns an ordinary reader, it slots directly into `alt` and
 ```cpp
 auto deadline = csp::after(100ms);
 int val;
-switch (csp::prialt(data_reader >> val, deadline >> poke)) {
+clock::time_point tp;
+switch (csp::prialt(data_reader >> val, deadline >> tp)) {
 case 0: /* data arrived in time  */ break;
 case 1: /* 100ms elapsed first   */ break;
 }
@@ -124,7 +125,7 @@ case 1: handle_timeout();     break;
 ```mermaid
 graph LR
     P["producer"] -->|"int"| R["data reader"]
-    T["after(100ms)"] -->|"poke"| D["deadline reader"]
+    T["after(100ms)"] -->|"time_point"| D["deadline reader"]
     R --> A["prialt"]
     D --> A
 ```
@@ -253,7 +254,7 @@ microthread returns normally.
 |---|---|---|---|
 | `csp::sleep(duration)` | `<csp/timer.h>` | `void` | -- (blocks caller) |
 | `csp::sleep_until(time_point)` | `<csp/timer.h>` | `void` | -- (blocks caller) |
-| `csp::after(duration)` | `<csp/timer.h>` | `reader<>` | Once |
+| `csp::after(duration)` | `<csp/timer.h>` | `reader<clock::time_point>` | Once |
 | `csp::tick(interval)` | `<csp/timer.h>` | `reader<clock::time_point>` | Repeatedly |
 | `csp::part::timer(control)` | `<csp/part/timer.h>` | `reader<clock::time_point>` | Per control value |
 

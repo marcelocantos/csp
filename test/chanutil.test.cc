@@ -850,7 +850,7 @@ TEST_CASE("ChanUtil - Throttle n=1") {
     using namespace std::chrono_literals;
 
     // Budget=1, interval=1s. Only first value passes; rest dropped before tick.
-    auto r = throttle<int>(1s).spawn(count(1, 6).spawn());
+    auto r = throttle<int>(tick(1s)).spawn(count(1, 6).spawn());
 
     CHECK_EQ(1, r.read());
     int _;
@@ -861,7 +861,7 @@ TEST_CASE("ChanUtil - Throttle n=2") {
     using namespace std::chrono_literals;
 
     // Budget=2, interval=1s. First two pass, rest dropped.
-    auto r = throttle<int>(1s, 2).spawn(count(1, 6).spawn());
+    auto r = throttle<int>(tick(1s), 2).spawn(count(1, 6).spawn());
 
     CHECK_EQ(1, r.read());
     CHECK_EQ(2, r.read());
@@ -873,7 +873,7 @@ TEST_CASE("ChanUtil - Throttle budget reset") {
     using namespace std::chrono_literals;
     RunStats stats;
 
-    auto th = throttle<int>(100ms, 2).spawn();
+    auto th = throttle<int>(tick(100ms), 2).spawn();
 
     stats.spawn([w = std::move(th.w)]{
         // First burst: 1,2,3.

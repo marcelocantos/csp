@@ -80,10 +80,44 @@ These are generated from the development sources by `scripts/amalgamate.py`
   Two-phase protocol: `prialt_begin` finds a match with locks held, typed
   transfer happens inline, then `alt_end` unlocks and schedules.
 
+## Documentation
+
+When making code changes, keep the following documentation in sync:
+
+- **`docs/agent-guide.md`** — Token-efficient reference for coding agents.
+  Update the Combinator Reference table when adding/removing/renaming parts.
+  Update API sections when core types or functions change.
+- **`docs/reference/parts.md`** — Parts catalog with per-section tables.
+  Add new parts to the appropriate category table, linked to their detail page.
+- **`docs/reference/parts/<name>.md`** — Per-part detail page. Create one for
+  every new part. Use an existing page as a template. Standard structure:
+  - **Heading**: `# name` — one-paragraph description.
+  - **Signature**: fenced C++ block with template signature and return type.
+  - **Parameters** (if any): table with type and description.
+  - **Topology**: Mermaid `graph LR` showing input/output channels and the
+    internal microthread. Add a `stateDiagram-v2` when the part has non-trivial
+    lifecycle states.
+  - **Semantics**: bulleted list covering backpressure, exit conditions, edge
+    cases (empty input, output death, input close).
+  - **Example**: minimal `#include "csp.h"` snippet. Additional sub-examples
+    for notable use cases.
+  - **See Also**: links to related parts.
+- **`docs/guide/`** — Narrative guide chapters. Update the relevant chapter
+  when behaviour changes (e.g., `03-multiplexing.md` for alt/prialt changes,
+  `05-combinators.md` for part system changes).
+- **`docs/reference/`** — Per-topic reference pages (channels, scheduling,
+  timers, I/O, signals, blocking, dynamic scoping, combinators, multiplexing).
+  Update when the corresponding API surface changes.
+- **`include/csp.h`** — Gateway header. Add an `#include` when creating a
+  new public header.
+
+`make` runs `scripts/check_md_links.py` which verifies all markdown
+cross-references resolve. Broken links fail the build.
+
 ## Tests
 
 doctest (vendored in `third_party/doctest/`). Test files in `test/`
-with `.test.cc` extension. 281 tests.
+with `.test.cc` extension.
 
 ## Dependencies
 

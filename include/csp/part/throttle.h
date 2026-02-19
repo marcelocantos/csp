@@ -1,25 +1,24 @@
 #pragma once
 
 #include <csp/part/part.h>
-#include <csp/timer.h>
 
 namespace csp::part {
 
-// Rate-limit: forward up to n values per interval, drop excess.
-// Budget starts at n (first n values pass immediately).
-// Resets every interval via tick().
-// Optional dead_letter: excess values are written here instead of discarded.
-template <typename T>
-auto throttle(csp::clock::duration d, size_t n = 1, writer<T> dead_letter = {}) {
-    return make_filter<T>([d, n, dead_letter = std::move(dead_letter)](reader<T> in, writer<T> out) mutable {
+// Rate-limit: forward up to n values per trigger, drop (or dead-letter) excess.
+// Each value received on the trigger channel resets the remaining budget to n.
+// Use with tick(d) for periodic resets: throttle<int>(tick(100ms), 3).
+template <typename T, typename Trigger = poke_t>
+auto throttle(reader<Trigger> trigger, size_t n = 1, writer<T> dead_letter = {}) {
+    return make_filter<T>([trigger = std::move(trigger), n,
+                           dead_letter = std::move(dead_letter)]
+                          (reader<T> in, writer<T> out) mutable {
         internal::descr("throttle");
-        auto ticker = csp::tick(d);
         size_t remaining = n;
 
         for (;;) {
             T t;
-            csp::clock::time_point tp;
-            switch (csp::alt(in >> t, ticker >> tp, ~out)) {
+            Trigger trig;
+            switch (csp::alt(in >> t, trigger >> trig, ~out)) {
             case 0:  // Value arrived.
                 if (remaining > 0) {
                     --remaining;
@@ -28,10 +27,10 @@ auto throttle(csp::clock::duration d, size_t n = 1, writer<T> dead_letter = {}) 
                     dead_letter << std::move(t);
                 }
                 break;
-            case 1:  // Tick — reset budget.
+            case 1:  // Trigger — reset budget.
                 remaining = n;
                 break;
-            default:  // Input, ticker, or output died.
+            default:  // Input, trigger, or output died.
                 return;
             }
         }

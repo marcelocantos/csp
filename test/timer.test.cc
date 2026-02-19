@@ -48,7 +48,8 @@ TEST_CASE("Timer - AfterInAlt") {
     stats.spawn([&, r = --idle_writer]{
         auto timeout = csp::after(5ms);
         int n = 0;
-        which_result = alt(r >> n, timeout >> poke);
+        clock::time_point tp;
+        which_result = alt(r >> n, timeout >> tp);
     });
 
     csp::schedule();
@@ -99,7 +100,8 @@ TEST_CASE("Timer - MultipleTimersOrdering") {
     stats.spawn([&]{
         auto slow = csp::after(20ms);
         auto fast = csp::after(5ms);
-        which_result = alt(slow >> poke, fast >> poke);
+        clock::time_point tp;
+        which_result = alt(slow >> tp, fast >> tp);
     });
 
     csp::schedule();
@@ -120,7 +122,8 @@ TEST_CASE("Timer - TimeoutPattern") {
 
     stats.spawn([&, r = ch.r.copy()]{
         auto timeout = csp::after(50ms);
-        which_result = alt(r >> val, timeout >> poke);
+        clock::time_point tp;
+        which_result = alt(r >> val, timeout >> tp);
     });
 
     ch.release();

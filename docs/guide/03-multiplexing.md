@@ -206,17 +206,17 @@ using namespace std::chrono_literals;
 
 // Wait for data, but give up after 100ms.
 auto deadline = after(100ms);
-poke_t p;
+clock::time_point tp;
 int n;
-switch (prialt(r >> n, deadline >> p)) {
+switch (prialt(r >> n, deadline >> tp)) {
 case 0: /* got data in time  */ break;
 case 1: /* timed out         */ break;
 }
 ```
 
-`after(duration)` returns a `reader<>` that fires once after the given
-duration. Since it is a reader, it slots into `alt`/`prialt` like any other
-channel operation.
+`after(duration)` returns a `reader<clock::time_point>` that fires once after
+the given duration, delivering the actual fire time. Since it is a reader, it
+slots into `alt`/`prialt` like any other channel operation.
 
 For periodic work, use `tick`:
 

@@ -35,8 +35,8 @@ auto delay(csp::clock::duration d) {
                 // Wait for input or oldest item's deadline.
                 auto timer = csp::after(q.front().second - csp::clock::now());
                 T t;
-                poke_t p;
-                switch (csp::alt(in >> t, timer >> p, ~out)) {
+                clock::time_point tp;
+                switch (csp::alt(in >> t, timer >> tp, ~out)) {
                 case 0:  // New value — enqueue.
                     q.emplace_back(std::move(t), csp::clock::now() + d);
                     break;

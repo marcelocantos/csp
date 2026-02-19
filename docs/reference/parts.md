@@ -119,7 +119,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [first_wins](parts/first_wins.md) | producer | Read from whichever source responds first, discard the rest |
 | [join](parts/join.md) | consumer | Block until all input channels close (barrier) |
 | [latch](parts/latch.md) | filter | Hold and serve the most recent value |
-| conflate | filter | Merge pending values when downstream is slow |
+| [conflate](parts/conflate.md) | filter | Merge pending values when downstream is slow |
 | [killswitch](parts/killswitch.md) | filter | Forward values until a keepalive channel dies |
 | [metrics](parts/metrics.md) | filter | Transparent passthrough reporting throughput stats on a side channel |
 

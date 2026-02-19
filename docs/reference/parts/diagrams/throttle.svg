@@ -1,0 +1,31 @@
+<svg viewBox="0 0 460 120" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <!-- arrowhead markers -->
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+
+  <!-- side channel: trigger above -->
+  <rect x="140" y="5" width="120" height="26" rx="4" fill="#d4edda" stroke="#888"/>
+  <text x="200" y="22" text-anchor="middle">reader&lt;Trigger&gt;</text>
+  <line x1="200" y1="31" x2="200" y2="60" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <text x="214" y="50" fill="#666" font-size="10">reset budget</text>
+
+  <!-- main flow -->
+  <rect x="5" y="60" width="90" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="50" y="80" text-anchor="middle">reader&lt;T&gt;</text>
+
+  <rect x="135" y="60" width="130" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="200" y="80" text-anchor="middle">throttle(n)</text>
+
+  <rect x="315" y="60" width="90" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="360" y="80" text-anchor="middle">reader&lt;T&gt;</text>
+
+  <!-- horizontal arrows -->
+  <line x1="95" y1="75" x2="135" y2="75" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="265" y1="75" x2="315" y2="75" stroke="#333" marker-end="url(#arr)"/>
+</svg>
