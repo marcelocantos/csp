@@ -44,8 +44,7 @@ Because `after` returns an ordinary reader, it slots directly into `alt` and
 ```cpp
 auto deadline = csp::after(100ms);
 int val;
-clock::time_point tp;
-switch (csp::prialt(data_reader >> val, deadline >> tp)) {
+switch (csp::prialt(data_reader >> val, deadline >> nullptr)) {
 case 0: /* data arrived in time  */ break;
 case 1: /* 100ms elapsed first   */ break;
 }
@@ -116,7 +115,7 @@ csp::spawn([w = std::move(w)] {
 
 auto deadline = csp::after(100ms);
 int val;
-switch (csp::prialt(r >> val, deadline >> poke)) {
+switch (csp::prialt(r >> val, deadline >> nullptr)) {
 case 0: handle(val);          break;
 case 1: handle_timeout();     break;
 }
@@ -141,8 +140,7 @@ auto heartbeat = csp::tick(50ms);
 
 for (;;) {
     int n;
-    csp::clock::time_point t;
-    switch (csp::alt(data >> n, heartbeat >> t)) {
+    switch (csp::alt(data >> n, heartbeat >> nullptr)) {
     case  0: process(n);      break;
     case ~0: goto done;       // data channel closed
     case  1: send_heartbeat(); break;
@@ -169,8 +167,8 @@ timers against each other.
 ```cpp
 auto slow = csp::after(100ms);
 auto fast = csp::after(10ms);
-int which = csp::alt(slow >> poke, fast >> poke);
-// which == 2 (fast wins)
+int which = csp::alt(slow >> nullptr, fast >> nullptr);
+// which == 1 (fast wins)
 ```
 
 ### Rate limiting with tick + buffer

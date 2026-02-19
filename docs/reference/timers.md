@@ -179,10 +179,9 @@ then writes `clock::now()` to the channel.
 The returned reader is most commonly used as a timeout arm in `alt` or `prialt`:
 
 ```cpp
-clock::time_point tp;
 csp::prialt(
-    r >> val,              // wait for data
-    csp::after(1s) >> tp   // timeout after 1 second
+    r >> val,                  // wait for data
+    csp::after(1s) >> nullptr  // timeout after 1 second
 );
 ```
 
@@ -214,10 +213,9 @@ csp::spawn([] {
     });
 
     int val;
-    csp::poke_t p;
     int which = csp::prialt(
         r >> val,
-        csp::after(std::chrono::seconds(1)) >> p
+        csp::after(std::chrono::seconds(1)) >> nullptr
     );
 
     if (which == 1) {

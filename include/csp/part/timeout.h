@@ -15,8 +15,7 @@ auto timeout(csp::clock::duration d) {
 
         for (;;) {
             T t;
-            clock::time_point tp;
-            switch (csp::alt(in >> t, timer >> tp, ~out)) {
+            switch (csp::alt(in >> t, timer >> nullptr, ~out)) {
             case 0:  // Value arrived — forward and reset timer.
                 if (!(out << std::move(t))) return;
                 timer = csp::after(d);

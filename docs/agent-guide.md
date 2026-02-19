@@ -131,7 +131,7 @@ events — both explicit vultures and implicit death on data operations —
 return complemented indices.
 
 **`after()` returns non-negative**: `after(d)` sends a `time_point` then
-dies, so `prialt(ch >> v, after(1s) >> tp)` returns `1` on timeout (data
+dies, so `prialt(ch >> v, after(1s) >> nullptr)` returns `1` on timeout (data
 match on the time_point value), not `~1`.
 
 ```cpp
@@ -195,8 +195,7 @@ reader<clock::time_point> tick(clock::duration interval);
 Timeout idiom:
 ```cpp
 int v;
-clock::time_point tp;
-switch (prialt(r >> v, after(100ms) >> tp)) {
+switch (prialt(r >> v, after(100ms) >> nullptr)) {
     case 0:  handle(v);  break;
     case 1:  timeout();  break;   // after() sent time_point → non-negative match
 }

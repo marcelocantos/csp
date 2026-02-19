@@ -34,8 +34,7 @@ int main() {
             // Wait up to 100ms
             auto deadline = after(100ms);
             int v;
-            clock::time_point tp;
-            switch (prialt(r >> v, deadline >> tp)) {
+            switch (prialt(r >> v, deadline >> nullptr)) {
             case 0:
                 printf("  Got result (this shouldn't happen)\n");
                 break;

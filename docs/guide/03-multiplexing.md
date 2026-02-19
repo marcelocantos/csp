@@ -206,9 +206,8 @@ using namespace std::chrono_literals;
 
 // Wait for data, but give up after 100ms.
 auto deadline = after(100ms);
-clock::time_point tp;
 int n;
-switch (prialt(r >> n, deadline >> tp)) {
+switch (prialt(r >> n, deadline >> nullptr)) {
 case 0: /* got data in time  */ break;
 case 1: /* timed out         */ break;
 }
@@ -223,9 +222,8 @@ For periodic work, use `tick`:
 ```cpp
 auto heartbeat = tick(1s);
 int n;
-clock::time_point t;
 for (;;) {
-    switch (alt(work >> n, heartbeat >> t)) {
+    switch (alt(work >> n, heartbeat >> nullptr)) {
     case  0: process(n); break;
     case ~0: return;  // work channel closed
     case  1: send_heartbeat(); break;
@@ -313,7 +311,7 @@ statement, with a few differences:
 | Fair selection | yes (random among ready cases) | `alt` = fair, `prialt` = priority |
 | Channel death detection | requires `ok` idiom: `v, ok := <-ch` | vultures: `~ch` as a first-class operation |
 | Non-blocking | `default:` case | `prialt(op, csp::none)` |
-| Timeout | `case <-time.After(d):` | `prialt(op, after(d) >> p)` |
+| Timeout | `case <-time.After(d):` | `prialt(op, after(d) >> nullptr)` |
 | Dynamic channel count | reflect.Select | `std::vector<chan_op<T>>` |
 | Return value | executes case body directly | returns 0-based index |
 | Nil channel | nil channel disables case | default-constructed `chan_op<T>{}` disables slot |

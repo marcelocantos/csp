@@ -24,8 +24,7 @@ auto debounce(csp::clock::duration d, writer<T> dead_letter = {}) {
             } else {
                 // Pending value — wait for input, timer, or death.
                 T next;
-                clock::time_point tp;
-                switch (csp::alt(in >> next, timer >> tp, ~out)) {
+                switch (csp::alt(in >> next, timer >> nullptr, ~out)) {
                 case 0:  // New value supersedes pending.
                     if (dead_letter) dead_letter << std::move(pending);
                     pending = std::move(next);

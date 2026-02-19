@@ -128,8 +128,7 @@ TEST_CASE("MN - TimerAfterInAlt") {
             auto r = --impossible;
             auto timeout = csp::after(10ms);
             int val = 0;
-            csp::clock::time_point tp;
-            int which = csp::alt(r >> val, timeout >> tp);
+            int which = csp::alt(r >> val, timeout >> nullptr);
             if (which == 1) {
                 timeouts.fetch_add(1, std::memory_order_relaxed);
             }
@@ -184,8 +183,7 @@ TEST_CASE("MN - ConcurrentTimersAndChannels") {
     csp::spawn([&, r = std::move(r)] {
         auto timeout = csp::after(200ms);
         int val = 0;
-        csp::clock::time_point tp;
-        int which = csp::alt(r >> val, timeout >> tp);
+        int which = csp::alt(r >> val, timeout >> nullptr);
         if (which == 0) {
             result.store(val, std::memory_order_relaxed);
         }
