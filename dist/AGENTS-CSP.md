@@ -226,14 +226,14 @@ auto r = csp::part::byte_reader(fd, 65536).spawn();   // custom size
 // byte_writer: writer<vector<uint8_t>> → fd. Owns fd, closes on exit.
 auto w = csp::part::byte_writer(fd).spawn();
 
-// lines: byte stream → string stream (LF-delimited).
-auto lr = csp::part::lines().spawn(std::move(byte_reader));
+// split_lines: byte stream → string stream (LF-delimited).
+auto lr = csp::part::split_lines().spawn(std::move(byte_reader));
 
-// fixed: byte stream → fixed-size frames.
-auto fr = csp::part::fixed(512).spawn(std::move(byte_reader));
+// fixed_frames: byte stream → fixed-size frames.
+auto fr = csp::part::fixed_frames(512).spawn(std::move(byte_reader));
 
 // Pipeline composition:
-auto lr = csp::part::byte_reader(fd) | csp::part::lines();
+auto lr = csp::part::byte_reader(fd) | csp::part::split_lines();
 auto line_reader = lr.spawn();
 ```
 

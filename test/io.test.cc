@@ -188,11 +188,11 @@ TEST_CASE("IO - ByteWriter") {
     csp::shutdown_runtime();
 }
 
-// --- Layer 3: lines() — pure channel test, no I/O ---
+// --- Layer 3: split_lines() — pure channel test, no I/O ---
 
 TEST_CASE("IO - Lines framing") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = lines().spawn(std::move(r));
+    auto lr = split_lines().spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         std::string data = "hello\nworld\nfoo\n";
@@ -207,7 +207,7 @@ TEST_CASE("IO - Lines framing") {
 
 TEST_CASE("IO - Lines partial flush") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = lines().spawn(std::move(r));
+    auto lr = split_lines().spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         std::string data = "hello\nworld";
@@ -223,7 +223,7 @@ TEST_CASE("IO - Lines partial flush") {
 
 TEST_CASE("IO - Lines multi-chunk") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = lines().spawn(std::move(r));
+    auto lr = split_lines().spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         // Split "hello\nworld\n" across two chunks.
@@ -239,11 +239,11 @@ TEST_CASE("IO - Lines multi-chunk") {
     CHECK_FALSE(bool(lr >> _));
 }
 
-// --- Layer 3: fixed() — pure channel test ---
+// --- Layer 3: fixed_frames() — pure channel test ---
 
 TEST_CASE("IO - Fixed framing") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto fr = fixed(4).spawn(std::move(r));
+    auto fr = fixed_frames(4).spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         // 10 bytes → 2 full frames of 4, partial 2 discarded.
@@ -268,7 +268,7 @@ TEST_CASE("IO - Fixed framing") {
 
 TEST_CASE("IO - Fixed multi-chunk") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto fr = fixed(4).spawn(std::move(r));
+    auto fr = fixed_frames(4).spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         // Frame boundary spans chunks.
@@ -286,7 +286,7 @@ TEST_CASE("IO - Fixed multi-chunk") {
     CHECK_FALSE(bool(fr >> _));
 }
 
-// --- Composed pipeline: lines(byte_reader(fd)) ---
+// --- Composed pipeline: split_lines(byte_reader(fd)) ---
 
 TEST_CASE("IO - Composed lines from pipe") {
     csp::init_runtime(2);
@@ -294,7 +294,7 @@ TEST_CASE("IO - Composed lines from pipe") {
     int pipefd[2];
     REQUIRE_EQ(0, pipe(pipefd));
 
-    auto lr = lines().spawn(byte_reader(pipefd[0]).spawn());
+    auto lr = split_lines().spawn(byte_reader(pipefd[0]).spawn());
 
     std::vector<std::string> result;
     std::atomic<bool> done{false};

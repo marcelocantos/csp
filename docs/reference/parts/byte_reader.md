@@ -71,5 +71,5 @@ for (std::vector<uint8_t> chunk; r >> chunk;) {
 ## See Also
 
 - [byte_writer](byte_writer.md) -- write byte chunks to an fd
-- [lines](lines.md) -- split byte stream into newline-delimited strings
-- [fixed](fixed.md) -- split byte stream into fixed-size frames
+- [split_lines](split_lines.md) -- split byte stream into newline-delimited strings
+- [fixed_frames](fixed_frames.md) -- split byte stream into fixed-size frames

@@ -65,5 +65,5 @@ csp::spawn([w = std::move(w)] {
 ## See Also
 
 - [byte_reader](byte_reader.md) -- read byte chunks from an fd
-- [lines](lines.md) -- split byte stream into newline-delimited strings
-- [fixed](fixed.md) -- split byte stream into fixed-size frames
+- [split_lines](split_lines.md) -- split byte stream into newline-delimited strings
+- [fixed_frames](fixed_frames.md) -- split byte stream into fixed-size frames

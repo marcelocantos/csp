@@ -14,7 +14,7 @@ suspends cooperatively and is woken by the reactor when the fd becomes ready.
 
 ## Table of Contents
 
-1. [wait_readable / wait_writable](#wait_readable--wait_writable) -- suspend until fd is ready
+1. [wait_readable / wait_writable](#wait_readable-wait_writable) -- suspend until fd is ready
 2. [set_nonblock](#set_nonblock) -- set fd to non-blocking mode
 3. [read](#read) -- non-blocking read
 4. [write](#write) -- non-blocking write

@@ -125,8 +125,8 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 |---|---|---|
 | [byte_reader](parts/byte_reader.md) | producer | Produce byte chunks from a non-blocking file descriptor |
 | [byte_writer](parts/byte_writer.md) | consumer | Write byte chunks to a file descriptor |
-| [lines](parts/lines.md) | filter | Split a byte stream into newline-delimited strings |
-| [fixed](parts/fixed.md) | filter | Split a byte stream into fixed-size frames |
+| [split_lines](parts/split_lines.md) | filter | Split a byte stream into newline-delimited strings |
+| [fixed_frames](parts/fixed_frames.md) | filter | Split a byte stream into fixed-size frames |
 
 ## RPC
 

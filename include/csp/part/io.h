@@ -48,10 +48,10 @@ inline auto byte_writer(int fd) {
 // transform — no I/O knowledge, testable with synthetic data.
 // Flushes any partial trailing line (no trailing newline) on input
 // close.
-inline auto lines() {
+inline auto split_lines() {
     return make_filter<std::vector<uint8_t>, std::string>(
         [](reader<std::vector<uint8_t>> in, writer<std::string> out) {
-            internal::descr("lines");
+            internal::descr("split_lines");
 
             std::string pending;
             for (std::vector<uint8_t> chunk;
@@ -81,11 +81,11 @@ inline auto lines() {
 
 // Split a byte stream into fixed-size frames. Discards any partial
 // trailing frame on input close.
-inline auto fixed(size_t frame_size) {
+inline auto fixed_frames(size_t frame_size) {
     return make_filter<std::vector<uint8_t>>(
         [frame_size](reader<std::vector<uint8_t>> in,
                      writer<std::vector<uint8_t>> out) {
-            internal::descr("fixed");
+            internal::descr("fixed_frames");
 
             std::vector<uint8_t> frame;
             frame.reserve(frame_size);
