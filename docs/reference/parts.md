@@ -97,6 +97,8 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [fanout](parts/fanout.md) | producer | Broadcast input to a dynamic set of subscribers |
 | [chain](parts/chain.md) | producer | Concatenate multiple readers sequentially |
 | [merge](parts/merge.md) | producer | Non-deterministic merge of N inputs |
+| mux | producer | Non-deterministic merge of N heterogeneous inputs into `variant` |
+| demux | function | Split a `variant` stream into N typed readers |
 | [zip](parts/zip.md) | producer | Combine N inputs element-wise into tuples |
 | [unzip](parts/unzip.md) | filter | Split a tuple stream into N independent readers |
 

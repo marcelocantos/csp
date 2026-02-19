@@ -40,7 +40,7 @@ TEST_CASE("Quantize - Complex") {
 
     auto [quanta_w, quanta_r] = chan<int>{};
     reader<int> residue;
-    stats.spawn(enumerate<int>(std::vector<int>{qdata}, true).bind(std::move(quanta_w)));
+    stats.spawn(enumerate(std::vector<int>{qdata}, true).bind(std::move(quanta_w)));
 
     reader<int> sink;
     stats.spawn(quantize(std::move(source_r), std::move(quanta_r), ++sink, ++residue));

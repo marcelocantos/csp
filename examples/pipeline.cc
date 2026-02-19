@@ -19,7 +19,7 @@ int main() {
         // Source: integers 1..50
         std::vector<int> nums(50);
         for (int i = 0; i < 50; ++i) nums[i] = i + 1;
-        auto source = enumerate<int>(std::move(nums)).spawn();
+        auto source = enumerate(std::move(nums)).spawn();
 
         // map: square each value
         auto squared = map<int>([](int n) { return n * n; }).spawn(std::move(source));

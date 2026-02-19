@@ -370,6 +370,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `latch<T>()` | filter | Serve most recent value on demand |
 | `map<In,Out>(f)` | filter | Transform each element |
 | `merge<T>(readers...)` | producer | Non-deterministic merge |
+| `mux(reader<Ts>...)` | producer | Heterogeneous merge into `variant<Ts...>` |
+| `demux(reader<variant<Ts...>>)` | function | Split variant stream into N typed readers |
 | `metrics<T>()` | function | Passthrough with stats reporting |
 | `mute<T>()` | producer | Never-producing endpoint |
 | `nwise<T>(n)` | filter | Sliding n-element window as tuple |
