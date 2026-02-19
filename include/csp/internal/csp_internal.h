@@ -4,8 +4,10 @@
 #include <csp/fcontext.h>
 #include <csp/internal/stack_pool.h>
 
+#include <any>
 #include <atomic>
 #include <cstddef>
+#include <unordered_map>
 
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across microthread switches.
@@ -75,6 +77,7 @@ struct alignas(16) Microthread {
     std::atomic<uint32_t> alt_state{ALT_IDLE};
 
     uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
+    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // mt_local storage
 
     bool in_global_ = false;  // true while in the global run queue
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window

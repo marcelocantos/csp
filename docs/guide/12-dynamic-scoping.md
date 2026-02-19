@@ -131,19 +131,44 @@ Because the HAMT is persistent (structurally shared), spawn inheritance is
 O(1): the child simply copies the parent's root pointer and increments its
 refcount.
 
+## Microthread-local variables
+
+`csp::mt_local<T>` is the microthread analog of `thread_local` -- per-microthread
+storage that is **not inherited** by child microthreads and supports direct
+(non-deferred) mutation:
+
+```cpp
+static csp::mt_local<int> call_count;
+
+csp::spawn([]{
+    call_count = *call_count + 1;  // direct write
+    assert(*call_count == 1);
+
+    csp::spawn([]{
+        // Child starts fresh -- not inherited.
+        assert(*call_count == 0);
+    });
+});
+```
+
+Use `mt_local<T>` for per-microthread counters, caches, or scratch state that
+shouldn't leak into child microthreads. Use `dynamic<T>` when you want ambient
+context that flows through spawn chains.
+
 ## Summary
 
 | Type | Purpose |
 |------|---------|
-| `dynamic<T>` | Typed dynamic-scoped variable |
+| `dynamic<T>` | Dynamic-scoped variable (inherited, scoped via `local`) |
+| `mt_local<T>` | Microthread-local variable (not inherited, direct write) |
 | `local` | RAII scoped binding: `local l{var = val}` |
 | `context` | Copyable handle to an HAMT root (sendable over channels) |
 | `context_scope` | Install a foreign context (from `context::current()`) |
 
 | Operation | Semantics |
 |-----------|-----------|
-| `*var` | Read current value (O(log32 N)) |
-| `var = val` | Create a binding (deferred; must be passed to `local`) |
-| `local l{var = val}` | Install binding; reverts when `l` is destroyed |
+| `*var` | Read current value |
+| `var = val` | `dynamic<T>`: create binding (pass to `local`); `mt_local<T>`: direct write |
+| `local l{var = val}` | Install `dynamic<T>` binding; reverts when `l` is destroyed |
 | `context::current()` | Capture the current microthread's context |
 | `context_scope scope(ctx)` | Save current, install foreign context |

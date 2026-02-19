@@ -14,7 +14,9 @@ A C++ microthreading library with typed, synchronous channels inspired by
 - **50+ stream combinators** — `map`, `where`, `scan`, `merge`, `zip`, and more,
   with `operator|` composition
 - **Non-blocking I/O and Unix signals** via kqueue reactor
-- **Dynamic scoping** — microthread-scoped variables with copy-on-write isolation
+- **Dynamic scoping** — inherited variables with scoped bindings and copy-on-write
+  isolation
+- **Microthread-local storage** — per-microthread variables (not inherited)
 
 ## Quick start
 

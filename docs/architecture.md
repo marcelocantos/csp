@@ -1054,6 +1054,10 @@ hash chunks per level.
   `context::current()` captures the calling microthread's current context.
 - **`context_scope`**: RAII guard that saves the current `dyn_ctx_` on
   construction and installs a foreign `context`; restores on destruction.
+- **`mt_local<T>`**: Microthread-local variable. Per-microthread storage
+  using a lazily allocated `unordered_map<uint64_t, std::any>` on the
+  Microthread struct (`local_ctx_`). Not inherited on spawn. Direct
+  read/write (no deferred binding).
 
 ### Inheritance
 
@@ -1061,3 +1065,5 @@ When `spawn()` creates a new microthread, the child's `dyn_ctx_` is
 initialised from the parent's `dyn_ctx_` (with a HAMT root retain). This
 gives the child a snapshot of the parent's dynamic variables. Subsequent
 writes by either parent or child are isolated via path-copying.
+`local_ctx_` (microthread-local storage) is NOT inherited — each
+microthread starts with an empty map.

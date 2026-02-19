@@ -648,6 +648,7 @@ namespace csp {
 
         Microthread::~Microthread() {
             if (dyn_ctx_) csp::internal::hamt_release(dyn_ctx_);
+            delete local_ctx_;
         }
 
         void Microthread::schedule_local(bool make_current) {

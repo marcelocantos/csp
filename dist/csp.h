@@ -956,7 +956,9 @@ private:
 
 } // namespace csp::detail
 
+#include <any>
 #include <atomic>
+#include <unordered_map>
 
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across microthread switches.
@@ -1026,6 +1028,7 @@ struct alignas(16) Microthread {
     std::atomic<uint32_t> alt_state{ALT_IDLE};
 
     uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
+    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // mt_local storage
 
     bool in_global_ = false;  // true while in the global run queue
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
@@ -1058,7 +1061,6 @@ char const * getstatus(Microthread const * mt) {
 // BLR-free read path: hamt_get uses only integer arithmetic,
 // __builtin_popcount, and pointer chasing.
 
-#include <any>
 #include <cstdint>
 
 namespace csp::internal {
@@ -1224,7 +1226,8 @@ class local;
 // --- dynamic_binding ---
 // Deferred variable binding. Returned by dynamic<T>::operator=.
 // Only constructible by dynamic<T>, only consumable by local.
-// Throws in destructor if not consumed (catches bare `var = val;`).
+// Asserts in destructor if not consumed (catches bare `var = val;`).
+// [[nodiscard]] on operator= provides a compile-time warning regardless.
 class dynamic_binding {
     friend class local;
     template <typename> friend class dynamic;
@@ -1242,11 +1245,7 @@ public:
     dynamic_binding& operator=(const dynamic_binding&) = delete;
     dynamic_binding& operator=(dynamic_binding&&) = delete;
 
-    ~dynamic_binding() noexcept(false) {
-        if (!consumed_)
-            throw std::logic_error(
-                "dynamic_binding destroyed without csp::local");
-    }
+    ~dynamic_binding() { assert(consumed_ && "dynamic_binding destroyed without csp::local"); }
 };
 
 // --- local ---
@@ -1317,6 +1316,45 @@ public:
     // Bind: returns a deferred binding for use with csp::local.
     [[nodiscard]] dynamic_binding operator=(T val) {
         return {key_.id(), std::any(std::move(val))};
+    }
+};
+
+// --- mt_local<T> ---
+// Microthread-local variable. Like thread_local but per-microthread.
+// NOT inherited by child microthreads. Direct read/write (no local needed).
+template <typename T>
+class mt_local {
+    context_key key_;
+    std::optional<T> default_;
+
+public:
+    mt_local() {
+        if constexpr (std::is_default_constructible_v<T>)
+            default_.emplace();
+    }
+    explicit mt_local(T def) : default_(std::move(def)) {}
+
+    mt_local(const mt_local&) = delete;
+    mt_local& operator=(const mt_local&) = delete;
+
+    // Read: map lookup + any_cast. Returns by value.
+    T operator*() const {
+        auto* m = detail::g_self->local_ctx_;
+        if (m) {
+            auto it = m->find(key_.id());
+            if (it != m->end())
+                return *std::any_cast<T>(&it->second);
+        }
+        assert(default_.has_value());
+        return *default_;
+    }
+
+    // Write: direct mutation of per-microthread map.
+    mt_local& operator=(T val) {
+        auto*& m = detail::g_self->local_ctx_;
+        if (!m) m = new std::unordered_map<uint64_t, std::any>();
+        (*m)[key_.id()] = std::any(std::move(val));
+        return *this;
     }
 };
 
@@ -3175,7 +3213,6 @@ reader<T> gate(reader<T> data, reader<bool> control) {
 /* csp/part/group_by.h */
 
 
-#include <unordered_map>
 
 namespace csp::part {
 

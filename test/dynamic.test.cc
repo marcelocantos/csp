@@ -193,3 +193,83 @@ TEST_CASE("dynamic: multi-bind local") {
     csp::schedule();
 }
 
+// --- mt_local tests ---
+
+TEST_CASE("mt_local: basic read/write") {
+    RunStats stats;
+    static csp::mt_local<int> counter;
+    stats.spawn([&]{
+        CHECK_EQ(*counter, 0);
+        counter = 42;
+        CHECK_EQ(*counter, 42);
+        counter = *counter + 1;
+        CHECK_EQ(*counter, 43);
+    });
+    csp::schedule();
+}
+
+TEST_CASE("mt_local: explicit default") {
+    RunStats stats;
+    static csp::mt_local<int> counter(99);
+    stats.spawn([&]{
+        CHECK_EQ(*counter, 99);
+        counter = 1;
+        CHECK_EQ(*counter, 1);
+    });
+    csp::schedule();
+}
+
+TEST_CASE("mt_local: not inherited by child") {
+    RunStats stats;
+    static csp::mt_local<int> val;
+    auto result = csp::chan<int>();
+    stats.spawn([&]{
+        val = 42;
+        CHECK_EQ(*val, 42);
+        stats.spawn([&]{
+            // Child should NOT see parent's value.
+            result.w << *val;
+        });
+    });
+    stats.spawn([&]{
+        int v;
+        result.r >> v;
+        CHECK_EQ(v, 0);  // default, not 42
+    });
+    csp::schedule();
+}
+
+TEST_CASE("mt_local: independent per microthread") {
+    RunStats stats;
+    static csp::mt_local<int> val;
+    auto ch1 = csp::chan<int>();
+    auto ch2 = csp::chan<int>();
+    stats.spawn([&]{
+        val = 10;
+        ch1.w << *val;
+    });
+    stats.spawn([&]{
+        val = 20;
+        ch2.w << *val;
+    });
+    stats.spawn([&]{
+        int v1, v2;
+        ch1.r >> v1;
+        ch2.r >> v2;
+        CHECK_EQ(v1, 10);
+        CHECK_EQ(v2, 20);
+    });
+    csp::schedule();
+}
+
+TEST_CASE("mt_local: string type") {
+    RunStats stats;
+    static csp::mt_local<std::string> name("default");
+    stats.spawn([&]{
+        CHECK_EQ(*name, "default");
+        name = std::string("hello");
+        CHECK_EQ(*name, "hello");
+    });
+    csp::schedule();
+}
+

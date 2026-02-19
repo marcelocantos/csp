@@ -184,4 +184,43 @@ public:
     }
 };
 
+// --- mt_local<T> ---
+// Microthread-local variable. Like thread_local but per-microthread.
+// NOT inherited by child microthreads. Direct read/write (no local needed).
+template <typename T>
+class mt_local {
+    context_key key_;
+    std::optional<T> default_;
+
+public:
+    mt_local() {
+        if constexpr (std::is_default_constructible_v<T>)
+            default_.emplace();
+    }
+    explicit mt_local(T def) : default_(std::move(def)) {}
+
+    mt_local(const mt_local&) = delete;
+    mt_local& operator=(const mt_local&) = delete;
+
+    // Read: map lookup + any_cast. Returns by value.
+    T operator*() const {
+        auto* m = detail::g_self->local_ctx_;
+        if (m) {
+            auto it = m->find(key_.id());
+            if (it != m->end())
+                return *std::any_cast<T>(&it->second);
+        }
+        assert(default_.has_value());
+        return *default_;
+    }
+
+    // Write: direct mutation of per-microthread map.
+    mt_local& operator=(T val) {
+        auto*& m = detail::g_self->local_ctx_;
+        if (!m) m = new std::unordered_map<uint64_t, std::any>();
+        (*m)[key_.id()] = std::any(std::move(val));
+        return *this;
+    }
+};
+
 } // namespace csp

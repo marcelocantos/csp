@@ -273,8 +273,8 @@ csp::dynamic<int> depth(0);
 // Multiple bindings in one local.
 csp::local l{depth = 1, user = std::string("alice")};
 
-// Bare assignment throws (catches accidental unscoped mutations).
-depth = 42;  // throws std::logic_error in binding destructor
+// Bare assignment asserts in debug (catches accidental unscoped mutations).
+depth = 42;  // assert failure + [[nodiscard]] warning
 
 // context: snapshot + transfer across channels.
 auto ctx = csp::context::current();
@@ -284,6 +284,12 @@ spawn([ctx] {
 });
 
 // Spawned microthreads inherit parent's context automatically.
+
+// Microthread-local (not inherited, direct write).
+csp::mt_local<int> counter;
+counter = 42;       // direct write, no local needed
+int v = *counter;   // 42
+// Child microthreads start with default (0), not parent's value.
 ```
 
 ## Parts System
@@ -420,7 +426,7 @@ All in `namespace csp::part` (included via `csp.h`).
 
 10. **Dynamic bindings must use `local`**: `var = val` returns a deferred
     binding, not a mutation. Always wrap in `csp::local l{var = val}`.
-    Bare `var = val;` throws `std::logic_error` in the binding's destructor.
+    Bare `var = val;` asserts in debug builds.
 
 11. **Dynamic scoping is per-microthread**: Bindings via `local` use
     COW (path-copy HAMT). Changes are invisible to other microthreads

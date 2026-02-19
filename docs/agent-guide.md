@@ -284,6 +284,12 @@ spawn([ctx] {
 });
 
 // Spawned microthreads inherit parent's context automatically.
+
+// Microthread-local (not inherited, direct write).
+csp::mt_local<int> counter;
+counter = 42;       // direct write, no local needed
+int v = *counter;   // 42
+// Child microthreads start with default (0), not parent's value.
 ```
 
 ## Parts System
