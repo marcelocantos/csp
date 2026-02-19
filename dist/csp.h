@@ -89,6 +89,7 @@ private:
     LogScope csp__logScope__##line(logger, CSP__DETAIL__SOURCE_ROOT, file, line, func, fmt, func, ##__VA_ARGS__);
 
 #include <cassert>
+#include <climits>
 #include <exception>
 #include <stdint.h>
 
@@ -336,8 +337,26 @@ private:
     mutable bool active_ = true;
 };
 
+// Non-blocking guard for alt/prialt.  Fires (returning csp::none) when no
+// other channel operation is ready, instead of blocking.
+//
+//   switch (prialt(r >> n, w << val, csp::none)) {
+//   case 0:         /* read matched  */ break;
+//   case 1:         /* write matched */ break;
+//   case csp::none: /* nothing ready */ break;
+//   }
+struct none_t {
+    static constexpr int value = INT_MIN;
+    constexpr operator int() const { return value; }
+    internal::ChanOp chanop() const { return {{}, nullptr}; }
+    static void transfer(void*, void*) {}
+    void disarm() const {}
+};
+inline constexpr none_t none{};
+
 namespace detail {
 template <typename T> struct is_chan_op<chan_op<T>> : std::true_type {};
+template <> struct is_chan_op<none_t> : std::true_type {};
 }
 
 
@@ -753,10 +772,11 @@ template <alt_begin_f * begin_f, typename... Ops>
 inline
 std::enable_if_t<(is_chan_op<std::decay_t<Ops>>::value && ...), int>
 typed_alt(Ops &&... ops) {
+    constexpr bool has_none = (std::is_same_v<std::decay_t<Ops>, none_t> || ...);
     constexpr size_t N = sizeof...(Ops);
     internal::ChanOp chanops[N] = {ops.chanop()...};
     internal::AltMatch m;
-    begin_f(&m, chanops, N, false);
+    begin_f(&m, chanops, N, has_none);
     if (m.src && m.dst) {
         int idx = (m.result >= 0 ? m.result : ~m.result);
         transfer_at<0>(idx, m.src, m.dst, ops...);
@@ -783,6 +803,22 @@ int typed_alt_vec(std::vector<chan_op<T>> const & ops) {
     for (auto & op : ops) chanops.push_back(op.chanop());
     internal::AltMatch m;
     begin_f(&m, chanops.data(), (int)chanops.size(), 0);
+    if (m.src && m.dst)
+        chan_op<T>::transfer(m.src, m.dst);
+    internal::alt_end(&m);
+    for (auto & op : ops) op.disarm();
+    return m.result;
+}
+
+// Typed vector alt with nowait (for none support).
+template <alt_begin_f * begin_f, typename T>
+inline
+int typed_alt_vec_none(std::vector<chan_op<T>> const & ops) {
+    std::vector<internal::ChanOp> chanops;
+    chanops.reserve(ops.size());
+    for (auto & op : ops) chanops.push_back(op.chanop());
+    internal::AltMatch m;
+    begin_f(&m, chanops.data(), (int)chanops.size(), 1);
     if (m.src && m.dst)
         chan_op<T>::transfer(m.src, m.dst);
     internal::alt_end(&m);
@@ -820,6 +856,20 @@ template <typename T>
 inline
 int prialt(std::vector<chan_op<T>> const & ops) {
     return detail::typed_alt_vec<&internal::prialt_begin>(ops);
+}
+
+// --- vector+none overloads ---
+
+template <typename T>
+inline
+int alt(std::vector<chan_op<T>> const & ops, none_t) {
+    return detail::typed_alt_vec_none<&internal::alt_begin>(ops);
+}
+
+template <typename T>
+inline
+int prialt(std::vector<chan_op<T>> const & ops, none_t) {
+    return detail::typed_alt_vec_none<&internal::prialt_begin>(ops);
 }
 
 // Dead channel to assist non-blocking waits.
@@ -4095,6 +4145,23 @@ template <typename T, typename Engine = std::mt19937_64>
 auto choice(std::initializer_list<T> c,
             Engine eng = Engine{std::random_device{}()}) {
     return choice<T>(std::vector<T>(c), std::move(eng));
+}
+
+// Infinite stream of random byte chunks of the given size.
+template <typename Engine = std::mt19937_64>
+auto random_bytes(size_t chunk_size,
+                  Engine eng = Engine{std::random_device{}()}) {
+    return make_producer<std::vector<uint8_t>>(
+        [chunk_size, eng = std::move(eng)](
+            writer<std::vector<uint8_t>> sink) mutable {
+            internal::descr("random_bytes");
+            std::uniform_int_distribution<unsigned> dist(0, 255);
+            std::vector<uint8_t> buf(chunk_size);
+            for (;;) {
+                for (auto& b : buf) b = static_cast<uint8_t>(dist(eng));
+                if (!(sink << buf)) return;
+            }
+        });
 }
 
 // Reservoir shuffle: buffer n elements, then for each new input pick a

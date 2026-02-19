@@ -94,6 +94,7 @@ void run_blocking(std::function<void()> fn) {
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
@@ -386,6 +387,7 @@ namespace {
 
             if (all_null || nowait) {
                 unlock_all();
+                if (nowait) out->result = INT_MIN;
                 return;
             }
 
