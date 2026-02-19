@@ -74,6 +74,23 @@ auto choice(std::initializer_list<T> c,
     return choice<T>(std::vector<T>(c), std::move(eng));
 }
 
+// Infinite stream of random byte chunks of the given size.
+template <typename Engine = std::mt19937_64>
+auto random_bytes(size_t chunk_size,
+                  Engine eng = Engine{std::random_device{}()}) {
+    return make_producer<std::vector<uint8_t>>(
+        [chunk_size, eng = std::move(eng)](
+            writer<std::vector<uint8_t>> sink) mutable {
+            internal::descr("random_bytes");
+            std::uniform_int_distribution<unsigned> dist(0, 255);
+            std::vector<uint8_t> buf(chunk_size);
+            for (;;) {
+                for (auto& b : buf) b = static_cast<uint8_t>(dist(eng));
+                if (!(sink << buf)) return;
+            }
+        });
+}
+
 // Reservoir shuffle: buffer n elements, then for each new input pick a
 // random slot, emit the displaced element, and store the new one.  On
 // input exhaustion, Fisher-Yates shuffle the remaining buffer and emit.
