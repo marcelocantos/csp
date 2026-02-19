@@ -32,6 +32,17 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [count](parts/count.md) | producer | Arithmetic sequence (`start` to `stop` by `step`); also `count_forever` |
 | [enumerate](parts/enumerate.md) | producer | Stream elements of a container or initializer list; also `cycle` |
 
+## Randomness
+
+| Part | Type | Description |
+|---|---|---|
+| [uniform_int](parts/random.md#uniform_int) | producer | Uniform random integers in \[lo, hi\] |
+| [uniform_real](parts/random.md#uniform_real) | producer | Uniform random reals in \[lo, hi) |
+| [bernoulli](parts/random.md#bernoulli) | producer | Random bools with configurable probability |
+| [normal](parts/random.md#normal) | producer | Normally distributed values |
+| [choice](parts/random.md#choice) | producer | Random picks from a container |
+| [shuffle](parts/random.md#shuffle) | filter | Reservoir shuffle through a bounded buffer |
+
 ## Basic Transforms
 
 | Part | Type | Description |
