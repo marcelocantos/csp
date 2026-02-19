@@ -220,20 +220,20 @@ resolve_result resolve(const std::string& host,
 Layer 3 parts:
 ```cpp
 // byte_reader: fd → reader<vector<uint8_t>>. Owns fd, closes on exit.
-auto r = csp::part::byte_reader(fd).spawn();          // 4096 chunks
-auto r = csp::part::byte_reader(fd, 65536).spawn();   // custom size
+auto r = csp::part::io::byte_reader(fd).spawn();          // 4096 chunks
+auto r = csp::part::io::byte_reader(fd, 65536).spawn();   // custom size
 
 // byte_writer: writer<vector<uint8_t>> → fd. Owns fd, closes on exit.
-auto w = csp::part::byte_writer(fd).spawn();
+auto w = csp::part::io::byte_writer(fd).spawn();
 
 // split_lines: byte stream → string stream (LF-delimited).
-auto lr = csp::part::split_lines().spawn(std::move(byte_reader));
+auto lr = csp::part::io::split_lines().spawn(std::move(byte_reader));
 
 // fixed_frames: byte stream → fixed-size frames.
-auto fr = csp::part::fixed_frames(512).spawn(std::move(byte_reader));
+auto fr = csp::part::io::fixed_frames(512).spawn(std::move(byte_reader));
 
 // Pipeline composition:
-auto lr = csp::part::byte_reader(fd) | csp::part::split_lines();
+auto lr = csp::part::io::byte_reader(fd) | csp::part::io::split_lines();
 auto line_reader = lr.spawn();
 ```
 

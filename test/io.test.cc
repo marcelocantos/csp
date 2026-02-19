@@ -17,13 +17,13 @@ TEST_CASE("IO - WaitReadable") {
 
     int pipefd[2];
     REQUIRE_EQ(0, pipe(pipefd));
-    io::set_nonblock(pipefd[0]);
-    io::set_nonblock(pipefd[1]);
+    csp::io::set_nonblock(pipefd[0]);
+    csp::io::set_nonblock(pipefd[1]);
 
     std::atomic<bool> got_data{false};
 
     csp::spawn([&got_data, rfd = pipefd[0]] {
-        io::wait_readable(rfd);
+        csp::io::wait_readable(rfd);
         char buf[16];
         ssize_t n = ::read(rfd, buf, sizeof(buf));
         CHECK_GT(n, 0);
@@ -48,8 +48,8 @@ TEST_CASE("IO - WaitWritable") {
 
     int pipefd[2];
     REQUIRE_EQ(0, pipe(pipefd));
-    io::set_nonblock(pipefd[0]);
-    io::set_nonblock(pipefd[1]);
+    csp::io::set_nonblock(pipefd[0]);
+    csp::io::set_nonblock(pipefd[1]);
 
     std::atomic<bool> write_completed{false};
 
@@ -57,7 +57,7 @@ TEST_CASE("IO - WaitWritable") {
     csp::spawn([&write_completed, wfd = pipefd[1]] {
         // Write a byte — should succeed immediately.
         char c = 'Y';
-        io::wait_writable(wfd);
+        csp::io::wait_writable(wfd);
         ssize_t n = ::write(wfd, &c, 1);
         CHECK_EQ(1, n);
         write_completed.store(true, std::memory_order_relaxed);
@@ -83,8 +83,8 @@ TEST_CASE("IO - ReadWrite roundtrip") {
 
     int pipefd[2];
     REQUIRE_EQ(0, pipe(pipefd));
-    io::set_nonblock(pipefd[0]);
-    io::set_nonblock(pipefd[1]);
+    csp::io::set_nonblock(pipefd[0]);
+    csp::io::set_nonblock(pipefd[1]);
 
     const char* msg = "Hello, CSP I/O!";
     size_t msglen = strlen(msg);
@@ -92,7 +92,7 @@ TEST_CASE("IO - ReadWrite roundtrip") {
     std::atomic<bool> done{false};
 
     csp::spawn([wfd = pipefd[1], msg, msglen] {
-        ssize_t n = io::write(wfd, msg, msglen);
+        ssize_t n = csp::io::write(wfd, msg, msglen);
         CHECK_EQ(static_cast<ssize_t>(msglen), n);
         ::close(wfd);
     });
@@ -100,7 +100,7 @@ TEST_CASE("IO - ReadWrite roundtrip") {
     csp::spawn([&result, &done, rfd = pipefd[0], msglen] {
         size_t total = 0;
         while (total < msglen) {
-            ssize_t n = io::read(rfd, result.data() + total, msglen - total);
+            ssize_t n = csp::io::read(rfd, result.data() + total, msglen - total);
             if (n <= 0) break;
             total += static_cast<size_t>(n);
         }
@@ -124,7 +124,7 @@ TEST_CASE("IO - ByteReader") {
     REQUIRE_EQ(0, pipe(pipefd));
 
     // byte_reader owns pipefd[0] and closes it.
-    auto r = byte_reader(pipefd[0], 16).spawn();
+    auto r = part::io::byte_reader(pipefd[0], 16).spawn();
 
     std::vector<uint8_t> all;
     std::atomic<bool> done{false};
@@ -158,7 +158,7 @@ TEST_CASE("IO - ByteWriter") {
     REQUIRE_EQ(0, pipe(pipefd));
 
     // byte_writer owns pipefd[1] and closes it.
-    auto w = byte_writer(pipefd[1]).spawn();
+    auto w = part::io::byte_writer(pipefd[1]).spawn();
 
     std::atomic<bool> done{false};
     std::vector<char> result;
@@ -192,7 +192,7 @@ TEST_CASE("IO - ByteWriter") {
 
 TEST_CASE("IO - Lines framing") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = split_lines().spawn(std::move(r));
+    auto lr = part::io::split_lines().spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         std::string data = "hello\nworld\nfoo\n";
@@ -207,7 +207,7 @@ TEST_CASE("IO - Lines framing") {
 
 TEST_CASE("IO - Lines partial flush") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = split_lines().spawn(std::move(r));
+    auto lr = part::io::split_lines().spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         std::string data = "hello\nworld";
@@ -223,7 +223,7 @@ TEST_CASE("IO - Lines partial flush") {
 
 TEST_CASE("IO - Lines multi-chunk") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto lr = split_lines().spawn(std::move(r));
+    auto lr = part::io::split_lines().spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         // Split "hello\nworld\n" across two chunks.
@@ -243,7 +243,7 @@ TEST_CASE("IO - Lines multi-chunk") {
 
 TEST_CASE("IO - Fixed framing") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto fr = fixed_frames(4).spawn(std::move(r));
+    auto fr = part::io::fixed_frames(4).spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         // 10 bytes → 2 full frames of 4, partial 2 discarded.
@@ -268,7 +268,7 @@ TEST_CASE("IO - Fixed framing") {
 
 TEST_CASE("IO - Fixed multi-chunk") {
     auto [w, r] = chan<std::vector<uint8_t>>{};
-    auto fr = fixed_frames(4).spawn(std::move(r));
+    auto fr = part::io::fixed_frames(4).spawn(std::move(r));
 
     csp::spawn([w = std::move(w)] {
         // Frame boundary spans chunks.
@@ -294,7 +294,7 @@ TEST_CASE("IO - Composed lines from pipe") {
     int pipefd[2];
     REQUIRE_EQ(0, pipe(pipefd));
 
-    auto lr = split_lines().spawn(byte_reader(pipefd[0]).spawn());
+    auto lr = part::io::split_lines().spawn(part::io::byte_reader(pipefd[0]).spawn());
 
     std::vector<std::string> result;
     std::atomic<bool> done{false};
@@ -330,15 +330,15 @@ TEST_CASE("IO - Multiple concurrent waiters") {
     int pipes[N][2];
     for (int i = 0; i < N; ++i) {
         REQUIRE_EQ(0, pipe(pipes[i]));
-        io::set_nonblock(pipes[i][0]);
-        io::set_nonblock(pipes[i][1]);
+        csp::io::set_nonblock(pipes[i][0]);
+        csp::io::set_nonblock(pipes[i][1]);
     }
 
     std::atomic<int> count{0};
 
     for (int i = 0; i < N; ++i) {
         csp::spawn([&count, rfd = pipes[i][0]] {
-            io::wait_readable(rfd);
+            csp::io::wait_readable(rfd);
             char buf[4];
             ::read(rfd, buf, sizeof(buf));
             count.fetch_add(1, std::memory_order_relaxed);
@@ -396,7 +396,7 @@ TEST_CASE("IO - Resolve localhost") {
         struct addrinfo hints{};
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
-        auto r = io::resolve("localhost", "80", &hints);
+        auto r = csp::io::resolve("localhost", "80", &hints);
         CHECK_EQ(0, r.error);
         CHECK(r.info != nullptr);
         resolved.store(true, std::memory_order_relaxed);

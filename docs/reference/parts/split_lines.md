@@ -51,7 +51,7 @@ using namespace csp;
 using namespace csp::part;
 
 auto [w, r] = chan<std::vector<uint8_t>>{};
-auto lr = split_lines().spawn(std::move(r));
+auto lr = io::split_lines().spawn(std::move(r));
 
 csp::spawn([w = std::move(w)] {
     std::string data = "hello\nworld\nfoo\n";
@@ -74,7 +74,7 @@ int pipefd[2];
 pipe(pipefd);
 
 // Compose: fd -> byte chunks -> lines
-auto lr = split_lines().spawn(byte_reader(pipefd[0]).spawn());
+auto lr = io::split_lines().spawn(io::byte_reader(pipefd[0]).spawn());
 
 csp::spawn([wfd = pipefd[1]] {
     const char* data = "alpha\nbeta\ngamma\n";

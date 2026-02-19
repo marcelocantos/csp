@@ -51,7 +51,7 @@ int pipefd[2];
 pipe(pipefd);
 
 // byte_writer owns pipefd[1] and closes it on exit.
-auto w = byte_writer(pipefd[1]).spawn();
+auto w = io::byte_writer(pipefd[1]).spawn();
 
 csp::spawn([w = std::move(w)] {
     std::string msg = "CSP writes!";

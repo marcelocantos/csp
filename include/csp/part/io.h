@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace csp::part {
+namespace csp::part::io {
 
 // Produce byte chunks from a non-blocking fd. Each message contains
 // as much data as was available from a single read() call. Owns the
@@ -15,11 +15,11 @@ inline auto byte_reader(int fd, size_t chunk_size = 4096) {
     return make_producer<std::vector<uint8_t>>(
         [fd, chunk_size](writer<std::vector<uint8_t>> out) {
             internal::descr("byte_reader");
-            io::set_nonblock(fd);
+            csp::io::set_nonblock(fd);
 
             std::vector<uint8_t> buf(chunk_size);
             for (;;) {
-                ssize_t n = io::read(fd, buf.data(), buf.size());
+                ssize_t n = csp::io::read(fd, buf.data(), buf.size());
                 if (n <= 0) break;
                 buf.resize(static_cast<size_t>(n));
                 if (!(out << std::move(buf))) break;
@@ -35,10 +35,10 @@ inline auto byte_writer(int fd) {
     return make_consumer<std::vector<uint8_t>>(
         [fd](reader<std::vector<uint8_t>> in) {
             internal::descr("byte_writer");
-            io::set_nonblock(fd);
+            csp::io::set_nonblock(fd);
 
             for (std::vector<uint8_t> chunk; in >> chunk;) {
-                if (io::write(fd, chunk.data(), chunk.size()) < 0) break;
+                if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
             }
             ::close(fd);
         });

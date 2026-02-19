@@ -53,7 +53,7 @@ int pipefd[2];
 pipe(pipefd);
 
 // byte_reader owns pipefd[0] and closes it on exit.
-auto r = byte_reader(pipefd[0], 16).spawn();
+auto r = io::byte_reader(pipefd[0], 16).spawn();
 
 csp::spawn([wfd = pipefd[1]] {
     const char* msg = "Hello, CSP!";

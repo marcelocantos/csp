@@ -51,7 +51,7 @@ using namespace csp;
 using namespace csp::part;
 
 auto [w, r] = chan<std::vector<uint8_t>>{};
-auto fr = fixed_frames(4).spawn(std::move(r));
+auto fr = io::fixed_frames(4).spawn(std::move(r));
 
 csp::spawn([w = std::move(w)] {
     // 10 bytes -> 2 full frames of 4, partial 2 discarded.
@@ -68,7 +68,7 @@ auto f2 = fr.read();  // {'C','C','D','D'}
 
 ```cpp
 auto [w, r] = chan<std::vector<uint8_t>>{};
-auto fr = fixed_frames(4).spawn(std::move(r));
+auto fr = io::fixed_frames(4).spawn(std::move(r));
 
 csp::spawn([w = std::move(w)] {
     // Frame boundary spans chunks.
@@ -87,7 +87,7 @@ int pipefd[2];
 pipe(pipefd);
 
 // Compose: fd -> byte chunks -> fixed-size frames
-auto fr = fixed_frames(64).spawn(byte_reader(pipefd[0]).spawn());
+auto fr = io::fixed_frames(64).spawn(io::byte_reader(pipefd[0]).spawn());
 ```
 
 ## See Also
