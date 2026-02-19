@@ -150,35 +150,49 @@ graph LR
     WRITE -->|"loop"| PRIALT
 ```
 
-## Non-blocking poll with skip
+## Non-blocking poll with `none`
 
 Sometimes you want to check whether a channel has data without blocking. CSP
-provides `skip` -- a global `reader<>` whose writer is permanently dead.
-Since `~skip` fires immediately (the writer is already gone), combining it
-with `prialt` gives you a non-blocking poll:
+provides `none` -- a guard that fires when no other operation is ready, turning
+an alt/prialt into a non-blocking poll:
 
 ```cpp
 int n;
-switch (prialt(r >> n, ~skip)) {
-case  0: /* r had data ready -- n is set */ break;
-case ~1: /* no data available right now  */ break;
+switch (prialt(r >> n, csp::none)) {
+case  0:         /* r had data ready -- n is set */ break;
+case csp::none:  /* no data available right now  */ break;
 }
 ```
 
-Because `prialt` checks left to right, it tries `r >> n` first. If a writer
-is waiting on `r`, the read completes. If not, `~skip` fires immediately
-(since skip's writer is dead), and the call returns without blocking.
+`prialt` checks left to right, trying `r >> n` first. If a writer is waiting
+on `r`, the read completes. If not, `none` fires immediately and the call
+returns `csp::none` (`INT_MIN`) without blocking.
 
 This is useful for draining a channel, trying speculative work, or
 implementing try-send patterns:
 
 ```cpp
 // Try to send without blocking.
-switch (prialt(w << value, ~skip)) {
-case  0: /* sent successfully */ break;
-case ~1: /* receiver not ready */ break;
+switch (prialt(w << value, csp::none)) {
+case  0:         /* sent successfully */ break;
+case csp::none:  /* receiver not ready */ break;
 }
 ```
+
+`csp::none` is a `constexpr` value equal to `INT_MIN`, so it works directly
+as a `case` label in switch statements.
+
+**Dead channels take priority over none.** If a channel's peer is already dead,
+alt/prialt reports the death event (complemented index) rather than `none`.
+This ensures that observable lifecycle events are never masked.
+
+### Legacy: `~skip`
+
+The older non-blocking idiom uses `skip` -- a global `reader<>` whose writer
+is permanently dead. Since `~skip` fires immediately, `prialt(op, ~skip)`
+gives the same non-blocking semantics. `none` is preferred for new code: it
+avoids the indirection of a death-watch, returns a clean constant for switch
+statements, and works with both variadic and vector overloads.
 
 ## Timeout patterns
 
@@ -298,7 +312,7 @@ statement, with a few differences:
 |---|---|---|
 | Fair selection | yes (random among ready cases) | `alt` = fair, `prialt` = priority |
 | Channel death detection | requires `ok` idiom: `v, ok := <-ch` | vultures: `~ch` as a first-class operation |
-| Non-blocking | `default:` case | `prialt(op, ~skip)` |
+| Non-blocking | `default:` case | `prialt(op, csp::none)` |
 | Timeout | `case <-time.After(d):` | `prialt(op, after(d) >> p)` |
 | Dynamic channel count | reflect.Select | `std::vector<chan_op<T>>` |
 | Return value | executes case body directly | returns 0-based index |

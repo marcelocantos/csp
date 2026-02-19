@@ -34,9 +34,16 @@ template <typename T> class chan_op;
 // Empty-message sentinel. chan<> is shorthand for chan<poke_t>.
 extern struct poke_t {} poke;
 
-// Dead-channel reader (always matches immediately as dead). Useful for
-// non-blocking alt: prialt(ch >> val, ~skip)
+// Dead-channel reader (always matches immediately as dead).
 extern reader<> const skip;
+
+// Non-blocking guard. Fires when no other op is ready.
+// Returns csp::none (INT_MIN), usable as a switch case label.
+//   switch (prialt(ch >> val, csp::none)) {
+//     case 0:         /* read matched  */ break;
+//     case csp::none: /* nothing ready */ break;
+//   }
+inline constexpr none_t none{};
 }
 ```
 
@@ -134,10 +141,14 @@ ops.push_back(r1 >> v);
 ops.push_back(r2 >> v);
 int result = alt(ops);  // or prialt(ops)
 
-// Non-blocking try: use skip (dead reader, always ready).
-poke_t p;
-if (prialt(r >> v, skip >> p) >= 0) { /* got v */ }
-else { /* would block */ }
+// Non-blocking poll with none.
+switch (prialt(r >> v, csp::none)) {
+    case 0:         /* got v */       break;
+    case csp::none: /* would block */ break;
+}
+
+// Vector overload with none.
+int result = alt(ops, csp::none);  // or prialt(ops, csp::none)
 ```
 
 ## Spawn Helpers

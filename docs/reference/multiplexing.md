@@ -27,8 +27,9 @@ stateDiagram-v2
 3. [Death-watch](#death-watch) -- `~reader` / `~writer`
 4. [chan_op\<T\>](#chan_opt) -- channel operation descriptors
 5. [chan_op RAII](#chan_op-raii) -- standalone blocking via destructor
-6. [skip](#skip) -- non-blocking guard
-7. [Interactions](#interactions)
+6. [none](#none) -- non-blocking guard (preferred)
+7. [skip](#skip) -- non-blocking guard (legacy)
+8. [Interactions](#interactions)
 
 ---
 
@@ -336,9 +337,82 @@ if (w << 42) {
 
 ---
 
+## none
+
+A non-blocking guard for `alt` and `prialt`.
+
+### Signature
+
+```cpp
+struct none_t {
+    static constexpr int value = INT_MIN;
+    constexpr operator int() const;
+};
+inline constexpr none_t none{};
+
+// Vector overloads with none:
+template <typename T>
+int alt(std::vector<chan_op<T>> const & ops, none_t);
+template <typename T>
+int prialt(std::vector<chan_op<T>> const & ops, none_t);
+```
+
+**Header:** `#include "csp.h"`
+
+### Description
+
+`none` is an always-ready guard that fires when no other channel operation can
+proceed, turning `alt`/`prialt` into non-blocking polls. When `none` fires,
+the return value is `csp::none` (`INT_MIN`), which can be used directly as a
+`case` label in switch statements.
+
+`none` participates in both variadic and vector overloads. In the variadic
+form, `none` appears alongside other channel operations. In the vector form,
+`none` is passed as a second argument.
+
+**Dead channels take priority over none.** If a channel's peer endpoint is
+already dead, alt/prialt reports the death event (complemented index) rather
+than `none`. This ensures that observable lifecycle events are never masked.
+
+### Transition rules ([syntax](transition-rules.md))
+
+```
+alt/prialt(ops..., none)  ─┤peer ready├────➤ transfer; index
+alt/prialt(ops..., none)  ─┤peer dead├─────➤ ~index
+alt/prialt(ops..., none)  ─┤no peer ready├─➤ csp::none (INT_MIN)
+```
+
+### Example
+
+```cpp
+csp::chan<int> ch;
+int n = -1;
+
+// Non-blocking read with switch on result.
+switch (csp::prialt(ch.r >> n, csp::none)) {
+case 0:          /* read succeeded */           break;
+case csp::none:  /* nothing ready, n unchanged */ break;
+}
+
+// Non-blocking try-send.
+switch (csp::prialt(ch.w << 42, csp::none)) {
+case 0:          /* sent successfully */  break;
+case csp::none:  /* receiver not ready */ break;
+}
+
+// Vector overload.
+std::vector<csp::chan_op<int>> ops;
+ops.push_back(ch.r >> n);
+if (csp::alt(ops, csp::none) == csp::none) {
+    // nothing ready
+}
+```
+
+---
+
 ## skip
 
-A pre-dead reader used as a non-blocking guard.
+A pre-dead reader used as a non-blocking guard (legacy).
 
 ### Signature
 
@@ -354,6 +428,10 @@ extern reader<> const skip;
 its peer is already dead, `~skip` always matches immediately in any
 `alt`/`prialt`. This provides a non-blocking escape hatch: if no other
 operation is ready, the death-watch on `skip` fires without suspending.
+
+**Prefer `none`** for new code. `none` avoids the indirection of a death-watch,
+returns a clean `constexpr` constant for switch statements, and works with both
+variadic and vector overloads.
 
 ### Example
 

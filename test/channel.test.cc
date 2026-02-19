@@ -801,6 +801,117 @@ TEST_CASE("Channel - NonBlocking") {
     while (csp::internal::run()) { }
 }
 
+TEST_CASE("Channel - None basic") {
+    RunStats stats;
+
+    chan<int> ch;
+    auto r = ch.r.copy();
+    int n = -1;
+
+    // No writer ready; none fires immediately.
+    CHECK_EQ(csp::none, prialt(r >> n, csp::none));
+    CHECK_EQ(-1, n);  // n unchanged
+
+    ch.release();
+    while (csp::internal::run()) { }
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("Channel - None ready channel wins") {
+    RunStats stats;
+
+    chan<int> ch;
+    auto r = ch.r.copy();
+
+    // Make a writer ready.
+    stats.spawn([w = ch.w.copy()]{ w << 42; });
+    ch.release();
+    while (csp::internal::run()) { }
+
+    // Writer is waiting; read should succeed over none.
+    int n = -1;
+    CHECK_EQ(0, prialt(r >> n, csp::none));
+    CHECK_EQ(42, n);
+
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("Channel - None dead channel") {
+    RunStats stats;
+
+    chan<int> ch;
+    auto r = ch.r.copy();
+    int n = -1;
+
+    // Kill the writer end.
+    ch.release();
+
+    // Dead channel reports death (negative result), not none.
+    int result = prialt(r >> n, csp::none);
+    CHECK_EQ(~0, result);
+    CHECK_EQ(-1, n);
+
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("Channel - None switch pattern") {
+    RunStats stats;
+
+    chan<int> ch;
+    auto r = ch.r.copy();
+    int n = -1;
+
+    bool hit_none = false;
+    switch (prialt(r >> n, csp::none)) {
+    case 0:         hit_none = false; break;
+    case csp::none: hit_none = true;  break;
+    }
+    CHECK(hit_none);
+    CHECK_EQ(-1, n);
+
+    ch.release();
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("Channel - None with alt") {
+    RunStats stats;
+
+    chan<int> ch;
+    auto r = ch.r.copy();
+    int n = -1;
+
+    // alt randomises but with no ready peer, none still fires.
+    CHECK_EQ(csp::none, alt(r >> n, csp::none));
+    CHECK_EQ(-1, n);
+
+    ch.release();
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("Channel - None vector") {
+    RunStats stats;
+
+    chan<int> ch;
+    auto r = ch.r.copy();
+    int n = -1;
+
+    std::vector<chan_op<int>> ops;
+    ops.push_back(r >> n);
+
+    CHECK_EQ(csp::none, alt(ops, csp::none));
+    CHECK_EQ(-1, n);
+
+    ops.clear();
+    ch.release();
+    r = {};
+    while (csp::internal::run()) { }
+}
+
 TEST_CASE("Channel - AltManyChannels") {
     RunStats stats;
 
