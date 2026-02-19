@@ -2572,39 +2572,6 @@ auto concat_all() {
 
 }
 
-/* csp/part/concat_map.h */
-
-
-/* csp/part/map.h */
-
-
-namespace csp::part {
-
-// Transform each element through a function.
-// map<A, B>(f) converts reader<A> to reader<B>. When A == B, the second
-// template parameter can be omitted: map<int>([](int n) { return n + 1; }).
-template <typename A, typename B = A, typename F>
-auto map(F&& f) {
-    return make_filter<A, B>([f = std::forward<F>(f)](reader<A> in, writer<B> out) {
-        internal::descr("map");
-
-        for (A a; alt(in >> a, ~out) >= 0 && out << f(a);) { }
-    });
-}
-
-}
-
-namespace csp::part {
-
-// Maps each input to a sub-stream via f, then drains each sequentially.
-// Equivalent to map<A, reader<B>>(f) | concat_all<B>().
-template <typename A, typename B, typename F>
-auto concat_map(F&& f) {
-    return map<A, reader<B>>(std::forward<F>(f)) | concat_all<B>();
-}
-
-}
-
 /* csp/part/count.h */
 
 
@@ -2944,21 +2911,6 @@ auto exhaust_all() {
             }
         }
     });
-}
-
-}
-
-/* csp/part/exhaust_map.h */
-
-
-namespace csp::part {
-
-// Maps each input to a sub-stream via f, ignoring new inputs while draining.
-// While a sub-stream is active, new sub-streams are discarded.
-// Equivalent to map<A, reader<B>>(f) | exhaust_all<B>().
-template <typename A, typename B, typename F>
-auto exhaust_map(F&& f) {
-    return map<A, reader<B>>(std::forward<F>(f)) | exhaust_all<B>();
 }
 
 }
@@ -3612,6 +3564,25 @@ inline auto const latch = make_filter<T>([](reader<T> in, writer<T> out) {
 
 }
 
+/* csp/part/map.h */
+
+
+namespace csp::part {
+
+// Transform each element through a function.
+// map<A, B>(f) converts reader<A> to reader<B>. When A == B, the second
+// template parameter can be omitted: map<int>([](int n) { return n + 1; }).
+template <typename A, typename B = A, typename F>
+auto map(F&& f) {
+    return make_filter<A, B>([f = std::forward<F>(f)](reader<A> in, writer<B> out) {
+        internal::descr("map");
+
+        for (A a; alt(in >> a, ~out) >= 0 && out << f(a);) { }
+    });
+}
+
+}
+
 /* csp/part/merge.h */
 
 
@@ -3733,20 +3704,6 @@ auto merge_all() {
             }
         }
     });
-}
-
-}
-
-/* csp/part/merge_map.h */
-
-
-namespace csp::part {
-
-// Maps each input to a sub-stream via f, then merges all concurrently.
-// Equivalent to map<A, reader<B>>(f) | merge_all<B>().
-template <typename A, typename B, typename F>
-auto merge_map(F&& f) {
-    return map<A, reader<B>>(std::forward<F>(f)) | merge_all<B>();
 }
 
 }
@@ -4704,21 +4661,6 @@ auto switch_all() {
             }
         }
     });
-}
-
-}
-
-/* csp/part/switch_map.h */
-
-
-namespace csp::part {
-
-// Maps each input to a sub-stream via f, switching to the latest.
-// Previous sub-streams are cancelled when a new one arrives.
-// Equivalent to map<A, reader<B>>(f) | switch_all<B>().
-template <typename A, typename B, typename F>
-auto switch_map(F&& f) {
-    return map<A, reader<B>>(std::forward<F>(f)) | switch_all<B>();
 }
 
 }

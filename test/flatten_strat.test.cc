@@ -9,7 +9,7 @@ using namespace csp::part;
 TEST_SUITE("FlattenStrategies") {
 
 // ========================================================================
-// merge_all / merge_map
+// merge_all
 // ========================================================================
 
 TEST_CASE("merge_all - concurrent merge") {
@@ -51,10 +51,10 @@ TEST_CASE("merge_all - output death") {
     csp::schedule();
 }
 
-TEST_CASE("merge_map - same as flat_map") {
-    auto r = merge_map<int, int>([](int n) {
-                 return count(n * 10, n * 10 + 3).spawn();
-             })
+TEST_CASE("map | merge_all - same as flat_map") {
+    auto r = (map<int, reader<int>>([](int n) {
+                  return count(n * 10, n * 10 + 3).spawn();
+              }) | merge_all<int>())
                  .spawn(count(1, 4).spawn());
 
     std::vector<int> got;
@@ -64,7 +64,7 @@ TEST_CASE("merge_map - same as flat_map") {
 }
 
 // ========================================================================
-// concat_all / concat_map
+// concat_all
 // ========================================================================
 
 TEST_CASE("concat_all - sequential drain") {
@@ -109,10 +109,10 @@ TEST_CASE("concat_all - empty sub-stream") {
     CHECK_EQ(std::vector<int>({1, 2, 3}), got);
 }
 
-TEST_CASE("concat_map - sequential order") {
-    auto r = concat_map<int, int>([](int n) {
-                 return count(n * 10, n * 10 + 3).spawn();
-             })
+TEST_CASE("map | concat_all - sequential order") {
+    auto r = (map<int, reader<int>>([](int n) {
+                  return count(n * 10, n * 10 + 3).spawn();
+              }) | concat_all<int>())
                  .spawn(count(1, 4).spawn());
 
     std::vector<int> got;
@@ -120,12 +120,12 @@ TEST_CASE("concat_map - sequential order") {
     CHECK_EQ(std::vector<int>({10, 11, 12, 20, 21, 22, 30, 31, 32}), got);
 }
 
-TEST_CASE("concat_map - output death") {
+TEST_CASE("map | concat_all - output death") {
     RunStats stats;
 
-    auto r = concat_map<int, int>([](int n) {
-                 return count_forever(n).spawn();
-             })
+    auto r = (map<int, reader<int>>([](int n) {
+                  return count_forever(n).spawn();
+              }) | concat_all<int>())
                  .spawn(count_forever(0).spawn());
 
     for (int i = 0; i < 10; ++i) r.read();
@@ -134,7 +134,7 @@ TEST_CASE("concat_map - output death") {
 }
 
 // ========================================================================
-// switch_all / switch_map
+// switch_all
 // ========================================================================
 
 TEST_CASE("switch_all - latest wins") {
@@ -186,13 +186,13 @@ TEST_CASE("switch_all - empty input") {
     CHECK_FALSE(bool(out >> dummy));
 }
 
-TEST_CASE("switch_map - cancel previous") {
+TEST_CASE("map | switch_all - cancel previous") {
     RunStats stats;
 
     auto [in_w, in_r] = chan<int>{};
-    auto out = switch_map<int, int>([](int n) {
-                   return count_forever(n * 10).spawn();
-               })
+    auto out = (map<int, reader<int>>([](int n) {
+                    return count_forever(n * 10).spawn();
+                }) | switch_all<int>())
                    .spawn(std::move(in_r));
 
     stats.spawn([in_w = std::move(in_w)] {
@@ -215,7 +215,7 @@ TEST_CASE("switch_map - cancel previous") {
 }
 
 // ========================================================================
-// exhaust_all / exhaust_map
+// exhaust_all
 // ========================================================================
 
 TEST_CASE("exhaust_all - discard while draining") {
@@ -276,13 +276,13 @@ TEST_CASE("exhaust_all - empty input") {
     CHECK_FALSE(bool(out >> dummy));
 }
 
-TEST_CASE("exhaust_map - ignore while busy") {
+TEST_CASE("map | exhaust_all - ignore while busy") {
     RunStats stats;
 
     auto [in_w, in_r] = chan<int>{};
-    auto out = exhaust_map<int, int>([](int n) {
-                   return count(n * 10, n * 10 + 3).spawn();
-               })
+    auto out = (map<int, reader<int>>([](int n) {
+                    return count(n * 10, n * 10 + 3).spawn();
+                }) | exhaust_all<int>())
                    .spawn(std::move(in_r));
 
     stats.spawn([in_w = std::move(in_w)] {
