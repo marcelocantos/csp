@@ -144,16 +144,17 @@ TEST_CASE("Sample - overwritten values go to dead letter") {
 
     auto [dl_w, dl_r] = chan<int>{};
     auto [trig_w, trig_r] = chan<>{};
-    auto r = sample(count(1, 4).spawn(), std::move(trig_r), std::move(dl_w)).spawn();
+    auto [src_w, src_r] = chan<int>{};
+    auto r = sample(std::move(src_r), std::move(trig_r), std::move(dl_w)).spawn();
 
     std::vector<int> dead;
     stats.spawn([dl_r = std::move(dl_r), &dead]{
         for (int v; dl_r >> v;) dead.push_back(v);
     });
 
-    stats.spawn([trig_w = std::move(trig_w)]{
-        // Give scheduler time to deliver source values before triggering.
-        csp::yield();
+    stats.spawn([src_w = std::move(src_w), trig_w = std::move(trig_w)]{
+        // Send 1, 2, 3 then trigger.
+        src_w << 1; src_w << 2; src_w << 3;
         trig_w << poke;
     });
 
@@ -173,10 +174,11 @@ TEST_CASE("Sample - no dead letter, no crash") {
     RunStats stats;
 
     auto [trig_w, trig_r] = chan<>{};
-    auto r = sample(count(1, 4).spawn(), std::move(trig_r)).spawn();
+    auto [src_w, src_r] = chan<int>{};
+    auto r = sample(std::move(src_r), std::move(trig_r)).spawn();
 
-    stats.spawn([trig_w = std::move(trig_w)]{
-        csp::yield();
+    stats.spawn([src_w = std::move(src_w), trig_w = std::move(trig_w)]{
+        src_w << 1; src_w << 2; src_w << 3;
         trig_w << poke;
     });
 
