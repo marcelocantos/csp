@@ -23,7 +23,7 @@ CSP is distributed as three files. Copy them into your project from `dist/`:
 | File | Notes |
 |---|---|
 | `csp.h` | Single header — all public API |
-| `csp.cpp` | Implementation + fcontext assembly |
+| `csp.cpp` | Implementation source |
 | `csp_globals.cpp` | Thread-local state — **must be a separate translation unit** ([why](docs/tls-caching-bug.md)) |
 
 No external dependencies. Compile both `.cpp` files alongside your code:

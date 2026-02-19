@@ -10,15 +10,12 @@ memory, no locks.
 ## Prerequisites
 
 - **C++17** compiler (Clang with libc++ recommended)
-- **Boost.Context** (linked library for coroutine context switching)
 
-## Building
+## Integration
 
-```bash
-make        # build and run all tests
-make build  # compile only
-make clean  # remove build artifacts
-```
+Copy the three distribution files (`csp.h`, `csp.cpp`, `csp_globals.cpp`) into
+your project and compile both `.cpp` files as separate translation units. There
+are no external dependencies.
 
 ## Your first program
 

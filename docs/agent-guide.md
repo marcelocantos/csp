@@ -425,4 +425,4 @@ make build  # compile only
 make clean  # remove build/
 ```
 
-Compiler: Clang, C++17, libc++, `-O2 -g`. Boost.Context required.
+Compiler: Clang, C++17, libc++, `-O2 -g`.
