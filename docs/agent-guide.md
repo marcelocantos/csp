@@ -349,6 +349,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `blackhole<T>()` | consumer | Discard all values |
 | `buffer<T>(n)` | filter | Bounded async FIFO buffer (size n) |
 | `chain<T>(readers...)` | producer | Concatenate readers sequentially |
+| `collect<T>(iter)` | consumer | Consume stream into output iterator |
+| `conflate<T>(f)` | filter | Merge pending values when downstream is slow |
 | `count<T>(start,stop,step)` | producer | Numeric sequence [start,stop) |
 | `count_forever<T>(start,step)` | producer | Unbounded numeric sequence |
 | `deaf<T>()` | consumer | Never-accepting endpoint |

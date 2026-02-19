@@ -12,6 +12,8 @@
 #        make examples                    (build examples)
 #        make run-examples                (build + run examples)
 
+MAKEFLAGS += -j$(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
 # Comma helper for $(subst) in BUILDDIR.
 , := ,
 

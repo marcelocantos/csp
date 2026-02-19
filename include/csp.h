@@ -22,6 +22,7 @@
 #include "csp/part/buffer.h"
 #include "csp/part/chain.h"
 #include "csp/part/collect.h"
+#include "csp/part/conflate.h"
 #include "csp/part/concat_all.h"
 #include "csp/part/count.h"
 #include "csp/part/deaf.h"
