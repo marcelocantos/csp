@@ -9,7 +9,7 @@ the stats reader is read.
 ```cpp
 struct metrics_snapshot {
     size_t count;
-    std::chrono::steady_clock::duration elapsed;
+    csp::duration elapsed;
 };
 
 template <typename T>

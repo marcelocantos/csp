@@ -10,7 +10,7 @@ static Logger g_log("Timer.Test");
 TEST_CASE("Timer - Sleep") {
     RunStats stats;
 
-    auto start = clock::now();
+    auto start = std::chrono::steady_clock::now();
     bool ran = false;
 
     stats.spawn([&]{
@@ -20,19 +20,19 @@ TEST_CASE("Timer - Sleep") {
 
     csp::schedule();
     CHECK(ran);
-    CHECK_GE(clock::now() - start, 10ms);
+    CHECK_GE(std::chrono::steady_clock::now() - start, 10ms);
 }
 
 TEST_CASE("Timer - After") {
     RunStats stats;
 
-    auto start = clock::now();
-    clock::duration elapsed{};
+    auto start = std::chrono::steady_clock::now();
+    duration elapsed{};
 
     stats.spawn([&]{
         auto timer = csp::after(10ms);
         timer.read();
-        elapsed = clock::now() - start;
+        elapsed = std::chrono::steady_clock::now() - start;
     });
 
     csp::schedule();
@@ -66,7 +66,7 @@ TEST_CASE("Timer - Tick") {
 
     stats.spawn([&]{
         auto ticker = csp::tick(interval);
-        clock::time_point prev = clock::now();
+        time_point prev = std::chrono::steady_clock::now();
         for (int i = 0; i < 3; ++i) {
             auto tp = ticker.read();
             if (tp - prev < threshold) ok = false;
@@ -133,18 +133,18 @@ TEST_CASE("Timer - Controlled duration") {
     RunStats stats;
 
     auto threshold = CSP_TEST_SANITIZER ? 8ms : 4ms;
-    std::vector<clock::duration> intervals;
+    std::vector<duration> intervals;
 
     stats.spawn([&]{
-        chan<clock::duration> ctl;
+        chan<duration> ctl;
         auto t = timer(std::move(ctl.r));
 
         csp::spawn([w = std::move(ctl.w)]() mutable {
             w << 10ms; w << 20ms; w << 10ms;
         });
 
-        clock::time_point prev = clock::now();
-        for (clock::time_point tp; t >> tp;) {
+        time_point prev = std::chrono::steady_clock::now();
+        for (time_point tp; t >> tp;) {
             intervals.push_back(tp - prev);
             prev = tp;
         }
@@ -163,10 +163,10 @@ TEST_CASE("Timer - Controlled time_point") {
     int fires = 0;
 
     stats.spawn([&]{
-        chan<clock::time_point> ctl;
+        chan<time_point> ctl;
         auto t = timer(std::move(ctl.r));
 
-        auto now = clock::now();
+        auto now = std::chrono::steady_clock::now();
         csp::spawn([w = std::move(ctl.w), now]() mutable {
             w << now + 10ms;
             w << now + 30ms;
@@ -183,7 +183,7 @@ TEST_CASE("Timer - Controlled cancellation") {
     RunStats stats;
 
     stats.spawn([]{
-        chan<clock::duration> ctl;
+        chan<duration> ctl;
         auto t = timer(std::move(ctl.r));
 
         csp::spawn([w = std::move(ctl.w)]() mutable {

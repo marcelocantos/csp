@@ -35,11 +35,11 @@ TEST_CASE("Pace - enforces minimum interval") {
         w << 1; w << 2; w << 3;
     });
 
-    std::vector<csp::clock::time_point> times;
+    std::vector<csp::time_point> times;
     stats.spawn([r = std::move(p.r), &times]{
         for (int v; r >> v;) {
             (void)v;
-            times.push_back(csp::clock::now());
+            times.push_back(std::chrono::steady_clock::now());
         }
     });
 
@@ -54,18 +54,18 @@ TEST_CASE("Pace - first value passes immediately") {
     RunStats stats;
 
     auto p = pace<int>(tick(200ms)).spawn();
-    auto start = csp::clock::now();
+    auto start = std::chrono::steady_clock::now();
 
     stats.spawn([w = std::move(p.w)]{
         w << 42;
     });
 
-    csp::clock::time_point received;
+    csp::time_point received;
     stats.spawn([r = std::move(p.r), &received]{
         int v;
         r >> v;
         CHECK_EQ(42, v);
-        received = csp::clock::now();
+        received = std::chrono::steady_clock::now();
     });
 
     csp::schedule();

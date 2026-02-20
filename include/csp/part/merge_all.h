@@ -20,9 +20,9 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
         std::vector<internal::ChanOp> chanops;
 
         // Slot 0: death-watch on output.
-        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
         // Slot 1: read from input (removed when input exhausted).
-        chanops.push_back({internal::wait(in.internal_reader()), &new_sub});
+        chanops.push_back({internal::wait(in.internal_reader()), &new_sub, internal::get_slot(in.internal_reader().ptr)});
 
         bool input_alive = true;
 
@@ -48,7 +48,7 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
                 return;  // Output died.
             } else if (input_alive && m.result == 1) {
                 // New sub-reader.
-                chanops.push_back({internal::wait(new_sub.internal_reader()), &b});
+                chanops.push_back({internal::wait(new_sub.internal_reader()), &b, internal::get_slot(new_sub.internal_reader().ptr)});
                 subs.push_back(std::move(new_sub));
             } else if (input_alive && m.result == ~1) {
                 // Input exhausted — remove input slot.

@@ -14,7 +14,7 @@ struct debounce_config {
 };
 
 template <typename T>
-auto debounce(csp::clock::duration d, debounce_config<T> cfg = {});
+auto debounce(csp::duration d, debounce_config<T> cfg = {});
 ```
 
 Returns a `filter<T, T>`.
@@ -23,7 +23,7 @@ Returns a `filter<T, T>`.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `d` | `csp::clock::duration` | | Quiet period required before emitting |
+| `d` | `csp::duration` | | Quiet period required before emitting |
 | `cfg.dead_letter` | `writer<T>` | `{}` | Optional: superseded pending values are written here instead of discarded |
 
 ## Diagram

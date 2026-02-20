@@ -1,14 +1,15 @@
 #pragma once
 
-#include <chrono>
 #include <csp/part/part.h>
+#include <csp/timer.h>
+
 #include <utility>
 
 namespace csp::part {
 
 struct metrics_snapshot {
     size_t count;
-    std::chrono::steady_clock::duration elapsed;
+    csp::duration elapsed;
 };
 
 // Transparent passthrough reporting throughput stats on a side channel.
@@ -25,12 +26,12 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
         internal::descr("metrics");
 
         size_t count = 0;
-        auto start = std::chrono::steady_clock::now();
+        auto start = csp::now();
         T t;
 
         for (;;) {
             auto snap = metrics_snapshot{
-                count, std::chrono::steady_clock::now() - start};
+                count, csp::now() - start};
             switch (csp::alt(data >> t, stats << snap, ~out)) {
             case 0:  // Data — forward.
                 count++;
@@ -42,7 +43,7 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
                 out = {};
                 for (;;) {
                     auto final_snap = metrics_snapshot{
-                        count, std::chrono::steady_clock::now() - start};
+                        count, csp::now() - start};
                     if (!(stats << final_snap)) return;
                 }
                 return;

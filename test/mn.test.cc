@@ -93,7 +93,7 @@ TEST_CASE("MN - TimerSleep") {
     std::atomic<int> done{0};
     constexpr int N = 8;
 
-    auto start = csp::clock::now();
+    auto start = std::chrono::steady_clock::now();
 
     for (int i = 0; i < N; ++i) {
         csp::spawn([&] {
@@ -107,7 +107,7 @@ TEST_CASE("MN - TimerSleep") {
     CHECK_EQ(N, done.load());
     // All N sleeps ran concurrently across workers, so wall time should be
     // much less than N * 20ms.
-    auto elapsed = csp::clock::now() - start;
+    auto elapsed = std::chrono::steady_clock::now() - start;
     CHECK_LT(elapsed, N * 20ms);
 
     csp::shutdown_runtime();

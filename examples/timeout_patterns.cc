@@ -60,7 +60,7 @@ int main() {
             int heartbeats = 0;
             for (;;) {
                 int n;
-                clock::time_point t;
+                time_point t;
                 switch (alt(r >> n, heartbeat >> t)) {
                 case 0:
                     printf("  Work item: %d\n", n);

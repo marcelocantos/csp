@@ -16,7 +16,8 @@ void mux_setup(internal::ChanOp* chanops, void** buf_ptrs,
                Bufs& bufs, Inputs& inputs,
                std::index_sequence<Is...>) {
     ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
-                     &std::get<Is>(bufs)}), ...);
+                     &std::get<Is>(bufs),
+                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
     ((buf_ptrs[Is] = &std::get<Is>(bufs)), ...);
 }
 
@@ -75,7 +76,7 @@ auto mux(reader<Ts>... inputs) {
             void* buf_ptrs[N];
 
             // Slot 0: death-watch on output.
-            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr};
+            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)};
             // Slots 1..N: reads, each pointing at its typed buffer.
             detail::mux_setup(
                 chanops + 1, buf_ptrs, bufs, inputs,

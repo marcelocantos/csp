@@ -20,9 +20,9 @@ auto flat_map(F&& f) {
         std::vector<internal::ChanOp> chanops;
 
         // Slot 0: death-watch on output.
-        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
         // Slot 1: read from input (removed when input exhausted).
-        chanops.push_back({internal::wait(in.internal_reader()), &a});
+        chanops.push_back({internal::wait(in.internal_reader()), &a, internal::get_slot(in.internal_reader().ptr)});
 
         bool input_alive = true;
 
@@ -49,7 +49,7 @@ auto flat_map(F&& f) {
             } else if (input_alive && m.result == 1) {
                 // New input element — spawn sub-stream.
                 reader<B> sub = f(std::move(a));
-                chanops.push_back({internal::wait(sub.internal_reader()), &b});
+                chanops.push_back({internal::wait(sub.internal_reader()), &b, internal::get_slot(sub.internal_reader().ptr)});
                 subs.push_back(std::move(sub));
             } else if (input_alive && m.result == ~1) {
                 // Input exhausted — remove input slot.

@@ -108,7 +108,7 @@ appear as a rule whose effects include a suspension, followed by an indented
 continuation with its own guard:
 
 ```
-sleep(d) ────────────────➤ suspend; deadline = clock::now() + d
+sleep(d) ────────────────➤ suspend; deadline = now() + d
          ─┤deadline passes├─➤ imp becomes runnable; return
 ```
 

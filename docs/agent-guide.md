@@ -180,16 +180,17 @@ range<T> spawn_range(F&& f);
 Requires `init_runtime()`.
 
 ```cpp
-using clock = std::chrono::steady_clock;
+using time_point = std::chrono::steady_clock::time_point;
+using duration = std::chrono::steady_clock::duration;
 
-void sleep(clock::duration d);
-void sleep_until(clock::time_point tp);
+void sleep(duration d);
+void sleep_until(time_point tp);
 
 // One-shot: reader<time_point> that fires after duration, then dies.
-reader<clock::time_point> after(clock::duration d);
+reader<time_point> after(duration d);
 
-// Periodic: reader<clock::time_point> that fires at interval (drift-free).
-reader<clock::time_point> tick(clock::duration interval);
+// Periodic: reader<time_point> that fires at interval (drift-free).
+reader<time_point> tick(duration interval);
 ```
 
 Timeout idiom:
@@ -205,16 +206,16 @@ switch (prialt(r >> v, after(100ms) >> nullptr)) {
 
 ```cpp
 class fake_clock;
-extern dynamic<fake_clock*> clock_override;   // nullptr = real clock
+extern dynamic<fake_clock*> clock;   // nullptr = real clock
 
-clock::time_point now();   // Returns fake time if overridden, real otherwise.
+time_point now();   // Returns fake time if overridden, real otherwise.
 
 class fake_clock {
 public:
-    explicit fake_clock(clock::time_point start = clock::time_point{});
-    clock::time_point now() const;
+    explicit fake_clock(time_point start = time_point{});
+    time_point now() const;
     bool has_pending() const;
-    void advance(clock::duration d);       // Advance time, fire expired timers.
+    void advance(duration d);              // Advance time, fire expired timers.
     bool advance_to_next();                // Jump to next deadline (false if empty).
     void run();                            // Scheduler loop with auto-advance.
     void run_until_idle();                 // Run ready imps, don't advance time.
@@ -224,7 +225,7 @@ public:
 Bind via dynamic scoping — inherited by child imps automatically:
 ```cpp
 fake_clock fc;
-csp::local l{clock_override = &fc};
+csp::local l{csp::clock = &fc};
 // All sleep/after/tick calls now use fc.
 ```
 

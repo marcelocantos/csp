@@ -166,24 +166,26 @@ namespace {
         return waiter & ~uintptr_t(15) ? descrs[waiter & 15] : "";
     }
 
+    // Extract Channel* from a Waiter/ChanOp pointer (Channel* with flags in low bits).
     Channel * get_chan(void * ptr) {
-        if (auto cp = reinterpret_cast<Channel * *>((uintptr_t)ptr & ~15UL)) {
-            return *cp;
-        }
-        return nullptr;
+        auto p = (uintptr_t)ptr & ~15UL;
+        return p ? reinterpret_cast<Channel *>(p) : nullptr;
     }
 
-    Channel * get_chan(WriterRef w) { return get_chan(w.ptr); }
-    Channel * get_chan(ReaderRef r) { return get_chan(r.ptr); }
     Channel * get_chan(Waiter w) { return get_chan(w.ptr); }
     Channel * get_chan(ChanOp const & c) { return get_chan(c.waiter); }
+
+    // Resolve a WriterRef/ReaderRef (Slot* with flags) to its current Channel*.
+    Channel * get_chan_from_ref(void * ptr) {
+        auto * slot = get_slot(ptr);
+        return slot ? static_cast<Channel *>(slot->channel.load(std::memory_order_acquire)) : nullptr;
+    }
 
     char const * describe(void * ch);
 
     class Channel {
     public:
         Channel() {
-            static_assert(offsetof(Channel,delegate_) == 0, "delegate_ must be at the start for get_chan() to work");
             // Must be 16-byte aligned.
             assert(((uintptr_t)this % 16) == 0);
 
@@ -194,61 +196,101 @@ namespace {
         }
         ~Channel() {
         }
-        WriterRef as_writer() { return {reinterpret_cast<void*>(this)}; }
-        ReaderRef as_reader() { return {reinterpret_cast<void*>((uintptr_t)this | 1)}; }
         void set_descr(char const * d) { descr_ = d; }
 
-        void addref(int endpt) {
-            ++counterses()[endpt].refs;
-            endpts_[endpt].refcount.fetch_add(1, std::memory_order_relaxed);
+        // Check if channel is alive (both endpoint sides have live handles).
+        explicit operator bool() {
+            return write_slot_->refcount.load(std::memory_order_acquire) > 0
+                && read_slot_->refcount.load(std::memory_order_acquire) > 0;
         }
-        // TLA:ChannelLifecycle.CloserWDecRef TLA:ChannelLifecycle.CloserRDecRef (shared: endpt selects W or R)
-        void release(int endpt) {
-            ++counterses()[endpt].derefs;
-            if (endpts_[endpt].refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                {
-                    // TLA:ChannelLifecycle.CloserWAcquire TLA:ChannelLifecycle.CloserRAcquire
-                    std::lock_guard<std::mutex> lock(mu_);
-                    --counterses()[endpt].active;
-                    auto & ep = endpts_[1 - endpt];
-                    if (ep.refcount.load(std::memory_order_acquire) > 0) {
-                        // TLA:ChannelLifecycle.CloserWWakeWaiters TLA:ChannelLifecycle.CloserRWakeWaiters
-                        // TLA:AltStateCAS.WakerCAS TLA:AltStateCAS.WakerSetSignal TLA:AltStateCAS.WakerSchedule TLA:AltStateCAS.LoserDone
-                        // TLA:DrainSuspended.StartWake
-                        // Wake waiters via CAS. Don't remove from queues —
-                        // woken threads clean up their own registrations.
-                        for (auto const & cw : ep.waiters) {
-                            uint32_t expected = Imp::ALT_WAITING;
-                            if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                                int idx = int(cw.chanop - cw.thread->chanops_);
-                                cw.thread->signal_ = ~idx;
-                                cw.thread->schedule();
-                            }
-                        }
 
-                        for (auto const & cv : ep.vultures) {
-                            uint32_t expected = Imp::ALT_WAITING;
-                            if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                                int idx = int(cv.chanop - cv.thread->chanops_);
-                                cv.thread->signal_ = ~idx;
-                                cv.thread->schedule();
-                            }
-                        }
-                        // Don't clear — woken threads clean up their own registrations.
-                    }
-                } // TLA:ChannelLifecycle.CloserWReleaseMu TLA:ChannelLifecycle.CloserRReleaseMu
-                // TLA:ChannelLifecycle.CloserWDecAlive TLA:ChannelLifecycle.CloserRDecAlive
-                // Both endpoint sides decrement alive_. The last one
-                // (fetch_sub returns 1) deletes. This avoids a race
-                // when both endpoints reach refcount 0 concurrently
-                // on different OS threads.
-                if (alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    delete this;
+        // Wake all waiters on a given endpoint side with a swap signal (INT_MIN).
+        void wake_all_for_swap(int endpt) {
+            auto & ep = endpts_[endpt];
+            for (auto const & cw : ep.waiters) {
+                uint32_t expected = Imp::ALT_WAITING;
+                if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
+                    cw.thread->signal_ = INT_MIN;
+                    cw.thread->schedule();
+                }
+            }
+            for (auto const & cv : ep.vultures) {
+                uint32_t expected = Imp::ALT_WAITING;
+                if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
+                    cv.thread->signal_ = INT_MIN;
+                    cv.thread->schedule();
                 }
             }
         }
 
-        explicit operator bool() { return endpts_[wr].refcount.load() > 0 && endpts_[rd].refcount.load() > 0; }
+        // Called when a slot's endpoint refcount drops to 0.
+        // endpt: wr or rd, indicating which side died.
+        // The caller has already locked mu_ and verified that
+        // slot->channel still points to this channel (see
+        // resolve_endpoint_death).
+        void on_endpoint_death_locked(int endpt) {
+            ++counterses()[endpt].derefs;
+            --counterses()[endpt].active;
+            // Check if the opposite side has live endpoints.
+            Slot * other_slot = (endpt == wr) ? read_slot_ : write_slot_;
+            if (other_slot->refcount.load(std::memory_order_acquire) > 0) {
+                // Wake waiters on the opposite side (death signal).
+                auto & ep = endpts_[1 - endpt];
+                for (auto const & cw : ep.waiters) {
+                    uint32_t expected = Imp::ALT_WAITING;
+                    if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
+                        int idx = int(cw.chanop - cw.thread->chanops_);
+                        cw.thread->signal_ = ~idx;
+                        cw.thread->schedule();
+                    }
+                }
+                for (auto const & cv : ep.vultures) {
+                    uint32_t expected = Imp::ALT_WAITING;
+                    if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
+                        int idx = int(cv.chanop - cv.thread->chanops_);
+                        cv.thread->signal_ = ~idx;
+                        cv.thread->schedule();
+                    }
+                }
+            }
+            mu_.unlock();
+            // Both endpoint sides decrement alive_. The last one
+            // (fetch_sub returns 1) deletes. This avoids a race
+            // when both endpoints reach refcount 0 concurrently
+            // on different OS threads.
+            if (alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                // Both endpoint slots are dead. Delete slots and channel.
+                delete write_slot_;
+                delete read_slot_;
+                delete this;
+            }
+        }
+
+        // Resolve the correct channel for a dying slot and call
+        // on_endpoint_death_locked.  A concurrent swap_slots may change
+        // slot->channel between the caller's fetch_sub (which observed
+        // the last refcount) and our channel.load.  We lock the
+        // candidate channel's mutex and re-verify; if the slot was
+        // swapped away we retry with the updated channel.  The loop
+        // terminates because once refcount is 0 no new swap can target
+        // this slot (swap requires a live handle).
+        // TLA:SwapRace.ResolveAndNotify
+        static void resolve_endpoint_death(Slot * slot, int endpt) {
+            for (;;) {
+                auto * ch = static_cast<Channel *>(
+                    slot->channel.load(std::memory_order_acquire));
+                ch->mu_.lock();
+                // Re-verify: swap_slots holds ch->mu_ while writing
+                // slot->channel, so after acquiring mu_ the pointer
+                // is stable.
+                if (static_cast<Channel *>(
+                        slot->channel.load(std::memory_order_acquire)) == ch) {
+                    ch->on_endpoint_death_locked(endpt);  // unlocks mu_
+                    return;
+                }
+                ch->mu_.unlock();
+            }
+        }
 
         // Internal state stored in AltMatch::opaque_.
         struct match_internal {
@@ -267,6 +309,21 @@ namespace {
             if (g_imp->stk_) {
                 StackPool::instance().maybe_shrink(
                     g_imp->stk_, __builtin_frame_address(0));
+            }
+
+        retry:
+            // Re-resolve each chanop's Channel* through its Slot to ensure
+            // the pointer is fresh.  A swap or endpoint death on another
+            // thread may have changed (or deleted) the channel since the
+            // Waiter was originally constructed.
+            for (int i = 0; i < count; ++i) {
+                if (chanops[i].slot) {
+                    auto * slot = static_cast<Slot *>(chanops[i].slot);
+                    auto * new_ch = slot->channel.load(std::memory_order_acquire);
+                    auto flags = (uintptr_t)chanops[i].waiter.ptr & 15UL;
+                    const_cast<ChanOp &>(chanops[i]).waiter.ptr =
+                        (void *)((uintptr_t)new_ch | flags);
+                }
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -429,6 +486,17 @@ namespace {
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
 
             g_imp->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+
+            // Check for swap wake-up: if signal_ is INT_MIN, a channel swap
+            // occurred. Re-resolve happens at retry: label.
+            if (g_imp->signal_ == INT_MIN) {
+                g_imp->chanops_ = nullptr;
+                g_imp->n_chanops_ = 0;
+                delete[] mi->heap_alloc;
+                mi->heap_alloc = nullptr;
+                goto retry;
+            }
+
             out->result = g_imp->signal_;
             g_imp->chanops_ = nullptr;
             g_imp->n_chanops_ = 0;
@@ -456,15 +524,13 @@ namespace {
         using Waiters = detail::RingBuffer<ChanopWaiter>;
         using Vultures = detail::RingBuffer<ChanopWaiter>;
 
-        // Anticipate channel fusing capability.
-        Channel * delegate_ = this;
-
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
         std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%lu", id_); return std::string(b); }();
         std::atomic<int> alive_{2};  // one per endpoint side; last to 0 deletes
         std::mutex mu_;
+        Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot
+        Slot * read_slot_ = nullptr;    // back-pointer to read endpoint slot
         struct EndPoint {
-            std::atomic<size_t> refcount{1};
             Waiters waiters;
             Vultures vultures;
 
@@ -488,11 +554,15 @@ namespace {
         } endpts_[2];
 
         friend char const * describe(void *);
+        friend bool csp::internal::make_chan(WriterRef*, ReaderRef*);
+        friend void csp::internal::swap_slots(void*, void*);
     };
 
-    char const * describe(void * ch) {
-        if (Channel * c = get_chan(ch)) {
-            return c->descr_.c_str();
+    char const * describe(void * ptr) {
+        auto p = (uintptr_t)ptr & ~15UL;
+        if (p) {
+            auto * ch = reinterpret_cast<Channel *>(p);
+            return ch->descr_.c_str();
         }
         return "▸Ø";
     }
@@ -510,8 +580,12 @@ int channel_count(int endpt) {
 bool make_chan(WriterRef * w, ReaderRef * r) {
     try {
         auto ch = new Channel{};
-        *w = ch->as_writer();
-        *r = ch->as_reader();
+        auto ws = new Slot{ch};
+        auto rs = new Slot{ch};
+        ch->write_slot_ = ws;
+        ch->read_slot_ = rs;
+        *w = {reinterpret_cast<void *>(ws)};
+        *r = {reinterpret_cast<void *>((uintptr_t)rs | 1)};
         return true;
     } catch (std::exception const & e) {
     } catch (...) {
@@ -519,24 +593,114 @@ bool make_chan(WriterRef * w, ReaderRef * r) {
     return false;
 }
 
-void set_chan_descr(void * ch, char const * descr) {
-    if (Channel * c = get_chan(ch)) {
+void set_chan_descr(void * ptr, char const * descr) {
+    if (Channel * c = get_chan_from_ref(ptr)) {
         c->set_descr(descr);
     }
 }
 
-char const * get_chan_descr(void * ch) {
-    return describe(ch);
+char const * get_chan_descr(void * ptr) {
+    auto * ch = get_chan_from_ref(ptr);
+    return ch ? describe(ch) : "▸Ø";
 }
 
 char const * get_chan_flags(void * ch) {
     return descr_flags((uintptr_t)ch);
 }
 
-WriterRef writer_addref(WriterRef w) { if (w) get_chan(w)->addref(wr); return w; }
-void      writer_release(WriterRef w) { if (w) get_chan(w)->release(wr); }
-ReaderRef reader_addref(ReaderRef r) { if (r) get_chan(r)->addref(rd); return r; }
-void      reader_release(ReaderRef r) { if (r) get_chan(r)->release(rd); }
+WriterRef writer_addref(WriterRef w) {
+    if (w) {
+        ++counterses()[wr].refs;
+        get_slot(w.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
+    }
+    return w;
+}
+
+void writer_release(WriterRef w) {
+    if (w) {
+        auto * slot = get_slot(w.ptr);
+        ++counterses()[wr].derefs;
+        if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            Channel::resolve_endpoint_death(slot, wr);
+        }
+    }
+}
+
+ReaderRef reader_addref(ReaderRef r) {
+    if (r) {
+        ++counterses()[rd].refs;
+        get_slot(r.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
+    }
+    return r;
+}
+
+void reader_release(ReaderRef r) {
+    if (r) {
+        auto * slot = get_slot(r.ptr);
+        ++counterses()[rd].derefs;
+        if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            Channel::resolve_endpoint_death(slot, rd);
+        }
+    }
+}
+
+void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {
+    auto * sa = static_cast<Slot *>(slot_a_ptr);
+    auto * sb = static_cast<Slot *>(slot_b_ptr);
+    if (sa == sb) return;
+
+    auto * ca = static_cast<Channel *>(sa->channel.load(std::memory_order_acquire));
+    auto * cb = static_cast<Channel *>(sb->channel.load(std::memory_order_acquire));
+    if (ca == cb) return;
+
+    // Lock both channels in id order to avoid deadlock.
+    if (ca->id_ > cb->id_) {
+        std::swap(ca, cb);
+        std::swap(sa, sb);
+    }
+
+    ca->mu_.lock();
+    cb->mu_.lock();
+
+    // Verify channels haven't changed (concurrent swap).
+    auto * ca_now = static_cast<Channel *>(sa->channel.load(std::memory_order_acquire));
+    auto * cb_now = static_cast<Channel *>(sb->channel.load(std::memory_order_acquire));
+    if (ca_now != ca || cb_now != cb) {
+        cb->mu_.unlock();
+        ca->mu_.unlock();
+        // Retry with current state.
+        swap_slots(slot_a_ptr, slot_b_ptr);
+        return;
+    }
+
+    // Determine which endpoint side (write or read) for each channel.
+    bool a_is_write = (ca->write_slot_ == sa);
+    bool b_is_write = (cb->write_slot_ == sb);
+    assert(a_is_write == b_is_write && "cannot swap write slot with read slot");
+
+    // Exchange channel pointers in slots.
+    sa->channel.store(cb, std::memory_order_release);
+    sb->channel.store(ca, std::memory_order_release);
+
+    // Exchange back-pointers on channels.
+    if (a_is_write) {
+        ca->write_slot_ = sb;
+        cb->write_slot_ = sa;
+    } else {
+        ca->read_slot_ = sb;
+        cb->read_slot_ = sa;
+    }
+
+    // Wake all waiters on both channels (both sides) so they can
+    // re-resolve their slots and detect any death-status changes.
+    for (int side = 0; side < 2; ++side) {
+        ca->wake_all_for_swap(side);
+        cb->wake_all_for_swap(side);
+    }
+
+    cb->mu_.unlock();
+    ca->mu_.unlock();
+}
 
 void prialt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait) {
     Channel::prialt_begin_impl(out, chanops, count, bool(nowait));
@@ -561,11 +725,11 @@ void alt_end(AltMatch * m) {
 
 namespace csp {
 
-dynamic<fake_clock*> clock_override{nullptr};
+dynamic<fake_clock*> clock{nullptr};
 
-fake_clock::fake_clock(clock::time_point start) : current_(start) {}
+fake_clock::fake_clock(time_point start) : current_(start) {}
 
-void fake_clock::sleep_until_impl(clock::time_point tp) {
+void fake_clock::sleep_until_impl(time_point tp) {
     if (tp <= current_) return;
     pending_.push({tp, detail::g_imp});
     internal::suspend();
@@ -579,7 +743,7 @@ void fake_clock::fire_expired() {
     }
 }
 
-void fake_clock::advance(clock::duration d) {
+void fake_clock::advance(duration d) {
     current_ += d;
     fire_expired();
 }

@@ -3,11 +3,11 @@
 
 namespace csp {
 
-dynamic<fake_clock*> clock_override{nullptr};
+dynamic<fake_clock*> clock{nullptr};
 
-fake_clock::fake_clock(clock::time_point start) : current_(start) {}
+fake_clock::fake_clock(time_point start) : current_(start) {}
 
-void fake_clock::sleep_until_impl(clock::time_point tp) {
+void fake_clock::sleep_until_impl(time_point tp) {
     if (tp <= current_) return;
     pending_.push({tp, detail::g_imp});
     internal::suspend();
@@ -21,7 +21,7 @@ void fake_clock::fire_expired() {
     }
 }
 
-void fake_clock::advance(clock::duration d) {
+void fake_clock::advance(duration d) {
     current_ += d;
     fire_expired();
 }

@@ -13,31 +13,31 @@ namespace csp::part {
 // (not serialized). On input close, remaining values are drained with their
 // original delays.
 template <typename T>
-auto delay(csp::clock::duration d) {
+auto delay(csp::duration d) {
     return make_filter<T>([d](reader<T> in, writer<T> out) {
         internal::descr("delay");
-        std::deque<std::pair<T, csp::clock::time_point>> q;
+        std::deque<std::pair<T, csp::time_point>> q;
 
         for (;;) {
             if (q.empty()) {
                 // Nothing pending — wait for input.
                 T t;
                 if (csp::alt(in >> t, ~out) != 0) return;
-                q.emplace_back(std::move(t), csp::clock::now() + d);
+                q.emplace_back(std::move(t), csp::now() + d);
             } else {
                 // Emit any items already past their deadline.
-                while (!q.empty() && q.front().second <= csp::clock::now()) {
+                while (!q.empty() && q.front().second <= csp::now()) {
                     if (!(out << std::move(q.front().first))) return;
                     q.pop_front();
                 }
                 if (q.empty()) continue;
 
                 // Wait for input or oldest item's deadline.
-                auto timer = csp::after(q.front().second - csp::clock::now());
+                auto timer = csp::after(q.front().second - csp::now());
                 T t;
                 switch (csp::alt(in >> t, timer >> nullptr, ~out)) {
                 case 0:  // New value — enqueue.
-                    q.emplace_back(std::move(t), csp::clock::now() + d);
+                    q.emplace_back(std::move(t), csp::now() + d);
                     break;
                 case 1:  // Timer fired — emit front.
                     if (!(out << std::move(q.front().first))) return;

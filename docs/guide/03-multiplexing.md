@@ -213,7 +213,7 @@ case 1: /* timed out         */ break;
 }
 ```
 
-`after(duration)` returns a `reader<clock::time_point>` that fires once after
+`after(duration)` returns a `reader<time_point>` that fires once after
 the given duration, delivering the actual fire time. Since it is a reader, it
 slots into `alt`/`prialt` like any other channel operation.
 

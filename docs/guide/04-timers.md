@@ -21,15 +21,16 @@ using namespace std::chrono_literals;
 
 csp::spawn([] {
     csp::sleep(100ms);                  // relative
-    csp::sleep_until(clock::now() + 1s); // absolute
+    csp::sleep_until(csp::now() + 1s);   // absolute
 });
 ```
 
-`csp::clock` is an alias for `std::chrono::steady_clock`.
+`csp::time_point` and `csp::duration` are aliases for the corresponding
+`std::chrono::steady_clock` types.
 
 ## after -- one-shot timer
 
-`after(duration)` returns a `reader<clock::time_point>` that delivers the
+`after(duration)` returns a `reader<time_point>` that delivers the
 actual fire time after the given duration, then closes.
 
 ```cpp
@@ -52,7 +53,7 @@ case 1: /* 100ms elapsed first   */ break;
 
 ## tick -- periodic timer
 
-`tick(interval)` returns a `reader<clock::time_point>` that fires
+`tick(interval)` returns a `reader<time_point>` that fires
 repeatedly. Each read delivers the actual fire time. The implementation uses
 absolute deadlines internally, so intervals do not drift even when reads are
 slightly delayed.
@@ -74,7 +75,7 @@ timer stops.
 ```cpp
 #include "csp.h"
 
-csp::chan<csp::clock::duration> ctl;
+csp::chan<csp::duration> ctl;
 auto t = csp::part::timer(std::move(ctl.r));
 
 csp::spawn([w = std::move(ctl.w)]() mutable {
@@ -82,18 +83,18 @@ csp::spawn([w = std::move(ctl.w)]() mutable {
     w << 50ms;   // second fire after 50ms
 });
 
-for (csp::clock::time_point tp; t >> tp;) {
+for (csp::time_point tp; t >> tp;) {
     // two fires, then the control channel closes and the loop ends
 }
 ```
 
-An absolute-deadline overload accepts `reader<clock::time_point>`:
+An absolute-deadline overload accepts `reader<time_point>`:
 
 ```cpp
-csp::chan<csp::clock::time_point> ctl;
+csp::chan<csp::time_point> ctl;
 auto t = csp::part::timer(std::move(ctl.r));
 
-auto now = csp::clock::now();
+auto now = csp::now();
 csp::spawn([w = std::move(ctl.w), now]() mutable {
     w << now + 100ms;
     w << now + 500ms;
@@ -180,10 +181,10 @@ A token-bucket rate limiter in three lines of CSP plumbing:
 
 // 10 tokens/sec, burst capacity of 3
 auto tokens = csp::tick(100ms);
-auto bucket = csp::part::buffer<csp::clock::time_point>(3)
+auto bucket = csp::part::buffer<csp::time_point>(3)
                   .spawn(std::move(tokens));
 
-csp::clock::time_point token;
+csp::time_point token;
 for (int req; requests >> req;) {
     bucket >> token;     // wait for a token
     handle(req);
@@ -252,9 +253,9 @@ imp returns normally.
 |---|---|---|---|
 | `csp::sleep(duration)` | `<csp/timer.h>` | `void` | -- (blocks caller) |
 | `csp::sleep_until(time_point)` | `<csp/timer.h>` | `void` | -- (blocks caller) |
-| `csp::after(duration)` | `<csp/timer.h>` | `reader<clock::time_point>` | Once |
-| `csp::tick(interval)` | `<csp/timer.h>` | `reader<clock::time_point>` | Repeatedly |
-| `csp::part::timer(control)` | `<csp/part/timer.h>` | `reader<clock::time_point>` | Per control value |
+| `csp::after(duration)` | `<csp/timer.h>` | `reader<time_point>` | Once |
+| `csp::tick(interval)` | `<csp/timer.h>` | `reader<time_point>` | Repeatedly |
+| `csp::part::timer(control)` | `<csp/part/timer.h>` | `reader<time_point>` | Per control value |
 
 ## Next steps
 

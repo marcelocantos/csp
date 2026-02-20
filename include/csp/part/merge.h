@@ -18,10 +18,10 @@ auto merge(std::vector<reader<T>> inputs) {
             T t;
             std::vector<internal::ChanOp> chanops;
             // Slot 0: death-watch on output.
-            chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+            chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
             // Slots 1..N: reads from each input.
             for (auto& r : inputs) {
-                chanops.push_back({internal::wait(r.internal_reader()), &t});
+                chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
             }
 
             while (!inputs.empty()) {

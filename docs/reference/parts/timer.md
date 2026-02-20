@@ -10,32 +10,32 @@ after which the actual wall-clock time is emitted.
 
 ```cpp
 // Relative durations: sleep for each duration, then emit now().
-inline reader<clock::time_point> timer(reader<clock::duration> control);
+inline reader<time_point> timer(reader<duration> control);
 
 // Absolute time_points: sleep until each deadline, then emit now().
-inline reader<clock::time_point> timer(reader<clock::time_point> control);
+inline reader<time_point> timer(reader<time_point> control);
 ```
 
-Returns a `reader<clock::time_point>`.
+Returns a `reader<time_point>`.
 
 ## Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `control` | `reader<clock::duration>` | Stream of relative sleep intervals |
+| `control` | `reader<duration>` | Stream of relative sleep intervals |
 
 or
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `control` | `reader<clock::time_point>` | Stream of absolute deadlines |
+| `control` | `reader<time_point>` | Stream of absolute deadlines |
 
 ## Topology
 
 ```mermaid
 graph LR
-    ctrl["reader&lt;clock::duration&gt;<br/>or reader&lt;clock::time_point&gt;<br/>(control)"] --> T["timer"]
-    T --> out["reader&lt;clock::time_point&gt;"]
+    ctrl["reader&lt;duration&gt;<br/>or reader&lt;time_point&gt;<br/>(control)"] --> T["timer"]
+    T --> out["reader&lt;time_point&gt;"]
     style T fill:#f5d6a8
     style ctrl fill:#d4edda
 ```
@@ -54,7 +54,7 @@ sleep completes.
 
 - Each value read from `control` becomes a sleep request: a `duration` is
   passed to `csp::sleep`, a `time_point` is passed to `csp::sleep_until`.
-- After the sleep completes, `clock::now()` is emitted on the output.
+- After the sleep completes, `csp::now()` is emitted on the output.
 - Sleeps are serialized: the next control value is not read until the current
   sleep finishes and the output value is accepted.
 - **Control closes:** the output closes (no more values to sleep on).
@@ -72,7 +72,7 @@ using namespace csp::part;
 using namespace std::chrono_literals;
 
 // Send two durations on a control channel.
-auto [ctrl_w, ctrl_r] = csp::chan<csp::clock::duration>{};
+auto [ctrl_w, ctrl_r] = csp::chan<csp::duration>{};
 auto r = timer(std::move(ctrl_r));
 
 csp::spawn([w = std::move(ctrl_w)] {
@@ -81,7 +81,7 @@ csp::spawn([w = std::move(ctrl_w)] {
 });
 
 // Read two fire times.
-csp::clock::time_point t1, t2;
+csp::time_point t1, t2;
 r >> t1;
 r >> t2;
 // t2 - t1 >= 100ms (the second sleep duration).

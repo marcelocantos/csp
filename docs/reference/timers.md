@@ -17,44 +17,45 @@ All types and functions live in `namespace csp`. Header: `#include "csp/timer.h"
 5. [after](#after) -- one-shot timer
 6. [tick](#tick) -- periodic timer
 7. [fake_clock](#fake_clock) -- deterministic time for testing
-8. [clock_override](#clock_override) -- dynamic variable for clock injection
+8. [clock](#clock-1) -- dynamic variable for clock injection
 
 ---
 
 ## clock
 
-Type alias for the steady clock used by all timer primitives.
+Type aliases for the steady clock types used by all timer primitives.
 
 ### Signature
 
 ```cpp
-using clock = std::chrono::steady_clock;
+using time_point = std::chrono::steady_clock::time_point;
+using duration = std::chrono::steady_clock::duration;
 ```
 
 ### Description
 
-`csp::clock` is an alias for `std::chrono::steady_clock`. All timer functions
-accept `csp::clock::duration` and `csp::clock::time_point` values. Because the
-clock is steady (monotonic), it is immune to wall-clock adjustments.
-
-Commonly used nested types:
+`csp::time_point` and `csp::duration` are aliases for the corresponding
+`std::chrono::steady_clock` types. All timer functions accept `csp::duration`
+and `csp::time_point` values. Because the underlying clock is steady
+(monotonic), it is immune to wall-clock adjustments.
 
 | Type | Meaning |
 |------|---------|
-| `csp::clock::time_point` | An absolute point in time on the steady clock. |
-| `csp::clock::duration` | A signed duration (nanosecond resolution on most platforms). |
+| `csp::time_point` | An absolute point in time on the steady clock. |
+| `csp::duration` | A signed duration (nanosecond resolution on most platforms). |
 
-`csp::clock::now()` returns the current `time_point`. This is equivalent to
-`std::chrono::steady_clock::now()`.
+`csp::now()` returns the current `time_point`. If a `csp::clock` is bound in
+the current dynamic scope, it returns the fake clock's time; otherwise it
+returns `std::chrono::steady_clock::now()`.
 
 ### Example
 
 ```cpp
 #include "csp/timer.h"
 
-auto start = csp::clock::now();
+auto start = csp::now();
 // ... work ...
-auto elapsed = csp::clock::now() - start;
+auto elapsed = csp::now() - start;
 ```
 
 ---
@@ -66,12 +67,12 @@ Current time, respecting clock override.
 ### Signature
 
 ```cpp
-clock::time_point now();
+time_point now();
 ```
 
 ### Description
 
-`now()` returns the current time. If `clock_override` is bound to a
+`now()` returns the current time. If `csp::clock` is bound to a
 `fake_clock*` in the current dynamic scope, it returns the fake clock's time.
 Otherwise it returns `std::chrono::steady_clock::now()`.
 
@@ -85,7 +86,7 @@ transparently.
 #include "csp/timer.h"
 
 csp::fake_clock fc;
-csp::local l{csp::clock_override = &fc};
+csp::local l{csp::clock = &fc};
 
 auto t1 = csp::now();     // epoch (fake clock starts at 0)
 fc.advance(1s);
@@ -101,7 +102,7 @@ Suspend the current imp for a given duration.
 ### Signature
 
 ```cpp
-void sleep(clock::duration d);
+void sleep(duration d);
 ```
 
 ### Description
@@ -113,14 +114,14 @@ deadline passes. Other imps continue to execute during the sleep.
 `sleep` must be called from within an imp. Calling it from the main
 thread (outside `schedule`) is undefined.
 
-The actual wakeup time may be slightly later than `clock::now() + d` due to
+The actual wakeup time may be slightly later than `now() + d` due to
 scheduling latency -- the imp becomes runnable after the deadline but
 must wait for a processor to pick it up.
 
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-sleep(d) ────────────────➤ suspend; deadline = clock::now() + d
+sleep(d) ────────────────➤ suspend; deadline = now() + d
          ─┤deadline passes├─➤ imp becomes runnable; return
 ```
 
@@ -145,7 +146,7 @@ Suspend the current imp until an absolute time point.
 ### Signature
 
 ```cpp
-void sleep_until(clock::time_point tp);
+void sleep_until(time_point tp);
 ```
 
 ### Description
@@ -155,7 +156,7 @@ void sleep_until(clock::time_point tp);
 re-scheduled.
 
 This is the underlying primitive used by `sleep`, which computes
-`clock::now() + d` and delegates to `sleep_until`.
+`now() + d` and delegates to `sleep_until`.
 
 ### Transition rules ([syntax](transition-rules.md))
 
@@ -171,7 +172,7 @@ sleep_until(tp) ─┤tp in past├────➤ yield; return
 #include "csp/timer.h"
 
 csp::spawn([] {
-    auto deadline = csp::clock::now() + std::chrono::seconds(1);
+    auto deadline = csp::now() + std::chrono::seconds(1);
 
     // ... do some work ...
 
@@ -190,7 +191,7 @@ One-shot timer that fires after a duration.
 ### Signature
 
 ```cpp
-reader<clock::time_point> after(clock::duration d);
+reader<time_point> after(duration d);
 ```
 
 ### States
@@ -209,10 +210,10 @@ stateDiagram-v2
 
 ### Description
 
-`after` returns a `reader<clock::time_point>` that produces a single
+`after` returns a `reader<time_point>` that produces a single
 `time_point` value (the actual fire time) after the given duration elapses.
 Internally, `after` spawns a producer imp that sleeps for `d` and
-then writes `clock::now()` to the channel.
+then writes `now()` to the channel.
 
 The returned reader is most commonly used as a timeout arm in `alt` or `prialt`:
 
@@ -272,7 +273,7 @@ Periodic timer that fires at a regular interval.
 ### Signature
 
 ```cpp
-reader<clock::time_point> tick(clock::duration interval);
+reader<time_point> tick(duration interval);
 ```
 
 ### States
@@ -290,8 +291,8 @@ stateDiagram-v2
 
 ### Description
 
-`tick` returns a `reader<clock::time_point>` that produces the current time
-(`clock::now()`) every `interval`. Internally, `tick` spawns a producer
+`tick` returns a `reader<time_point>` that produces the current time
+(`now()`) every `interval`. Internally, `tick` spawns a producer
 imp that maintains an absolute deadline and advances it by `interval`
 after each write. This absolute-deadline approach prevents drift: even if a
 particular read is delayed, subsequent ticks remain aligned to the original
@@ -344,25 +345,25 @@ Deterministic clock for testing time-dependent code.
 ```cpp
 class fake_clock {
 public:
-    explicit fake_clock(clock::time_point start = clock::time_point{});
+    explicit fake_clock(time_point start = time_point{});
 
-    clock::time_point now() const;
+    time_point now() const;
     bool has_pending() const;
 
-    void advance(clock::duration d);
+    void advance(duration d);
     bool advance_to_next();
 
     void run();
     void run_until_idle();
 
-    void sleep_until_impl(clock::time_point tp);
+    void sleep_until_impl(time_point tp);
 };
 ```
 
 ### Description
 
 `fake_clock` replaces the real clock for testing. When bound via
-`csp::local l{csp::clock_override = &fc}`, all calls to `csp::now()`,
+`csp::local l{csp::clock = &fc}`, all calls to `csp::now()`,
 `sleep`, `sleep_until`, `after`, and `tick` within that dynamic scope (and
 any child imps) use the fake clock instead of the real steady clock.
 
@@ -387,7 +388,7 @@ Non-copyable.
 Auto-advance (simplest):
 ```cpp
 csp::fake_clock fc;
-csp::local l{csp::clock_override = &fc};
+csp::local l{csp::clock = &fc};
 
 csp::spawn([&] {
     csp::sleep(1s);
@@ -399,7 +400,7 @@ fc.run();
 Manual advance (inspect intermediate state):
 ```cpp
 csp::fake_clock fc;
-csp::local l{csp::clock_override = &fc};
+csp::local l{csp::clock = &fc};
 
 bool woke = false;
 csp::spawn([&] { csp::sleep(100ms); woke = true; });
@@ -416,26 +417,26 @@ assert(woke);       // Now.
 
 ---
 
-## clock_override
+## clock
 
 Dynamic variable for injecting a fake clock.
 
 ### Signature
 
 ```cpp
-extern dynamic<fake_clock*> clock_override;
+extern dynamic<fake_clock*> clock;
 ```
 
 ### Description
 
-`clock_override` is a dynamically-scoped variable (see
+`csp::clock` is a dynamically-scoped variable (see
 [dynamic scoping](dynamic.md)). Its default value is `nullptr`, meaning the
 real steady clock is used. Bind it to a `fake_clock*` to redirect all timer
 primitives:
 
 ```cpp
 csp::fake_clock fc;
-csp::local l{csp::clock_override = &fc};
+csp::local l{csp::clock = &fc};
 ```
 
 The binding is automatically inherited by child imps spawned within the scope,

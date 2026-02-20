@@ -26,7 +26,7 @@ int main() {
         auto tokens = tick(100ms);
 
         // Buffer up to 3 tokens (burst capacity)
-        auto bucket = buffer<clock::time_point>(3).spawn(std::move(tokens));
+        auto bucket = buffer<time_point>(3).spawn(std::move(tokens));
 
         // Simulate 8 bursty requests
         auto [w, r] = chan<int>{};
@@ -43,13 +43,13 @@ int main() {
         });
 
         // Process requests, consuming one token per request
-        auto start = clock::now();
+        auto start = std::chrono::steady_clock::now();
         for (int req; r >> req;) {
             // Wait for a token
             bucket >> nullptr;
 
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                clock::now() - start).count();
+                std::chrono::steady_clock::now() - start).count();
             printf("  Request %d served at t=%lldms\n", req, elapsed);
         }
     });

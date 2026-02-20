@@ -929,11 +929,11 @@ TEST_CASE("ChanUtil - Delay") {
     auto r = delay<int>(50ms).spawn(count(1, 4).spawn());
 
     stats.spawn([r = std::move(r)]{
-        auto start = csp::clock::now();
+        auto start = std::chrono::steady_clock::now();
         CHECK_EQ(1, r.read());
         CHECK_EQ(2, r.read());
         CHECK_EQ(3, r.read());
-        auto elapsed = csp::clock::now() - start;
+        auto elapsed = std::chrono::steady_clock::now() - start;
         CHECK(elapsed >= 45ms);
         int _;
         CHECK_FALSE(bool(r >> _));

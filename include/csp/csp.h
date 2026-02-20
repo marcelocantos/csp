@@ -2,6 +2,7 @@
 
 #include <csp/internal/log.h>
 
+#include <atomic>
 #include <cassert>
 #include <climits>
 #include <exception>
@@ -18,28 +19,64 @@
 
 namespace csp::internal {
 
+// Endpoint slot: separately allocated indirection between endpoint handles
+// and the channel they target. Enables atomic channel swap (rewiring the
+// topology) without touching the handles. Refcount tracks live handles
+// (for death detection); channel pointer is swappable.
+struct alignas(16) Slot {
+    std::atomic<void*> channel{nullptr};   // Channel* (type-erased)
+    std::atomic<size_t> refcount{1};       // live endpoint handles
+
+    explicit Slot(void* ch) : channel(ch) {}
+};
+
+// Extract Slot* from an endpoint ref (mask off low flag bits).
+inline Slot* get_slot(void* ptr) {
+    return reinterpret_cast<Slot*>((uintptr_t)ptr & ~15UL);
+}
+
 // Opaque channel endpoint handles.
-// WriterRef: holds Channel* (16-byte aligned, low bits available for flags).
-// ReaderRef: holds (Channel* | 1) — endpoint bit in bit 0.
+// WriterRef: holds Slot* (16-byte aligned, low bits available for flags).
+// ReaderRef: holds (Slot* | 1) — endpoint bit in bit 0.
 struct WriterRef { void* ptr = nullptr; explicit operator bool() const { return ptr; } };
 struct ReaderRef { void* ptr = nullptr; explicit operator bool() const { return ptr; } };
 
 // Waiter: encoded channel pointer + endpoint + state flags.
+// Note: Waiters hold the resolved Channel* (not Slot*), so they reference
+// the channel that was current when the waiter was constructed.
 struct Waiter { void* ptr = nullptr; };
 
 // State flag constants.
 enum : int { dead = 2, ready = dead | 1 };
 
 // Create a waiter for data or death-watch operations.
-inline Waiter wait(WriterRef w)      { return {(void*)((uintptr_t)w.ptr | (ready << 1) | 8)}; }
-inline Waiter wait(ReaderRef r)      { return {(void*)((uintptr_t)r.ptr | (ready << 1) | 8)}; }
-inline Waiter wait_dead(WriterRef w) { return {(void*)((uintptr_t)w.ptr | (dead << 1) | 8)}; }
-inline Waiter wait_dead(ReaderRef r) { return {(void*)((uintptr_t)r.ptr | (dead << 1) | 8)}; }
+// Resolves through the endpoint's Slot to get the current Channel*.
+inline Waiter wait(WriterRef w) {
+    auto* s = get_slot(w.ptr);
+    auto* ch = s->channel.load(std::memory_order_acquire);
+    return {(void*)((uintptr_t)ch | (ready << 1) | 8)};
+}
+inline Waiter wait(ReaderRef r) {
+    auto* s = get_slot(r.ptr);
+    auto* ch = s->channel.load(std::memory_order_acquire);
+    return {(void*)((uintptr_t)ch | 1 | (ready << 1) | 8)};
+}
+inline Waiter wait_dead(WriterRef w) {
+    auto* s = get_slot(w.ptr);
+    auto* ch = s->channel.load(std::memory_order_acquire);
+    return {(void*)((uintptr_t)ch | (dead << 1) | 8)};
+}
+inline Waiter wait_dead(ReaderRef r) {
+    auto* s = get_slot(r.ptr);
+    auto* ch = s->channel.load(std::memory_order_acquire);
+    return {(void*)((uintptr_t)ch | 1 | (dead << 1) | 8)};
+}
 
 // Channel operation descriptor.
 struct ChanOp {
     Waiter waiter;
     void * message = nullptr;
+    void * slot = nullptr;     // Slot* for re-resolution after channel swap
 };
 
 // Two-phase alt/prialt match result.
@@ -65,6 +102,9 @@ WriterRef writer_addref(WriterRef w);
 void writer_release(WriterRef w);
 ReaderRef reader_addref(ReaderRef r);
 void reader_release(ReaderRef r);
+
+// Channel swap: atomically exchange which channels two endpoint groups target.
+void swap_slots(void* slot_a, void* slot_b);
 
 // Channel introspection.
 void set_chan_descr(void * ch, char const * descr);
@@ -172,14 +212,14 @@ public:
 
     // Write operation (copy).
     chan_op(internal::WriterRef w, T const & t)
-        : chanop_{internal::wait(w), &buf_}, has_buf_(true)
+        : chanop_{internal::wait(w), &buf_, internal::get_slot(w.ptr)}, has_buf_(true)
     {
         new (&buf_) T(t);
     }
 
     // Write operation (move).
     chan_op(internal::WriterRef w, T && t)
-        : chanop_{internal::wait(w), &buf_}, has_buf_(true)
+        : chanop_{internal::wait(w), &buf_, internal::get_slot(w.ptr)}, has_buf_(true)
     {
         new (&buf_) T(std::move(t));
     }
@@ -187,11 +227,11 @@ public:
     // Read operation.
     template <typename U, typename = std::enable_if_t<std::is_convertible<T, U>::value>>
     chan_op(internal::ReaderRef r, U & dest)
-        : chanop_{internal::wait(r), &dest} {}
+        : chanop_{internal::wait(r), &dest, internal::get_slot(r.ptr)} {}
 
     // Raw-pointer read (for ring buffer slots and nullptr discard).
     chan_op(internal::ReaderRef r, void * dest)
-        : chanop_{internal::wait(r), dest} {}
+        : chanop_{internal::wait(r), dest, internal::get_slot(r.ptr)} {}
 
     // Dead-endpoint operation.
     explicit chan_op(internal::ChanOp op) : chanop_(op) {}
@@ -325,7 +365,7 @@ public:
     chan_op<T> operator<<(T && t) const { return {w_, std::move(t)}; }
 
     chan_op<T> operator~() const {
-        return chan_op<T>(internal::ChanOp{internal::wait_dead(w_), nullptr});
+        return chan_op<T>(internal::ChanOp{internal::wait_dead(w_), nullptr, internal::get_slot(w_.ptr)});
     }
 
     writer copy() const {
@@ -452,7 +492,7 @@ public:
     iterator end() const { return {}; }
 
     chan_op<T> operator~() const {
-        return chan_op<T>(internal::ChanOp{internal::wait_dead(r_), nullptr});
+        return chan_op<T>(internal::ChanOp{internal::wait_dead(r_), nullptr, internal::get_slot(r_.ptr)});
     }
 
     reader copy() const {
@@ -516,6 +556,23 @@ void make_channel(writer<T> & w, reader<T> & r) {
     auto [cw, cr] = chan<T>{};
     w = std::move(cw);
     r = std::move(cr);
+}
+
+// Atomically swap which channels two writer (or reader) groups target.
+// All holders of copies of a's endpoint are transparently redirected to b's
+// channel, and vice versa.
+template <typename T>
+void channel_swap(writer<T>& a, writer<T>& b) {
+    internal::swap_slots(
+        internal::get_slot(a.internal_writer().ptr),
+        internal::get_slot(b.internal_writer().ptr));
+}
+
+template <typename T>
+void channel_swap(reader<T>& a, reader<T>& b) {
+    internal::swap_slots(
+        internal::get_slot(a.internal_reader().ptr),
+        internal::get_slot(b.internal_reader().ptr));
 }
 
 // Make a channel for a writer&, returning the matching reader.

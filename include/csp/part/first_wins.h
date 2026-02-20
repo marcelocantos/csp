@@ -15,7 +15,7 @@ T first_wins(std::vector<reader<T>> inputs) {
     T t;
     std::vector<internal::ChanOp> chanops;
     for (auto& r : inputs) {
-        chanops.push_back({internal::wait(r.internal_reader()), &t});
+        chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
     }
 
     while (!inputs.empty()) {

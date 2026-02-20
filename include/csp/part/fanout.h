@@ -30,10 +30,10 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
         //   2: new_out >> out_val  (writer<T> transfer)
         //   3+: ~outs[i]           (death watches, no transfer)
         std::vector<internal::ChanOp> chanops;
-        chanops.push_back({internal::wait(new_in.internal_writer()), &in_val});
+        chanops.push_back({internal::wait(new_in.internal_writer()), &in_val, internal::get_slot(new_in.internal_writer().ptr)});
         chanops.push_back({{}, nullptr});
-        chanops.push_back({internal::wait(new_out.internal_reader()), &out_val});
-        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+        chanops.push_back({internal::wait(new_out.internal_reader()), &out_val, internal::get_slot(new_out.internal_reader().ptr)});
+        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
 
         std::vector<writer<T>> outs;
         outs.push_back(std::move(out));
@@ -61,7 +61,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
             case 0:
                 CSP_LOG(log, "new_in");
                 chanops[0] = {{}, nullptr};
-                chanops[1] = {internal::wait(in.internal_reader()), &t};
+                chanops[1] = {internal::wait(in.internal_reader()), &t, internal::get_slot(in.internal_reader().ptr)};
                 break;
             case ~0:
                 CSP_LOG(log, "~new_in");
@@ -81,12 +81,12 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
                 CSP_LOG(log, "~in");
                 in = {};
                 in_val = ++in;
-                chanops[0] = {internal::wait(new_in.internal_writer()), &in_val};
+                chanops[0] = {internal::wait(new_in.internal_writer()), &in_val, internal::get_slot(new_in.internal_writer().ptr)};
                 chanops[1] = {{}, nullptr};
                 break;
             case 2:  // new_out
                 CSP_LOG(log, "new_out");
-                chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr});
+                chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr, internal::get_slot(out_val.internal_writer().ptr)});
                 outs.push_back(std::move(out_val));
                 break;
             case ~2:

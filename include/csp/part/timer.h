@@ -7,26 +7,26 @@ namespace csp::part {
 
 // Each duration read from control becomes the next sleep interval.
 // Emits the actual fire time after each sleep.
-inline reader<clock::time_point> timer(reader<clock::duration> control) {
-    return spawn_producer<clock::time_point>(
-        [control = std::move(control)](writer<clock::time_point> out) mutable {
+inline reader<time_point> timer(reader<duration> control) {
+    return spawn_producer<time_point>(
+        [control = std::move(control)](writer<time_point> out) mutable {
             internal::descr("timer");
-            for (clock::duration d; control >> d;) {
+            for (duration d; control >> d;) {
                 csp::sleep(d);
-                if (!(out << clock::now())) return;
+                if (!(out << csp::now())) return;
             }
         });
 }
 
 // Each time_point read from control becomes the next absolute deadline.
 // Emits the actual fire time after each sleep.
-inline reader<clock::time_point> timer(reader<clock::time_point> control) {
-    return spawn_producer<clock::time_point>(
-        [control = std::move(control)](writer<clock::time_point> out) mutable {
+inline reader<time_point> timer(reader<time_point> control) {
+    return spawn_producer<time_point>(
+        [control = std::move(control)](writer<time_point> out) mutable {
             internal::descr("timer");
-            for (clock::time_point tp; control >> tp;) {
+            for (time_point tp; control >> tp;) {
                 csp::sleep_until(tp);
-                if (!(out << clock::now())) return;
+                if (!(out << csp::now())) return;
             }
         });
 }

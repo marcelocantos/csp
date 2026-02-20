@@ -110,8 +110,8 @@
   struct restart_policy {
       restart_strategy strategy = one_for_one{};
       int max_restarts = 3;               // Within the window.
-      csp::clock::duration window = 5s;   // Rolling window.
-      csp::clock::duration backoff = 0s;  // Delay before restart (0 = immediate).
+      csp::duration window = 5s;   // Rolling window.
+      csp::duration backoff = 0s;  // Delay before restart (0 = immediate).
       // If max_restarts exceeded within window, supervisor itself dies
       // (escalates to its parent supervisor).
   };
@@ -147,7 +147,7 @@
 
       // Request graceful shutdown: drop all children's killswitch channels,
       // wait for them to exit (with optional timeout).
-      void shutdown(csp::clock::duration timeout = 5s);
+      void shutdown(csp::duration timeout = 5s);
 
       // Dynamic child management (from within supervised imps).
       void add_child(child_spec spec);     // Hot-add.

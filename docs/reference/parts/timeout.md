@@ -9,7 +9,7 @@ resets the timer. Values are forwarded unchanged.
 
 ```cpp
 template <typename T>
-auto timeout(csp::clock::duration d);
+auto timeout(csp::duration d);
 ```
 
 Returns a `filter<T, T>`.
@@ -18,7 +18,7 @@ Returns a `filter<T, T>`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `d` | `csp::clock::duration` | Maximum idle time before closing |
+| `d` | `csp::duration` | Maximum idle time before closing |
 
 ## Diagram
 

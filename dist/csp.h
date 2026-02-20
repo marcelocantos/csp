@@ -88,6 +88,7 @@ private:
 #define BRAC_SCOPE__(logger, file, line, func, fmt, ...) \
     LogScope csp__logScope__##line(logger, CSP__DETAIL__SOURCE_ROOT, file, line, func, fmt, func, ##__VA_ARGS__);
 
+#include <atomic>
 #include <cassert>
 #include <climits>
 #include <exception>
@@ -104,28 +105,64 @@ private:
 
 namespace csp::internal {
 
+// Endpoint slot: separately allocated indirection between endpoint handles
+// and the channel they target. Enables atomic channel swap (rewiring the
+// topology) without touching the handles. Refcount tracks live handles
+// (for death detection); channel pointer is swappable.
+struct alignas(16) Slot {
+    std::atomic<void*> channel{nullptr};   // Channel* (type-erased)
+    std::atomic<size_t> refcount{1};       // live endpoint handles
+
+    explicit Slot(void* ch) : channel(ch) {}
+};
+
+// Extract Slot* from an endpoint ref (mask off low flag bits).
+inline Slot* get_slot(void* ptr) {
+    return reinterpret_cast<Slot*>((uintptr_t)ptr & ~15UL);
+}
+
 // Opaque channel endpoint handles.
-// WriterRef: holds Channel* (16-byte aligned, low bits available for flags).
-// ReaderRef: holds (Channel* | 1) — endpoint bit in bit 0.
+// WriterRef: holds Slot* (16-byte aligned, low bits available for flags).
+// ReaderRef: holds (Slot* | 1) — endpoint bit in bit 0.
 struct WriterRef { void* ptr = nullptr; explicit operator bool() const { return ptr; } };
 struct ReaderRef { void* ptr = nullptr; explicit operator bool() const { return ptr; } };
 
 // Waiter: encoded channel pointer + endpoint + state flags.
+// Note: Waiters hold the resolved Channel* (not Slot*), so they reference
+// the channel that was current when the waiter was constructed.
 struct Waiter { void* ptr = nullptr; };
 
 // State flag constants.
 enum : int { dead = 2, ready = dead | 1 };
 
 // Create a waiter for data or death-watch operations.
-inline Waiter wait(WriterRef w)      { return {(void*)((uintptr_t)w.ptr | (ready << 1) | 8)}; }
-inline Waiter wait(ReaderRef r)      { return {(void*)((uintptr_t)r.ptr | (ready << 1) | 8)}; }
-inline Waiter wait_dead(WriterRef w) { return {(void*)((uintptr_t)w.ptr | (dead << 1) | 8)}; }
-inline Waiter wait_dead(ReaderRef r) { return {(void*)((uintptr_t)r.ptr | (dead << 1) | 8)}; }
+// Resolves through the endpoint's Slot to get the current Channel*.
+inline Waiter wait(WriterRef w) {
+    auto* s = get_slot(w.ptr);
+    auto* ch = s->channel.load(std::memory_order_acquire);
+    return {(void*)((uintptr_t)ch | (ready << 1) | 8)};
+}
+inline Waiter wait(ReaderRef r) {
+    auto* s = get_slot(r.ptr);
+    auto* ch = s->channel.load(std::memory_order_acquire);
+    return {(void*)((uintptr_t)ch | 1 | (ready << 1) | 8)};
+}
+inline Waiter wait_dead(WriterRef w) {
+    auto* s = get_slot(w.ptr);
+    auto* ch = s->channel.load(std::memory_order_acquire);
+    return {(void*)((uintptr_t)ch | (dead << 1) | 8)};
+}
+inline Waiter wait_dead(ReaderRef r) {
+    auto* s = get_slot(r.ptr);
+    auto* ch = s->channel.load(std::memory_order_acquire);
+    return {(void*)((uintptr_t)ch | 1 | (dead << 1) | 8)};
+}
 
 // Channel operation descriptor.
 struct ChanOp {
     Waiter waiter;
     void * message = nullptr;
+    void * slot = nullptr;     // Slot* for re-resolution after channel swap
 };
 
 // Two-phase alt/prialt match result.
@@ -151,6 +188,9 @@ WriterRef writer_addref(WriterRef w);
 void writer_release(WriterRef w);
 ReaderRef reader_addref(ReaderRef r);
 void reader_release(ReaderRef r);
+
+// Channel swap: atomically exchange which channels two endpoint groups target.
+void swap_slots(void* slot_a, void* slot_b);
 
 // Channel introspection.
 void set_chan_descr(void * ch, char const * descr);
@@ -258,14 +298,14 @@ public:
 
     // Write operation (copy).
     chan_op(internal::WriterRef w, T const & t)
-        : chanop_{internal::wait(w), &buf_}, has_buf_(true)
+        : chanop_{internal::wait(w), &buf_, internal::get_slot(w.ptr)}, has_buf_(true)
     {
         new (&buf_) T(t);
     }
 
     // Write operation (move).
     chan_op(internal::WriterRef w, T && t)
-        : chanop_{internal::wait(w), &buf_}, has_buf_(true)
+        : chanop_{internal::wait(w), &buf_, internal::get_slot(w.ptr)}, has_buf_(true)
     {
         new (&buf_) T(std::move(t));
     }
@@ -273,11 +313,11 @@ public:
     // Read operation.
     template <typename U, typename = std::enable_if_t<std::is_convertible<T, U>::value>>
     chan_op(internal::ReaderRef r, U & dest)
-        : chanop_{internal::wait(r), &dest} {}
+        : chanop_{internal::wait(r), &dest, internal::get_slot(r.ptr)} {}
 
     // Raw-pointer read (for ring buffer slots and nullptr discard).
     chan_op(internal::ReaderRef r, void * dest)
-        : chanop_{internal::wait(r), dest} {}
+        : chanop_{internal::wait(r), dest, internal::get_slot(r.ptr)} {}
 
     // Dead-endpoint operation.
     explicit chan_op(internal::ChanOp op) : chanop_(op) {}
@@ -411,7 +451,7 @@ public:
     chan_op<T> operator<<(T && t) const { return {w_, std::move(t)}; }
 
     chan_op<T> operator~() const {
-        return chan_op<T>(internal::ChanOp{internal::wait_dead(w_), nullptr});
+        return chan_op<T>(internal::ChanOp{internal::wait_dead(w_), nullptr, internal::get_slot(w_.ptr)});
     }
 
     writer copy() const {
@@ -538,7 +578,7 @@ public:
     iterator end() const { return {}; }
 
     chan_op<T> operator~() const {
-        return chan_op<T>(internal::ChanOp{internal::wait_dead(r_), nullptr});
+        return chan_op<T>(internal::ChanOp{internal::wait_dead(r_), nullptr, internal::get_slot(r_.ptr)});
     }
 
     reader copy() const {
@@ -602,6 +642,23 @@ void make_channel(writer<T> & w, reader<T> & r) {
     auto [cw, cr] = chan<T>{};
     w = std::move(cw);
     r = std::move(cr);
+}
+
+// Atomically swap which channels two writer (or reader) groups target.
+// All holders of copies of a's endpoint are transparently redirected to b's
+// channel, and vice versa.
+template <typename T>
+void channel_swap(writer<T>& a, writer<T>& b) {
+    internal::swap_slots(
+        internal::get_slot(a.internal_writer().ptr),
+        internal::get_slot(b.internal_writer().ptr));
+}
+
+template <typename T>
+void channel_swap(reader<T>& a, reader<T>& b) {
+    internal::swap_slots(
+        internal::get_slot(a.internal_reader().ptr),
+        internal::get_slot(b.internal_reader().ptr));
 }
 
 // Make a channel for a writer&, returning the matching reader.
@@ -1031,7 +1088,6 @@ private:
 } // namespace csp::detail
 
 #include <any>
-#include <atomic>
 #include <unordered_map>
 
 // TSan fiber annotations: tell TSan about user-mode context switches
@@ -2673,7 +2729,8 @@ template <size_t... Is, typename Bufs, typename Inputs>
 void combine_setup(internal::ChanOp* chanops, Bufs& bufs, Inputs& inputs,
                    std::index_sequence<Is...>) {
     ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
-                     &std::get<Is>(bufs)}), ...);
+                     &std::get<Is>(bufs),
+                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
 }
 
 // Dispatch tables for typed transfer and latest-update by runtime index.
@@ -2729,7 +2786,7 @@ auto combine_latest_impl(F&& f, reader<Ts>... inputs) {
 
             internal::ChanOp chanops[N + 1];
             // Slot 0: death-watch on output.
-            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr};
+            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)};
             // Slots 1..N: reads from each input.
             combine_setup(chanops + 1, bufs, inputs,
                           std::index_sequence_for<Ts...>{});
@@ -2919,14 +2976,15 @@ namespace csp::detail { struct Imp; }
 
 namespace csp {
 
-using clock = std::chrono::steady_clock;
+using time_point = std::chrono::steady_clock::time_point;
+using duration = std::chrono::steady_clock::duration;
 
 // Fake clock for testing time-dependent code.
-// Bind via csp::local l{csp::clock_override = &fc}.
+// Bind via csp::local l{csp::clock = &fc}.
 class fake_clock {
-    clock::time_point current_;
+    time_point current_;
     struct Entry {
-        clock::time_point deadline;
+        time_point deadline;
         detail::Imp* imp;
         bool operator>(Entry const& o) const { return deadline > o.deadline; }
     };
@@ -2935,13 +2993,13 @@ class fake_clock {
     void fire_expired();
 
 public:
-    explicit fake_clock(clock::time_point start = clock::time_point{});
+    explicit fake_clock(time_point start = time_point{});
 
-    clock::time_point now() const { return current_; }
+    time_point now() const { return current_; }
     bool has_pending() const { return !pending_.empty(); }
 
     // Advance time and fire expired timers.
-    void advance(clock::duration d);
+    void advance(duration d);
 
     // Jump to next pending deadline. Returns false if no timers pending.
     bool advance_to_next();
@@ -2953,37 +3011,37 @@ public:
     void run_until_idle();
 
     // Called by sleep_until when this clock is active.
-    void sleep_until_impl(clock::time_point tp);
+    void sleep_until_impl(time_point tp);
 
     fake_clock(fake_clock const&) = delete;
     fake_clock& operator=(fake_clock const&) = delete;
 };
 
-extern dynamic<fake_clock*> clock_override;
+extern dynamic<fake_clock*> clock;
 
-// Current time: fake if clock_override is bound, real otherwise.
-inline clock::time_point now() {
-    if (auto* fc = *clock_override)
+// Current time: fake if clock is bound, real otherwise.
+inline time_point now() {
+    if (auto* fc = *clock)
         return fc->now();
-    return clock::now();
+    return std::chrono::steady_clock::now();
 }
 
 // Block the current imp until the given deadline.
-inline void sleep_until(clock::time_point tp) {
-    if (auto* fc = *clock_override)
+inline void sleep_until(time_point tp) {
+    if (auto* fc = *clock)
         return fc->sleep_until_impl(tp);
     internal::sleep_until(tp.time_since_epoch().count());
 }
 
 // Block the current imp for the given duration.
-inline void sleep(clock::duration d) {
+inline void sleep(duration d) {
     sleep_until(csp::now() + d);
 }
 
 // Return a reader that fires once after the given duration,
 // delivering the current time.
-inline reader<clock::time_point> after(clock::duration d) {
-    return spawn_producer<clock::time_point>([d](writer<clock::time_point> w) {
+inline reader<time_point> after(duration d) {
+    return spawn_producer<time_point>([d](writer<time_point> w) {
         csp::sleep(d);
         w << csp::now();
     });
@@ -2991,8 +3049,8 @@ inline reader<clock::time_point> after(clock::duration d) {
 
 // Return a reader that fires repeatedly at the given interval,
 // delivering the current time. Uses absolute deadlines to prevent drift.
-inline reader<clock::time_point> tick(clock::duration interval) {
-    return spawn_producer<clock::time_point>([interval](writer<clock::time_point> w) {
+inline reader<time_point> tick(duration interval) {
+    return spawn_producer<time_point>([interval](writer<time_point> w) {
         auto next = csp::now() + interval;
         while (true) {
             csp::sleep_until(next);
@@ -3016,11 +3074,11 @@ struct debounce_config {
 // Optional dead_letter: superseded pending values are written here instead of
 // discarded.
 template <typename T>
-auto debounce(csp::clock::duration d, debounce_config<T> cfg = {}) {
+auto debounce(csp::duration d, debounce_config<T> cfg = {}) {
     return make_filter<T>([d, dead_letter = std::move(cfg.dead_letter)](reader<T> in, writer<T> out) mutable {
         internal::descr("debounce");
         T pending;
-        reader<clock::time_point> timer;
+        reader<time_point> timer;
 
         for (;;) {
             if (!timer) {
@@ -3088,31 +3146,31 @@ namespace csp::part {
 // (not serialized). On input close, remaining values are drained with their
 // original delays.
 template <typename T>
-auto delay(csp::clock::duration d) {
+auto delay(csp::duration d) {
     return make_filter<T>([d](reader<T> in, writer<T> out) {
         internal::descr("delay");
-        std::deque<std::pair<T, csp::clock::time_point>> q;
+        std::deque<std::pair<T, csp::time_point>> q;
 
         for (;;) {
             if (q.empty()) {
                 // Nothing pending — wait for input.
                 T t;
                 if (csp::alt(in >> t, ~out) != 0) return;
-                q.emplace_back(std::move(t), csp::clock::now() + d);
+                q.emplace_back(std::move(t), csp::now() + d);
             } else {
                 // Emit any items already past their deadline.
-                while (!q.empty() && q.front().second <= csp::clock::now()) {
+                while (!q.empty() && q.front().second <= csp::now()) {
                     if (!(out << std::move(q.front().first))) return;
                     q.pop_front();
                 }
                 if (q.empty()) continue;
 
                 // Wait for input or oldest item's deadline.
-                auto timer = csp::after(q.front().second - csp::clock::now());
+                auto timer = csp::after(q.front().second - csp::now());
                 T t;
                 switch (csp::alt(in >> t, timer >> nullptr, ~out)) {
                 case 0:  // New value — enqueue.
-                    q.emplace_back(std::move(t), csp::clock::now() + d);
+                    q.emplace_back(std::move(t), csp::now() + d);
                     break;
                 case 1:  // Timer fired — emit front.
                     if (!(out << std::move(q.front().first))) return;
@@ -3427,10 +3485,10 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
         //   2: new_out >> out_val  (writer<T> transfer)
         //   3+: ~outs[i]           (death watches, no transfer)
         std::vector<internal::ChanOp> chanops;
-        chanops.push_back({internal::wait(new_in.internal_writer()), &in_val});
+        chanops.push_back({internal::wait(new_in.internal_writer()), &in_val, internal::get_slot(new_in.internal_writer().ptr)});
         chanops.push_back({{}, nullptr});
-        chanops.push_back({internal::wait(new_out.internal_reader()), &out_val});
-        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+        chanops.push_back({internal::wait(new_out.internal_reader()), &out_val, internal::get_slot(new_out.internal_reader().ptr)});
+        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
 
         std::vector<writer<T>> outs;
         outs.push_back(std::move(out));
@@ -3458,7 +3516,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
             case 0:
                 CSP_LOG(log, "new_in");
                 chanops[0] = {{}, nullptr};
-                chanops[1] = {internal::wait(in.internal_reader()), &t};
+                chanops[1] = {internal::wait(in.internal_reader()), &t, internal::get_slot(in.internal_reader().ptr)};
                 break;
             case ~0:
                 CSP_LOG(log, "~new_in");
@@ -3478,12 +3536,12 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
                 CSP_LOG(log, "~in");
                 in = {};
                 in_val = ++in;
-                chanops[0] = {internal::wait(new_in.internal_writer()), &in_val};
+                chanops[0] = {internal::wait(new_in.internal_writer()), &in_val, internal::get_slot(new_in.internal_writer().ptr)};
                 chanops[1] = {{}, nullptr};
                 break;
             case 2:  // new_out
                 CSP_LOG(log, "new_out");
-                chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr});
+                chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr, internal::get_slot(out_val.internal_writer().ptr)});
                 outs.push_back(std::move(out_val));
                 break;
             case ~2:
@@ -3594,7 +3652,7 @@ T first_wins(std::vector<reader<T>> inputs) {
     T t;
     std::vector<internal::ChanOp> chanops;
     for (auto& r : inputs) {
-        chanops.push_back({internal::wait(r.internal_reader()), &t});
+        chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
     }
 
     while (!inputs.empty()) {
@@ -3640,9 +3698,9 @@ auto flat_map(F&& f) {
         std::vector<internal::ChanOp> chanops;
 
         // Slot 0: death-watch on output.
-        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
         // Slot 1: read from input (removed when input exhausted).
-        chanops.push_back({internal::wait(in.internal_reader()), &a});
+        chanops.push_back({internal::wait(in.internal_reader()), &a, internal::get_slot(in.internal_reader().ptr)});
 
         bool input_alive = true;
 
@@ -3669,7 +3727,7 @@ auto flat_map(F&& f) {
             } else if (input_alive && m.result == 1) {
                 // New input element — spawn sub-stream.
                 reader<B> sub = f(std::move(a));
-                chanops.push_back({internal::wait(sub.internal_reader()), &b});
+                chanops.push_back({internal::wait(sub.internal_reader()), &b, internal::get_slot(sub.internal_reader().ptr)});
                 subs.push_back(std::move(sub));
             } else if (input_alive && m.result == ~1) {
                 // Input exhausted — remove input slot.
@@ -3987,7 +4045,7 @@ void join(std::vector<reader<T>> inputs) {
     T t;
     std::vector<internal::ChanOp> chanops;
     for (auto& r : inputs) {
-        chanops.push_back({internal::wait(r.internal_reader()), &t});
+        chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
     }
 
     while (!inputs.empty()) {
@@ -4104,10 +4162,10 @@ auto merge(std::vector<reader<T>> inputs) {
             T t;
             std::vector<internal::ChanOp> chanops;
             // Slot 0: death-watch on output.
-            chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+            chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
             // Slots 1..N: reads from each input.
             for (auto& r : inputs) {
-                chanops.push_back({internal::wait(r.internal_reader()), &t});
+                chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
             }
 
             while (!inputs.empty()) {
@@ -4158,9 +4216,9 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
         std::vector<internal::ChanOp> chanops;
 
         // Slot 0: death-watch on output.
-        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr});
+        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
         // Slot 1: read from input (removed when input exhausted).
-        chanops.push_back({internal::wait(in.internal_reader()), &new_sub});
+        chanops.push_back({internal::wait(in.internal_reader()), &new_sub, internal::get_slot(in.internal_reader().ptr)});
 
         bool input_alive = true;
 
@@ -4186,7 +4244,7 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
                 return;  // Output died.
             } else if (input_alive && m.result == 1) {
                 // New sub-reader.
-                chanops.push_back({internal::wait(new_sub.internal_reader()), &b});
+                chanops.push_back({internal::wait(new_sub.internal_reader()), &b, internal::get_slot(new_sub.internal_reader().ptr)});
                 subs.push_back(std::move(new_sub));
             } else if (input_alive && m.result == ~1) {
                 // Input exhausted — remove input slot.
@@ -4212,11 +4270,12 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
 /* csp/part/metrics.h */
 
 
+
 namespace csp::part {
 
 struct metrics_snapshot {
     size_t count;
-    std::chrono::steady_clock::duration elapsed;
+    csp::duration elapsed;
 };
 
 // Transparent passthrough reporting throughput stats on a side channel.
@@ -4233,12 +4292,12 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
         internal::descr("metrics");
 
         size_t count = 0;
-        auto start = std::chrono::steady_clock::now();
+        auto start = csp::now();
         T t;
 
         for (;;) {
             auto snap = metrics_snapshot{
-                count, std::chrono::steady_clock::now() - start};
+                count, csp::now() - start};
             switch (csp::alt(data >> t, stats << snap, ~out)) {
             case 0:  // Data — forward.
                 count++;
@@ -4250,7 +4309,7 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
                 out = {};
                 for (;;) {
                     auto final_snap = metrics_snapshot{
-                        count, std::chrono::steady_clock::now() - start};
+                        count, csp::now() - start};
                     if (!(stats << final_snap)) return;
                 }
                 return;
@@ -4284,7 +4343,8 @@ void mux_setup(internal::ChanOp* chanops, void** buf_ptrs,
                Bufs& bufs, Inputs& inputs,
                std::index_sequence<Is...>) {
     ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
-                     &std::get<Is>(bufs)}), ...);
+                     &std::get<Is>(bufs),
+                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
     ((buf_ptrs[Is] = &std::get<Is>(bufs)), ...);
 }
 
@@ -4343,7 +4403,7 @@ auto mux(reader<Ts>... inputs) {
             void* buf_ptrs[N];
 
             // Slot 0: death-watch on output.
-            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr};
+            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)};
             // Slots 1..N: reads, each pointing at its typed buffer.
             detail::mux_setup(
                 chanops + 1, buf_ptrs, bufs, inputs,
@@ -5633,7 +5693,7 @@ namespace csp::part {
 // Close output if no value arrives within duration d.
 // Timer resets on each value. Values are forwarded unchanged.
 template <typename T>
-auto timeout(csp::clock::duration d) {
+auto timeout(csp::duration d) {
     return make_filter<T>([d](reader<T> in, writer<T> out) {
         internal::descr("timeout");
         auto timer = csp::after(d);
@@ -5663,26 +5723,26 @@ namespace csp::part {
 
 // Each duration read from control becomes the next sleep interval.
 // Emits the actual fire time after each sleep.
-inline reader<clock::time_point> timer(reader<clock::duration> control) {
-    return spawn_producer<clock::time_point>(
-        [control = std::move(control)](writer<clock::time_point> out) mutable {
+inline reader<time_point> timer(reader<duration> control) {
+    return spawn_producer<time_point>(
+        [control = std::move(control)](writer<time_point> out) mutable {
             internal::descr("timer");
-            for (clock::duration d; control >> d;) {
+            for (duration d; control >> d;) {
                 csp::sleep(d);
-                if (!(out << clock::now())) return;
+                if (!(out << csp::now())) return;
             }
         });
 }
 
 // Each time_point read from control becomes the next absolute deadline.
 // Emits the actual fire time after each sleep.
-inline reader<clock::time_point> timer(reader<clock::time_point> control) {
-    return spawn_producer<clock::time_point>(
-        [control = std::move(control)](writer<clock::time_point> out) mutable {
+inline reader<time_point> timer(reader<time_point> control) {
+    return spawn_producer<time_point>(
+        [control = std::move(control)](writer<time_point> out) mutable {
             internal::descr("timer");
-            for (clock::time_point tp; control >> tp;) {
+            for (time_point tp; control >> tp;) {
                 csp::sleep_until(tp);
-                if (!(out << clock::now())) return;
+                if (!(out << csp::now())) return;
             }
         });
 }

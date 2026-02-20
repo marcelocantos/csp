@@ -10,7 +10,7 @@ serialized).
 
 ```cpp
 template <typename T>
-auto delay(csp::clock::duration d);
+auto delay(csp::duration d);
 ```
 
 Returns a `filter<T, T>`.
@@ -19,7 +19,7 @@ Returns a `filter<T, T>`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `d` | `csp::clock::duration` | Duration to delay each value |
+| `d` | `csp::duration` | Duration to delay each value |
 
 ## Diagram
 
@@ -86,11 +86,11 @@ using namespace std::chrono_literals;
 
 auto r = delay<int>(50ms).spawn(count(1, 4).spawn());
 
-auto start = csp::clock::now();
+auto start = csp::now();
 while (int v; r >> v) {
     // Each value arrives ~50ms after it was sent.
 }
-auto elapsed = csp::clock::now() - start;
+auto elapsed = csp::now() - start;
 // elapsed >= 50ms
 ```
 

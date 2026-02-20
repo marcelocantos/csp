@@ -15,11 +15,11 @@ struct debounce_config {
 // Optional dead_letter: superseded pending values are written here instead of
 // discarded.
 template <typename T>
-auto debounce(csp::clock::duration d, debounce_config<T> cfg = {}) {
+auto debounce(csp::duration d, debounce_config<T> cfg = {}) {
     return make_filter<T>([d, dead_letter = std::move(cfg.dead_letter)](reader<T> in, writer<T> out) mutable {
         internal::descr("debounce");
         T pending;
-        reader<clock::time_point> timer;
+        reader<time_point> timer;
 
         for (;;) {
             if (!timer) {

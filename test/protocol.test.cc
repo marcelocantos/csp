@@ -183,7 +183,7 @@ TEST_CASE("Protocol - A5 timer heap boundary") {
     constexpr int N = 65;
     std::atomic<int> count{0};
 
-    auto deadline = csp::clock::now() + 20ms;
+    auto deadline = std::chrono::steady_clock::now() + 20ms;
 
     for (int i = 0; i < N; ++i) {
         csp::spawn([&count, deadline] {

@@ -16,7 +16,8 @@ template <size_t... Is, typename Bufs, typename Inputs>
 void combine_setup(internal::ChanOp* chanops, Bufs& bufs, Inputs& inputs,
                    std::index_sequence<Is...>) {
     ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
-                     &std::get<Is>(bufs)}), ...);
+                     &std::get<Is>(bufs),
+                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
 }
 
 // Dispatch tables for typed transfer and latest-update by runtime index.
@@ -72,7 +73,7 @@ auto combine_latest_impl(F&& f, reader<Ts>... inputs) {
 
             internal::ChanOp chanops[N + 1];
             // Slot 0: death-watch on output.
-            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr};
+            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)};
             // Slots 1..N: reads from each input.
             combine_setup(chanops + 1, bufs, inputs,
                           std::index_sequence_for<Ts...>{});
