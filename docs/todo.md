@@ -53,29 +53,33 @@
       Implemented as `exhaust_all<B>` (+ `map | exhaust_all` composition).
       Uses prialt with vulture chanop for deterministic sub-death detection.
 
-- [ ] **sort_merge** `(vector<reader<T>>, Cmp) → reader<T>` — Merge N
-      pre-sorted streams into one sorted output.
+- [x] **sort_merge** `(vector<reader<T>>, Cmp) → reader<T>` — Merge N
+      pre-sorted streams into one sorted output. Min-heap based. Implemented
+      in `include/csp/part/sort_merge.h`.
 
-- [ ] **chunk_by** `(reader<T>, F(T,T)→bool) → reader<vector<T>>` — Group
+- [x] **chunk_by** `(reader<T>, F(T,T)→bool) → reader<vector<T>>` — Group
       consecutive elements where predicate holds between adjacent pairs.
+      Implemented in `include/csp/part/chunk_by.h`.
 
-- [ ] **fallback** `(reader<T>, reader<T>) → reader<T>` — Sequential failover:
-      if primary closes without producing, switch to backup.
+- [x] **fallback** `(vector<reader<T>>) → reader<T>` — Sequential failover:
+      try each reader in order, use first that produces. Implemented in
+      `include/csp/part/fallback.h`.
 
-- [ ] **until** `(Pred) → filter<T,T>` — Like take_while but inclusive: emits
-      the terminating element.
+- [x] **take_until** `(Pred) → filter<T,T>` — Like take_while but inclusive:
+      emits the terminating element. Implemented in
+      `include/csp/part/take_until.h`.
 
-- [ ] **foreach_emit** `(S init, Update, Extract) → filter<T, U>` — Generalized
-      scan with separate state update and extraction phases.
+- [x] **foreach_emit** `(S init, Update, Extract) → filter<T, U>` —
+      Generalized scan with separate state update and extraction phases.
+      Implemented in `include/csp/part/foreach_emit.h`.
 
-- [ ] **transpose** `(vector<reader<T>>) → reader<vector<T>>` — Dynamic-width
+- [x] **transpose** `(vector<reader<T>>) → reader<vector<T>>` — Dynamic-width
       zip: reads one from each of N channels in lockstep, emits as vector.
+      Implemented in `include/csp/part/transpose.h`.
 
-- [ ] **unfold** `(S init, F(S)→optional<pair<T,S>>) → reader<T>` — Generate
-      a stream from a seed state machine. Producer dual of reduce.
-
-- [ ] **any_match/all_match** `(reader<T>, Pred) → bool` — Short-circuiting
-      quantifiers. Close pipeline early on first match/mismatch.
+- [x] **any_of/all_of** `(reader<T>, Pred) → bool` — Short-circuiting
+      quantifiers. Close pipeline early on first match/mismatch. Implemented
+      in `include/csp/part/quantify.h`.
 
 ## Tier C — Coordination and resilience
 

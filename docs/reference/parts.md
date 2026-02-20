@@ -54,6 +54,8 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [flat_map](parts/flat_map.md) | filter | Map each element to a sub-stream, then merge |
 | [flatten](parts/flatten.md) | filter | Flatten a stream of containers into individual elements |
 | [reduce](parts/reduce.md) | filter | Fold entire stream to a single output value |
+| [foreach_emit](parts/foreach_emit.md) | filter | Generalized scan with separate state update and extraction |
+| [any_of / all_of](parts/quantify.md) | filter | Short-circuiting existential/universal quantifiers (emit single bool) |
 
 ## Windowing
 
@@ -65,6 +67,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [nwise](parts/nwise.md) | filter | Sliding N-element window emitting tuples |
 | [pairwise](parts/pairwise.md) | filter | Consecutive pairs from a stream |
 | [quantize](parts/quantize.md) | filter | Batch additive values into variable-size quanta |
+| [chunk_by](parts/chunk_by.md) | filter | Group consecutive elements where predicate holds between adjacent pairs |
 
 ## Filtering
 
@@ -73,6 +76,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [distinct](parts/distinct.md) | filter | Suppress consecutive duplicate values |
 | [unique](parts/unique.md) | filter | Suppress all-time duplicates (hash set) |
 | [take_while](parts/take_while.md) | filter | Forward elements while predicate holds, then close |
+| [take_until](parts/take_until.md) | filter | Forward elements until predicate holds (inclusive — emits the match) |
 | [skip_while](parts/skip_while.md) | filter | Drop leading elements while predicate holds |
 | [first / last / skip_first / skip_last](parts/first_last.md) | filter | Position-based selection at stream boundaries |
 | [stride](parts/stride.md) | filter | Take every Nth element |
@@ -106,6 +110,8 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [demux](parts/demux.md) | function | Split a `variant` stream into N typed readers |
 | [combine_latest](parts/combine_latest.md) | producer | Emit tuple of latest values whenever any input updates |
 | [zip](parts/zip.md) | producer | Combine N inputs element-wise into tuples |
+| [transpose](parts/transpose.md) | producer | Dynamic-width zip: N homogeneous readers in lockstep as vectors |
+| [sort_merge](parts/sort_merge.md) | producer | Merge N pre-sorted streams into one sorted output |
 | [unzip](parts/unzip.md) | filter | Split a tuple stream into N independent readers |
 
 ## Routing
@@ -129,6 +135,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 |---|---|---|
 | [share](parts/share.md) | producer | Broadcast a source to multiple independent subscribers |
 | [first_wins](parts/first_wins.md) | producer | Read from whichever source responds first, discard the rest |
+| [fallback](parts/fallback.md) | producer | Sequential failover: try each reader, use first that produces |
 | [join](parts/join.md) | consumer | Block until all input channels close (barrier) |
 | [latch](parts/latch.md) | filter | Hold and serve the most recent value |
 | [conflate](parts/conflate.md) | filter | Merge pending values when downstream is slow |
