@@ -137,6 +137,59 @@ for (int n : r) {
 If you need to catch the combinator's exception, use `spawn_range` or
 explicitly `join()` the underlying imp.
 
+## try\_map -- resilient pipelines
+
+Sometimes you want a pipeline to *survive* errors rather than tear down on the
+first exception. `try_map` catches exceptions from the mapping function and
+routes them to a side channel as `std::exception_ptr`, while successful results
+continue through the pipeline normally:
+
+```cpp
+auto src = chan<int>();
+auto err = chan<std::exception_ptr>();
+
+auto out = std::move(src.r) | try_map<int>([](int n) -> int {
+    if (n < 0) throw std::domain_error("negative");
+    return n * 2;
+}, std::move(err.w));
+
+// Producer
+spawn([w = std::move(src.w)] {
+    w << 1; w << -1; w << 2; w << -2; w << 3;
+});
+
+// Error handler -- runs concurrently
+spawn([r = std::move(err.r)] {
+    for (std::exception_ptr ep; r >> ep;) {
+        try { std::rethrow_exception(ep); }
+        catch (std::exception const& e) {
+            fprintf(stderr, "skipped: %s\n", e.what());
+        }
+    }
+});
+
+// Consumer sees only the successful values: 2, 4, 6
+for (int n : out) {
+    process(n);
+}
+```
+
+The error channel carries `exception_ptr` values. The receiver rethrows each
+one to inspect it -- since it knows what exceptions to expect, it can `catch`
+the specific types and extract whatever context they carry.
+
+Key behaviours:
+
+- **Pipeline continues** after each error. Only successful results reach
+  downstream.
+- **Error channel backpressure** applies: if the error handler is slow,
+  `try_map` blocks on the error write, throttling the whole pipeline.
+- **Dead error channel** stops `try_map` only when an error actually occurs.
+  If you drop the error reader, normal values still flow until the next
+  exception -- then `try_map` exits because it cannot deliver the error.
+- **Without an error channel**, `try_map(f)` is equivalent to `map(f)` --
+  exceptions propagate normally and tear down the pipeline as described above.
+
 ## Channel death as control flow
 
 Dropping an endpoint is not an error -- it is the primary mechanism for
