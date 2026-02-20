@@ -11,7 +11,7 @@ TEST_SUITE("Pace") {
 TEST_CASE("Pace - all values pass through") {
     RunStats stats;
 
-    auto p = pace<int>(50ms).spawn();
+    auto p = pace<int>(tick(50ms)).spawn();
 
     stats.spawn([w = std::move(p.w)]{
         w << 1; w << 2; w << 3;
@@ -29,7 +29,7 @@ TEST_CASE("Pace - all values pass through") {
 TEST_CASE("Pace - enforces minimum interval") {
     RunStats stats;
 
-    auto p = pace<int>(80ms).spawn();
+    auto p = pace<int>(tick(80ms)).spawn();
 
     stats.spawn([w = std::move(p.w)]{
         w << 1; w << 2; w << 3;
@@ -53,7 +53,7 @@ TEST_CASE("Pace - enforces minimum interval") {
 TEST_CASE("Pace - first value passes immediately") {
     RunStats stats;
 
-    auto p = pace<int>(200ms).spawn();
+    auto p = pace<int>(tick(200ms)).spawn();
     auto start = csp::clock::now();
 
     stats.spawn([w = std::move(p.w)]{
@@ -75,7 +75,7 @@ TEST_CASE("Pace - first value passes immediately") {
 TEST_CASE("Pace - output death stops") {
     RunStats stats;
 
-    auto p = pace<int>(50ms).spawn();
+    auto p = pace<int>(tick(50ms)).spawn();
 
     stats.spawn([w = std::move(p.w)]{
         // Send many values — output will die after first read.
@@ -93,7 +93,7 @@ TEST_CASE("Pace - output death stops") {
 TEST_CASE("Pace - pipe composition") {
     RunStats stats;
 
-    auto r = count(1, 4).spawn() | pace<int>(50ms);
+    auto r = count(1, 4).spawn() | pace<int>(tick(50ms));
 
     std::vector<int> got;
     stats.spawn([r = std::move(r), &got]{
@@ -102,6 +102,27 @@ TEST_CASE("Pace - pipe composition") {
 
     csp::schedule();
     CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+}
+
+TEST_CASE("Pace - trigger death stops") {
+    RunStats stats;
+
+    auto [tw, tr] = chan<>{};
+    auto p = pace<int>(std::move(tr)).spawn();
+
+    stats.spawn([w = std::move(p.w), tw = std::move(tw)]{
+        w << 1;  // Passes immediately (first value).
+        // tw dropped here — trigger dies, pace should stop.
+        w << 2;
+    });
+
+    stats.spawn([r = std::move(p.r)]{
+        CHECK_EQ(1, r.read());
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+
+    csp::schedule();
 }
 
 }
