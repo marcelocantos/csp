@@ -10,7 +10,7 @@ using namespace csp;
 // Basic (single-threaded cooperative) swap tests
 // ---------------------------------------------------------------------------
 
-TEST_SUITE("channel_swap") {
+TEST_SUITE("swap") {
 
 TEST_CASE("baseline channel count") {
     MESSAGE("wr=" << csp::internal::channel_count(0)
@@ -37,7 +37,7 @@ TEST_CASE("swap writers - redirects data") {
     chan<int> a;
     chan<int> b;
 
-    channel_swap(a.w, b.w);
+    swap(a.w, b.w);
 
     spawn([w = std::move(a.w)] { w << 42; });
     spawn([w = std::move(b.w)] { w << 99; });
@@ -54,7 +54,7 @@ TEST_CASE("swap readers - redirects data") {
     chan<int> a;
     chan<int> b;
 
-    channel_swap(a.r, b.r);
+    swap(a.r, b.r);
 
     spawn([w = std::move(a.w)] { w << 42; });
     spawn([w = std::move(b.w)] { w << 99; });
@@ -74,7 +74,7 @@ TEST_CASE("swap with copies - all copies see redirection") {
     auto a_w_copy = a.w.copy();
     auto b_w_copy = b.w.copy();
 
-    channel_swap(a.w, b.w);
+    swap(a.w, b.w);
 
     spawn([w = std::move(a_w_copy)] { w << 10; });
     spawn([w = std::move(b_w_copy)] { w << 20; });
@@ -92,7 +92,7 @@ TEST_CASE("swap with copies - all copies see redirection") {
 
 TEST_CASE("swap self is no-op") {
     chan<int> a;
-    channel_swap(a.w, a.w);
+    swap(a.w, a.w);
 
     spawn([w = std::move(a.w)] { w << 7; });
 
@@ -106,8 +106,8 @@ TEST_CASE("double swap restores original") {
     chan<int> a;
     chan<int> b;
 
-    channel_swap(a.w, b.w);
-    channel_swap(a.w, b.w);
+    swap(a.w, b.w);
+    swap(a.w, b.w);
 
     spawn([w = std::move(a.w)] { w << 42; });
     spawn([w = std::move(b.w)] { w << 99; });
@@ -124,7 +124,7 @@ TEST_CASE("swap death detection - writer dies on swapped channel") {
     chan<int> a;
     chan<int> b;
 
-    channel_swap(a.w, b.w);
+    swap(a.w, b.w);
 
     a.w = {};
 
@@ -156,7 +156,7 @@ TEST_CASE("swap during blocked read - waiter retries") {
 
     csp::yield();
 
-    channel_swap(a.w, b.w);
+    swap(a.w, b.w);
 
     b.w << 77;
 
@@ -175,8 +175,8 @@ TEST_CASE("swap three-way rotation") {
     chan<int> b;
     chan<int> c;
 
-    channel_swap(a.w, b.w);
-    channel_swap(b.w, c.w);
+    swap(a.w, b.w);
+    swap(b.w, c.w);
 
     spawn([w = std::move(a.w)] { w << 1; });
     spawn([w = std::move(b.w)] { w << 2; });
@@ -198,7 +198,7 @@ TEST_CASE("swap refcounts preserved") {
     {
         chan<int> a;
         chan<int> b;
-        channel_swap(a.w, b.w);
+        swap(a.w, b.w);
     }
     CHECK_EQ(wr_before, csp::internal::channel_count(0));
     CHECK_EQ(rd_before, csp::internal::channel_count(1));
@@ -211,7 +211,7 @@ TEST_CASE("swap refcounts with copies preserved") {
         chan<int> a;
         chan<int> b;
         auto a_copy = a.w.copy();
-        channel_swap(a.w, b.w);
+        swap(a.w, b.w);
     }
     CHECK_EQ(wr_before, csp::internal::channel_count(0));
     CHECK_EQ(rd_before, csp::internal::channel_count(1));
@@ -222,13 +222,13 @@ TEST_CASE("basic swap suite channel leak check") {
     CHECK_EQ(0, csp::internal::channel_count(1));
 }
 
-} // TEST_SUITE("channel_swap")
+} // TEST_SUITE("swap")
 
 // ---------------------------------------------------------------------------
 // M:N stress tests — exercise swap under real concurrency
 // ---------------------------------------------------------------------------
 
-TEST_SUITE("channel_swap MN") {
+TEST_SUITE("swap MN") {
 
 TEST_CASE("MN Swap - concurrent data flow") {
     // Swap writers while data is actively flowing through both channels.
@@ -262,7 +262,7 @@ TEST_CASE("MN Swap - concurrent data flow") {
     csp::spawn([wa = a.w.copy(), wb = b.w.copy()]() mutable {
         for (int i = 0; i < 50; ++i) {
             csp::yield();
-            channel_swap(wa, wb);
+            swap(wa, wb);
         }
     });
 
@@ -303,7 +303,7 @@ TEST_CASE("MN Swap - swap during blocked alt") {
             csp::yield();
 
             // Swap writers: b.w now targets a's channel.
-            channel_swap(a.w, b.w);
+            swap(a.w, b.w);
 
             // Write through b.w (which now targets a's channel).
             b.w << (i + 1);
@@ -338,7 +338,7 @@ TEST_CASE("MN Swap - swap racing with endpoint death") {
 
             // Swapper uses copies to avoid data race with parent.
             csp::spawn([wa = a.w.copy(), wb = b.w.copy()]() mutable {
-                channel_swap(wa, wb);
+                swap(wa, wb);
             });
 
             // Another imp drops a writer copy concurrently.
@@ -385,7 +385,7 @@ TEST_CASE("MN Swap - rapid repeated swaps") {
             chan<int> b;
 
             for (int s = 0; s < SWAPS_PER_PAIR; ++s) {
-                channel_swap(a.w, b.w);
+                swap(a.w, b.w);
             }
 
             bool even = (SWAPS_PER_PAIR % 2) == 0;
@@ -430,7 +430,7 @@ TEST_CASE("MN Swap - multi-channel swap storm") {
         int j = (s * 7 + 3) % N_CHANS;
         if (i == j) j = (j + 1) % N_CHANS;
         csp::spawn([wi = chans[i].w.copy(), wj = chans[j].w.copy()]() mutable {
-            channel_swap(wi, wj);
+            swap(wi, wj);
         });
     }
 
@@ -468,7 +468,7 @@ TEST_CASE("MN Swap - swap with shared copies across threads") {
     chan<int> b;
 
     // Swap first: a.w's slot now targets b's channel.
-    channel_swap(a.w, b.w);
+    swap(a.w, b.w);
 
     // Many writers holding copies of a.w — they all target b's channel
     // through the shared slot.
@@ -532,7 +532,7 @@ TEST_CASE("MN Stress - swap during pipeline") {
     // Use copies to avoid data race with parent's cleanup.
     csp::spawn([mw = middle.w.copy(), amw = alt_middle.w.copy(), MSGS]() mutable {
         for (int i = 0; i < MSGS / 2; ++i) csp::yield();
-        channel_swap(mw, amw);
+        swap(mw, amw);
     });
 
     // Producer.
@@ -569,7 +569,7 @@ TEST_CASE("MN Stress - swap lifecycle") {
         for (int p = 0; p < PAIRS; ++p) {
             chan<int> a;
             chan<int> b;
-            channel_swap(a.w, b.w);
+            swap(a.w, b.w);
 
             csp::spawn([w = std::move(a.w), p] { w << p; });
             csp::spawn([w = std::move(b.w), p] { w << p * 10; });
@@ -593,4 +593,223 @@ TEST_CASE("MN Stress - swap lifecycle") {
     }
 }
 
-} // TEST_SUITE("channel_swap MN")
+} // TEST_SUITE("swap MN")
+
+// ---------------------------------------------------------------------------
+// Fuse / split / 4-arg swap tests
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("fuse") {
+
+TEST_CASE("fuse - basic data transfer") {
+    chan<int> a;
+    chan<int> b;
+
+    fuse(a.w, b.r);
+
+    // a.w now targets temp channel, b.r now targets temp channel.
+    // Write through a.w, read from b.r.
+    spawn([w = std::move(a.w)] { w << 42; });
+
+    CHECK_EQ(42, b.r.read());
+
+    // a.r sees writer-side death (no writers left on a's channel).
+    int v;
+    CHECK_FALSE(bool(a.r >> v));
+
+    // b.w sees reader-side death (no readers left on b's channel).
+    CHECK_FALSE(bool(b.w << 99));
+
+    a.r = {};
+    b.r = {};
+    b.w = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("fuse - death propagation") {
+    chan<int> a;
+    chan<int> b;
+
+    fuse(a.w, b.r);
+
+    // a.r should see write-side death (a's channel has no writers).
+    int v;
+    CHECK_FALSE(bool(a.r >> v));
+
+    // b.w should see read-side death (b's channel has no readers).
+    CHECK_FALSE(bool(b.w << 1));
+
+    a.r = {};
+    b.w = {};
+    a.w = {};
+    b.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("fuse - copies follow redirection") {
+    chan<int> a;
+    chan<int> b;
+
+    auto aw_copy = a.w.copy();
+    auto br_copy = b.r.copy();
+
+    fuse(a.w, b.r);
+
+    // Copies share the same slot, so they follow the redirection.
+    spawn([w = std::move(aw_copy)] { w << 77; });
+
+    CHECK_EQ(77, br_copy.read());
+
+    a.w = {};
+    b.r = {};
+    a.r = {};
+    b.w = {};
+    br_copy = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("4-arg swap - split") {
+    // Split: swap(w, move(a.r), move(b.w), r) breaks one channel into two.
+    // After: orig.w → b's channel, orig.r → a's channel.
+    // The consumed a.r and b.w die on return, killing orig's channel.
+    chan<int> orig;
+    chan<int> a;
+    chan<int> b;
+
+    swap(orig.w, std::move(a.r), std::move(b.w), orig.r);
+
+    // orig.w → b's channel. Write through orig.w, read from b.r.
+    spawn([w = orig.w.copy()] { w << 42; });
+    CHECK_EQ(42, b.r.read());
+
+    // orig.r → a's channel. Write through a.w, read from orig.r.
+    spawn([w = std::move(a.w)] { w << 99; });
+    CHECK_EQ(99, orig.r.read());
+
+    orig.w = {};
+    orig.r = {};
+    b.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("fuse - channel leak check") {
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
+}
+
+} // TEST_SUITE("fuse")
+
+TEST_SUITE("fuse MN") {
+
+TEST_CASE("MN Fuse - basic pipeline") {
+    // Fuse a.w onto b.r, then send data through the fused path.
+    csp::init_runtime(4);
+
+    constexpr int MSGS = 500 / SCALE_MEDIUM;
+    std::atomic<int64_t> total{0};
+
+    chan<int> a;
+    chan<int> b;
+
+    // Fuse first: a.w and b.r now share a temp channel.
+    fuse(a.w, b.r);
+
+    // Producer writes through a.w (→ temp channel).
+    csp::spawn([w = a.w.copy()] {
+        for (int i = 1; i <= MSGS; ++i) w << i;
+    });
+
+    // Consumer reads through b.r (→ temp channel).
+    csp::spawn([r = b.r.copy(), &total] {
+        for (int v; r >> v;) total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    a.w = {};
+    a.r = {};
+    b.w = {};
+    b.r = {};
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
+    CHECK_EQ(expected, total.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Fuse - repeated fuse") {
+    // Many concurrent fuse operations under M:N threading.
+    csp::init_runtime(4);
+
+    constexpr int CYCLES = 200 / SCALE_MEDIUM;
+    std::atomic<int> completed{0};
+
+    for (int i = 0; i < CYCLES; ++i) {
+        csp::spawn([&completed] {
+            chan<int> a;
+            chan<int> b;
+
+            fuse(a.w, b.r);
+
+            csp::spawn([w = a.w.copy()] { w << 1; });
+            int v = b.r.read();
+            CHECK_EQ(1, v);
+
+            a.w = {};
+            a.r = {};
+            b.w = {};
+            b.r = {};
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    csp::schedule();
+    CHECK_EQ(CYCLES, completed.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Fuse - racing with endpoint death") {
+    // Fuse and endpoint death happen concurrently.
+    // Exercises the alive_ pinning logic.
+    csp::init_runtime(4);
+
+    constexpr int CYCLES = 500 / SCALE_MEDIUM;
+    std::atomic<int> completed{0};
+
+    for (int i = 0; i < CYCLES; ++i) {
+        csp::spawn([&completed] {
+            chan<int> a;
+            chan<int> b;
+
+            // Fuser uses copies.
+            csp::spawn([aw = a.w.copy(), br = b.r.copy()]() mutable {
+                fuse(aw, br);
+            });
+
+            // Another imp drops a.w concurrently.
+            csp::spawn([w = a.w.copy()] { });
+
+            // Drain readers so they can handle death.
+            csp::spawn([r = a.r.copy()] {
+                int v;
+                while (bool(r >> v)) { }
+            });
+            csp::spawn([r = b.r.copy()] {
+                int v;
+                while (bool(r >> v)) { }
+            });
+
+            a.release();
+            b.release();
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    csp::schedule();
+    CHECK_EQ(CYCLES, completed.load());
+
+    csp::shutdown_runtime();
+}
+
+} // TEST_SUITE("fuse MN")

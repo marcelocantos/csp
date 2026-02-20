@@ -435,12 +435,6 @@ public:
         w.w_ = {};
         return *this;
     }
-    void swap(writer& w) {
-        auto tmp = w_;
-        w_ = w.w_;
-        w.w_ = tmp;
-    }
-
     bool operator==(const writer& w) const { return w_.ptr == w.w_.ptr; }
     bool operator!=(const writer& w) const { return !(*this == w); }
     explicit operator bool() const { return bool(w_); }
@@ -494,12 +488,6 @@ public:
         r.r_ = {};
         return *this;
     }
-    void swap(reader& i) {
-        auto tmp = r_;
-        r_ = i.r_;
-        i.r_ = tmp;
-    }
-
     bool operator==(const reader& r) const { return r_.ptr == r.r_.ptr; }
     bool operator!=(const reader& r) const { return !(*this == r); }
     explicit operator bool() const  { return bool(r_); }
@@ -648,18 +636,50 @@ void make_channel(writer<T> & w, reader<T> & r) {
 // All holders of copies of a's endpoint are transparently redirected to b's
 // channel, and vice versa.
 template <typename T>
-void channel_swap(writer<T>& a, writer<T>& b) {
+void swap(writer<T>& a, writer<T>& b) {
     internal::swap_slots(
         internal::get_slot(a.internal_writer().ptr),
         internal::get_slot(b.internal_writer().ptr));
 }
 
 template <typename T>
-void channel_swap(reader<T>& a, reader<T>& b) {
+void swap(reader<T>& a, reader<T>& b) {
     internal::swap_slots(
         internal::get_slot(a.internal_reader().ptr),
         internal::get_slot(b.internal_reader().ptr));
 }
+
+// 4-arg swap: exchange which channels two (writer, reader) pairs target.
+// The middle two parameters (r1, w2) are by value: when both are empty,
+// a temporary channel is created (fuse mode); otherwise their destruction
+// on return triggers death on the channels they were swapped onto.
+//
+//   Fuse:  swap(a.w, {}, {}, b.r)
+//   Split: swap(w, std::move(a.r), std::move(b.w), r)
+template <typename T>
+void swap(writer<T>& w1, reader<T> r1, writer<T> w2, reader<T>& r2) {
+    if (!r1 && !w2) {
+        chan<T> temp;
+        swap(w1, temp.w);
+        swap(temp.r, r2);
+        return;
+    }
+    swap(w1, w2);
+    swap(r1, r2);
+}
+
+// Fuse two endpoints: redirect w onto r's channel.
+// Orphaned sides on the original channels see death.
+template <typename T>
+void fuse(writer<T>& w, reader<T>& r) {
+    swap(w, {}, {}, r);
+}
+
+// Backward compatibility.
+template <typename T>
+void channel_swap(writer<T>& a, writer<T>& b) { swap(a, b); }
+template <typename T>
+void channel_swap(reader<T>& a, reader<T>& b) { swap(a, b); }
 
 // Make a channel for a writer&, returning the matching reader.
 template <typename T>
@@ -948,19 +968,6 @@ extern reader<> const skip;
 
 }
 
-namespace std {
-
-template <typename T>
-void swap(csp::writer<T>& a, csp::writer<T>& b) {
-    a.swap(b);
-}
-
-template <typename T>
-void swap(csp::reader<T>& a, csp::reader<T>& b) {
-    a.swap(b);
-}
-
-}
 
 
 namespace csp::internal {
