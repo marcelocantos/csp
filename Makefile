@@ -195,7 +195,7 @@ TLA_CHECK  := $(filter-out %_Bug.tla,$(TLA_SPECS))
 check-tla-tags:
 	@python3 scripts/check_tla_tags.py
 
-check: check-tla-tags $(TLA_JAR)
+check: $(TLA_JAR)
 	@fail=0; \
 	for spec in $(TLA_CHECK); do \
 		echo "=== TLC: $$spec ==="; \

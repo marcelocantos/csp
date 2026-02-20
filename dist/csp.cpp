@@ -196,6 +196,7 @@ namespace {
         }
         ~Channel() {
         }
+
         void set_descr(char const * d) { descr_ = d; }
 
         // Check if channel is alive (both endpoint sides have live handles).
@@ -459,6 +460,14 @@ namespace {
                 }
             }
 
+            // Pin all unique channels so they cannot be deleted while
+            // we sleep.  After wakeup, Phase 3 can safely lock and
+            // deregister; the unpin after Phase 3 may trigger deferred
+            // deletion if the channel's endpoints died in the interim.
+            for (int i = 0; i < mi->n_sorted; ++i) {
+                mi->sorted[i]->alive_.fetch_add(1, std::memory_order_relaxed);
+            }
+
             g_imp->chanops_ = chanops;
             g_imp->n_chanops_ = count;
             // Mark suspending_ before unlock_all so that schedule()
@@ -484,6 +493,17 @@ namespace {
                 }
             }
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
+
+            // Unpin channels.  If an endpoint died while we slept,
+            // alive_ may reach 0 here, triggering deferred deletion.
+            for (int i = 0; i < mi->n_sorted; ++i) {
+                Channel * ch = mi->sorted[i];
+                if (ch->alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    delete ch->write_slot_;
+                    delete ch->read_slot_;
+                    delete ch;
+                }
+            }
 
             g_imp->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
 
@@ -526,7 +546,7 @@ namespace {
 
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
         std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%lu", id_); return std::string(b); }();
-        std::atomic<int> alive_{2};  // one per endpoint side; last to 0 deletes
+        std::atomic<int> alive_{2};  // endpoints (2) + sleeping waiters; last to 0 deletes
         std::mutex mu_;
         Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot
         Slot * read_slot_ = nullptr;    // back-pointer to read endpoint slot
