@@ -14,7 +14,7 @@ TEST_CASE("Throttle - excess goes to dead letter") {
     auto [dl_w, dl_r] = chan<int>{};
 
     // Budget=1, interval=1s. Only first value passes; rest go to dead letter.
-    auto r = throttle<int>(tick(1s), 1, std::move(dl_w)).spawn(count(1, 6).spawn());
+    auto r = throttle<int>(tick(1s), {.dead_letter = std::move(dl_w)}).spawn(count(1, 6).spawn());
 
     std::vector<int> dead;
     stats.spawn([dl_r = std::move(dl_r), &dead]{
@@ -44,7 +44,7 @@ TEST_CASE("Throttle - budget reset with dead letter") {
     RunStats stats;
 
     auto [dl_w, dl_r] = chan<int>{};
-    auto th = throttle<int>(tick(100ms), 2, std::move(dl_w)).spawn();
+    auto th = throttle<int>(tick(100ms), {.n = 2, .dead_letter = std::move(dl_w)}).spawn();
 
     stats.spawn([w = std::move(th.w)]{
         // First burst: 1,2,3.
@@ -82,7 +82,7 @@ TEST_CASE("Debounce - superseded values go to dead letter") {
 
     // count sends 1–5 instantly. Each supersedes the previous pending value.
     // Input closes → pending (5) emitted. 1–4 go to dead letter.
-    auto r = debounce<int>(50ms, std::move(dl_w)).spawn(count(1, 6).spawn());
+    auto r = debounce<int>(50ms, {.dead_letter = std::move(dl_w)}).spawn(count(1, 6).spawn());
 
     std::vector<int> dead;
     stats.spawn([dl_r = std::move(dl_r), &dead]{
@@ -111,7 +111,7 @@ TEST_CASE("Debounce - spaced values, no drops") {
     RunStats stats;
 
     auto [dl_w, dl_r] = chan<int>{};
-    auto db = debounce<int>(50ms, std::move(dl_w)).spawn();
+    auto db = debounce<int>(50ms, {.dead_letter = std::move(dl_w)}).spawn();
 
     stats.spawn([w = std::move(db.w)]{
         w << 1;
@@ -145,7 +145,7 @@ TEST_CASE("Sample - overwritten values go to dead letter") {
     auto [dl_w, dl_r] = chan<int>{};
     auto [trig_w, trig_r] = chan<>{};
     auto [src_w, src_r] = chan<int>{};
-    auto r = sample(std::move(src_r), std::move(trig_r), std::move(dl_w)).spawn();
+    auto r = sample(std::move(src_r), std::move(trig_r), {.dead_letter = std::move(dl_w)}).spawn();
 
     std::vector<int> dead;
     stats.spawn([dl_r = std::move(dl_r), &dead]{

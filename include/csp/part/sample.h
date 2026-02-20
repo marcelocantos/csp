@@ -5,16 +5,21 @@
 
 namespace csp::part {
 
+template <typename T>
+struct sample_config {
+    writer<T> dead_letter = {};
+};
+
 // On each trigger, emit the most recent value from source.
 // After source dies, keeps emitting the last latched value on each trigger
 // until the trigger stream dies.
 // Optional dead_letter: overwritten latched values are written here instead of
 // discarded.
 template <typename T, typename Trigger = poke_t>
-auto sample(reader<T> source, reader<Trigger> trigger, writer<T> dead_letter = {}) {
+auto sample(reader<T> source, reader<Trigger> trigger, sample_config<T> cfg = {}) {
     return make_producer<T>(
         [source = std::move(source), trigger = std::move(trigger),
-         dead_letter = std::move(dead_letter)]
+         dead_letter = std::move(cfg.dead_letter)]
         (writer<T> out) mutable {
             internal::descr("sample");
             T latest;

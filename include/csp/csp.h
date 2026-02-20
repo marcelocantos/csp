@@ -119,6 +119,17 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// Wrapper for config struct fields that must be explicitly initialized.
+// Has no default constructor, so omitting the field in aggregate init is an error.
+template <typename T>
+struct required {
+    T value;
+    required() = delete;
+    required(T v) : value(std::move(v)) {}
+    operator T const&() const { return value; }
+    operator T&() { return value; }
+};
+
 // Surrogate for empty-message channels.
 // - Boost took none.
 // - cpplinq squatted on empty.

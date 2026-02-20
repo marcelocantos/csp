@@ -9,18 +9,24 @@ multiple times if no new source value arrives between triggers.
 ## Synopsis
 
 ```cpp
+template <typename T>
+struct sample_config {
+    writer<T> dead_letter = {};
+};
+
 template <typename T, typename Trigger = poke_t>
-auto sample(reader<T> source, reader<Trigger> trigger);
+auto sample(reader<T> source, reader<Trigger> trigger, sample_config<T> cfg = {});
 ```
 
 Returns a `producer<T>`.
 
 ## Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `source` | `reader<T>` | Stream whose latest value is sampled |
-| `trigger` | `reader<Trigger>` | Stream that triggers emission (default `poke_t`) |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `source` | `reader<T>` | | Stream whose latest value is sampled |
+| `trigger` | `reader<Trigger>` | | Stream that triggers emission (default `poke_t`) |
+| `cfg.dead_letter` | `writer<T>` | `{}` | Optional: overwritten latched values are written here instead of discarded |
 
 ## Diagram
 
@@ -52,7 +58,8 @@ The trigger samples whatever the source most recently produced.
 - When a trigger arrives before any source value, nothing is emitted (the
   trigger is consumed but no output is produced).
 - **Source faster than trigger:** intermediate source values are silently
-  replaced. Only the value current at trigger time is emitted.
+  replaced (or sent to `dead_letter` if provided). Only the value current at
+  trigger time is emitted.
 - **Trigger faster than source:** the same latched value is emitted on each
   trigger.
 - After the source dies, the last latched value continues to be emitted on

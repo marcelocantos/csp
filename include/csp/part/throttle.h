@@ -4,13 +4,20 @@
 
 namespace csp::part {
 
+template <typename T>
+struct throttle_config {
+    size_t n = 1;
+    writer<T> dead_letter = {};
+};
+
 // Rate-limit: forward up to n values per trigger, drop (or dead-letter) excess.
 // Each value received on the trigger channel resets the remaining budget to n.
-// Use with tick(d) for periodic resets: throttle<int>(tick(100ms), 3).
+// Use with tick(d) for periodic resets: throttle<int>(tick(100ms), {.n = 3}).
 template <typename T, typename Trigger = poke_t>
-auto throttle(reader<Trigger> trigger, size_t n = 1, writer<T> dead_letter = {}) {
-    return make_filter<T>([trigger = std::move(trigger), n,
-                           dead_letter = std::move(dead_letter)]
+auto throttle(reader<Trigger> trigger, throttle_config<T> cfg = {}) {
+    return make_filter<T>([trigger = std::move(trigger),
+                           n = cfg.n,
+                           dead_letter = std::move(cfg.dead_letter)]
                           (reader<T> in, writer<T> out) mutable {
         internal::descr("throttle");
         size_t remaining = n;

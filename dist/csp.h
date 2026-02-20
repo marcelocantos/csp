@@ -205,6 +205,17 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// Wrapper for config struct fields that must be explicitly initialized.
+// Has no default constructor, so omitting the field in aggregate init is an error.
+template <typename T>
+struct required {
+    T value;
+    required() = delete;
+    required(T v) : value(std::move(v)) {}
+    operator T const&() const { return value; }
+    operator T&() { return value; }
+};
+
 // Surrogate for empty-message channels.
 // - Boost took none.
 // - cpplinq squatted on empty.
@@ -2598,6 +2609,35 @@ auto chain(R rr) {
 
 }
 
+/* csp/part/chunk_by.h */
+
+
+
+namespace csp::part {
+
+// Group consecutive elements where pred(prev, curr) is true.
+// Emits each group as a vector. Flushes the final group on input exhaustion.
+template <typename T, typename F>
+auto chunk_by(F&& f) {
+    return make_filter<T, std::vector<T>>(
+        [f = std::forward<F>(f)]
+        (reader<T> in, writer<std::vector<T>> out) {
+            internal::descr("chunk_by");
+            std::vector<T> chunk;
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
+                if (!chunk.empty() && !f(chunk.back(), t)) {
+                    if (!(out << std::move(chunk))) return;
+                    chunk.clear();
+                }
+                chunk.push_back(std::move(t));
+            }
+            if (!chunk.empty())
+                out << std::move(chunk);
+        });
+}
+
+}
+
 /* csp/part/collect.h */
 
 
@@ -2911,13 +2951,18 @@ inline reader<clock::time_point> tick(clock::duration interval) {
 
 namespace csp::part {
 
+template <typename T>
+struct debounce_config {
+    writer<T> dead_letter = {};
+};
+
 // Suppress rapid values; emit only after a quiet period elapses.
 // When input closes with a pending value, emits it immediately.
 // Optional dead_letter: superseded pending values are written here instead of
 // discarded.
 template <typename T>
-auto debounce(csp::clock::duration d, writer<T> dead_letter = {}) {
-    return make_filter<T>([d, dead_letter = std::move(dead_letter)](reader<T> in, writer<T> out) mutable {
+auto debounce(csp::clock::duration d, debounce_config<T> cfg = {}) {
+    return make_filter<T>([d, dead_letter = std::move(cfg.dead_letter)](reader<T> in, writer<T> out) mutable {
         internal::descr("debounce");
         T pending;
         reader<clock::time_point> timer;
@@ -3269,6 +3314,33 @@ inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> i
 
 }
 
+/* csp/part/fallback.h */
+
+
+
+namespace csp::part {
+
+// Sequential failover: try each reader in order. If a reader produces at
+// least one value, drain it fully and stop. If it closes without producing
+// anything, try the next. Output closes empty if all inputs close empty.
+template <typename T>
+auto fallback(std::vector<reader<T>> inputs) {
+    return make_producer<T>(
+        [inputs = std::move(inputs)](writer<T> out) mutable {
+            internal::descr("fallback");
+            for (auto& r : inputs) {
+                bool produced = false;
+                for (T t; csp::alt(r >> t, ~out) == 0;) {
+                    produced = true;
+                    if (!(out << std::move(t))) return;
+                }
+                if (produced) return;
+            }
+        });
+}
+
+}
+
 /* csp/part/fanout.h */
 
 
@@ -3582,6 +3654,32 @@ inline auto const flatten = make_filter<C, T>([](reader<C> in, writer<T> out) {
         }
     }
 });
+
+}
+
+/* csp/part/foreach_emit.h */
+
+
+
+namespace csp::part {
+
+// Generalized scan with separate state update and extraction phases.
+// state = update(state, input), then emits extract(state) each step.
+template <typename T, typename S, typename U, typename Update, typename Extract>
+auto foreach_emit(S init, Update&& update, Extract&& extract) {
+    return make_filter<T, U>(
+        [init = std::move(init),
+         update = std::forward<Update>(update),
+         extract = std::forward<Extract>(extract)]
+        (reader<T> in, writer<U> out) {
+            internal::descr("foreach_emit");
+            S state = init;
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
+                state = update(std::move(state), std::move(t));
+                if (!(out << extract(state))) return;
+            }
+        });
+}
 
 }
 
@@ -4480,6 +4578,47 @@ auto partition(reader<T> in, Pred pred) {
 
 }
 
+/* csp/part/quantify.h */
+
+
+namespace csp::part {
+
+// Short-circuiting existential quantifier.
+// Emits true on first match, or false if input exhausts without a match.
+template <typename T, typename Pred>
+auto any_of(Pred&& pred) {
+    return make_filter<T, bool>(
+        [pred = std::forward<Pred>(pred)](reader<T> in, writer<bool> out) {
+            internal::descr("any_of");
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
+                if (pred(t)) {
+                    out << true;
+                    return;
+                }
+            }
+            out << false;
+        });
+}
+
+// Short-circuiting universal quantifier.
+// Emits false on first non-match, or true if all elements match.
+template <typename T, typename Pred>
+auto all_of(Pred&& pred) {
+    return make_filter<T, bool>(
+        [pred = std::forward<Pred>(pred)](reader<T> in, writer<bool> out) {
+            internal::descr("all_of");
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
+                if (!pred(t)) {
+                    out << false;
+                    return;
+                }
+            }
+            out << true;
+        });
+}
+
+}
+
 /* csp/part/quantize.h */
 
 
@@ -4893,16 +5032,21 @@ auto rpc_server(reader<std::pair<std::tuple<Args...>, writer<Rep>>> req, F && f)
 
 namespace csp::part {
 
+template <typename T>
+struct sample_config {
+    writer<T> dead_letter = {};
+};
+
 // On each trigger, emit the most recent value from source.
 // After source dies, keeps emitting the last latched value on each trigger
 // until the trigger stream dies.
 // Optional dead_letter: overwritten latched values are written here instead of
 // discarded.
 template <typename T, typename Trigger = poke_t>
-auto sample(reader<T> source, reader<Trigger> trigger, writer<T> dead_letter = {}) {
+auto sample(reader<T> source, reader<Trigger> trigger, sample_config<T> cfg = {}) {
     return make_producer<T>(
         [source = std::move(source), trigger = std::move(trigger),
-         dead_letter = std::move(dead_letter)]
+         dead_letter = std::move(cfg.dead_letter)]
         (writer<T> out) mutable {
             internal::descr("sample");
             T latest;
@@ -5124,19 +5268,23 @@ struct window_pair {
     reader<T> out;  // elements leaving the window
 };
 
+struct slide_config {
+    bool slide_in = true;
+};
+
 // General sliding window with predicate-based expiry.
 // expired(older, current) returns true when older should leave the window.
 // Per input element: expire from front (send on out), then send new on in.
 // slide_in=true emits during growth; false suppresses until first expiry.
 template <typename T, typename Pred,
           std::enable_if_t<std::is_invocable_v<Pred&, const T&, const T&>, int> = 0>
-window_pair<T> slide(reader<T> src, Pred expired, bool slide_in = true) {
+window_pair<T> slide(reader<T> src, Pred expired, slide_config cfg = {}) {
     chan<T> in_ch, out_ch;
     window_pair<T> result{std::move(in_ch.r), std::move(out_ch.r)};
 
     csp::spawn([src = std::move(src), in_w = std::move(in_ch.w),
                 out_w = std::move(out_ch.w), expired = std::move(expired),
-                slide_in]() mutable {
+                slide_in = cfg.slide_in]() mutable {
         internal::descr("slide");
 
         std::deque<T> win;
@@ -5165,12 +5313,13 @@ window_pair<T> slide(reader<T> src, Pred expired, bool slide_in = true) {
 
 // Fixed-size sliding window. Expires oldest when window exceeds n elements.
 template <typename T>
-window_pair<T> slide(reader<T> src, size_t n, bool slide_in = true) {
+window_pair<T> slide(reader<T> src, size_t n, slide_config cfg = {}) {
     chan<T> in_ch, out_ch;
     window_pair<T> result{std::move(in_ch.r), std::move(out_ch.r)};
 
     csp::spawn([src = std::move(src), in_w = std::move(in_ch.w),
-                out_w = std::move(out_ch.w), n, slide_in]() mutable {
+                out_w = std::move(out_ch.w), n,
+                slide_in = cfg.slide_in]() mutable {
         internal::descr("slide");
 
         std::deque<T> win;
@@ -5193,6 +5342,54 @@ window_pair<T> slide(reader<T> src, size_t n, bool slide_in = true) {
     });
 
     return result;
+}
+
+}
+
+/* csp/part/sort_merge.h */
+
+
+
+namespace csp::part {
+
+// Merge N pre-sorted streams into one sorted output.
+// Each input must be sorted according to cmp. Output is the sorted merge.
+template <typename T, typename Cmp = std::less<T>>
+auto sort_merge(std::vector<reader<T>> inputs, Cmp cmp = {}) {
+    return make_producer<T>(
+        [inputs = std::move(inputs), cmp = std::move(cmp)]
+        (writer<T> out) mutable {
+            internal::descr("sort_merge");
+
+            // Heap entry: (value, index into inputs).
+            struct Entry {
+                T value;
+                size_t idx;
+            };
+            auto heap_cmp = [&cmp](Entry const& a, Entry const& b) {
+                return cmp(b.value, a.value); // reverse for min-heap
+            };
+            std::priority_queue<Entry, std::vector<Entry>, decltype(heap_cmp)>
+                heap(heap_cmp);
+
+            // Prime: read one value from each input.
+            for (size_t i = 0; i < inputs.size(); ++i) {
+                T t;
+                if (csp::alt(inputs[i] >> t, ~out) == 0)
+                    heap.push({std::move(t), i});
+            }
+
+            while (!heap.empty()) {
+                auto [value, idx] = std::move(const_cast<Entry&>(heap.top()));
+                heap.pop();
+                if (!(out << std::move(value))) return;
+
+                // Refill from the same input.
+                T t;
+                if (csp::alt(inputs[idx] >> t, ~out) == 0)
+                    heap.push({std::move(t), idx});
+            }
+        });
 }
 
 }
@@ -5261,6 +5458,26 @@ inline auto const switch_all = make_filter<reader<B>, B>([](reader<reader<B>> in
 
 }
 
+/* csp/part/take_until.h */
+
+
+namespace csp::part {
+
+// Forward elements until pred is true (inclusive — emits the terminating element).
+template <typename T, typename Pred>
+auto take_until(Pred&& pred) {
+    return make_filter<T>([pred = std::forward<Pred>(pred)](reader<T> in, writer<T> out) {
+        internal::descr("take_until");
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
+            bool done = pred(t);
+            if (!(out << std::move(t))) return;
+            if (done) return;
+        }
+    });
+}
+
+}
+
 /* csp/part/take_while.h */
 
 
@@ -5311,13 +5528,20 @@ auto tee(writer<T> side) {
 
 namespace csp::part {
 
+template <typename T>
+struct throttle_config {
+    size_t n = 1;
+    writer<T> dead_letter = {};
+};
+
 // Rate-limit: forward up to n values per trigger, drop (or dead-letter) excess.
 // Each value received on the trigger channel resets the remaining budget to n.
-// Use with tick(d) for periodic resets: throttle<int>(tick(100ms), 3).
+// Use with tick(d) for periodic resets: throttle<int>(tick(100ms), {.n = 3}).
 template <typename T, typename Trigger = poke_t>
-auto throttle(reader<Trigger> trigger, size_t n = 1, writer<T> dead_letter = {}) {
-    return make_filter<T>([trigger = std::move(trigger), n,
-                           dead_letter = std::move(dead_letter)]
+auto throttle(reader<Trigger> trigger, throttle_config<T> cfg = {}) {
+    return make_filter<T>([trigger = std::move(trigger),
+                           n = cfg.n,
+                           dead_letter = std::move(cfg.dead_letter)]
                           (reader<T> in, writer<T> out) mutable {
         internal::descr("throttle");
         size_t remaining = n;
@@ -5404,6 +5628,35 @@ inline reader<clock::time_point> timer(reader<clock::time_point> control) {
             for (clock::time_point tp; control >> tp;) {
                 csp::sleep_until(tp);
                 if (!(out << clock::now())) return;
+            }
+        });
+}
+
+}
+
+/* csp/part/transpose.h */
+
+
+
+namespace csp::part {
+
+// Dynamic-width zip: read one element from each of N inputs in lockstep,
+// emit as vector<T>. Stops when any input dies or output dies.
+template <typename T>
+auto transpose(std::vector<reader<T>> inputs) {
+    return make_producer<std::vector<T>>(
+        [inputs = std::move(inputs)](writer<std::vector<T>> out) mutable {
+            internal::descr("transpose");
+            size_t n = inputs.size();
+            for (;;) {
+                std::vector<T> row;
+                row.reserve(n);
+                for (auto& r : inputs) {
+                    T t;
+                    if (csp::alt(r >> t, ~out) != 0) return;
+                    row.push_back(std::move(t));
+                }
+                if (!(out << std::move(row))) return;
             }
         });
 }

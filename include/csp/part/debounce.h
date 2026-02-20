@@ -5,13 +5,18 @@
 
 namespace csp::part {
 
+template <typename T>
+struct debounce_config {
+    writer<T> dead_letter = {};
+};
+
 // Suppress rapid values; emit only after a quiet period elapses.
 // When input closes with a pending value, emits it immediately.
 // Optional dead_letter: superseded pending values are written here instead of
 // discarded.
 template <typename T>
-auto debounce(csp::clock::duration d, writer<T> dead_letter = {}) {
-    return make_filter<T>([d, dead_letter = std::move(dead_letter)](reader<T> in, writer<T> out) mutable {
+auto debounce(csp::clock::duration d, debounce_config<T> cfg = {}) {
+    return make_filter<T>([d, dead_letter = std::move(cfg.dead_letter)](reader<T> in, writer<T> out) mutable {
         internal::descr("debounce");
         T pending;
         reader<clock::time_point> timer;

@@ -345,10 +345,13 @@ All in `namespace csp::part` (included via `csp.h`).
 
 | Combinator | Kind | Description |
 |---|---|---|
+| `all_of<T>(pred)` | filter | Short-circuiting universal quantifier; emits single bool |
+| `any_of<T>(pred)` | filter | Short-circuiting existential quantifier; emits single bool |
 | `batch<T>(n)` | filter | Collect n elements into `vector<T>` |
 | `blackhole<T>()` | consumer | Discard all values |
 | `buffer<T>(n)` | filter | Bounded async FIFO buffer (size n) |
 | `chain<T>(readers...)` | producer | Concatenate readers sequentially |
+| `chunk_by<T>(f)` | filter | Group consecutive elements where `f(prev,curr)` is true |
 | `collect<T>(iter)` | consumer | Consume stream into output iterator |
 | `concat_all<T>` | filter | Flatten `reader<reader<T>>` sequentially |
 | `combine_latest<Ts...>(readers...)` | producer | Emit tuple of latest values whenever any input updates |
@@ -356,15 +359,17 @@ All in `namespace csp::part` (included via `csp.h`).
 | `count<T>(start,stop,step)` | producer | Numeric sequence [start,stop) |
 | `count_forever<T>(start,step)` | producer | Unbounded numeric sequence |
 | `deaf<T>()` | consumer | Never-accepting endpoint |
-| `debounce<T>(dur)` | filter | Emit after quiet period, suppress rapid fire |
+| `debounce<T>(dur,cfg)` | filter | Emit after quiet period, suppress rapid fire |
 | `default_if_empty<T>(val)` | filter | Emit default if input closes empty |
 | `delay<T>(dur)` | filter | Delay each value independently |
 | `distinct<T>()` | filter | Suppress consecutive duplicates |
 | `enumerate<T>(container)` | producer | Stream container elements |
 | `exhaust_all<T>` | filter | Flatten sub-streams, ignoring new while active |
+| `fallback<T>(readers)` | producer | Sequential failover: try each reader, use first that produces |
 | `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
 | `first<T>(n)` | filter | Take first n elements |
 | `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
+| `foreach_emit<T,S,U>(init,update,extract)` | filter | Generalized scan: separate state update and extraction |
 | `flatten<T>` | filter | Flatten `vector<T>` → T |
 | `gate<T>()` | function | Pause/resume via control channel |
 | `group_by<T,K>(f)` | producer | Partition by key, emit (key, reader) pairs |
@@ -398,12 +403,15 @@ All in `namespace csp::part` (included via `csp.h`).
 | `skip_while<T>(pred)` | filter | Drop while predicate true |
 | `slide<T>(params)` | function | Sliding window with expiry |
 | `stride<T>(n)` | filter | Every Nth element |
+| `sort_merge<T>(readers,cmp)` | producer | Merge N pre-sorted streams into one sorted output |
 | `switch_all<T>` | filter | Flatten sub-streams with latest-wins cancellation |
+| `take_until<T>(pred)` | filter | Forward until predicate true (inclusive — emits the match) |
 | `take_while<T>(pred)` | filter | Forward while predicate true |
 | `tee<T>(side_writer)` | filter | Duplicate: main first, then side |
-| `throttle<T>(trigger,n)` | filter | Rate-limit: n per trigger, use with `tick(d)` |
+| `throttle<T>(trigger,cfg)` | filter | Rate-limit: `cfg.n` per trigger, use with `tick(d)` |
 | `timeout<T>(dur)` | filter | Close if no value within duration |
 | `timer(control)` | producer | Sleep per control, emit fire times |
+| `transpose<T>(readers)` | producer | Dynamic-width zip: N readers in lockstep as `vector<T>` |
 | `try_map<A,B>(f,err)` | filter | Map with exception catching; errors to side channel |
 | `unique<T>(cap)` | filter | All-time dedup with optional eviction |
 | `unzip<Tuple>()` | function | Split tuple stream into N streams |

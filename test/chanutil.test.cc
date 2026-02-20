@@ -861,7 +861,7 @@ TEST_CASE("ChanUtil - Throttle n=2") {
     using namespace std::chrono_literals;
 
     // Budget=2, interval=1s. First two pass, rest dropped.
-    auto r = throttle<int>(tick(1s), 2).spawn(count(1, 6).spawn());
+    auto r = throttle<int>(tick(1s), {.n = 2}).spawn(count(1, 6).spawn());
 
     CHECK_EQ(1, r.read());
     CHECK_EQ(2, r.read());
@@ -873,7 +873,7 @@ TEST_CASE("ChanUtil - Throttle budget reset") {
     using namespace std::chrono_literals;
     RunStats stats;
 
-    auto th = throttle<int>(tick(100ms), 2).spawn();
+    auto th = throttle<int>(tick(100ms), {.n = 2}).spawn();
 
     stats.spawn([w = std::move(th.w)]{
         // First burst: 1,2,3.
@@ -1289,7 +1289,7 @@ TEST_CASE("ChanUtil - Slide fixed") {
 TEST_CASE("ChanUtil - Slide fixed no slide_in") {
     RunStats stats;
 
-    auto [in, out] = slide<int>(count(1, 7).spawn(), size_t(3), false);
+    auto [in, out] = slide<int>(count(1, 7).spawn(), size_t(3), {.slide_in = false});
 
     std::vector<int> ins, outs;
     stats.spawn([r = std::move(in), &ins]{

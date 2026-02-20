@@ -18,14 +18,18 @@ struct window_pair {
     reader<T> out;  // elements leaving the window
 };
 
+struct slide_config {
+    bool slide_in = true;
+};
+
 // Fixed-size window: expires oldest when window exceeds n elements.
 template <typename T>
-window_pair<T> slide(reader<T> src, size_t n, bool slide_in = true);
+window_pair<T> slide(reader<T> src, size_t n, slide_config cfg = {});
 
 // Predicate window: expired(older, current) returns true when older
 // should leave the window.
 template <typename T, typename Pred>
-window_pair<T> slide(reader<T> src, Pred expired, bool slide_in = true);
+window_pair<T> slide(reader<T> src, Pred expired, slide_config cfg = {});
 ```
 
 ## Topology

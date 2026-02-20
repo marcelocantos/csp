@@ -9,8 +9,14 @@ trigger resets the budget. Use with `tick(d)` for periodic resets.
 ## Synopsis
 
 ```cpp
+template <typename T>
+struct throttle_config {
+    size_t n = 1;
+    writer<T> dead_letter = {};
+};
+
 template <typename T, typename Trigger = poke_t>
-auto throttle(reader<Trigger> trigger, size_t n = 1, writer<T> dead_letter = {});
+auto throttle(reader<Trigger> trigger, throttle_config<T> cfg = {});
 ```
 
 Returns a `filter<T, T>`.
@@ -20,8 +26,8 @@ Returns a `filter<T, T>`.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `trigger` | `reader<Trigger>` | | Channel whose values reset the budget to `n` |
-| `n` | `size_t` | `1` | Number of values allowed per trigger |
-| `dead_letter` | `writer<T>` | `{}` | Optional: excess values are written here instead of discarded |
+| `cfg.n` | `size_t` | `1` | Number of values allowed per trigger |
+| `cfg.dead_letter` | `writer<T>` | `{}` | Optional: excess values are written here instead of discarded |
 
 ## Diagram
 
@@ -67,13 +73,13 @@ auto r = throttle<int>(tick(1s)).spawn(source.spawn());
 
 ```cpp
 // At most 5 values per 100ms.
-auto r = throttle<int>(tick(100ms), 5).spawn(source.spawn());
+auto r = throttle<int>(tick(100ms), {.n = 5}).spawn(source.spawn());
 ```
 
 ### Composed with `|`
 
 ```cpp
-auto pipeline = count(1, 6) | throttle<int>(tick(1s), 2);
+auto pipeline = count(1, 6) | throttle<int>(tick(1s), {.n = 2});
 auto r = pipeline.spawn();
 // Only 1 and 2 pass (budget=2, all values arrive in first interval).
 ```
@@ -81,7 +87,7 @@ auto r = pipeline.spawn();
 ### Standalone spawn
 
 ```cpp
-auto ch = throttle<int>(tick(100ms), 2).spawn();
+auto ch = throttle<int>(tick(100ms), {.n = 2}).spawn();
 csp::spawn([w = std::move(ch.w)] {
     // First burst: 1,2,3
     w << 1; w << 2; w << 3;
@@ -112,7 +118,7 @@ using namespace csp::part;
 using namespace std::chrono_literals;
 
 // Budget=2, interval=100ms. First two pass, rest dropped within interval.
-auto th = throttle<int>(tick(100ms), 2).spawn();
+auto th = throttle<int>(tick(100ms), {.n = 2}).spawn();
 
 csp::spawn([w = std::move(th.w)] {
     w << 1; w << 2; w << 3;       // 1,2 pass; 3 dropped

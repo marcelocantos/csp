@@ -9,16 +9,22 @@ value restarts the timer. Only the most recent value survives a burst.
 
 ```cpp
 template <typename T>
-auto debounce(csp::clock::duration d);
+struct debounce_config {
+    writer<T> dead_letter = {};
+};
+
+template <typename T>
+auto debounce(csp::clock::duration d, debounce_config<T> cfg = {});
 ```
 
 Returns a `filter<T, T>`.
 
 ## Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `d` | `csp::clock::duration` | Quiet period required before emitting |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `d` | `csp::clock::duration` | | Quiet period required before emitting |
+| `cfg.dead_letter` | `writer<T>` | `{}` | Optional: superseded pending values are written here instead of discarded |
 
 ## Diagram
 
@@ -45,10 +51,11 @@ is only emitted when no new value arrives for duration `d`.
 - When a value arrives and no timer is running, the value is latched and a
   timer of duration `d` is started.
 - When a value arrives while a timer is running, the pending value is replaced
-  and the timer is restarted.
+  (or written to `dead_letter` if provided) and the timer is restarted.
 - When the timer fires without interruption, the pending value is emitted.
 - **Values arrive faster than `d`:** only the last value in the burst is
-  emitted. All intermediate values are silently replaced.
+  emitted. Intermediate values are silently replaced (or sent to
+  `dead_letter`).
 - **Values arrive slower than `d`:** every value is emitted (each has a quiet
   period longer than `d`).
 - On input close with a pending value, the pending value is emitted
