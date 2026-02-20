@@ -12,13 +12,13 @@ struct parallel_map_config {
     bool ordered = false;
 };
 
-// Ordered concurrent transform: fan out to N workers, reassemble in input
-// order (ordered=true) or emit as completed (ordered=false, default).
-// Demand-driven: whichever worker is free reads next.
-template <typename A, typename B = std::invoke_result_t<std::decay_t<A>&&>, typename F>
+// Concurrent transform: fan out to N workers, reassemble in input order
+// (ordered=true) or emit as completed (ordered=false, default).
+// Demand-driven dispatch: whichever worker is free reads next.
+template <typename A, typename B = A, typename F>
 auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
     return make_filter<A, B>(
-        [n, f = std::forward<F>(f), cfg](reader<A> in, writer<B> out) mutable {
+        [n, f = std::forward<F>(f), cfg](reader<A> in, writer<B> out) {
             internal::descr("parallel_map");
 
             if (cfg.ordered) {
@@ -37,15 +37,16 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
 
                 // Workers: read numbered items, apply f, write numbered results.
                 for (size_t i = 0; i < n; ++i) {
-                    csp::spawn([f, num_r = num_r.copy(), res_w = res_w.copy()]() mutable {
-                        internal::descr("parallel_map/worker");
-                        std::pair<size_t, A> item;
-                        while (num_r >> item) {
-                            auto result = f(std::move(item.second));
-                            if (!(res_w << std::make_pair(item.first, std::move(result))))
-                                return;
-                        }
-                    });
+                    csp::spawn(
+                        [f, num_r = num_r.copy(), res_w = res_w.copy()]() mutable {
+                            internal::descr("parallel_map/worker");
+                            std::pair<size_t, A> item;
+                            while (num_r >> item) {
+                                auto result = f(std::move(item.second));
+                                if (!(res_w << std::make_pair(item.first, std::move(result))))
+                                    return;
+                            }
+                        });
                 }
                 // Drop originals so channels close when workers finish.
                 num_r = {};
@@ -72,38 +73,29 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
                 }
             } else {
                 // Unordered: workers share input and output directly.
+                // done channel tracks worker completion: when all workers
+                // exit their done_w copies are dropped, making done_r dead.
+                auto [done_w, done_r] = chan<>{};
+
                 for (size_t i = 0; i < n; ++i) {
-                    csp::spawn([f, in = in.copy(), out = out.copy()]() mutable {
-                        internal::descr("parallel_map/worker");
-                        for (A a; in >> a;) {
-                            if (!(out << f(std::move(a)))) return;
-                        }
-                    });
+                    csp::spawn(
+                        [f, in = in.copy(), out = out.copy(),
+                         done_w = done_w.copy()]() mutable {
+                            internal::descr("parallel_map/worker");
+                            for (;;) {
+                                A a;
+                                // Watch for output death while waiting for input.
+                                if (csp::alt(in >> a, ~out) != 0) return;
+                                if (!(out << f(std::move(a)))) return;
+                            }
+                        });
                 }
                 // Drop originals — workers hold the live copies.
                 in = {};
-                // Keep out alive until all workers finish by watching for
-                // input exhaustion via the workers' shared out copies.
-                // The producer framework owns out; just wait for workers.
-                // Block until out's reader dies (downstream closed) or
-                // all workers finish (they drop their out copies, but we
-                // still hold ours). Use a sentinel: drop our in, workers
-                // run to completion, drop their outs, then our out is the
-                // last copy — but we need to detect that. Simplest: just
-                // wait for our writer to become the sole copy by blocking
-                // on ~out (reader death).
-                //
-                // Actually: the producer framework already owns `out`.
-                // When we return, `out` is destroyed, closing the output.
-                // We just need to wait for all workers to finish. But we
-                // can't join microthreads. Instead, the workers share
-                // `out` via copy() — when the last worker finishes, the
-                // last copy is our local `out`. The producer framework
-                // handles closure. We just need to not return early.
-                //
-                // Wait for output reader death (downstream done).
-                poke_t p;
-                csp::alt(~out);
+                done_w = {};
+
+                // Block until all workers finish or output dies.
+                csp::alt(~done_r, ~out);
             }
         });
 }

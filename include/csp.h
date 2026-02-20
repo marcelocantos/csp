@@ -55,6 +55,7 @@
 #include "csp/part/nwise.h"
 #include "csp/part/pace.h"
 #include "csp/part/pairwise.h"
+#include "csp/part/parallel_map.h"
 #include "csp/part/part.h"
 #include "csp/part/partition.h"
 #include "csp/part/quantize.h"
