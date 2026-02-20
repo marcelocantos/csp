@@ -1,4 +1,4 @@
-#include <csp/internal/mt_log.h>
+#include <csp/internal/log.h>
 
 #include <csp/csp.h>
 #include <csp/internal/on_scope_exit.h>
@@ -228,7 +228,7 @@ namespace csp {
             {
                 std::vector<std::string> ignore{
                     "csp::Logger::",
-                    "_ZN3csp6detailL9switch_toERNS0_11MicrothreadEl",
+                    "_ZN3csp6detailL9switch_toERNS0_3ImpEl",
                     "std::__1::",
                     "<redacted>",
                 };

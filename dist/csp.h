@@ -8,7 +8,7 @@
 /* csp/csp.h */
 
 
-/* csp/internal/mt_log.h */
+/* csp/internal/log.h */
 
 #include <cstdarg>
 #include <string>
@@ -136,10 +136,10 @@ struct AltMatch {
     alignas(8) char opaque_[128];
 };
 
-// Microthread entry function.
+// Imp entry function.
 using EntryFn = void (*)(void *);
 
-// Microthread management.
+// Imp management.
 int spawn(EntryFn entry, void * data);
 int run();
 void yield();
@@ -192,8 +192,7 @@ extern Logger g_descrlog;
 void set_scheduler(std::function<void()> f);
 void schedule();
 
-// Yield control so other microthreads can run. Does nothing outside a
-// microthread.
+// Yield control so other imps can run. Does nothing outside an imp.
 inline void yield() { internal::yield(); }
 
 // Initialize the M:N runtime with the given number of processors (0 = auto).
@@ -201,7 +200,7 @@ inline void yield() { internal::yield(); }
 void init_runtime(int num_procs = 0);
 void shutdown_runtime();
 
-class microthread_error : public std::runtime_error {
+class error : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
@@ -473,7 +472,7 @@ public:
     T read() const {
         T t;
         if (!(*this >> t)) {
-            throw microthread_error("reader exhausted");
+            throw error("reader exhausted");
         }
         return t;
     }
@@ -553,7 +552,7 @@ struct chan {
         internal::WriterRef cw;
         internal::ReaderRef cr;
         if (!internal::make_chan(&cw, &cr)) {
-            throw microthread_error("channel creation failed");
+            throw error("channel creation failed");
         }
         w.assign(cw);
         r.assign(cr);
@@ -594,7 +593,7 @@ void make_channel(writer<T> & w, reader<T> & r) {
 template <typename T>
 reader<T> operator--(writer<T> & w) {
     if (w) {
-        throw microthread_error("writer already attached channel");
+        throw error("writer already attached channel");
     }
     auto [cw, cr] = chan<T>{};
     w = std::move(cw);
@@ -605,7 +604,7 @@ reader<T> operator--(writer<T> & w) {
 template <typename T>
 writer<T> operator++(reader<T> & r) {
     if (r) {
-        throw microthread_error("reader already attached to channel");
+        throw error("reader already attached to channel");
     }
     auto [cw, cr] = chan<T>{};
     r = std::move(cr);
@@ -662,7 +661,7 @@ reader<std::exception_ptr> spawn(F && f) {
     reader<std::exception_ptr> r;
     auto sd = new detail::spawn_data<F>{std::move(f), ++r};
     if (!internal::spawn(detail::spawn_entry<F>, sd)) {
-        throw microthread_error("spawn failed");
+        throw error("spawn failed");
     }
     return r;
 }
@@ -894,8 +893,8 @@ void swap(csp::reader<T>& a, csp::reader<T>& b) {
 
 namespace csp::internal {
 
-// Suspend the calling microthread and run fn on the blocking pool.
-// Resumes the microthread when fn returns. Declared in csp.h's
+// Suspend the calling imp and run fn on the blocking pool.
+// Resumes the imp when fn returns. Declared in csp.h's
 // internal namespace; defined in blocking_pool.cc.
 void run_blocking(std::function<void()> fn);
 
@@ -903,7 +902,7 @@ void run_blocking(std::function<void()> fn);
 
 namespace csp {
 
-// Run fn on an OS thread pool, suspending the calling microthread until
+// Run fn on an OS thread pool, suspending the calling imp until
 // it completes. Use this for blocking OS calls (DNS, file I/O on
 // non-fd-based APIs, third-party libraries) that would otherwise stall
 // the processor.
@@ -1021,7 +1020,7 @@ private:
 #include <unordered_map>
 
 // TSan fiber annotations: tell TSan about user-mode context switches
-// so it can correctly track happens-before across microthread switches.
+// so it can correctly track happens-before across imp switches.
 #if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
 #define CSP_TSAN 1
 extern "C" {
@@ -1038,13 +1037,13 @@ namespace csp::detail {
 
 enum class Status : intptr_t { run, sleep, detach, exit, spawn };
 
-struct Microthread;
+struct Imp;
 
-extern thread_local Microthread * g_self;
+extern thread_local Imp * g_imp;
 
 void do_switch(Status status = Status::sleep);
 
-struct alignas(16) Microthread {
+struct alignas(16) Imp {
     struct alignas(16) StackSlot { char c[16]; };
 
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
@@ -1054,8 +1053,8 @@ struct alignas(16) Microthread {
     static constexpr size_t stack_size = 32 << 10;
 #endif
 
-    Microthread * prev_;
-    Microthread * next_;
+    Imp * prev_;
+    Imp * next_;
     std::atomic<fcontext_t> ctx_;
     StackRegion stk_;
     char status_[32];
@@ -1067,12 +1066,12 @@ struct alignas(16) Microthread {
         return next_++;
     }();
 
-    Microthread(fcontext_t ctx, StackRegion stk);
-    Microthread();
-    ~Microthread();
-    Microthread(Microthread const &) = delete;
+    Imp(fcontext_t ctx, StackRegion stk);
+    Imp();
+    ~Imp();
+    Imp(Imp const &) = delete;
 
-    Microthread & operator=(Microthread const &) = delete;
+    Imp & operator=(Imp const &) = delete;
 
     char const * getfullstatus_() const {
         return status_;
@@ -1088,25 +1087,25 @@ struct alignas(16) Microthread {
     std::atomic<uint32_t> alt_state{ALT_IDLE};
 
     uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
-    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // mt_local storage
+    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
 
     bool in_global_ = false;  // true while in the global run queue
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 
 #if CSP_TSAN
-    void* tsan_fiber_ = nullptr;  // TSan fiber handle for this microthread
+    void* tsan_fiber_ = nullptr;  // TSan fiber handle for this imp
 #endif
 };
 
 inline
-char const * getfullstatus(Microthread const * mt) {
-    return mt ? mt->getfullstatus_() : "Ø";
+char const * getfullstatus(Imp const * imp) {
+    return imp ? imp->getfullstatus_() : "Ø";
 }
 
 inline
-char const * getstatus(Microthread const * mt) {
-    return getfullstatus(mt);
+char const * getstatus(Imp const * imp) {
+    return getfullstatus(imp);
 }
 
 }
@@ -1243,10 +1242,10 @@ public:
 
     uintptr_t root() const { return root_; }
 
-    // Snapshot the current microthread's context.
+    // Snapshot the current imp's context.
     static context current() {
         context c;
-        c.root_ = detail::g_self->dyn_ctx_;
+        c.root_ = detail::g_imp->dyn_ctx_;
         if (c.root_) internal::hamt_retain(c.root_);
         return c;
     }
@@ -1260,17 +1259,17 @@ class context_scope {
     uintptr_t saved_;
 public:
     // Save current context and install a foreign one.
-    explicit context_scope(const context& ctx) : saved_(detail::g_self->dyn_ctx_) {
+    explicit context_scope(const context& ctx) : saved_(detail::g_imp->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
-        auto old = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = ctx.root();
+        auto old = detail::g_imp->dyn_ctx_;
+        detail::g_imp->dyn_ctx_ = ctx.root();
         if (ctx.root()) internal::hamt_retain(ctx.root());
         if (old) internal::hamt_release(old);
     }
 
     ~context_scope() {
-        auto current = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = saved_;
+        auto current = detail::g_imp->dyn_ctx_;
+        detail::g_imp->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -1319,8 +1318,8 @@ class local {
 
     void apply(dynamic_binding&& b) {
         b.consumed_ = true;
-        auto old = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = internal::hamt_assoc(
+        auto old = detail::g_imp->dyn_ctx_;
+        detail::g_imp->dyn_ctx_ = internal::hamt_assoc(
             old, b.key_id_, std::move(b.value_));
         if (old) internal::hamt_release(old);
     }
@@ -1331,14 +1330,14 @@ public:
                   sizeof...(Bs) >= 1 &&
                   (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...),
                   int> = 0>
-    local(Bs&&... bindings) : saved_(detail::g_self->dyn_ctx_) {
+    local(Bs&&... bindings) : saved_(detail::g_imp->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
         (apply(std::forward<Bs>(bindings)), ...);
     }
 
     ~local() {
-        auto current = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = saved_;
+        auto current = detail::g_imp->dyn_ctx_;
+        detail::g_imp->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -1366,7 +1365,7 @@ public:
 
     // Read: HAMT lookup + any_cast. Returns by value (safe, no dangling).
     T operator*() const {
-        if (auto* a = internal::hamt_get(detail::g_self->dyn_ctx_, key_.id()))
+        if (auto* a = internal::hamt_get(detail::g_imp->dyn_ctx_, key_.id()))
             return *std::any_cast<T>(a);
         assert(default_.has_value());
         return *default_;
@@ -1378,27 +1377,27 @@ public:
     }
 };
 
-// --- mt_local<T> ---
-// Microthread-local variable. Like thread_local but per-microthread.
-// NOT inherited by child microthreads. Direct read/write (no local needed).
+// --- imp_local<T> ---
+// Imp-local variable. Like thread_local but per-imp.
+// NOT inherited by child imps. Direct read/write (no local needed).
 template <typename T>
-class mt_local {
+class imp_local {
     context_key key_;
     std::optional<T> default_;
 
 public:
-    mt_local() {
+    imp_local() {
         if constexpr (std::is_default_constructible_v<T>)
             default_.emplace();
     }
-    explicit mt_local(T def) : default_(std::move(def)) {}
+    explicit imp_local(T def) : default_(std::move(def)) {}
 
-    mt_local(const mt_local&) = delete;
-    mt_local& operator=(const mt_local&) = delete;
+    imp_local(const imp_local&) = delete;
+    imp_local& operator=(const imp_local&) = delete;
 
     // Read: map lookup + any_cast. Returns by value.
     T operator*() const {
-        auto* m = detail::g_self->local_ctx_;
+        auto* m = detail::g_imp->local_ctx_;
         if (m) {
             auto it = m->find(key_.id());
             if (it != m->end())
@@ -1408,9 +1407,9 @@ public:
         return *default_;
     }
 
-    // Write: direct mutation of per-microthread map.
-    mt_local& operator=(T val) {
-        auto*& m = detail::g_self->local_ctx_;
+    // Write: direct mutation of per-imp map.
+    imp_local& operator=(T val) {
+        auto*& m = detail::g_imp->local_ctx_;
         if (!m) m = new std::unordered_map<uint64_t, std::any>();
         (*m)[key_.id()] = std::any(std::move(val));
         return *this;
@@ -1426,15 +1425,15 @@ public:
 
 namespace csp::detail {
 
-struct Microthread;
+struct Imp;
 
 class BlockingPool {
 public:
     static BlockingPool& instance();
 
-    // Submit a function to run on a pool thread. The microthread will be
-    // rescheduled via mt->schedule() when the function completes.
-    void submit(Microthread* mt, std::function<void()> fn);
+    // Submit a function to run on a pool thread. The imp will be
+    // rescheduled via imp->schedule() when the function completes.
+    void submit(Imp* imp, std::function<void()> fn);
 
     // Lazy init: creates worker threads on first submit.
     void ensure_started();
@@ -1448,7 +1447,7 @@ private:
     BlockingPool& operator=(BlockingPool const&) = delete;
 
     struct Work {
-        Microthread* mt;
+        Imp* imp;
         std::function<void()> fn;
     };
 
@@ -1776,21 +1775,21 @@ namespace csp::detail {
 
 struct TimerEntry {
     std::chrono::steady_clock::time_point deadline;
-    Microthread * thread;
+    Imp * thread;
     bool operator>(TimerEntry const & o) const { return deadline > o.deadline; }
 };
 
 struct Processor {
-    Microthread  main;       // Sentinel node for this P's run queue
-    Microthread* busy;       // Head of circular DLL run queue
-    std::atomic<fcontext_t>*  save_ctx;   // Where to store suspended mt's ctx
-    Microthread*  save_mt;    // The microthread being suspended
+    Imp  main;       // Sentinel node for this P's run queue
+    Imp* busy;       // Head of circular DLL run queue
+    std::atomic<fcontext_t>*  save_ctx;   // Where to store suspended imp's ctx
+    Imp*  save_imp;    // The imp being suspended
 
     std::priority_queue<TimerEntry, std::vector<TimerEntry>,
                         std::greater<TimerEntry>> timer_heap;
 
     std::mutex run_mu;                // Protects busy queue DLL + timer_heap
-    Microthread* running = nullptr;   // MT claimed by local_next (steal-safe)
+    Imp* running = nullptr;   // Imp claimed by local_next (steal-safe)
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
 
     std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
@@ -1801,7 +1800,7 @@ struct Processor {
     Processor(int id_)
         : busy(&main)
         , save_ctx(nullptr)
-        , save_mt(nullptr)
+        , save_imp(nullptr)
         , id(id_)
     { }
 
@@ -1819,17 +1818,17 @@ void bind_processor(Processor* p);
 
 namespace csp::detail {
 
-struct Microthread;
+struct Imp;
 
 class Reactor {
 public:
     static Reactor& instance();
 
-    // Register fd for read/write readiness. The microthread will be
-    // rescheduled via mt->schedule() when the event fires. EV_ONESHOT
+    // Register fd for read/write readiness. The imp will be
+    // rescheduled via imp->schedule() when the event fires. EV_ONESHOT
     // semantics: each registration fires at most once.
-    void wait_read(int fd, Microthread* mt);
-    void wait_write(int fd, Microthread* mt);
+    void wait_read(int fd, Imp* imp);
+    void wait_write(int fd, Imp* imp);
 
     // Remove all registrations for fd.
     void cancel(int fd);
@@ -1869,7 +1868,7 @@ struct Runtime {
     std::vector<std::thread> workers;               // M1..Mn
 
     std::mutex global_mu;
-    std::deque<Microthread*> global_run_queue;
+    std::deque<Imp*> global_run_queue;
 
     std::mutex park_mu;
     std::condition_variable park_cv;
@@ -1889,18 +1888,18 @@ struct Runtime {
     void shutdown();
     void unpark_one();
 
-    // Push a microthread to the global run queue.  Caller must
-    // hold global_mu.  The microthread must already be delinked
-    // from any local queue (next_==nullptr).  The happens-before
-    // chain through global_mu guarantees that the next P to pop
-    // this MT from the queue will see the null next_/prev_.
-    void push_to_global(Microthread* mt);
+    // Push an imp to the global run queue.  Caller must hold
+    // global_mu.  The imp must already be delinked from any local
+    // queue (next_==nullptr).  The happens-before chain through
+    // global_mu guarantees that the next P to pop this imp from
+    // the queue will see the null next_/prev_.
+    void push_to_global(Imp* imp);
 
     void worker_loop();
     void main_loop();
     void watchdog_loop();
     void add_processor();
-    Microthread* local_next(Processor& p);
+    Imp* local_next(Processor& p);
     bool take_from_global(Processor& p);
     void fire_timers(Processor& p);
     bool steal_work(Processor& thief);
@@ -1946,7 +1945,7 @@ inline int set_nonblock(int fd) {
 }
 
 // --- Layer 2: Non-blocking wrappers ---
-// These retry on EAGAIN by suspending the microthread until the fd
+// These retry on EAGAIN by suspending the imp until the fd
 // is ready, then retrying the syscall. All retry on EINTR.
 
 // Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
@@ -2015,7 +2014,7 @@ inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
 
 // --- DNS resolution ---
 // Offloads getaddrinfo to the blocking thread pool so the calling
-// microthread suspends cooperatively instead of blocking its processor.
+// imp suspends cooperatively instead of blocking its processor.
 
 struct addrinfo_deleter {
     void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }
@@ -2057,7 +2056,7 @@ inline resolve_result resolve(const std::string& host,
 namespace csp::part {
 
 // Wrapper for a reader-consuming combinator body.
-// spawn() creates a channel and microthread; bind() returns a deferred
+// spawn() creates a channel and imp; bind() returns a deferred
 // callable; operator() runs inline. const& overloads copy the body,
 // && overloads move it.
 template <typename T, typename F>
@@ -2876,12 +2875,12 @@ namespace csp {
 
 using clock = std::chrono::steady_clock;
 
-// Block the current microthread until the given deadline.
+// Block the current imp until the given deadline.
 inline void sleep_until(clock::time_point tp) {
     internal::sleep_until(tp.time_since_epoch().count());
 }
 
-// Block the current microthread for the given duration.
+// Block the current imp for the given duration.
 inline void sleep(clock::duration d) {
     sleep_until(clock::now() + d);
 }
@@ -3461,7 +3460,7 @@ auto skip_last(size_t n) {
 namespace csp::part {
 
 // Read from whichever source responds first, discard the rest.
-// Blocks the calling microthread until a value is available.
+// Blocks the calling imp until a value is available.
 // Throws std::runtime_error if all readers close without producing a value.
 template <typename T>
 T first_wins(std::vector<reader<T>> inputs) {
@@ -4871,7 +4870,7 @@ namespace csp::part {
 // Share a source across multiple subscribers. Each read from the returned
 // channel creates a new subscription that immediately delivers the current
 // value (if any) then subsequent updates. Each subscriber gets a dedicated
-// latch microthread with independent backpressure: a slow subscriber sees
+// latch imp with independent backpressure: a slow subscriber sees
 // latest-value semantics (intermediate values overwritten), while fast
 // subscribers see every value.
 template <typename T>

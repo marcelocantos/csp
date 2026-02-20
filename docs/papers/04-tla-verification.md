@@ -1,9 +1,9 @@
-# Verifying a Microthread Scheduler with TLA+
+# Verifying a Imp Scheduler with TLA+
 
 ## Abstract
 
 We describe five TLA+ specifications that model concurrent protocols
-in an M:N microthread scheduler: suspension handoff, work stealing,
+in an M:N imp scheduler: suspension handoff, work stealing,
 channel lifecycle, alt-state CAS claiming, and worker parking. Each
 protocol is modeled in both correct and intentionally buggy variants.
 The TLC model checker exhaustively verifies the correct specifications
@@ -15,7 +15,7 @@ systems code.
 
 ## 1. Why schedulers are hard to test
 
-A microthread scheduler is a composition of multiple synchronization
+A imp scheduler is a composition of multiple synchronization
 protocols, each using its own combination of mutexes, atomics, and
 condition variables. Each protocol is simple enough to fit on a screen.
 The difficulty is that they interact: a wakeup produced by one
@@ -52,7 +52,7 @@ violation.
 
 ### 2.1 The protocol
 
-When a microthread suspends (waiting for a channel peer), three
+When an imp suspends (waiting for a channel peer), three
 participants interact:
 
 - The **suspending MT** sets `suspending_ = true` and context-switches
@@ -101,7 +101,7 @@ above.
 
 ### 3.1 The invariant
 
-In the M:N scheduler, idle workers steal microthreads from busy
+In the M:N scheduler, idle workers steal imps from busy
 workers. A critical safety property: **never steal the MT that is
 currently executing.** The running MT stays on the victim's local
 doubly-linked list (DLL) — it is not removed during execution. The
@@ -168,7 +168,7 @@ use-after-free.
 ## 5. Alt-state CAS
 
 `AltStateCAS.tla` models the protocol by which multiple wakers compete
-to claim a sleeping microthread registered on multiple channels. The
+to claim a sleeping imp registered on multiple channels. The
 MT sets `alt_state = ALT_WAITING`. Each waker attempts a
 compare-and-swap: `ALT_WAITING → ALT_CLAIMED`. Exactly one succeeds;
 the rest observe the CAS failure and skip.
@@ -250,7 +250,7 @@ WStartSchedule == ...
 // Push to global queue under global_mu.
 //
 // TLA:StealWork.WStartSchedule
-void Microthread::schedule(bool make_current) { ... }
+void Imp::schedule(bool make_current) { ... }
 ```
 
 A verification script (`scripts/check_tla_tags.py`) scans both TLA+

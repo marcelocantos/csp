@@ -26,7 +26,7 @@ graph LR
     in["reader&lt;T&gt;"] --> C["conflate(f)"] --> out["reader&lt;T&gt;"]
 ```
 
-One internal microthread uses `alt` to race writing the pending value
+One internal imp uses `alt` to race writing the pending value
 downstream against reading the next value upstream.
 
 ```mermaid

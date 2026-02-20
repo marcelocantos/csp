@@ -19,7 +19,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["stride(n)"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread reads from the input, emits every Nth value, and
+One internal imp reads from the input, emits every Nth value, and
 discards the rest.
 
 ## Semantics

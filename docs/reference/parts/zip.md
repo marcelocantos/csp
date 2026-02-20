@@ -34,7 +34,7 @@ graph LR
     Zip --> Out["reader&lt;tuple&lt;A, B, ...&gt;&gt;<br/>or reader&lt;R&gt; with f"]
 ```
 
-One internal microthread reads from each input in sequence (using `alt` to
+One internal imp reads from each input in sequence (using `alt` to
 also watch for output death), then writes the combined result.
 
 ## Semantics
@@ -45,7 +45,7 @@ also watch for output death), then writes the combined result.
   is dropped.
 - All inputs must produce at the same rate for zip to be useful. If inputs
   have different lengths, the output length equals the shortest input.
-- Backpressure: the microthread blocks on each output write, so a slow
+- Backpressure: the imp blocks on each output write, so a slow
   consumer throttles all inputs.
 
 ## Example

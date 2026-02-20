@@ -22,7 +22,7 @@ graph LR
     RR --> O2[reader&lt;T&gt; 2]
 ```
 
-One internal microthread reads from the input and writes to output channels in
+One internal imp reads from the input and writes to output channels in
 strict cyclic order: element 0 goes to output 0, element 1 to output 1, and so
 on, wrapping at `n`.
 

@@ -22,7 +22,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["window(n)"] --> C["reader&lt;vector&lt;T&gt;&gt;"]
 ```
 
-One internal microthread maintains a deque, copying it to a vector for each
+One internal imp maintains a deque, copying it to a vector for each
 output.
 
 ## Semantics
@@ -34,7 +34,7 @@ output.
 - When the window is full, the oldest element is dropped before adding
   the new one.
 - Exits when the input is exhausted or the output reader is dropped.
-- Backpressure: the microthread blocks on each vector write, so a slow
+- Backpressure: the imp blocks on each vector write, so a slow
   consumer throttles the pipeline.
 
 ## Example

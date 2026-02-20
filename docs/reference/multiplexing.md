@@ -62,7 +62,7 @@ When a match is found, the data transfer happens inline and `alt` returns the
 0-based index of the matched operation. If the match is a death-watch (see
 below), `alt` returns `~index` (bitwise complement), which is always negative.
 
-If no operation is immediately ready, the calling microthread suspends until a
+If no operation is immediately ready, the calling imp suspends until a
 peer becomes available or an endpoint dies.
 
 ### Transition rules ([syntax](transition-rules.md))
@@ -462,13 +462,13 @@ Both `alt` and `prialt` use a two-phase internal protocol:
 
 2. **Phase 2 (alt_end):** After the caller performs the typed data transfer
    (move from `src` to `dst`), `alt_end` unlocks all channels and schedules
-   the matched peer microthread.
+   the matched peer imp.
 
-If no peer is ready in phase 1, the microthread registers itself as a waiter
+If no peer is ready in phase 1, the imp registers itself as a waiter
 on all involved channels, releases the locks, and suspends. When a peer
-arrives (or an endpoint dies), it claims the waiting microthread via an atomic
-CAS on the microthread's `alt_state`, sets the signal, and schedules it. On
-wakeup, the microthread cleans up its registrations under locks.
+arrives (or an endpoint dies), it claims the waiting imp via an atomic
+CAS on the imp's `alt_state`, sets the signal, and schedules it. On
+wakeup, the imp cleans up its registrations under locks.
 
 ### alt vs prialt scan order
 

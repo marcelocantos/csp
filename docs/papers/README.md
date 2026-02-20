@@ -1,7 +1,7 @@
 # The Engineering of CSP
 
 A series of technical papers on the design, implementation, and
-debugging of the CSP microthreading library.
+debugging of the CSP imp-based concurrency library.
 
 ## Papers
 
@@ -19,7 +19,7 @@ debugging of the CSP microthreading library.
    channel operations while maintaining type safety through a
    compilation firewall.
 
-4. **[Verifying a Microthread Scheduler with TLA+](04-tla-verification.md)**
+4. **[Verifying a Imp Scheduler with TLA+](04-tla-verification.md)**
    — Five TLA+ specifications that formally verify the scheduler's
    suspension, work-stealing, lifecycle, claiming, and parking
    protocols.
@@ -28,6 +28,6 @@ debugging of the CSP microthreading library.
    Demand-paged virtual stacks, a recycling pool, and an ARM64
    instruction walker that estimates stack depth at spawn time.
 
-6. **[Dynamic Scoping for Microthreads](06-dynamic-scoping.md)** — A
+6. **[Dynamic Scoping for Imps](06-dynamic-scoping.md)** — A
    persistent HAMT provides inherited, copy-on-write-isolated,
-   channel-sendable per-microthread variables.
+   channel-sendable per-imp variables.

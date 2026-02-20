@@ -1,6 +1,6 @@
 # join
 
-Blocks the calling microthread until all input channels close. All values
+Blocks the calling imp until all input channels close. All values
 received are drained and discarded. This is a synchronization barrier -- it
 waits for a set of concurrent activities to finish.
 
@@ -21,12 +21,12 @@ graph LR
     J --> done["(returns)"]
 ```
 
-No microthreads are spawned. `join` blocks the calling microthread using `alt`,
+No imps are spawned. `join` blocks the calling imp using `alt`,
 draining and discarding all values until every reader is dead.
 
 ## Semantics
 
-- **Blocking call**: `join` suspends the calling microthread until all input
+- **Blocking call**: `join` suspends the calling imp until all input
   readers have closed.
 - **Values discarded**: Any values produced by the inputs are read and
   immediately discarded. `join` is purely a synchronization primitive.
@@ -53,7 +53,7 @@ rs.push_back(std::move(a.r));
 rs.push_back(std::move(b.r));
 
 join(std::move(rs));
-// All microthreads have finished; all values were drained.
+// All imps have finished; all values were drained.
 ```
 
 ## See Also

@@ -12,48 +12,48 @@ ASan.
 
 ## Background
 
-CSP is a C++ microthreading library using Boost.Context (`jump_fcontext` /
-`make_fcontext`) for cooperative context switching. In M:N mode, microthreads
+CSP is a C++ imp-based concurrency library using Boost.Context (`jump_fcontext` /
+`make_fcontext`) for cooperative context switching. In M:N mode, imps
 are multiplexed across a pool of OS worker threads via a work-stealing
-scheduler. A microthread suspended on OS thread A can be resumed on OS thread B.
+scheduler. A imp suspended on OS thread A can be resumed on OS thread B.
 
-The library tracks the currently-running microthread via a thread-local
+The library tracks the currently-running imp via a thread-local
 variable:
 
 ```cpp
 // csp_globals.cpp — definition
 namespace csp::detail {
-    thread_local Microthread * g_self = nullptr;
+    thread_local Imp * g_imp = nullptr;
 }
 
 // csp_internal.h — declaration
 namespace csp::detail {
-    extern thread_local Microthread * g_self;
+    extern thread_local Imp * g_imp;
 }
 ```
 
-The `start()` function — the entry point for every new microthread — writes
-`g_self` twice, with a `switch_to()` call (containing `jump_fcontext`) in
+The `start()` function — the entry point for every new imp — writes
+`g_imp` twice, with a `switch_to()` call (containing `jump_fcontext`) in
 between:
 
 ```cpp
 static void start(transfer_t t) {
     // ... unpack StartData ...
     auto * self = &sd.self;
-    g_self = self;                                  // (1) first write
+    g_imp = self;                                  // (1) first write
     auto killyou_val = switch_to(sd.caller, 0);     // warmup handshake
     // MT may now be on a DIFFERENT OS thread
-    g_self = self;                                  // (2) second write
+    g_imp = self;                                  // (2) second write
     // ...
 }
 ```
 
-Write (1) sets `g_self` on the thread that spawned this microthread. The
-`switch_to()` call suspends the new microthread and returns control to the
-spawner, which completes the handshake and enqueues the microthread on the
+Write (1) sets `g_imp` on the thread that spawned this imp. The
+`switch_to()` call suspends the new imp and returns control to the
+spawner, which completes the handshake and enqueues the imp on the
 global run queue. When a (potentially different) worker thread picks it up and
 resumes it, execution continues after `switch_to()`. Write (2) must set
-`g_self` on *that* thread — whichever thread resumed us.
+`g_imp` on *that* thread — whichever thread resumed us.
 
 ## Investigation
 
@@ -84,67 +84,67 @@ the separate-TU build and the single-TU build.
 **Separate build** (`csp_globals.cpp` is a different TU):
 
 ```asm
-; g_self = self;                    (first write)
-bl  __ZTWN3csp6detail6g_selfE      ; call TLS wrapper → x0 = &g_self
+; g_imp = self;                    (first write)
+bl  __ZTWN3csp6detail6g_impE      ; call TLS wrapper → x0 = &g_imp
 str x8, [x0]                       ; *x0 = self
 
 ; switch_to(sd.caller, 0);         (warmup — may resume on different thread)
 bl  __ZN3csp6detailL9switch_toE...
 
-; g_self = self;                    (second write)
-bl  __ZTWN3csp6detail6g_selfE      ; call TLS wrapper AGAIN → fresh &g_self
+; g_imp = self;                    (second write)
+bl  __ZTWN3csp6detail6g_impE      ; call TLS wrapper AGAIN → fresh &g_imp
 str x8, [x0]                       ; *x0 = self  ✓ correct TLS slot
 ```
 
-Each `g_self` access calls the opaque TLS wrapper function
-`__ZTWN3csp6detail6g_selfE`, which resolves the thread-local address from
+Each `g_imp` access calls the opaque TLS wrapper function
+`__ZTWN3csp6detail6g_impE`, which resolves the thread-local address from
 scratch on each invocation. After `switch_to()` resumes on a different OS
-thread, the second wrapper call returns that thread's `&g_self`.
+thread, the second wrapper call returns that thread's `&g_imp`.
 
 **Single-TU build** (`csp_globals.cpp` merged into same TU):
 
 ```asm
-; g_self = self;                    (first write)
-adrp x0, _g_self@TLVPPAGE          ; \ direct TLV descriptor
-ldr  x0, [x0, _g_self@TLVPPAGEOFF] ;  } access — inlined
+; g_imp = self;                    (first write)
+adrp x0, _g_imp@TLVPPAGE          ; \ direct TLV descriptor
+ldr  x0, [x0, _g_imp@TLVPPAGEOFF] ;  } access — inlined
 ldr  x9, [x0]                      ;  } resolver function ptr
-blr  x9                            ; / call resolver → x0 = &g_self
-str  x0, [sp, #0x8]                ; *** CACHE &g_self on stack ***
+blr  x9                            ; / call resolver → x0 = &g_imp
+str  x0, [sp, #0x8]                ; *** CACHE &g_imp on stack ***
 str  x8, [x0]                      ; *x0 = self  (correct)
 
 ; switch_to(sd.caller, 0);         (warmup — may resume on different thread)
 bl  __ZN3csp6detailL9switch_toE...
 
-; g_self = self;                    (second write)
-ldr  x0, [sp, #0x8]                ; *** RELOAD CACHED &g_self (STALE!) ***
+; g_imp = self;                    (second write)
+ldr  x0, [sp, #0x8]                ; *** RELOAD CACHED &g_imp (STALE!) ***
 str  x8, [x0]                      ; *x0 = self  ✗ WRONG TLS SLOT
 ```
 
 ## Root Cause
 
-When `csp_globals.cpp` (which *defines* `thread_local Microthread * g_self`) is
+When `csp_globals.cpp` (which *defines* `thread_local Imp * g_imp`) is
 in the same TU as `csp.cc`, Clang sees both the `extern` declaration and the
 definition. This enables a more aggressive TLS access pattern: instead of
 calling the opaque wrapper function, the compiler generates inline TLV
 descriptor access (`adrp`/`ldr`/`ldr`/`blr` of the TLV resolver).
 
-Crucially, the compiler then treats the resolved `&g_self` address as a
+Crucially, the compiler then treats the resolved `&g_imp` address as a
 **stable value within the function** and caches it on the stack
 (`str x0, [sp, #0x8]`). After `switch_to()`, it reloads from the cache
 (`ldr x0, [sp, #0x8]`) instead of re-resolving TLS.
 
 This is normally a valid optimisation. But `switch_to()` calls
 `jump_fcontext`, which saves the entire register file and stack pointer, then
-jumps to a different context. The microthread is now suspended. When a
+jumps to a different context. The imp is now suspended. When a
 *different* OS thread resumes it, `jump_fcontext` restores the registers and
-stack — including the cached `&g_self` from the *original* thread. The second
-write to `g_self` goes to the old thread's TLS slot, leaving the current
-thread's `g_self` unchanged.
+stack — including the cached `&g_imp` from the *original* thread. The second
+write to `g_imp` goes to the old thread's TLS slot, leaving the current
+thread's `g_imp` unchanged.
 
-The consequences are immediate and catastrophic: the current thread's `g_self`
-still points to its Processor's main microthread (or whoever was last
-correctly set). When `do_switch(Status::exit)` reads `g_self` to determine the
-`killme` pointer, it gets the wrong microthread, leading to double-frees,
+The consequences are immediate and catastrophic: the current thread's `g_imp`
+still points to its Processor's main imp (or whoever was last
+correctly set). When `do_switch(Status::exit)` reads `g_imp` to determine the
+`killme` pointer, it gets the wrong imp, leading to double-frees,
 use-after-frees, and assertion failures.
 
 This bug is invisible to standard tooling:
@@ -179,13 +179,13 @@ compilation units. The comment in the script explains why:
 
 ```python
 # csp_globals.cpp MUST be a separate TU.  It defines the
-# thread_local variable g_self.  When the definition and the
+# thread_local variable g_imp.  When the definition and the
 # extern declaration (from csp_internal.h) are in the same TU,
 # Clang generates direct TLV-descriptor access and may cache the
 # resolved TLS address across jump_fcontext calls.  Because
-# jump_fcontext can resume a microthread on a different OS thread,
+# jump_fcontext can resume an imp on a different OS thread,
 # the cached address becomes stale and writes to the wrong TLS
-# slot — corrupting g_self and crashing the M:N scheduler.
+# slot — corrupting g_imp and crashing the M:N scheduler.
 # Keeping csp_globals.cpp separate forces the wrapper-call
 # pattern, which re-resolves the TLS address on every access.
 ```

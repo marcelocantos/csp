@@ -27,7 +27,7 @@ graph LR
     Fanout -.-> OutN["writer&lt;T&gt; ...N"]
 ```
 
-The fanout microthread manages a two-phase lifecycle:
+The fanout imp manages a two-phase lifecycle:
 
 1. **Registration phase**: Reads the first `writer<T>` from the subscriber
    channel (`new_out`), then creates a fresh `chan<T>` and sends its writer
@@ -46,7 +46,7 @@ The fanout microthread manages a two-phase lifecycle:
 - New subscribers can join at any time by sending a `writer<T>` through the
   subscriber channel.
 - When the subscriber channel closes and all subscribers die, the fanout
-  microthread exits.
+  imp exits.
 - When the input stream dies, fanout re-enters the registration phase:
   it waits for the subscriber channel to deliver the next input writer,
   enabling wave-based operation.

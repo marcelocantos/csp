@@ -37,12 +37,12 @@ namespace {
 
     struct ChanopWaiter {
         ChanOp const * chanop;
-        Microthread * thread;
+        Imp * thread;
 
         bool operator==(ChanopWaiter const & cw) const { return chanop == cw.chanop && thread == cw.thread; }
         bool operator!=(ChanopWaiter const & cw) const { return !(*this == cw); }
 
-        ChanopWaiter(ChanOp const * chanop, Microthread * thread) : chanop{chanop}, thread{thread} { }
+        ChanopWaiter(ChanOp const * chanop, Imp * thread) : chanop{chanop}, thread{thread} { }
     };
 
 }
@@ -129,8 +129,8 @@ namespace {
                         // Wake waiters via CAS. Don't remove from queues —
                         // woken threads clean up their own registrations.
                         for (auto const & cw : ep.waiters) {
-                            uint32_t expected = Microthread::ALT_WAITING;
-                            if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
+                            uint32_t expected = Imp::ALT_WAITING;
+                            if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_);
                                 cw.thread->signal_ = ~idx;
                                 cw.thread->schedule();
@@ -138,8 +138,8 @@ namespace {
                         }
 
                         for (auto const & cv : ep.vultures) {
-                            uint32_t expected = Microthread::ALT_WAITING;
-                            if (cv.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
+                            uint32_t expected = Imp::ALT_WAITING;
+                            if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                                 int idx = int(cv.chanop - cv.thread->chanops_);
                                 cv.thread->signal_ = ~idx;
                                 cv.thread->schedule();
@@ -167,7 +167,7 @@ namespace {
             Channel** sorted;       // points to fixed_sorted or heap_alloc
             Channel** heap_alloc;   // non-null if heap-allocated
             int n_sorted;
-            Microthread* peer;
+            Imp* peer;
             bool needs_unlock;
             bool use_run;           // single-P writer: unlock then run
         };
@@ -175,9 +175,9 @@ namespace {
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
-            if (g_self->stk_) {
+            if (g_imp->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_self->stk_, __builtin_frame_address(0));
+                    g_imp->stk_, __builtin_frame_address(0));
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -262,8 +262,8 @@ namespace {
                     if ((flags & ready_flag)) {
                         // TLA:AltStateCAS.WakerStart TLA:AltStateCAS.WakerCAS
                         for (auto & cw : them) {
-                            uint32_t expected = Microthread::ALT_WAITING;
-                            if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
+                            uint32_t expected = Imp::ALT_WAITING;
+                            if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_);
                                 cw.thread->signal_ = idx;
 
@@ -304,7 +304,7 @@ namespace {
 
             // Phase 2: Register on all channels and sleep.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
-            g_self->alt_state.store(Microthread::ALT_WAITING, std::memory_order_release);
+            g_imp->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
@@ -313,8 +313,8 @@ namespace {
                 }
             }
 
-            g_self->chanops_ = chanops;
-            g_self->n_chanops_ = count;
+            g_imp->chanops_ = chanops;
+            g_imp->n_chanops_ = count;
             // Mark suspending_ before unlock_all so that schedule()
             // (called by a waker on another thread) will set
             // wake_pending_ instead of pushing to the global queue.
@@ -323,26 +323,26 @@ namespace {
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
-            g_self->suspending_.store(true, std::memory_order_release);
+            g_imp->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            g_self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < g_self->n_chanops_; ++i) {
-                auto const & chop = g_self->chanops_[i];
+            for (int i = 0; i < g_imp->n_chanops_; ++i) {
+                auto const & chop = g_imp->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, g_self);
+                    ch->endpts_[flags & endpt_flag].remove(&chop, g_imp);
                 }
             }
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
 
-            g_self->alt_state.store(Microthread::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
-            out->result = g_self->signal_;
-            g_self->chanops_ = nullptr;
-            g_self->n_chanops_ = 0;
+            g_imp->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+            out->result = g_imp->signal_;
+            g_imp->chanops_ = nullptr;
+            g_imp->n_chanops_ = 0;
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
@@ -382,13 +382,13 @@ namespace {
             void wait(ChanOp const * chop) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
-                    waiters.emplace(chop, g_self);
+                    waiters.emplace(chop, g_imp);
                 } else {
-                    vultures.emplace(chop, g_self);
+                    vultures.emplace(chop, g_imp);
                 }
             }
 
-            void remove(ChanOp const * chop, Microthread * t) {
+            void remove(ChanOp const * chop, Imp * t) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
                     waiters.remove({chop, t});

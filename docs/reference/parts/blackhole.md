@@ -21,13 +21,13 @@ graph LR
     A[reader&lt;T&gt;] --> B["blackhole"]
 ```
 
-One internal microthread reads and discards every value until the input closes.
+One internal imp reads and discards every value until the input closes.
 
 ## Semantics
 
 - Reads every value from the input channel and immediately drops it.
 - Exits when the input channel is exhausted (all writers have closed).
-- Backpressure: the microthread reads as fast as possible, so producers are
+- Backpressure: the imp reads as fast as possible, so producers are
   never throttled by the consumer side. The only backpressure comes from the
   synchronous channel rendezvous itself.
 
@@ -50,7 +50,7 @@ for (int i = 0; i < 1000; ++i) {
 
 - **Testing**: provide a consumer endpoint when you only care about the
   producer side of a pipeline.
-- **Side-effect producers**: when a microthread produces values as a side
+- **Side-effect producers**: when an imp produces values as a side
   effect but no downstream consumer is needed.
 - **Pipeline draining**: attach to a channel to ensure it drains completely,
   preventing upstream writers from blocking.

@@ -18,7 +18,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["skip_while(pred)"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread reads from the input. While the predicate returns
+One internal imp reads from the input. While the predicate returns
 true, elements are discarded. Once the predicate fails, the failing element
 and all remaining elements are forwarded to the output.
 

@@ -49,10 +49,10 @@ public:
 
     uintptr_t root() const { return root_; }
 
-    // Snapshot the current microthread's context.
+    // Snapshot the current imp's context.
     static context current() {
         context c;
-        c.root_ = detail::g_self->dyn_ctx_;
+        c.root_ = detail::g_imp->dyn_ctx_;
         if (c.root_) internal::hamt_retain(c.root_);
         return c;
     }
@@ -66,17 +66,17 @@ class context_scope {
     uintptr_t saved_;
 public:
     // Save current context and install a foreign one.
-    explicit context_scope(const context& ctx) : saved_(detail::g_self->dyn_ctx_) {
+    explicit context_scope(const context& ctx) : saved_(detail::g_imp->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
-        auto old = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = ctx.root();
+        auto old = detail::g_imp->dyn_ctx_;
+        detail::g_imp->dyn_ctx_ = ctx.root();
         if (ctx.root()) internal::hamt_retain(ctx.root());
         if (old) internal::hamt_release(old);
     }
 
     ~context_scope() {
-        auto current = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = saved_;
+        auto current = detail::g_imp->dyn_ctx_;
+        detail::g_imp->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -125,8 +125,8 @@ class local {
 
     void apply(dynamic_binding&& b) {
         b.consumed_ = true;
-        auto old = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = internal::hamt_assoc(
+        auto old = detail::g_imp->dyn_ctx_;
+        detail::g_imp->dyn_ctx_ = internal::hamt_assoc(
             old, b.key_id_, std::move(b.value_));
         if (old) internal::hamt_release(old);
     }
@@ -137,14 +137,14 @@ public:
                   sizeof...(Bs) >= 1 &&
                   (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...),
                   int> = 0>
-    local(Bs&&... bindings) : saved_(detail::g_self->dyn_ctx_) {
+    local(Bs&&... bindings) : saved_(detail::g_imp->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
         (apply(std::forward<Bs>(bindings)), ...);
     }
 
     ~local() {
-        auto current = detail::g_self->dyn_ctx_;
-        detail::g_self->dyn_ctx_ = saved_;
+        auto current = detail::g_imp->dyn_ctx_;
+        detail::g_imp->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -172,7 +172,7 @@ public:
 
     // Read: HAMT lookup + any_cast. Returns by value (safe, no dangling).
     T operator*() const {
-        if (auto* a = internal::hamt_get(detail::g_self->dyn_ctx_, key_.id()))
+        if (auto* a = internal::hamt_get(detail::g_imp->dyn_ctx_, key_.id()))
             return *std::any_cast<T>(a);
         assert(default_.has_value());
         return *default_;
@@ -184,27 +184,27 @@ public:
     }
 };
 
-// --- mt_local<T> ---
-// Microthread-local variable. Like thread_local but per-microthread.
-// NOT inherited by child microthreads. Direct read/write (no local needed).
+// --- imp_local<T> ---
+// Imp-local variable. Like thread_local but per-imp.
+// NOT inherited by child imps. Direct read/write (no local needed).
 template <typename T>
-class mt_local {
+class imp_local {
     context_key key_;
     std::optional<T> default_;
 
 public:
-    mt_local() {
+    imp_local() {
         if constexpr (std::is_default_constructible_v<T>)
             default_.emplace();
     }
-    explicit mt_local(T def) : default_(std::move(def)) {}
+    explicit imp_local(T def) : default_(std::move(def)) {}
 
-    mt_local(const mt_local&) = delete;
-    mt_local& operator=(const mt_local&) = delete;
+    imp_local(const imp_local&) = delete;
+    imp_local& operator=(const imp_local&) = delete;
 
     // Read: map lookup + any_cast. Returns by value.
     T operator*() const {
-        auto* m = detail::g_self->local_ctx_;
+        auto* m = detail::g_imp->local_ctx_;
         if (m) {
             auto it = m->find(key_.id());
             if (it != m->end())
@@ -214,9 +214,9 @@ public:
         return *default_;
     }
 
-    // Write: direct mutation of per-microthread map.
-    mt_local& operator=(T val) {
-        auto*& m = detail::g_self->local_ctx_;
+    // Write: direct mutation of per-imp map.
+    imp_local& operator=(T val) {
+        auto*& m = detail::g_imp->local_ctx_;
         if (!m) m = new std::unordered_map<uint64_t, std::any>();
         (*m)[key_.id()] = std::any(std::move(val));
         return *this;

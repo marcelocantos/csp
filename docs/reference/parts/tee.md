@@ -21,7 +21,7 @@ graph LR
     Tee --> Side[writer&lt;T&gt; side]
 ```
 
-One internal microthread reads from the input and writes each value to both
+One internal imp reads from the input and writes each value to both
 the main output and the side channel.
 
 ## Semantics
@@ -32,7 +32,7 @@ the main output and the side channel.
 - If the side channel's reader is dropped (side channel dies), the tee
   enters a fallback loop that forwards remaining values only to the main
   output. No values are lost.
-- Backpressure: the microthread blocks on each write, so a slow side
+- Backpressure: the imp blocks on each write, so a slow side
   consumer can throttle the entire pipeline until the side channel dies.
 
 ## Example

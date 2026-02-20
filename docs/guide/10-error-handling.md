@@ -1,7 +1,7 @@
 # Error Handling
 
 Every `spawn()` call returns a `reader<std::exception_ptr>` -- an exception
-channel tied to the new microthread. If the microthread's function throws, the
+channel tied to the new imp. If the imp's function throws, the
 exception is captured and sent on this channel rather than crashing the
 program. This design makes error propagation explicit and composable.
 
@@ -15,12 +15,12 @@ reader<std::exception_ptr> ex = spawn([] {
 ```
 
 The returned reader delivers at most one message: the exception that
-terminated the microthread. If the microthread returns normally, the writer
+terminated the imp. If the imp returns normally, the writer
 side closes without sending and the reader sees EOF.
 
 ## join() -- wait and rethrow
 
-`join()` reads from the exception channel. If the microthread threw, `join()`
+`join()` reads from the exception channel. If the imp threw, `join()`
 rethrows the original exception in the caller's context:
 
 ```cpp
@@ -35,12 +35,12 @@ try {
 }
 ```
 
-If the microthread completed normally, `join()` returns immediately (the
+If the imp completed normally, `join()` returns immediately (the
 exception channel is closed, so the read sees EOF and there is nothing to
 rethrow).
 
 The pattern `join(spawn([]{...}))` is the simplest way to run work on a
-microthread and propagate any errors back to the caller:
+imp and propagate any errors back to the caller:
 
 ```cpp
 join(spawn([] {
@@ -51,7 +51,7 @@ join(spawn([] {
 ## Fire-and-forget and global_exception_handler
 
 When you discard the returned `reader<std::exception_ptr>`, exceptions from
-that microthread are sent to `global_exception_handler` instead. This is a
+that imp are sent to `global_exception_handler` instead. This is a
 global `writer<std::exception_ptr>` that you can reassign:
 
 ```cpp
@@ -83,7 +83,7 @@ The escalation chain is:
 ## range\<T\> -- iterator-friendly error propagation
 
 `spawn_range<T>()` returns a `range<T>` that wraps both a data channel and the
-microthread's exception channel. Iteration reads from the data channel; when
+imp's exception channel. Iteration reads from the data channel; when
 the data channel closes, the range checks the exception channel and rethrows
 any captured exception:
 
@@ -111,7 +111,7 @@ consumer must know whether the producer finished cleanly or failed.
 ## Pipeline error propagation
 
 Combinators like `map`, `where`, `scan`, and others run inside spawned
-microthreads. When a combinator throws:
+imps. When a combinator throws:
 
 1. The combinator's output channel closes (its writer is destroyed).
 2. Downstream readers see EOF and exit their loops naturally.
@@ -135,7 +135,7 @@ for (int n : r) {
 ```
 
 If you need to catch the combinator's exception, use `spawn_range` or
-explicitly `join()` the underlying microthread.
+explicitly `join()` the underlying imp.
 
 ## Channel death as control flow
 
@@ -165,9 +165,9 @@ ch.r = {};    // producer sees dead channel and exits
 
 ## Best practices
 
-**Use `join()` for critical microthreads.** If a microthread's failure should
+**Use `join()` for critical imps.** If an imp's failure should
 be visible to the caller, always `join()` on its exception channel. This is
-especially important for microthreads that perform I/O or other operations
+especially important for imps that perform I/O or other operations
 where silent failure would cause data loss.
 
 **Use `spawn_range<T>()` for producer-consumer patterns.** The range
@@ -180,4 +180,4 @@ other side observe the dead channel through its normal read/write loop.
 
 **Set `global_exception_handler` during development.** The default discards
 unhandled exceptions silently. Logging them during development helps catch
-fire-and-forget microthreads that fail unexpectedly.
+fire-and-forget imps that fail unexpectedly.

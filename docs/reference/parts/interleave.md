@@ -21,7 +21,7 @@ graph LR
     IL --> Out[reader&lt;T&gt;]
 ```
 
-One internal microthread reads from each input in cyclic order and writes each
+One internal imp reads from each input in cyclic order and writes each
 value to a single output channel.
 
 ## Semantics

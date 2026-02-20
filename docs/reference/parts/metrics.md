@@ -28,26 +28,26 @@ graph LR
     M --> ST["reader&lt;metrics_snapshot&gt;<br>(stats)"]
 ```
 
-One internal microthread uses `alt` to service three events: incoming data,
+One internal imp uses `alt` to service three events: incoming data,
 stats pull requests, and output reader death.
 
 ## Semantics
 
 - **Transparent forwarding**: Data passes through unchanged with normal
-  backpressure. The metrics microthread increments a counter for each forwarded
+  backpressure. The metrics imp increments a counter for each forwarded
   value.
 - **Pull-based stats**: Stats are not pushed automatically. Reading from the
   stats reader triggers a snapshot containing the current count and elapsed time
-  since the metrics microthread started.
+  since the metrics imp started.
 - **Stats reader dropped**: If the stats reader is dropped, data continues
-  flowing. The microthread falls back to a simple forward loop with no stats
+  flowing. The imp falls back to a simple forward loop with no stats
   overhead.
-- **Data reader dropped**: If the data reader is dropped, the microthread
+- **Data reader dropped**: If the data reader is dropped, the imp
   terminates (even if the stats reader is still alive).
 - **Source death**: When the source closes, the data output is closed. If the
-  stats reader is still alive, the microthread enters a terminal loop serving
+  stats reader is still alive, the imp enters a terminal loop serving
   final stats (with the final count) until the stats reader is also dropped.
-- **Both dropped**: If both readers are dropped, the microthread terminates
+- **Both dropped**: If both readers are dropped, the imp terminates
   cleanly.
 
 ## Example

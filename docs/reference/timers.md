@@ -1,7 +1,7 @@
 # Timers Reference
 
 Primitives for time-based operations: sleeping, one-shot timers, and periodic
-ticks. All functions run inside microthreads and integrate with the scheduler's
+ticks. All functions run inside imps and integrate with the scheduler's
 sleep queue.
 
 All types and functions live in `namespace csp`. Header: `#include "csp/timer.h"`.
@@ -58,7 +58,7 @@ auto elapsed = csp::clock::now() - start;
 
 ## sleep
 
-Suspend the current microthread for a given duration.
+Suspend the current imp for a given duration.
 
 ### Signature
 
@@ -68,22 +68,22 @@ void sleep(clock::duration d);
 
 ### Description
 
-`sleep` suspends the calling microthread for at least `d`. The microthread is
+`sleep` suspends the calling imp for at least `d`. The imp is
 placed on the scheduler's sleep queue and becomes runnable again once the
-deadline passes. Other microthreads continue to execute during the sleep.
+deadline passes. Other imps continue to execute during the sleep.
 
-`sleep` must be called from within a microthread. Calling it from the main
+`sleep` must be called from within an imp. Calling it from the main
 thread (outside `schedule`) is undefined.
 
 The actual wakeup time may be slightly later than `clock::now() + d` due to
-scheduling latency -- the microthread becomes runnable after the deadline but
+scheduling latency -- the imp becomes runnable after the deadline but
 must wait for a processor to pick it up.
 
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
 sleep(d) ────────────────➤ suspend; deadline = clock::now() + d
-         ─┤deadline passes├─➤ microthread becomes runnable; return
+         ─┤deadline passes├─➤ imp becomes runnable; return
 ```
 
 ### Example
@@ -102,7 +102,7 @@ csp::schedule();
 
 ## sleep_until
 
-Suspend the current microthread until an absolute time point.
+Suspend the current imp until an absolute time point.
 
 ### Signature
 
@@ -112,8 +112,8 @@ void sleep_until(clock::time_point tp);
 
 ### Description
 
-`sleep_until` suspends the calling microthread until the steady clock reaches
-`tp`. If `tp` is already in the past, the microthread yields and is immediately
+`sleep_until` suspends the calling imp until the steady clock reaches
+`tp`. If `tp` is already in the past, the imp yields and is immediately
 re-scheduled.
 
 This is the underlying primitive used by `sleep`, which computes
@@ -123,7 +123,7 @@ This is the underlying primitive used by `sleep`, which computes
 
 ```
 sleep_until(tp) ─┤tp in future├──➤ suspend; deadline = tp
-                 ─┤deadline passes├─➤ microthread becomes runnable; return
+                 ─┤deadline passes├─➤ imp becomes runnable; return
 sleep_until(tp) ─┤tp in past├────➤ yield; return
 ```
 
@@ -166,14 +166,14 @@ stateDiagram-v2
 
 | State | Meaning |
 |-------|---------|
-| waiting | Timer is running; the internal microthread is sleeping. |
+| waiting | Timer is running; the internal imp is sleeping. |
 | fired | Duration elapsed; a `time_point` is available on the reader. |
 
 ### Description
 
 `after` returns a `reader<clock::time_point>` that produces a single
 `time_point` value (the actual fire time) after the given duration elapses.
-Internally, `after` spawns a producer microthread that sleeps for `d` and
+Internally, `after` spawns a producer imp that sleeps for `d` and
 then writes `clock::now()` to the channel.
 
 The returned reader is most commonly used as a timeout arm in `alt` or `prialt`:
@@ -187,7 +187,7 @@ csp::prialt(
 
 After the single value is read, the internal producer exits and the reader
 transitions to dead. If the reader is dropped before the timer fires, the
-producer microthread is unblocked (writer sees dead channel) and exits cleanly.
+producer imp is unblocked (writer sees dead channel) and exits cleanly.
 
 ### Transition rules ([syntax](transition-rules.md))
 
@@ -248,13 +248,13 @@ stateDiagram-v2
 
 | State | Meaning |
 |-------|---------|
-| running | Timer is active; the internal microthread sleeps and writes on each interval. |
+| running | Timer is active; the internal imp sleeps and writes on each interval. |
 
 ### Description
 
 `tick` returns a `reader<clock::time_point>` that produces the current time
 (`clock::now()`) every `interval`. Internally, `tick` spawns a producer
-microthread that maintains an absolute deadline and advances it by `interval`
+imp that maintains an absolute deadline and advances it by `interval`
 after each write. This absolute-deadline approach prevents drift: even if a
 particular read is delayed, subsequent ticks remain aligned to the original
 schedule.
@@ -264,7 +264,7 @@ If the consumer is slow, ticks are not queued -- the producer simply waits.
 This means the consumer never receives a burst of stale ticks after a delay.
 
 **Shutdown.** When the returned reader is dropped (or goes out of scope), the
-producer's write fails and the microthread exits. No explicit cancellation is
+producer's write fails and the imp exits. No explicit cancellation is
 needed.
 
 ### Transition rules ([syntax](transition-rules.md))

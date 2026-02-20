@@ -193,11 +193,11 @@ TEST_CASE("dynamic: multi-bind local") {
     csp::schedule();
 }
 
-// --- mt_local tests ---
+// --- imp_local tests ---
 
-TEST_CASE("mt_local: basic read/write") {
+TEST_CASE("imp_local: basic read/write") {
     RunStats stats;
-    static csp::mt_local<int> counter;
+    static csp::imp_local<int> counter;
     stats.spawn([&]{
         CHECK_EQ(*counter, 0);
         counter = 42;
@@ -208,9 +208,9 @@ TEST_CASE("mt_local: basic read/write") {
     csp::schedule();
 }
 
-TEST_CASE("mt_local: explicit default") {
+TEST_CASE("imp_local: explicit default") {
     RunStats stats;
-    static csp::mt_local<int> counter(99);
+    static csp::imp_local<int> counter(99);
     stats.spawn([&]{
         CHECK_EQ(*counter, 99);
         counter = 1;
@@ -219,9 +219,9 @@ TEST_CASE("mt_local: explicit default") {
     csp::schedule();
 }
 
-TEST_CASE("mt_local: not inherited by child") {
+TEST_CASE("imp_local: not inherited by child") {
     RunStats stats;
-    static csp::mt_local<int> val;
+    static csp::imp_local<int> val;
     auto result = csp::chan<int>();
     stats.spawn([&]{
         val = 42;
@@ -239,9 +239,9 @@ TEST_CASE("mt_local: not inherited by child") {
     csp::schedule();
 }
 
-TEST_CASE("mt_local: independent per microthread") {
+TEST_CASE("imp_local: independent per imp") {
     RunStats stats;
-    static csp::mt_local<int> val;
+    static csp::imp_local<int> val;
     auto ch1 = csp::chan<int>();
     auto ch2 = csp::chan<int>();
     stats.spawn([&]{
@@ -262,9 +262,9 @@ TEST_CASE("mt_local: independent per microthread") {
     csp::schedule();
 }
 
-TEST_CASE("mt_local: string type") {
+TEST_CASE("imp_local: string type") {
     RunStats stats;
-    static csp::mt_local<std::string> name("default");
+    static csp::imp_local<std::string> name("default");
     stats.spawn([&]{
         CHECK_EQ(*name, "default");
         name = std::string("hello");

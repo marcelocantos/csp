@@ -2,7 +2,7 @@
 
 A producer that never emits any values. Spawning it creates a reader endpoint
 that is permanently blocked -- any attempt to read from it will block
-indefinitely. The internal microthread simply waits for the channel to close
+indefinitely. The internal imp simply waits for the channel to close
 via `alt(~out)`.
 
 ## Signature
@@ -24,14 +24,14 @@ graph LR
     A["mute"] -. never writes .-> B["reader (blocked)"]
 ```
 
-The internal microthread does not write to the channel. It waits for the
+The internal imp does not write to the channel. It waits for the
 channel to close (all reader copies dropped), then exits.
 
 ## Semantics
 
 - The spawned reader endpoint never produces values. Any read will block
   forever.
-- The microthread exits only when the channel's read end is fully closed
+- The imp exits only when the channel's read end is fully closed
   (all copies of the reader are dropped).
 - Useful as a placeholder or default in `alt`/`prialt` expressions, where
   a read arm should be present but never selected except via its death guard.

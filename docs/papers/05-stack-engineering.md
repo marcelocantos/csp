@@ -2,24 +2,24 @@
 
 ## Abstract
 
-Microthread libraries face a stack allocation dilemma: too small and
+Imp libraries face a stack allocation dilemma: too small and
 functions overflow; too large and memory is wasted. We describe a
 three-part solution: demand-paged virtual stacks that allocate only
 the physical memory actually touched, a pool that recycles stack
-regions across microthread lifetimes, and an ARM64 instruction walker
+regions across imp lifetimes, and an ARM64 instruction walker
 that estimates each function's maximum stack depth at spawn time. The
 instruction walker itself must avoid indirect function calls to
 produce exact results — requiring custom hash maps that compile to
 pure inline arithmetic. Together, these techniques allow thousands of
-concurrent microthreads with minimal physical memory overhead.
+concurrent imps with minimal physical memory overhead.
 
 ## 1. The stack allocation problem
 
-Every microthread needs a stack. The question is how much.
+Every imp needs a stack. The question is how much.
 
 A fixed allocation is always wrong. Too small, and a perfectly valid
 function call chain overflows into the guard page, killing the
-process. Too large, and a program with 10,000 microthreads consumes
+process. Too large, and a program with 10,000 imps consumes
 gigabytes of memory for stacks that are 90% unused.
 
 Go solves this with segmented stacks (now contiguous, with copying):
@@ -29,14 +29,14 @@ requires compiler cooperation — the prologue check is inserted at
 every function entry.
 
 CSP doesn't have compiler cooperation. It's a library, not a
-language runtime. The C++ compiler doesn't know about microthread
+language runtime. The C++ compiler doesn't know about imp
 stacks and won't insert growth checks. We need a solution that works
 within the standard C++ compilation model.
 
 ## 2. Demand-paged virtual stacks
 
 The first part of the solution exploits virtual memory. Each
-microthread gets a 1 MB virtual address region, allocated via `mmap`
+imp gets a 1 MB virtual address region, allocated via `mmap`
 with `MAP_ANON | MAP_PRIVATE`:
 
 ```cpp
@@ -53,7 +53,7 @@ corrupting adjacent memory.
 The key insight: `mmap` reserves virtual address space but does not
 allocate physical pages. The kernel faults in physical pages
 on demand, one page at a time, as the stack grows downward. A
-microthread that uses only 4 KB of stack consumes exactly one physical
+imp that uses only 4 KB of stack consumes exactly one physical
 page (4 KB), not 1 MB.
 
 This means the 1 MB reservation is free in practice. The cost is
@@ -63,9 +63,9 @@ not to the reservation size.
 
 ## 3. The stack pool
 
-Allocating and freeing `mmap` regions per microthread is expensive —
+Allocating and freeing `mmap` regions per imp is expensive —
 each call is a kernel trap, and the kernel must update page tables.
-For a scheduler that creates and destroys thousands of microthreads
+For a scheduler that creates and destroys thousands of imps
 per second, this overhead is significant.
 
 The stack pool caches freed regions in a free list:
@@ -84,7 +84,7 @@ StackRegion StackPool::allocate() {
 }
 ```
 
-When a microthread exits, its stack region is returned to the pool
+When an imp exits, its stack region is returned to the pool
 rather than unmapped. The pool retains up to 256 regions. Beyond
 that, excess regions are unmapped.
 
@@ -114,10 +114,10 @@ common case, automatic memory return under pressure.
 
 ## 4. Shrinking live stacks
 
-A microthread that once made a deep call chain (perhaps during
+A imp that once made a deep call chain (perhaps during
 initialisation) and then settles into a shallow loop retains the
 physical pages from the deep phase. Over time, thousands of
-microthreads accumulating high-water-mark pages can waste significant
+imps accumulating high-water-mark pages can waste significant
 memory.
 
 The `maybe_shrink()` function, called at API boundaries (channel
@@ -143,7 +143,7 @@ oscillates around a page boundary, the headroom absorbs the
 oscillation without triggering repeated `madvise` calls.
 
 The choice of API boundaries as shrink points is deliberate. These
-are moments when the microthread is about to suspend (blocking on a
+are moments when the imp is about to suspend (blocking on a
 channel or sleeping on a timer), so the overhead of the `madvise`
 syscall is amortised against the much larger cost of the context
 switch.
@@ -153,7 +153,7 @@ switch.
 The demand-paged stack handles the common case well, but for optimal
 stack sizing, the library includes a static analysis pass: an ARM64
 instruction walker that estimates the maximum stack depth of each
-microthread entry function.
+imp entry function.
 
 The walker operates at spawn time. Starting from the entry function's
 first instruction, it decodes ARM64 instructions one by one, tracking:
@@ -211,23 +211,23 @@ intrusive scheme (refcount embedded in the object) with a direct
 `delete` call in the destructor, replacing `shared_ptr`'s virtual
 control block destructor.
 
-### 5.2 System thread vs. microthread spawns
+### 5.2 System thread vs. imp spawns
 
 Full analysis is recursive and can consume significant stack space
 (the walker follows call chains transitively). Running it on a
-microthread's small stack would risk overflow — the analyzer
+imp's small stack would risk overflow — the analyzer
 overflowing the stack it's trying to size.
 
 The solution: only system-thread spawns (the initial `spawn()` calls
-before the M:N scheduler starts) run full analysis. Microthread
-spawns — which happen on microthread stacks — use a cache-only
+before the M:N scheduler starts) run full analysis. Imp
+spawns — which happen on imp stacks — use a cache-only
 lookup. If the function was previously analysed (during system-thread
 bootstrap), the cached result is used. If not, the conservative
 default applies.
 
-In practice, most microthread entry functions are lambda wrappers or
+In practice, most imp entry functions are lambda wrappers or
 combinator bodies that are first spawned during initialisation,
-populating the cache. Subsequent spawns within running microthreads
+populating the cache. Subsequent spawns within running imps
 hit the cache and avoid the deep analysis.
 
 ## 6. Sanitizer fallback
@@ -236,12 +236,12 @@ Under AddressSanitizer or ThreadSanitizer, the demand-paged mmap
 approach becomes impractical. These sanitizers allocate shadow memory
 proportional to the virtual address space mapped — a 1 MB mmap
 region generates ~250 KB of shadow memory (TSan) or ~128 KB (ASan).
-With thousands of microthreads, the shadow memory alone can exhaust
+With thousands of imps, the shadow memory alone can exhaust
 the system.
 
 The fallback is simple: under sanitizers, the stack pool allocates
 128 KB heap regions (`new char[131072]`) instead of 1 MB mmap
-regions. This is large enough for most microthread entry functions
+regions. This is large enough for most imp entry functions
 and small enough that shadow memory remains manageable.
 
 The stack depth analyzer is also disabled under sanitizers (via `#if`
@@ -256,20 +256,20 @@ The three mechanisms compose:
 1. **Demand-paged mmap** provides a large virtual address space (1 MB)
    with minimal physical cost (pages faulted on use).
 2. **The stack pool** amortises mmap/munmap overhead across
-   microthread lifetimes.
+   imp lifetimes.
 3. **`maybe_shrink()`** reclaims physical pages from live stacks
    that have passed their high-water mark.
 4. **The instruction walker** provides spawn-time stack depth
    estimates for sizing decisions and diagnostics.
 
-A program spawning 10,000 microthreads with typical stack depths of
+A program spawning 10,000 imps with typical stack depths of
 8-16 KB uses approximately 80-160 MB of physical memory for stacks,
 despite reserving 10 GB of virtual address space. The 256-entry pool
 handles burst creation without kernel traps. The per-API shrinking
-keeps long-lived microthreads from accumulating dead pages.
+keeps long-lived imps from accumulating dead pages.
 
 The result is that stack management, typically one of the most
 painful aspects of userspace threading, becomes effectively invisible
-to the library user. Microthreads get stacks that are simultaneously
+to the library user. Imps get stacks that are simultaneously
 large enough to never overflow in practice and small enough to run
 thousands concurrently on a laptop.

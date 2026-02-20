@@ -41,8 +41,8 @@ struct producer {
     auto bind(writer<T> w) const &;    // returns callable
     auto bind(writer<T> w) &&;         // returns callable (moves body)
 
-    reader<T> spawn() const &;         // copies body into microthread
-    reader<T> spawn() &&;              // moves body into microthread
+    reader<T> spawn() const &;         // copies body into imp
+    reader<T> spawn() &&;              // moves body into imp
 };
 ```
 
@@ -59,17 +59,17 @@ The call blocks until the body returns.
 the captured writer. The `const &` overload copies the body; the `&&` overload
 moves it.
 
-**`spawn()`** creates a new channel, spawns a microthread that runs the body
+**`spawn()`** creates a new channel, spawns an imp that runs the body
 with the write end, and returns the read end. This is the primary way to use a
 producer -- it wires up the channel plumbing and launches execution. The
-`const &` overload copies the body into the microthread; the `&&` overload
+`const &` overload copies the body into the imp; the `&&` overload
 moves it, enabling move-only captures (e.g., a `std::vector<reader<T>>`
 captured by a merge combinator).
 
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-producer.spawn()  ────────────────➤ chan<T> created; microthread M spawned;
+producer.spawn()  ────────────────➤ chan<T> created; imp M spawned;
                                     M calls body_(writer<T>);
                                     → reader<T>
 
@@ -93,7 +93,7 @@ spawn([] {
     // Nothing has executed yet -- p is lazy.
     auto r = std::move(p).spawn();
 
-    // Now a microthread is running, producing 0..4.
+    // Now an imp is running, producing 0..4.
     for (int v : r) {
         // v: 0, 1, 2, 3, 4
     }
@@ -150,7 +150,7 @@ moves it.
 
 **`spawn(writer<Out>)`** binds the output end, creating a new input channel.
 The returned `writer<In>` is the input endpoint; the caller writes values into
-it and the filter's microthread reads them and writes transformed results to
+it and the filter's imp reads them and writes transformed results to
 the provided `writer<Out>`.
 
 **`spawn(reader<In>)`** binds the input end, creating a new output channel.
@@ -166,22 +166,22 @@ auto doubled = map<int>([](int n) { return n * 2; }).spawn(source);
 output channel, returning a `chan<T>` whose `.w` accepts input and whose `.r`
 emits output.
 
-All `spawn` overloads launch a microthread. The `const &` overloads copy the
+All `spawn` overloads launch an imp. The `const &` overloads copy the
 body; the `&&` overloads move it.
 
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-filter.spawn(reader<In>)   ──────➤ chan<Out> created; microthread M spawned;
+filter.spawn(reader<In>)   ──────➤ chan<Out> created; imp M spawned;
                                    M calls body_(reader<In>, writer<Out>);
                                    → reader<Out>
 
-filter.spawn(writer<Out>)  ──────➤ chan<In> created; microthread M spawned;
+filter.spawn(writer<Out>)  ──────➤ chan<In> created; imp M spawned;
                                    M calls body_(reader<In>, writer<Out>);
                                    → writer<In>
 
 filter.spawn()             ──────➤ chan<T> in + chan<T> out created;
-                                   microthread M spawned;
+                                   imp M spawned;
                                    M calls body_(in.reader, out.writer);
                                    → chan<T>{in.writer, out.reader}
 
@@ -233,8 +233,8 @@ struct consumer {
     auto bind(reader<T> r) const &;    // returns callable
     auto bind(reader<T> r) &&;         // returns callable (moves body)
 
-    writer<T> spawn() const &;         // copies body into microthread
-    writer<T> spawn() &&;              // moves body into microthread
+    writer<T> spawn() const &;         // copies body into imp
+    writer<T> spawn() &&;              // moves body into imp
 };
 ```
 
@@ -249,14 +249,14 @@ The call blocks until the body returns.
 **`bind(reader<T>)`** captures the body and reader into a deferred callable.
 The `const &` overload copies the body; the `&&` overload moves it.
 
-**`spawn()`** creates a new channel, spawns a microthread that runs the body
+**`spawn()`** creates a new channel, spawns an imp that runs the body
 with the read end, and returns the write end. The caller writes values into the
-returned `writer<T>` and the consumer's microthread reads and processes them.
+returned `writer<T>` and the consumer's imp reads and processes them.
 
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-consumer.spawn()  ────────────────➤ chan<T> created; microthread M spawned;
+consumer.spawn()  ────────────────➤ chan<T> created; imp M spawned;
                                     M calls body_(reader<T>);
                                     → writer<T>
 
@@ -379,13 +379,13 @@ move-only captures in combinator bodies.
 
 **Lazy compositions** (combinator | combinator) produce a new combinator of the
 appropriate type. The composed body, when eventually spawned, chains the
-intermediate channels internally. No microthreads are created until `spawn()`
+intermediate channels internally. No imps are created until `spawn()`
 is called on the result.
 
 **Immediate compositions** (reader | combinator, combinator | writer) call
 `spawn()` on the right-hand combinator immediately, wiring the live endpoint
 into the pipeline. These return a live endpoint (`reader` or `writer`) that is
-already connected to a running microthread.
+already connected to a running imp.
 
 **Terminal compositions** (producer | consumer, reader | consumer,
 producer | writer) produce a plain callable that, when invoked, runs the
@@ -451,7 +451,7 @@ spawn([] {
     auto source = count(1, 4).spawn();  // reader<int>
     auto doubled = std::move(source)
         | map<int>([](int n) { return n * 2; });
-    // doubled is a reader<int> backed by a running microthread.
+    // doubled is a reader<int> backed by a running imp.
     for (int v : doubled) {
         // v: 2, 4, 6
     }
@@ -463,8 +463,8 @@ schedule();
 
 ## Immediate-Spawn Helpers
 
-Convenience functions that create a channel, spawn a microthread, and return
-the external endpoint in one step. These are not lazy -- the microthread starts
+Convenience functions that create a channel, spawn an imp, and return
+the external endpoint in one step. These are not lazy -- the imp starts
 immediately.
 
 ### spawn_producer
@@ -474,8 +474,8 @@ template <typename T, typename F>
 reader<T> spawn_producer(F&& f);
 ```
 
-Creates a `chan<T>`, spawns a microthread that calls `f(writer<T>)` with the
-write end, and returns the read end. The microthread owns the writer; when `f`
+Creates a `chan<T>`, spawns an imp that calls `f(writer<T>)` with the
+write end, and returns the read end. The imp owns the writer; when `f`
 returns, the write end closes and the reader sees channel death.
 
 ### spawn_consumer
@@ -485,7 +485,7 @@ template <typename T, typename F>
 writer<T> spawn_consumer(F f);
 ```
 
-Creates a `chan<T>`, spawns a microthread that calls `f(reader<T>)` with the
+Creates a `chan<T>`, spawns an imp that calls `f(reader<T>)` with the
 read end, and returns the write end. The caller writes values into the returned
 writer; when the caller closes it, the reader sees channel death and `f` can
 exit.
@@ -497,7 +497,7 @@ template <typename T, typename F>
 chan<T> spawn_filter(F&& f);
 ```
 
-Creates two channels (input and output), spawns a microthread that calls
+Creates two channels (input and output), spawns an imp that calls
 `f(reader<T>, writer<T>)`, and returns a `chan<T>` whose `.w` is the input
 writer and `.r` is the output reader.
 
@@ -525,12 +525,12 @@ spawn_filter<T>(f)   ────────────➤ in chan<T> + out ch
 using namespace csp;
 
 spawn([] {
-    // spawn_producer: immediate microthread, returns reader.
+    // spawn_producer: immediate imp, returns reader.
     auto r = spawn_producer<int>([](writer<int> w) {
         for (int i = 0; i < 3; ++i) w << i;
     });
 
-    // spawn_consumer: immediate microthread, returns writer.
+    // spawn_consumer: immediate imp, returns writer.
     auto w = spawn_consumer<int>([](reader<int> r) {
         for (int v : r) { /* process v */ }
     });

@@ -2,12 +2,12 @@
 (*******************************************************************************
  * Models the multi-waker alt claim protocol from csp/src/channel.cc.
  *
- * When a microthread (waiter) is registered on multiple channels via
+ * When an imp (waiter) is registered on multiple channels via
  * alt/prialt, multiple peer threads (wakers) may simultaneously try to
  * claim it. The CAS on alt_state ensures exactly one waker succeeds.
  *
  * Participants:
- *   Waiter  — the microthread registered on multiple channels
+ *   Waiter  — the imp registered on multiple channels
  *   Waker_i — peer threads that find the waiter on their channel
  *
  * Code references (src/channel.cc, include/csp/internal/csp_internal.h):

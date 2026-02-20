@@ -31,7 +31,7 @@ state.operation(args) ─┤guard├──➤ effects; result
 
 | Document | Header | Contents |
 |---|---|---|
-| [Dynamic Scoping](dynamic.md) | `csp.h` | `dynamic<T>`, `local`, `context`, `context_scope`, `mt_local<T>` |
+| [Dynamic Scoping](dynamic.md) | `csp.h` | `dynamic<T>`, `local`, `context`, `context_scope`, `imp_local<T>` |
 
 ## Stream Combinators
 
@@ -45,7 +45,7 @@ state.operation(args) ─┤guard├──➤ effects; result
 
 The reference documents assume familiarity with a few core ideas:
 
-**Microthreads** are lightweight, cooperatively scheduled execution contexts.
+**Imps** are lightweight, cooperatively scheduled execution contexts.
 They run on a small number of OS threads (M:N model) and context-switch only
 at well-defined points: channel operations, `yield`, `sleep`, and I/O waits.
 
@@ -68,4 +68,4 @@ value is the matched index, or `~index` for death-watches.
 
 **Combinators** (`namespace csp::part`) are lazy wrappers composed with the `|`
 pipe operator. Nothing executes until `.spawn()` is called, which creates the
-channels and microthreads needed to run the pipeline.
+channels and imps needed to run the pipeline.

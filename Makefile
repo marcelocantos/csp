@@ -1,4 +1,4 @@
-# CSP — C++ microthreading with typed channels
+# CSP — C++ imp-based concurrency with typed channels
 # Usage: make                              (build + run tests)
 #        make build                        (compile only)
 #        make bench                        (build + run benchmarks)
@@ -88,7 +88,7 @@ LIB_SRCS := src/csp.cc \
             src/csp_globals.cpp \
             src/channel.cc \
             src/hamt.cc \
-            src/mt_log.cc \
+            src/log.cc \
             src/runtime.cpp \
             src/stack_analysis_arm64.cc \
             src/reactor.cc \

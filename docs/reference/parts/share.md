@@ -1,7 +1,7 @@
 # share
 
 Broadcasts a single source stream to multiple independent subscribers. Each
-subscriber gets a dedicated latch microthread with independent backpressure: a
+subscriber gets a dedicated latch imp with independent backpressure: a
 slow subscriber sees latest-value semantics (intermediate values are
 overwritten), while fast subscribers see every value.
 
@@ -24,7 +24,7 @@ graph LR
 ```
 
 Each call to `.read()` on the returned meta-reader creates a new subscription.
-Internally, each subscription spawns a per-subscriber latch microthread that
+Internally, each subscription spawns a per-subscriber latch imp that
 mediates delivery.
 
 ```mermaid
@@ -39,7 +39,7 @@ graph LR
 - **Subscription**: Reading from the returned `reader<reader<T>>` creates a new
   subscriber. Each subscriber immediately receives the most recent value (if one
   has been published) followed by subsequent updates.
-- **Independent backpressure**: Each subscriber has its own latch microthread. A
+- **Independent backpressure**: Each subscriber has its own latch imp. A
   slow subscriber does not block the source or other subscribers. Instead,
   intermediate values are overwritten and the subscriber sees only the latest
   value when it next reads.
@@ -47,13 +47,13 @@ graph LR
   receives the current (most recent) value as its first read, then subsequent
   updates.
 - **Subscriber death**: When a subscriber drops its reader, the corresponding
-  latch microthread terminates and the feed writer is removed. Other subscribers
+  latch imp terminates and the feed writer is removed. Other subscribers
   are unaffected.
 - **Source death**: When the source closes, each latch delivers its last value
   and then closes.
 - **Subscription channel closure**: Once the meta-reader is dropped (no more
   subscribers can join), `share` continues serving existing subscribers. When all
-  subscribers are gone, the share microthread terminates.
+  subscribers are gone, the share imp terminates.
 
 ## Example
 

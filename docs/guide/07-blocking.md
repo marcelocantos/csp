@@ -1,14 +1,14 @@
 # Blocking Calls
 
-CSP microthreads run cooperatively on a small pool of OS threads. When a
-microthread makes a blocking syscall -- `getaddrinfo`, file I/O, a database
-query -- it stalls the underlying OS thread and starves every other microthread
+CSP imps run cooperatively on a small pool of OS threads. When a
+imp makes a blocking syscall -- `getaddrinfo`, file I/O, a database
+query -- it stalls the underlying OS thread and starves every other imp
 scheduled on the same processor. The `csp::blocking` function solves this by
 offloading the work to a dedicated thread pool.
 
 ## The problem
 
-Consider a microthread that resolves a hostname:
+Consider an imp that resolves a hostname:
 
 ```cpp
 csp::spawn([] {
@@ -19,20 +19,20 @@ csp::spawn([] {
 ```
 
 `getaddrinfo` can take hundreds of milliseconds. During that time the OS thread
-is stuck in the kernel, unable to run any other microthread. With a 4-thread
+is stuck in the kernel, unable to run any other imp. With a 4-thread
 runtime, one DNS lookup blocks 25% of the scheduler's capacity.
 
 ## `csp::blocking`
 
 `csp::blocking(fn)` runs `fn` on a separate OS thread pool while the calling
-microthread suspends cooperatively, keeping its processor free for other work.
+imp suspends cooperatively, keeping its processor free for other work.
 
 ```cpp
 #include "csp.h"
 
 csp::spawn([] {
     int result = csp::blocking([] {
-        // Runs on a pool thread -- the microthread's processor is free.
+        // Runs on a pool thread -- the imp's processor is free.
         return expensive_syscall();
     });
     // Back on a normal processor, result is available.
@@ -52,7 +52,7 @@ csp::blocking([] {
 
 ```mermaid
 sequenceDiagram
-    participant MT as Microthread
+    participant MT as Imp
     participant P as Processor
     participant BP as Blocking Pool
     participant GQ as Global Queue
@@ -72,9 +72,9 @@ sequenceDiagram
 
 Key properties:
 
-- **The processor is never blocked.** The microthread detaches before the pool
+- **The processor is never blocked.** The imp detaches before the pool
   thread starts `fn`, so the processor immediately picks up other work.
-- **The microthread migrates.** After `fn` completes, the microthread is pushed
+- **The imp migrates.** After `fn` completes, the imp is pushed
   to the global queue and may resume on any processor -- not necessarily the
   one it started on.
 - **The pool is lazily initialized.** Worker threads are created on the first

@@ -26,7 +26,7 @@ csp::spawn([w = std::move(w)] {
 });
 ```
 
-If you need the endpoint in both the spawning and the spawned microthread, use
+If you need the endpoint in both the spawning and the spawned imp, use
 `.copy()`:
 
 ```cpp
@@ -41,10 +41,10 @@ Use `.copy()` deliberately -- it extends the channel's lifetime by incrementing
 the reference count. If a `.copy()` is kept alive by accident, the channel
 never closes and downstream readers hang forever.
 
-## 2. Microthreads that never exit
+## 2. Imps that never exit
 
-If a microthread loops forever, `schedule()` never returns because the runtime
-waits for all live microthreads to complete. This is the most common cause of
+If an imp loops forever, `schedule()` never returns because the runtime
+waits for all live imps to complete. This is the most common cause of
 programs that hang on shutdown.
 
 ```cpp
@@ -75,11 +75,11 @@ csp::spawn([r = std::move(r)] {
 
 ### The sentinel pattern
 
-Sometimes a microthread reads from a resource (a pipe, a socket) that has no
-built-in notion of "channel death". The microthread cannot exit because the
+Sometimes an imp reads from a resource (a pipe, a socket) that has no
+built-in notion of "channel death". The imp cannot exit because the
 blocking read never returns.
 
-The solution is a *sentinel* -- a helper microthread that watches for channel
+The solution is a *sentinel* -- a helper imp that watches for channel
 death and closes the resource, causing the blocked read to return an error or
 EOF. The signal handler demonstrates this pattern:
 
@@ -111,13 +111,13 @@ csp::spawn([rfd, wfd, out = std::move(out)] {
 
 When the sentinel detects that the downstream reader is gone (`~out_copy`
 fires), it closes the write end of the pipe. This causes the producer's
-`io::read()` to return 0 (EOF), breaking the loop and allowing the microthread
+`io::read()` to return 0 (EOF), breaking the loop and allowing the imp
 to exit.
 
 ## 3. Deadlock in alt/prialt
 
 Using the same channel on both sides of a single `prialt` is a deadlock. Since
-channels are synchronous, a microthread cannot send to itself:
+channels are synchronous, an imp cannot send to itself:
 
 ```cpp
 // BUG: deadlock -- waiting to read and write the same channel
@@ -126,7 +126,7 @@ int n;
 csp::prialt(w << 1, r >> n);   // blocks forever: no other party
 ```
 
-A more subtle variant is two microthreads each trying to write to each other
+A more subtle variant is two imps each trying to write to each other
 with no reader:
 
 ```cpp
@@ -146,7 +146,7 @@ csp::spawn([w = std::move(w2), r = std::move(r1)] {
 });
 ```
 
-Both microthreads block on their sends because neither reaches its receive.
+Both imps block on their sends because neither reaches its receive.
 Fix this by ensuring at least one side reads first, or by using `alt` to
 attempt both operations simultaneously:
 
@@ -192,8 +192,8 @@ csp::shutdown_runtime();
 
 ## 5. Capturing stack references
 
-A spawned microthread runs concurrently. If it captures a local variable by
-reference, the variable may be destroyed before the microthread reads it:
+A spawned imp runs concurrently. If it captures a local variable by
+reference, the variable may be destroyed before the imp reads it:
 
 ```cpp
 // BUG: dangling reference
@@ -202,7 +202,7 @@ void start_worker() {
     csp::spawn([&config] {      // captures by reference
         use(config);            // undefined behavior: config is gone
     });
-    // config destroyed here, but the microthread is still running
+    // config destroyed here, but the imp is still running
 }
 ```
 
@@ -232,14 +232,14 @@ void start_worker() {
 
 ## 6. Blocking the processor thread
 
-Calling blocking system calls directly from a microthread stalls the OS thread,
-preventing all other microthreads on that processor from running:
+Calling blocking system calls directly from an imp stalls the OS thread,
+preventing all other imps on that processor from running:
 
 ```cpp
 // BUG: blocks the entire processor
 csp::spawn([] {
     auto result = getaddrinfo(...);   // blocks OS thread
-    // all other microthreads on this processor are frozen
+    // all other imps on this processor are frozen
 });
 ```
 
@@ -251,7 +251,7 @@ csp::spawn([] {
     auto result = csp::blocking([] {
         return getaddrinfo(...);
     });
-    // processor was free to run other microthreads while DNS resolved
+    // processor was free to run other imps while DNS resolved
 });
 ```
 
@@ -267,7 +267,7 @@ csp::io::read(fd, buf, len);
 ```
 
 The `csp::io` wrappers set the fd to non-blocking mode, suspend the
-microthread on EAGAIN, and retry when the fd becomes ready -- all without
+imp on EAGAIN, and retry when the fd becomes ready -- all without
 stalling the processor.
 
 ## 7. Channel death propagation in pipelines
@@ -319,7 +319,7 @@ csp::spawn([r = std::move(ab_r), w = std::move(bc_w)] {
 
 On Unix, writing to a pipe or socket whose read end is closed delivers SIGPIPE,
 which terminates the process by default. This can happen when a downstream
-microthread drops its reader before the writer finishes:
+imp drops its reader before the writer finishes:
 
 ```cpp
 // BUG: SIGPIPE kills the process
@@ -354,8 +354,8 @@ instead of killing the process. Check the return value and handle the error.
 
 ## 9. Double-close of file descriptors
 
-When multiple microthreads share a file descriptor, closing it from one
-microthread while another is still using it causes undefined behavior
+When multiple imps share a file descriptor, closing it from one
+imp while another is still using it causes undefined behavior
 (the fd number may be reused by the OS for a new file):
 
 ```cpp
@@ -385,7 +385,7 @@ struct OwnedFd {
     OwnedFd(const OwnedFd&) = delete;
 };
 
-// Single microthread owns the fd
+// Single imp owns the fd
 csp::spawn([fd = std::make_shared<OwnedFd>(open_connection()),
             done_r = std::move(done_r)] {
     char buf[1024];
@@ -394,6 +394,6 @@ csp::spawn([fd = std::make_shared<OwnedFd>(open_connection()),
 });
 ```
 
-A simpler approach is to designate a single microthread as the fd owner and
-have other microthreads communicate with it through channels rather than
+A simpler approach is to designate a single imp as the fd owner and
+have other imps communicate with it through channels rather than
 sharing the fd directly.

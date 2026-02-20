@@ -12,9 +12,9 @@ dropping the reader endpoint cancels the timer, just like any other channel.
 
 ## sleep / sleep_until
 
-`sleep` and `sleep_until` suspend the calling microthread for a duration or
+`sleep` and `sleep_until` suspend the calling imp for a duration or
 until an absolute deadline. They are cooperative -- the OS thread is free to
-run other microthreads while the caller sleeps.
+run other imps while the caller sleeps.
 
 ```cpp
 using namespace std::chrono_literals;
@@ -229,7 +229,7 @@ for (int n; guarded >> n;) {
 ## Timer cancellation
 
 Timers follow the same endpoint lifecycle as every other channel: dropping
-the reader cancels the timer. The microthread backing the timer sees a failed
+the reader cancels the timer. The imp backing the timer sees a failed
 write and exits.
 
 ```cpp
@@ -237,14 +237,14 @@ write and exits.
     auto ticker = csp::tick(10ms);
     ticker.read();   // one tick
     ticker = {};     // assigns empty reader, closing the endpoint
-    // the tick microthread exits; no leak, no background work
+    // the tick imp exits; no leak, no background work
 }
 ```
 
 This works because `tick` (and `after`) are implemented with
-`spawn_producer`, which moves a `writer<T>` into a microthread. When the
+`spawn_producer`, which moves a `writer<T>` into an imp. When the
 reader is destroyed, the writer's next `<<` returns false, and the
-microthread returns normally.
+imp returns normally.
 
 ## API summary
 

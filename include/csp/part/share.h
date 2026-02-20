@@ -9,7 +9,7 @@ namespace csp::part {
 // Share a source across multiple subscribers. Each read from the returned
 // channel creates a new subscription that immediately delivers the current
 // value (if any) then subsequent updates. Each subscriber gets a dedicated
-// latch microthread with independent backpressure: a slow subscriber sees
+// latch imp with independent backpressure: a slow subscriber sees
 // latest-value semantics (intermediate values overwritten), while fast
 // subscribers see every value.
 template <typename T>

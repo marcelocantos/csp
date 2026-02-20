@@ -85,12 +85,12 @@ When an operation's effects don't fit on one line, continuation lines are
 indented and aligned with the effects column:
 
 ```
-spawn(f) ────────────────────────➤ new microthread M created; M becomes runnable;
+spawn(f) ────────────────────────➤ new imp M created; M becomes runnable;
                                    → reader<std::exception_ptr>
 ```
 
 The `→` on the continuation line indicates the return value. Read: "`spawn`
-creates a new microthread that becomes runnable, and returns a
+creates a new imp that becomes runnable, and returns a
 `reader<std::exception_ptr>`."
 
 A longer example:
@@ -109,11 +109,11 @@ continuation with its own guard:
 
 ```
 sleep(d) ────────────────➤ suspend; deadline = clock::now() + d
-         ─┤deadline passes├─➤ microthread becomes runnable; return
+         ─┤deadline passes├─➤ imp becomes runnable; return
 ```
 
-Read: "`sleep(d)` suspends the microthread with a deadline. When the deadline
-passes, the microthread becomes runnable and `sleep` returns."
+Read: "`sleep(d)` suspends the imp with a deadline. When the deadline
+passes, the imp becomes runnable and `sleep` returns."
 
 ## State transitions
 
@@ -143,7 +143,7 @@ When the subject is a function call with no receiver object (a free function),
 the subject is the function itself:
 
 ```
-schedule() ─┤microthreads exist├─➤ block calling thread; run scheduler loop
+schedule() ─┤imps exist├─➤ block calling thread; run scheduler loop
 schedule() ─┤all MTs finished├───➤ return
 ```
 

@@ -2,7 +2,7 @@
 (*******************************************************************************
  * Models the work-stealing dual-lock protocol from csp/src/runtime.cpp.
  *
- * The protocol ensures that when a thief steals a microthread (MT) from a
+ * The protocol ensures that when a thief steals an imp (MT) from a
  * victim processor's local queue, the MT is never lost, duplicated, or
  * stolen while actively executing.
  *
@@ -30,7 +30,7 @@
 EXTENDS FiniteSets
 
 CONSTANTS
-    MTs,        \* Set of microthread IDs (e.g., {m1, m2})
+    MTs,        \* Set of imp IDs (e.g., {m1, m2})
     Victim,     \* Processor ID for the victim
     Thief       \* Processor ID for the thief
 
@@ -110,13 +110,13 @@ VLocalNext ==
                    pc_thief, pc_waker, pc_taker, steal_cand, waker_mt>>
 
 (* DoSwitch: running MT yields, victim picks next MT to run. Under
- * run_mu, running is updated to g_self (the MT calling do_switch) and
+ * run_mu, running is updated to g_imp (the MT calling do_switch) and
  * then the busy pointer advances. We model this as: clear running
  * (the old MT is still on DLL, now stealable) and return to local_next.
  *
  * Code: src/csp.cc:244-265 (do_switch)
  *   std::lock_guard<std::mutex> lk(current_p().run_mu);
- *   current_p().running = g_self;
+ *   current_p().running = g_imp;
  *   ... busy = busy->next_;
  *   target = busy;
  *   ... target->run();
@@ -135,7 +135,7 @@ VDoSwitch ==
  * from the DLL and running is cleared. The MT becomes unplaced.
  *
  * Code: src/csp.cc:176-216 (run with Status::detach)
- *   Under run_mu: deschedule g_self (remove from DLL, next_=nullptr)
+ *   Under run_mu: deschedule g_imp (remove from DLL, next_=nullptr)
  *
  * TLA:StealWork.VDeschedule *)
 VDeschedule ==

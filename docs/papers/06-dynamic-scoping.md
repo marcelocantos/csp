@@ -1,13 +1,13 @@
-# Dynamic Scoping for Microthreads
+# Dynamic Scoping for Imps
 
 ## Abstract
 
 Thread-local storage is the standard mechanism for per-thread state
-in C++. But in an M:N microthreading system, where thousands of
-microthreads are multiplexed across a handful of OS threads,
+in C++. But in an M:N imp-based concurrency system, where thousands of
+imps are multiplexed across a handful of OS threads,
 thread-local storage refers to the wrong entity — the OS thread, not
-the microthread. We describe a dynamic scoping system for
-microthreads, built on a persistent hash array mapped trie (HAMT)
+the imp. We describe a dynamic scoping system for
+imps, built on a persistent hash array mapped trie (HAMT)
 with intrusive reference counting. Variables are inherited from parent
 to child on spawn, isolated by copy-on-write, and sendable over
 channels as first-class values. The read path compiles to pure inline
@@ -19,11 +19,11 @@ C++ `thread_local` variables are indexed by OS thread. In a
 single-threaded-per-task model, this works: each task has its own
 thread, and `thread_local` is effectively per-task.
 
-In an M:N scheduler, the mapping breaks. A microthread running on OS
+In an M:N scheduler, the mapping breaks. A imp running on OS
 thread A may be suspended and resumed on OS thread B. If it wrote to
 a `thread_local` variable before suspending, the value is on thread
 A's TLS. After resuming on thread B, the read hits thread B's TLS —
-a different slot with a different value. The microthread's "per-thread"
+a different slot with a different value. The imp's "per-thread"
 state has silently changed identity.
 
 Go solves this by not offering thread-local storage at all.
@@ -32,9 +32,9 @@ data is stored on the goroutine struct. But Go is a language runtime
 with compiler support; a C++ library cannot add fields to a function's
 local scope.
 
-The question for a C++ microthreading library is: what mechanism can
-provide per-microthread state that follows the microthread across OS
-threads, is inherited by child microthreads, and doesn't require
+The question for a C++ imp-based concurrency library is: what mechanism can
+provide per-imp state that follows the imp across OS
+threads, is inherited by child imps, and doesn't require
 compiler support?
 
 ## 2. Dynamic scoping
@@ -45,12 +45,12 @@ called within the binding's scope, regardless of where those
 functions are defined. Common Lisp's `special` variables and Clojure's
 `binding` macro are the canonical examples.
 
-For microthreads, dynamic scoping has three desirable properties:
+For imps, dynamic scoping has three desirable properties:
 
-1. **Inheritance.** A child microthread inherits its parent's
+1. **Inheritance.** A child imp inherits its parent's
    bindings. A trace ID set at the top of a request handler is
    visible in every function called within that handler, including
-   functions in spawned child microthreads.
+   functions in spawned child imps.
 
 2. **Isolation.** A child that modifies a binding does not affect the
    parent. The parent's bindings remain unchanged — the child gets
@@ -61,7 +61,7 @@ For microthreads, dynamic scoping has three desirable properties:
 
 The challenge is implementing this efficiently. A naive approach —
 copying the entire binding map on every spawn or write — would be
-prohibitively expensive for microthreads that are created and
+prohibitively expensive for imps that are created and
 destroyed at high rates.
 
 ## 3. The persistent HAMT
@@ -165,7 +165,7 @@ reference to Root₁ sees the old value. Anyone holding Root₂ sees the
 new value. The shared subtrees (A, C, D) have their reference counts
 incremented but are not copied.
 
-This is the source of copy-on-write isolation: a child microthread
+This is the source of copy-on-write isolation: a child imp
 inherits the parent's root pointer (with a reference count bump).
 If the child writes to a dynamic variable, it gets a new root; the
 parent's root is unchanged.
@@ -189,9 +189,9 @@ inline void hamt_retain(uintptr_t p) {
 }
 ```
 
-## 4. Integration with microthreads
+## 4. Integration with imps
 
-Each `Microthread` struct has a `dyn_ctx_` field holding the HAMT root
+Each `Imp` struct has a `dyn_ctx_` field holding the HAMT root
 (0 for empty). When `spawn()` creates a child, the child's `dyn_ctx_`
 is initialised from the parent's with a retain:
 
@@ -302,5 +302,5 @@ structure (the HAMT) to achieve inheritance, isolation, and snapshot
 semantics simultaneously. The persistent structure means that
 inheritance is free (refcount bump), isolation is automatic
 (path-copy on write), and snapshots are first-class values that can
-be sent over channels and installed in other microthreads — a
+be sent over channels and installed in other imps — a
 capability that none of the alternatives offer.

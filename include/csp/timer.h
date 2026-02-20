@@ -8,12 +8,12 @@ namespace csp {
 
 using clock = std::chrono::steady_clock;
 
-// Block the current microthread until the given deadline.
+// Block the current imp until the given deadline.
 inline void sleep_until(clock::time_point tp) {
     internal::sleep_until(tp.time_since_epoch().count());
 }
 
-// Block the current microthread for the given duration.
+// Block the current imp for the given duration.
 inline void sleep(clock::duration d) {
     sleep_until(clock::now() + d);
 }

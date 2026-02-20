@@ -8,7 +8,7 @@
 namespace csp::part {
 
 // Wrapper for a reader-consuming combinator body.
-// spawn() creates a channel and microthread; bind() returns a deferred
+// spawn() creates a channel and imp; bind() returns a deferred
 // callable; operator() runs inline. const& overloads copy the body,
 // && overloads move it.
 template <typename T, typename F>

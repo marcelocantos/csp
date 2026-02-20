@@ -1,12 +1,12 @@
-// daisy_chain.cc — 100,000 microthreads
+// daisy_chain.cc — 100,000 imps
 //
-// Create a chain of N microthreads, each connected to the next by a
-// channel. Send a value in one end; each microthread increments it
+// Create a chain of N imps, each connected to the next by a
+// channel. Send a value in one end; each imp increments it
 // and forwards to the next. Receive the final value at the other end.
 //
-// This demonstrates that CSP microthreads are ultra-lightweight —
+// This demonstrates that CSP imps are ultra-lightweight —
 // 100,000 concurrent contexts where OS threads would exhaust memory.
-// (An OS thread typically needs 1-8 MB of stack; a CSP microthread
+// (An OS thread typically needs 1-8 MB of stack; a CSP imp
 // uses a few hundred bytes.)
 
 #include "csp.h"
@@ -50,7 +50,7 @@ int main() {
         auto build_us = std::chrono::duration_cast<std::chrono::microseconds>(built - start).count();
         auto run_us = std::chrono::duration_cast<std::chrono::microseconds>(done - built).count();
 
-        printf("Daisy chain: %d microthreads\n", N);
+        printf("Daisy chain: %d imps\n", N);
         printf("  Result: %d (expected %d)\n", result, N);
         printf("  Build time: %lld us (%.1f us/thread)\n", build_us, (double)build_us / N);
         printf("  Run time:   %lld us (%.1f us/hop)\n", run_us, (double)run_us / N);

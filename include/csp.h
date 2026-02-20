@@ -10,7 +10,7 @@
 #include "csp/internal/flat_hash_set.h"
 #include "csp/internal/function.h"
 #include "csp/internal/hamt.h"
-#include "csp/internal/mt_log.h"
+#include "csp/internal/log.h"
 #include "csp/internal/on_scope_exit.h"
 #include "csp/internal/processor.h"
 #include "csp/internal/reactor.h"

@@ -23,7 +23,7 @@ graph LR
     W["writer&lt;T&gt;"] --> L["latch MT"] --> R["reader&lt;T&gt;"]
 ```
 
-One internal microthread holds the latest value. It uses `prialt` to
+One internal imp holds the latest value. It uses `prialt` to
 simultaneously accept new writes and serve reads, with writes taking priority.
 
 ```mermaid

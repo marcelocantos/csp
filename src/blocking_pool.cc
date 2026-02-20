@@ -46,11 +46,11 @@ void BlockingPool::shutdown() {
     running_.store(false, std::memory_order_release);
 }
 
-void BlockingPool::submit(Microthread* mt, std::function<void()> fn) {
+void BlockingPool::submit(Imp* imp, std::function<void()> fn) {
     ensure_started();
     {
         std::lock_guard<std::mutex> lk(mu_);
-        queue_.push_back({mt, std::move(fn)});
+        queue_.push_back({imp, std::move(fn)});
     }
     cv_.notify_one();
 }
@@ -69,7 +69,7 @@ void BlockingPool::worker() {
             queue_.pop_back();
         }
         w.fn();
-        w.mt->schedule();
+        w.imp->schedule();
     }
 }
 
@@ -79,10 +79,10 @@ void BlockingPool::worker() {
 namespace csp::internal {
 
 void run_blocking(std::function<void()> fn) {
-    detail::g_self->suspending_.store(true, std::memory_order_release);
-    detail::BlockingPool::instance().submit(detail::g_self, std::move(fn));
+    detail::g_imp->suspending_.store(true, std::memory_order_release);
+    detail::BlockingPool::instance().submit(detail::g_imp, std::move(fn));
     detail::do_switch(detail::Status::detach);
-    detail::g_self->suspending_.store(false, std::memory_order_release);
+    detail::g_imp->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal

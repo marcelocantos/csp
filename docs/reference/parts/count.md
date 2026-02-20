@@ -27,14 +27,14 @@ graph LR
     C["count(start, stop)"] --> Out["reader&lt;T&gt;"]
 ```
 
-No input channel. The producer spawns a microthread that writes values to its
+No input channel. The producer spawns an imp that writes values to its
 output.
 
 ## Semantics
 
 - **Finite mode** (`count`): emits `start`, `start + step`, `start + 2*step`,
   ... for every value strictly less than `stop`, then the writer closes and the
-  microthread exits.
+  imp exits.
 - **Cyclic mode** (`count` with `cyclic = true`): after reaching `stop` the
   sequence wraps back to `start` and repeats indefinitely. The stream never
   closes on its own.
@@ -43,7 +43,7 @@ output.
   destroyed.
 - **Backpressure**: every write blocks until a reader is ready (synchronous
   channel semantics). No buffering.
-- **Exit**: the microthread exits when either the sequence is exhausted
+- **Exit**: the imp exits when either the sequence is exhausted
   (finite, non-cyclic) or the downstream reader closes.
 - `T` must support `<`, `+=`, and `-` (any arithmetic or iterator-like type).
 

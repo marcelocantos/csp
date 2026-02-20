@@ -10,7 +10,7 @@
 #include <unordered_map>
 
 // TSan fiber annotations: tell TSan about user-mode context switches
-// so it can correctly track happens-before across microthread switches.
+// so it can correctly track happens-before across imp switches.
 #if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
 #define CSP_TSAN 1
 extern "C" {
@@ -27,13 +27,13 @@ namespace csp::detail {
 
 enum class Status : intptr_t { run, sleep, detach, exit, spawn };
 
-struct Microthread;
+struct Imp;
 
-extern thread_local Microthread * g_self;
+extern thread_local Imp * g_imp;
 
 void do_switch(Status status = Status::sleep);
 
-struct alignas(16) Microthread {
+struct alignas(16) Imp {
     struct alignas(16) StackSlot { char c[16]; };
 
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
@@ -43,8 +43,8 @@ struct alignas(16) Microthread {
     static constexpr size_t stack_size = 32 << 10;
 #endif
 
-    Microthread * prev_;
-    Microthread * next_;
+    Imp * prev_;
+    Imp * next_;
     std::atomic<fcontext_t> ctx_;
     StackRegion stk_;
     char status_[32];
@@ -56,12 +56,12 @@ struct alignas(16) Microthread {
         return next_++;
     }();
 
-    Microthread(fcontext_t ctx, StackRegion stk);
-    Microthread();
-    ~Microthread();
-    Microthread(Microthread const &) = delete;
+    Imp(fcontext_t ctx, StackRegion stk);
+    Imp();
+    ~Imp();
+    Imp(Imp const &) = delete;
 
-    Microthread & operator=(Microthread const &) = delete;
+    Imp & operator=(Imp const &) = delete;
 
     char const * getfullstatus_() const {
         return status_;
@@ -77,25 +77,25 @@ struct alignas(16) Microthread {
     std::atomic<uint32_t> alt_state{ALT_IDLE};
 
     uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
-    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // mt_local storage
+    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
 
     bool in_global_ = false;  // true while in the global run queue
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 
 #if CSP_TSAN
-    void* tsan_fiber_ = nullptr;  // TSan fiber handle for this microthread
+    void* tsan_fiber_ = nullptr;  // TSan fiber handle for this imp
 #endif
 };
 
 inline
-char const * getfullstatus(Microthread const * mt) {
-    return mt ? mt->getfullstatus_() : "Ø";
+char const * getfullstatus(Imp const * imp) {
+    return imp ? imp->getfullstatus_() : "Ø";
 }
 
 inline
-char const * getstatus(Microthread const * mt) {
-    return getfullstatus(mt);
+char const * getstatus(Imp const * imp) {
+    return getfullstatus(imp);
 }
 
 }

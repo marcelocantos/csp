@@ -25,7 +25,7 @@ graph LR
     Meta -.->|"key=..."| GN[reader&lt;T&gt;]
 ```
 
-One internal microthread reads input elements and evaluates `f` on each.
+One internal imp reads input elements and evaluates `f` on each.
 When a new key is seen, a fresh channel is created and a `(key, reader<T>)`
 pair is emitted on the meta-channel. Subsequent values for that key are
 forwarded to the existing sub-stream.
@@ -43,7 +43,7 @@ forwarded to the existing sub-stream.
   group_by terminates.
 - Backpressure: writing to a sub-stream blocks until the sub-stream consumer
   reads. Sub-stream readers must be drained concurrently (typically by
-  spawning a microthread per group).
+  spawning an imp per group).
 - Elements are moved into sub-stream channels.
 
 ## Example

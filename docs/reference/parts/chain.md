@@ -23,7 +23,7 @@ graph LR
     Chain --> Out[reader&lt;T&gt;]
 ```
 
-One internal microthread reads each input reader to exhaustion in sequence,
+One internal imp reads each input reader to exhaustion in sequence,
 writing every value to the single output.
 
 ## Semantics
@@ -34,7 +34,7 @@ writing every value to the single output.
   next input is started.
 - Exits when all inputs are exhausted or when the output reader is dropped
   (output death terminates the chain early).
-- Backpressure: the microthread blocks on each write to the output, so a
+- Backpressure: the imp blocks on each write to the output, so a
   slow consumer throttles reading.
 - Chaining zero inputs produces an immediately-closed output.
 - Chains can be nested: a chain of chains produces a flat sequential stream.

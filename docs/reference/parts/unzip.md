@@ -31,20 +31,20 @@ graph LR
     Unzip --> OutN[reader&lt;...&gt;]
 ```
 
-A spawned microthread reads tuples from the input and writes each element to
+A spawned imp reads tuples from the input and writes each element to
 its corresponding output channel.
 
 ## Semantics
 
-- Spawns a microthread immediately (unlike filter/producer parts which are
+- Spawns an imp immediately (unlike filter/producer parts which are
   lazy). The returned readers are live from the moment `unzip` is called.
 - Each tuple element is written to its output channel in order. If any
   output write fails (reader dropped), the remaining elements in that tuple
   are still attempted via short-circuit `&&`.
 - Exits when the input is exhausted.
 - All output readers must be drained concurrently (or by separate
-  microthreads), since the channels are synchronous and the unzip
-  microthread writes to each output in sequence.
+  imps), since the channels are synchronous and the unzip
+  imp writes to each output in sequence.
 
 ## Example
 

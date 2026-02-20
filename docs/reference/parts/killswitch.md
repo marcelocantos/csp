@@ -24,7 +24,7 @@ graph LR
     IN["reader&lt;A&gt;"] --> KS --> OUT["reader&lt;A&gt;"]
 ```
 
-One internal microthread uses `prialt` to monitor three events simultaneously:
+One internal imp uses `prialt` to monitor three events simultaneously:
 keepalive death, output reader death, and incoming data. A second `prialt`
 monitors keepalive death and the outgoing write.
 

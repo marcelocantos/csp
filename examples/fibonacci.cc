@@ -1,11 +1,11 @@
 // fibonacci.cc — Communicating generators
 //
-// Two microthreads cooperate to produce Fibonacci numbers.
+// Two imps cooperate to produce Fibonacci numbers.
 // A generator sends pairs of consecutive Fibonacci numbers;
 // a feedback loop adds them and feeds the next pair back.
 // The result is an infinite stream of Fibonacci numbers
 // produced by pure message passing — no shared state,
-// no mutable variables outside each microthread's scope.
+// no mutable variables outside each imp's scope.
 
 #include "csp.h"
 

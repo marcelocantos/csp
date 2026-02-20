@@ -20,7 +20,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["unique(N)"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread reads from the input, checks a hash set, and forwards
+One internal imp reads from the input, checks a hash set, and forwards
 values not previously seen.
 
 ## Semantics

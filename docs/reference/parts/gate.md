@@ -122,7 +122,7 @@ for (int n; r >> n;) got.push_back(n);
 ## Note
 
 Unlike the filter-based timing parts, `gate` is a standalone function that
-returns a `reader<T>` directly (it spawns its own microthread internally). It
+returns a `reader<T>` directly (it spawns its own imp internally). It
 does not use the `make_filter` / `make_producer` wrappers and cannot be
 composed with `|`.
 

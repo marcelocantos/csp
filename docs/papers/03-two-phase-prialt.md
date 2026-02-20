@@ -48,7 +48,7 @@ especially when different channel types interleave, causing the
 branch predictor to thrash.
 
 **Stack analysis cost.** CSP includes an ARM64 instruction walker
-that estimates the maximum stack depth of each microthread entry
+that estimates the maximum stack depth of each imp entry
 function at spawn time (see [Paper 5](05-stack-engineering.md)).
 The walker follows direct calls (`BL`) recursively but cannot follow
 `BLR` — it doesn't know the target at analysis time. Every `BLR` in
@@ -90,7 +90,7 @@ they deal only in channel pointers, wait queues, and
 source/destination addresses.
 
 This keeps the header lightweight (no scheduler implementation, no
-lock headers, no microthread struct definition) and confines
+lock headers, no imp struct definition) and confines
 compilation complexity to a small number of `.cc` files. Users
 include one header; the compiler instantiates only the thin template
 wrappers.
@@ -200,7 +200,7 @@ This means that `w << 42;` is a complete blocking send:
 1. `operator<<` constructs a `chan_op<int>` (which is a temporary).
 2. At the end of the statement, the temporary is destroyed.
 3. The destructor calls `prialt_begin` → inline transfer → `alt_end`.
-4. The caller's microthread blocks until a receiver is ready, the
+4. The caller's imp blocks until a receiver is ready, the
    data is transferred, and the call returns.
 
 The same `chan_op<T>` can also be used as a boolean — `operator bool`

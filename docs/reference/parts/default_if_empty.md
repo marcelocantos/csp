@@ -18,7 +18,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["default_if_empty(def)"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread reads from the input and forwards values. When the
+One internal imp reads from the input and forwards values. When the
 input closes, if no values were seen, the default value is written to the
 output.
 

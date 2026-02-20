@@ -96,7 +96,7 @@ underlying resources are cleaned up automatically:
     auto sig = csp::signal::notify({SIGUSR1});
     // ... use sig ...
 }
-// sig destroyed here -- pipe closed, microthreads exit.
+// sig destroyed here -- pipe closed, imps exit.
 // Future SIGUSR1 deliveries are silently ignored.
 ```
 
@@ -110,7 +110,7 @@ Signal handlers in Unix can only call a handful of
 [async-signal-safe][posix-async] functions. In particular, they cannot
 allocate memory, acquire mutexes, or interact with CSP channels. The
 `signal::notify` implementation uses the classic **self-pipe trick** to
-bridge from the signal handler into the cooperative world of microthreads:
+bridge from the signal handler into the cooperative world of imps:
 
 ```mermaid
 sequenceDiagram
@@ -135,10 +135,10 @@ sequenceDiagram
    pipe whose mask includes that signal. The handler only calls `write()` and
    performs atomic loads -- both async-signal-safe.
 
-3. **A producer microthread** loops on `io::read()` from the pipe's read end,
+3. **A producer imp** loops on `io::read()` from the pipe's read end,
    forwarding each byte as an `int` to the output channel.
 
-4. **A sentinel microthread** watches for consumer death. It uses
+4. **A sentinel imp** watches for consumer death. It uses
    `prialt(~out_copy, ~kill_r)` -- if the output reader is dropped
    (`~out_copy` fires) or the producer exits (`~kill_r` fires because the
    producer's `kill_w` is destroyed), the sentinel clears the pipe's signal

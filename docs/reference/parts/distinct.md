@@ -19,7 +19,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["distinct(eq)"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread reads from the input, compares each value with the
+One internal imp reads from the input, compares each value with the
 previously emitted value, and forwards it only when it differs.
 
 ## Semantics

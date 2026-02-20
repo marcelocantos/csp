@@ -2,7 +2,7 @@
 //
 // A latch holds the most recent value and serves it to any number
 // of readers without blocking the writer. Here, a config producer
-// periodically updates a latch, while multiple service microthreads
+// periodically updates a latch, while multiple service imps
 // read the latest config whenever they need it.
 //
 // This pattern normally requires std::atomic or mutex-protected

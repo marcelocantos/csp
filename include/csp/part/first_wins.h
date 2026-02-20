@@ -8,7 +8,7 @@
 namespace csp::part {
 
 // Read from whichever source responds first, discard the rest.
-// Blocks the calling microthread until a value is available.
+// Blocks the calling imp until a value is available.
 // Throws std::runtime_error if all readers close without producing a value.
 template <typename T>
 T first_wins(std::vector<reader<T>> inputs) {

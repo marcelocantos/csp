@@ -12,7 +12,7 @@
  * Participants:
  *   CloserW  — thread that closes the writer endpoint (refcount → 0)
  *   CloserR  — thread that closes the reader endpoint (refcount → 0)
- *   Waiter   — microthread in prialt_begin_impl, holding a reader endpoint
+ *   Waiter   — imp in prialt_begin_impl, holding a reader endpoint
  *
  * The waiter holds a reader reference. It enters prialt_begin_impl (which
  * uses the channel), then returns, and only then releases the reader
@@ -119,7 +119,7 @@ WaiterPhase1 ==
  * Single action because both happen under mu_ before unlock.
  *
  * Code: channel.cc:301-308
- *   g_self->alt_state.store(ALT_WAITING, release);
+ *   g_imp->alt_state.store(ALT_WAITING, release);
  *   ch->endpts_[endpt].wait(&chop);
  *
  * TLA:ChannelLifecycle.RegisterWaiter *)
@@ -135,7 +135,7 @@ RegisterWaiter ==
  * Single action: unlock + switch happen together from waiter's perspective.
  *
  * Code: channel.cc:319-321
- *   g_self->suspending_.store(true, release);
+ *   g_imp->suspending_.store(true, release);
  *   unlock_all();
  *   do_switch(Status::detach);
  *
@@ -168,9 +168,9 @@ WaiterWakeAcquire ==
  * Single action: all under mu_.
  *
  * Code: channel.cc:326-335
- *   ch->endpts_[endpt].remove(&chop, g_self);
+ *   ch->endpts_[endpt].remove(&chop, g_imp);
  *   unlock_all();
- *   g_self->alt_state.store(ALT_IDLE, release);
+ *   g_imp->alt_state.store(ALT_IDLE, release);
  *
  * TLA:ChannelLifecycle.WaiterCleanup *)
 WaiterCleanup ==

@@ -19,21 +19,21 @@ graph LR
     A[reader&lt;T&gt;] --> B["buffer(N)"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread manages a ring buffer between the input and output
+One internal imp manages a ring buffer between the input and output
 channels, using `alt` to simultaneously offer reads and writes depending on
 whether the buffer is full, empty, or neither.
 
 ## Semantics
 
 - **Bounded mode** (`buffer<T>(N)`): the internal ring buffer holds at most
-  `N` elements. When full, the microthread stops reading from the input until
+  `N` elements. When full, the imp stops reading from the input until
   a consumer takes a value, providing backpressure to the producer.
 - **Unbounded mode** (`buffer<T>()`): capacity defaults to `size_t(-1)`,
   effectively unlimited. The producer is never blocked by buffer fullness
   (though it may still block on the synchronous channel write into the buffer).
 - **Draining**: when the input channel closes, any remaining buffered values
-  are drained to the output before the buffer microthread exits.
-- **Output closes**: if the output reader is dropped, the buffer microthread
+  are drained to the output before the buffer imp exits.
+- **Output closes**: if the output reader is dropped, the buffer imp
   exits immediately (buffered values are discarded).
 - Order is strictly FIFO.
 

@@ -56,16 +56,16 @@ void Reactor::wake() {
     kevent(kq_, &ev, 1, nullptr, 0, nullptr);
 }
 
-void Reactor::wait_read(int fd, Microthread* mt) {
+void Reactor::wait_read(int fd, Imp* imp) {
     struct kevent ev;
-    EV_SET(&ev, fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, mt);
+    EV_SET(&ev, fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, imp);
     int rc = kevent(kq_, &ev, 1, nullptr, 0, nullptr);
     assert(rc == 0);
 }
 
-void Reactor::wait_write(int fd, Microthread* mt) {
+void Reactor::wait_write(int fd, Imp* imp) {
     struct kevent ev;
-    EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, mt);
+    EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, imp);
     int rc = kevent(kq_, &ev, 1, nullptr, 0, nullptr);
     assert(rc == 0);
 }
@@ -88,8 +88,8 @@ void Reactor::loop() {
         }
         for (int i = 0; i < n; ++i) {
             if (events[i].filter == EVFILT_USER) continue;
-            auto* mt = static_cast<Microthread*>(events[i].udata);
-            mt->schedule();
+            auto* imp = static_cast<Imp*>(events[i].udata);
+            imp->schedule();
         }
     }
 }
@@ -108,20 +108,20 @@ void io_wait_readable(int fd) {
     auto& reactor = detail::Reactor::instance();
     reactor.ensure_started();
 
-    detail::g_self->suspending_.store(true, std::memory_order_release);
-    reactor.wait_read(fd, detail::g_self);
+    detail::g_imp->suspending_.store(true, std::memory_order_release);
+    reactor.wait_read(fd, detail::g_imp);
     detail::do_switch(detail::Status::detach);
-    detail::g_self->suspending_.store(false, std::memory_order_release);
+    detail::g_imp->suspending_.store(false, std::memory_order_release);
 }
 
 void io_wait_writable(int fd) {
     auto& reactor = detail::Reactor::instance();
     reactor.ensure_started();
 
-    detail::g_self->suspending_.store(true, std::memory_order_release);
-    reactor.wait_write(fd, detail::g_self);
+    detail::g_imp->suspending_.store(true, std::memory_order_release);
+    reactor.wait_write(fd, detail::g_imp);
     detail::do_switch(detail::Status::detach);
-    detail::g_self->suspending_.store(false, std::memory_order_release);
+    detail::g_imp->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal

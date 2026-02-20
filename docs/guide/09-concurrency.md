@@ -1,24 +1,24 @@
 # Concurrency
 
-By default, CSP runs all microthreads on a single OS thread using cooperative
+By default, CSP runs all imps on a single OS thread using cooperative
 scheduling. This is simple, deterministic, and sufficient for many programs. When
 you need true parallelism -- CPU-bound work across cores, concurrent I/O, or a
-blocking thread pool -- the M:N runtime spreads microthreads across multiple OS
+blocking thread pool -- the M:N runtime spreads imps across multiple OS
 threads with no changes to your channel code.
 
 ## Default mode: single-threaded
 
-Without calling `init_runtime()`, all microthreads run cooperatively on the main
+Without calling `init_runtime()`, all imps run cooperatively on the main
 thread:
 
 ```cpp
 csp::spawn([] { /* ... */ });
-csp::schedule();   // runs all microthreads cooperatively
+csp::schedule();   // runs all imps cooperatively
 ```
 
 Context switches happen at channel operations, `yield()`, `sleep()`, and other
-blocking points. Between those points, the running microthread has exclusive
-access to the thread -- no preemption, no data races with other microthreads.
+blocking points. Between those points, the running imp has exclusive
+access to the thread -- no preemption, no data races with other imps.
 
 This mode is a good default. Use it unless you have a specific reason to go
 multi-threaded.
@@ -26,7 +26,7 @@ multi-threaded.
 ## M:N mode
 
 `csp::init_runtime(n)` creates **n processors** backed by **n-1 worker threads**
-plus the main thread. Microthreads are multiplexed across these processors via a
+plus the main thread. Imps are multiplexed across these processors via a
 global run queue and work stealing:
 
 ```cpp
@@ -41,7 +41,7 @@ csp::init_runtime(0);    // one processor per hardware thread
 
 ```mermaid
 graph TD
-    subgraph "Microthreads (G)"
+    subgraph "Imps (G)"
         G1["G1"] ~~~ G2["G2"] ~~~ G3["G3"] ~~~ G4["G4"] ~~~ G5["G5"] ~~~ G6["G6"]
     end
     subgraph "Processors (P)"
@@ -65,31 +65,31 @@ graph TD
     P2 --- M2
 ```
 
-Each processor has its own local run queue. Newly spawned and woken microthreads
+Each processor has its own local run queue. Newly spawned and woken imps
 go to a shared global queue, and idle processors pull work from it.
 
 ### When to use M:N mode
 
-- **CPU parallelism**: distribute compute-heavy microthreads across cores.
+- **CPU parallelism**: distribute compute-heavy imps across cores.
 - **Concurrent I/O**: the reactor and blocking pool need the global queue to
-  dispatch completions back to microthreads.
-- **Avoiding starvation**: a microthread that does a long computation without
+  dispatch completions back to imps.
+- **Avoiding starvation**: an imp that does a long computation without
   yielding only blocks one processor; others keep running.
 
 ## How it works
 
 ### Scheduling
 
-When a new microthread is spawned or a blocked microthread is woken (by a
+When a new imp is spawned or a blocked imp is woken (by a
 channel peer or timer), it is pushed to the **global run queue**. Each worker
 thread loops through a priority list of work sources:
 
 1. **Fire expired timers** on the local processor.
-2. **Local run queue** -- pick the next microthread from the processor's
+2. **Local run queue** -- pick the next imp from the processor's
    circular doubly-linked list.
 3. **Global run queue** -- pull a fair share (total / num_processors, at least
    1) into the local queue.
-4. **Work stealing** -- steal a microthread from another processor's local
+4. **Work stealing** -- steal an imp from another processor's local
    queue.
 5. **Park** -- sleep on a condition variable until work arrives or a timer
    expires.
@@ -98,7 +98,7 @@ thread loops through a priority list of work sources:
 flowchart TD
     START["Worker loop iteration"] --> TIMERS["Fire expired timers"]
     TIMERS --> LOCAL{"Local queue\nnon-empty?"}
-    LOCAL -- yes --> RUN["Run microthread"]
+    LOCAL -- yes --> RUN["Run imp"]
     LOCAL -- no --> GLOBAL{"Global queue\nnon-empty?"}
     GLOBAL -- yes --> TAKE["Take fair share\ninto local queue"]
     TAKE --> RUN
@@ -113,21 +113,21 @@ flowchart TD
 
 When a processor's local queue is empty and the global queue is also empty, the
 worker attempts to steal from another processor. It locks the victim's run queue
-and takes a microthread from the tail (the opposite end from where the victim
+and takes an imp from the tail (the opposite end from where the victim
 picks work), then pushes it to the global queue so any worker can pick it up.
 
-Three kinds of microthreads are never stolen:
+Three kinds of imps are never stolen:
 
 - The **sentinel** node that anchors the doubly-linked list.
 - The **head** of the queue (about to be picked by the victim).
-- The **currently running** microthread (its context hasn't been saved yet).
+- The **currently running** imp (its context hasn't been saved yet).
 
 ### Parking and unparking
 
 When there is no work anywhere, the worker parks on a condition variable. It is
 woken when:
 
-- A microthread is pushed to the global queue (spawn, channel wakeup).
+- A imp is pushed to the global queue (spawn, channel wakeup).
 - Work is stolen and deposited in the global queue.
 - A timer expires.
 - The runtime is shutting down.
@@ -180,7 +180,7 @@ csp::schedule();
 csp::shutdown_runtime();
 ```
 
-Microthreads may migrate between OS threads during their lifetime. A microthread
+Imps may migrate between OS threads during their lifetime. A imp
 that blocks on a channel on one thread may resume on a different thread after
 being stolen. This is transparent -- `std::this_thread::get_id()` may return
 different values before and after a blocking operation.
@@ -194,7 +194,7 @@ csp::init_runtime(4);        // create processors and worker threads
 
 csp::spawn([&] { /* ... */ });
 
-csp::schedule();             // blocks until all microthreads finish
+csp::schedule();             // blocks until all imps finish
 
 csp::shutdown_runtime();     // stops workers, joins threads, restores
                              // single-threaded scheduler
@@ -206,7 +206,7 @@ default single-threaded scheduler.
 
 ## Example: fan-out/fan-in
 
-A common M:N pattern distributes work across multiple microthreads and collects
+A common M:N pattern distributes work across multiple imps and collects
 results:
 
 ```cpp

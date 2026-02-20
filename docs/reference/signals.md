@@ -37,7 +37,7 @@ is delivered to the process.
 
 Internally, `notify` uses the self-pipe trick: a pipe is created and the signal
 handler writes the signal number (as a byte) to the pipe's write end. A
-microthread reads from the pipe via `io::read` (non-blocking, reactor-driven)
+imp reads from the pipe via `io::read` (non-blocking, reactor-driven)
 and forwards each signal number to the returned reader through a channel.
 Because the handler only performs atomic loads and `write()` -- both
 async-signal-safe -- the design is safe even when signals arrive during channel
@@ -53,7 +53,7 @@ calls for the same signal share the same handler. Each call creates its own
 pipe, so multiple readers for the same signal each receive every delivery
 independently.
 
-**Cleanup.** Dropping the returned reader triggers a sentinel microthread that
+**Cleanup.** Dropping the returned reader triggers a sentinel imp that
 closes the pipe write end, causing the producer's `io::read` loop to see EOF
 and exit. The signal handler remains installed but becomes a harmless no-op
 once the pipe's signal mask is cleared.

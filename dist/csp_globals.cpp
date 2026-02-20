@@ -14,7 +14,7 @@ namespace csp {
 
     namespace detail {
 
-        thread_local Microthread * g_self = nullptr;
+        thread_local Imp * g_imp = nullptr;
 
         static thread_local Processor * tl_proc_ = nullptr;
         static bool runtime_initialized_ = false;
@@ -34,7 +34,7 @@ namespace csp {
 
         void bind_processor(Processor * p) {
             tl_proc_ = p;
-            g_self = &p->main;
+            g_imp = &p->main;
 #if CSP_TSAN
             p->main.tsan_fiber_ = __tsan_get_current_fiber();
 #endif

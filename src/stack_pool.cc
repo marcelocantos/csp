@@ -122,7 +122,7 @@ void StackPool::munmap_region(StackRegion region) {
 }
 
 StackRegion StackPool::allocate() {
-    // Under sanitizers: use the fixed stack size from Microthread.
+    // Under sanitizers: use the fixed stack size from Imp.
     // 128KB under sanitizers = 8192 StackSlotAlloc (16 bytes each).
     static constexpr size_t kSanitStack = 128 << 10;
     static constexpr size_t S = kSanitStack / 16;

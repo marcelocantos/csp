@@ -2,7 +2,7 @@
 
 A consumer that never reads any values. Spawning it creates a writer endpoint
 that is permanently blocked -- any attempt to write to it will block
-indefinitely. The internal microthread simply waits for the channel to close
+indefinitely. The internal imp simply waits for the channel to close
 via `alt(~in)`.
 
 ## Signature
@@ -23,13 +23,13 @@ graph LR
     A["writer (blocked)"] -. never reads .-> B["deaf"]
 ```
 
-The internal microthread does not read from the channel. It waits for the
+The internal imp does not read from the channel. It waits for the
 channel to close (all writer copies dropped), then exits.
 
 ## Semantics
 
 - The spawned writer endpoint accepts no values. Any write will block forever.
-- The microthread exits only when the channel's write end is fully closed
+- The imp exits only when the channel's write end is fully closed
   (all copies of the writer are dropped).
 - Useful as a placeholder or default in `alt`/`prialt` expressions, where
   a write arm should be present but never selected except via its death guard.

@@ -21,7 +21,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["pairwise"] --> C["reader&lt;pair&lt;T,T&gt;&gt;"]
 ```
 
-One internal microthread reads pairs of adjacent elements and writes each
+One internal imp reads pairs of adjacent elements and writes each
 pair to the output.
 
 ## Semantics
@@ -31,7 +31,7 @@ pair to the output.
 - An input stream of `n` elements produces `n - 1` pairs (`0` if
   `n < 2`).
 - Exits when the input is exhausted or the output reader is dropped.
-- Backpressure: the microthread blocks on each pair write, so a slow
+- Backpressure: the imp blocks on each pair write, so a slow
   consumer throttles the pipeline.
 
 ## Example

@@ -1,7 +1,7 @@
 // fan_out_fan_in.cc — Parallel work distribution
 //
 // Distribute jobs across N workers, collect results into one stream.
-// Each worker is an independent microthread — no shared queues, no
+// Each worker is an independent imp — no shared queues, no
 // mutexes, no counting semaphores. Workers pull from a shared input
 // channel and push to a shared output channel. When the input is
 // exhausted, workers exit naturally and the output channel closes.

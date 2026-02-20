@@ -23,14 +23,14 @@ graph LR
     A[reader&lt;A&gt;] --> B["sink(f)"]
 ```
 
-One internal microthread reads every value from the input channel and invokes
-`f` on it. The microthread exits when the input closes.
+One internal imp reads every value from the input channel and invokes
+`f` on it. The imp exits when the input closes.
 
 ## Semantics
 
 - Reads and processes every value until the input channel is exhausted.
 - `f` is called exactly once per input element, in order.
-- Backpressure: the microthread blocks on each input read, so it consumes
+- Backpressure: the imp blocks on each input read, so it consumes
   values as fast as the producer supplies them. There is no output channel to
   create downstream backpressure.
 - `sinkhole(t)` is equivalent to `sink<T>([&t](T a) { t = a; })` -- it

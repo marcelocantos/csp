@@ -17,7 +17,7 @@ graph LR
     A["reader&lt;vector&lt;uint8_t&gt;&gt;"] --> L["split_lines"] --> B["reader&lt;string&gt;"]
 ```
 
-One internal microthread reads byte chunks from the input, scans for `'\n'`
+One internal imp reads byte chunks from the input, scans for `'\n'`
 characters, and emits one `std::string` per complete line.
 
 ## Semantics
@@ -34,7 +34,7 @@ characters, and emits one `std::string` per complete line.
 - **Output close**: Uses `csp::alt(in >> chunk, ~out)` to detect downstream
   reader drop. If the output reader is dropped, the filter exits immediately
   without draining the input.
-- **Backpressure**: The microthread blocks on each output write, so a slow
+- **Backpressure**: The imp blocks on each output write, so a slow
   consumer throttles the entire pipeline.
 - **No I/O dependency**: `split_lines` operates purely on channels. It can be
   tested with synthetic `chan<std::vector<uint8_t>>` data or composed with

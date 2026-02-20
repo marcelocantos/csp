@@ -37,7 +37,7 @@ graph LR
     B --> D["window_pair.out (leaving)"]
 ```
 
-One internal microthread reads from the source, manages the deque, and
+One internal imp reads from the source, manages the deque, and
 writes to both output channels.
 
 ## Semantics
@@ -53,7 +53,7 @@ writes to both output channels.
   occurs). When `false`, both channels are silent until the first expiry
   event.
 - Both output channels must be drained concurrently; if only one is read
-  the microthread will block.
+  the imp will block.
 - Exits when the source is exhausted or either output reader is dropped.
 
 ## Example
@@ -67,7 +67,7 @@ using namespace csp::part;
 // Fixed-size window of 3 over 1..6.
 auto [in, out] = slide<int>(count(1, 7).spawn(), size_t(3));
 
-// Must drain both concurrently (e.g. in separate microthreads).
+// Must drain both concurrently (e.g. in separate imps).
 // in reads:  1, 2, 3, 4, 5, 6
 // out reads: 1, 2, 3
 

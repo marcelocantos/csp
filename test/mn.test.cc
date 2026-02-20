@@ -122,7 +122,7 @@ TEST_CASE("MN - TimerAfterInAlt") {
     constexpr int N = 4;
 
     for (int i = 0; i < N; ++i) {
-        // Each microthread waits on an impossible channel with a short timeout.
+        // Each imp waits on an impossible channel with a short timeout.
         csp::spawn([&] {
             csp::writer<int> impossible;
             auto r = --impossible;
@@ -417,7 +417,7 @@ TEST_CASE("MN Volume - DaisyChain") {
         });
     }
 
-    // I/O must happen in spawned microthreads in M:N mode — the main
+    // I/O must happen in spawned imps in M:N mode — the main
     // thread cannot block on channels because its P may have no local work.
     csp::spawn([w = std::move(head.w)] {
         for (int i = 0; i < MSGS; ++i) {
@@ -594,9 +594,9 @@ TEST_CASE("MN Stress - ProducerConsumer") {
 TEST_CASE("MN Volume - SpawnDuringExecution") {
     csp::init_runtime(4);
 
-    // Each microthread spawns one child before exiting.
-    // Starting from 1, this creates a tree of 2^DEPTH - 1 microthreads.
-    constexpr int DEPTH = (CSP_TEST_SANITIZER ? 12 : 17);  // 131071 or 8191 microthreads
+    // Each imp spawns one child before exiting.
+    // Starting from 1, this creates a tree of 2^DEPTH - 1 imps.
+    constexpr int DEPTH = (CSP_TEST_SANITIZER ? 12 : 17);  // 131071 or 8191 imps
     std::atomic<int> count{0};
 
     auto go = [&](auto & self, int depth) -> void {

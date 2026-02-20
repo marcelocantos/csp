@@ -34,7 +34,7 @@ graph LR
     E["enumerate(container)"] --> Out["reader&lt;T&gt;"]
 ```
 
-No input channel. The producer spawns a microthread that writes each element
+No input channel. The producer spawns an imp that writes each element
 to its output.
 
 ## Semantics
@@ -52,7 +52,7 @@ to its output.
   repeat without invalidating the source.
 - **Backpressure**: every write blocks until a reader is ready (synchronous
   channel semantics). No buffering.
-- **Exit**: the microthread exits when the container is exhausted (non-cyclic)
+- **Exit**: the imp exits when the container is exhausted (non-cyclic)
   or the downstream reader closes.
 
 ## Example

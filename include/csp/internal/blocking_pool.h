@@ -9,15 +9,15 @@
 
 namespace csp::detail {
 
-struct Microthread;
+struct Imp;
 
 class BlockingPool {
 public:
     static BlockingPool& instance();
 
-    // Submit a function to run on a pool thread. The microthread will be
-    // rescheduled via mt->schedule() when the function completes.
-    void submit(Microthread* mt, std::function<void()> fn);
+    // Submit a function to run on a pool thread. The imp will be
+    // rescheduled via imp->schedule() when the function completes.
+    void submit(Imp* imp, std::function<void()> fn);
 
     // Lazy init: creates worker threads on first submit.
     void ensure_started();
@@ -31,7 +31,7 @@ private:
     BlockingPool& operator=(BlockingPool const&) = delete;
 
     struct Work {
-        Microthread* mt;
+        Imp* imp;
         std::function<void()> fn;
     };
 

@@ -52,7 +52,7 @@ graph LR
     Q --> R[writer&lt;T&gt; residue]
 ```
 
-One microthread manages all four channels using `alt` to multiplex reads
+One imp manages all four channels using `alt` to multiplex reads
 and writes.
 
 ## Semantics

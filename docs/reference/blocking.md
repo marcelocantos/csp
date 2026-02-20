@@ -1,7 +1,7 @@
 # Blocking Reference
 
 Offload blocking or long-running work to an OS thread pool without stalling
-the microthread scheduler.
+the imp scheduler.
 
 ---
 
@@ -13,7 +13,7 @@ the microthread scheduler.
 
 ## blocking
 
-Run a callable on an OS thread pool, suspending the calling microthread until
+Run a callable on an OS thread pool, suspending the calling imp until
 it completes.
 
 ### Signature
@@ -28,16 +28,16 @@ auto blocking(Fn&& fn) -> std::invoke_result_t<Fn>;
 ### Description
 
 `blocking` offloads a callable `fn` to a pool of OS threads managed by the
-runtime, suspending the calling microthread until `fn` returns. The microthread
+runtime, suspending the calling imp until `fn` returns. The imp
 is detached from its processor while `fn` executes, freeing the processor to
-run other microthreads. When `fn` completes, the microthread is rescheduled and
+run other imps. When `fn` completes, the imp is rescheduled and
 resumes with the return value of `fn`.
 
 If `fn` returns `void`, `blocking` returns `void`. Otherwise, `blocking`
 returns whatever `fn` returns.
 
 If `fn` throws an exception, the exception propagates to the calling
-microthread when it resumes.
+imp when it resumes.
 
 The thread pool is lazily initialized on first use. The pool size is
 `max(4, hardware_concurrency())`. Pool threads spend most of their time
@@ -82,7 +82,7 @@ csp::spawn([] {
         return std::string(std::istreambuf_iterator<char>(f),
                            std::istreambuf_iterator<char>());
     });
-    // Back on the microthread scheduler with the result.
+    // Back on the imp scheduler with the result.
 });
 csp::schedule();
 ```

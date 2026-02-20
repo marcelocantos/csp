@@ -23,7 +23,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["nwise&lt;N&gt;()"] --> C["reader&lt;tuple&lt;T,...&gt;&gt;"]
 ```
 
-One internal microthread maintains a fixed-size array that slides through
+One internal imp maintains a fixed-size array that slides through
 the input.
 
 ## Semantics
@@ -34,7 +34,7 @@ the input.
 - If the input has fewer than `N` elements, the output closes immediately
   with no values.
 - Exits when the input is exhausted or the output reader is dropped.
-- Backpressure: the microthread blocks on each tuple write, so a slow
+- Backpressure: the imp blocks on each tuple write, so a slow
   consumer throttles the pipeline.
 
 ## Example

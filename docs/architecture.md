@@ -1,8 +1,8 @@
 # CSP Architecture and Implementation
 
-This document describes the internal architecture of the CSP microthreading
-library: how microthreads are represented, how context switching works, how
-channels synchronise communicating microthreads, and how the M:N scheduler
+This document describes the internal architecture of the CSP imp-based
+concurrency library: how imps are represented, how context switching works,
+how channels synchronise communicating imps, and how the M:N scheduler
 distributes work across OS threads.
 
 > **Note:** File references below (e.g. `csp_internal.h`, `channel.cc`) refer
@@ -12,7 +12,7 @@ distributes work across OS threads.
 
 ## Table of Contents
 
-1. [Microthread Representation](#1-microthread-representation)
+1. [Imp Representation](#1-imp-representation)
 2. [Context Switching](#2-context-switching)
 3. [Run Queue and Scheduling](#3-run-queue-and-scheduling)
 4. [Channel Implementation](#4-channel-implementation)
@@ -21,7 +21,7 @@ distributes work across OS threads.
 7. [Work Stealing](#7-work-stealing)
 8. [Concurrency Control](#8-concurrency-control)
 9. [Timer System](#9-timer-system)
-10. [Lifecycle of a Microthread](#10-lifecycle-of-a-microthread)
+10. [Lifecycle of an Imp](#10-lifecycle-of-an-imp)
 11. [Stream Combinators](#11-stream-combinators)
 12. [I/O Reactor](#12-io-reactor)
 13. [Blocking Pool](#13-blocking-pool)
@@ -31,15 +31,15 @@ distributes work across OS threads.
 
 ---
 
-## 1. Microthread Representation
+## 1. Imp Representation
 
-Each microthread is a `Microthread` struct (`csp_internal.h`)
+Each imp is a `Imp` struct (`csp_internal.h`)
 allocated at the top of its own stack:
 
 ```
 Low address                                          High address
 ┌──────────┬───────────────────────────────┬──────────────────┐
-│  Guard   │         Stack space           │   Microthread    │
+│  Guard   │         Stack space           │   Imp    │
 │  page    │       (grows downward)        │    struct        │
 └──────────┴───────────────────────────────┴──────────────────┘
                                            ↑ 16-byte aligned
@@ -52,14 +52,14 @@ depth. The pool caches up to 256 freed stacks and uses `MADV_FREE` on
 release for lazy page reclamation. Under sanitizers (ASan/TSan), the pool
 falls back to heap allocation (128 KB) to avoid shadow-memory bloat.
 
-The `Microthread` is placement-constructed at the end of the stack region,
+The `Imp` is placement-constructed at the end of the stack region,
 ensuring 16-byte alignment as required by ARM64 and Boost.Context.
 
 Key fields:
 
 | Field            | Type                      | Purpose                                  |
 |------------------|---------------------------|------------------------------------------|
-| `prev_`, `next_` | `Microthread*`            | Circular doubly-linked run queue          |
+| `prev_`, `next_` | `Imp*`            | Circular doubly-linked run queue          |
 | `ctx_`           | `atomic<fcontext_t>`      | Saved execution context (SP, registers)   |
 | `stk_`           | `StackRegion`             | Stack region (base pointer + total size)  |
 | `dyn_ctx_`       | `uintptr_t`               | Dynamic scoping HAMT root (0 = empty)     |
@@ -70,7 +70,7 @@ Key fields:
 | `id_`            | `size_t`                  | Monotonically increasing unique ID        |
 | `status_`        | `char[32]`                | Human-readable debug description          |
 
-A sentinel microthread `Processor::main` anchors each processor's run
+A sentinel imp `Processor::main` anchors each processor's run
 queue. It uses the default constructor which creates a self-referential
 DLL node (`prev_ = next_ = this`) and has no user stack.
 
@@ -88,11 +88,11 @@ jump_fcontext(target_ctx, data)
   → returns transfer_t{saved_ctx, data} on the target's stack
 ```
 
-The library wraps this in `switch_to(Microthread& mt, intptr_t data)`:
+The library wraps this in `switch_to(Imp& mt, intptr_t data)`:
 
 ```
 switch_to(target, data):
-    self = g_self
+    self = g_imp
     ctx = target.ctx_.load(acquire)          // (a) acquire target context
     current_p().save_ctx = &self->ctx_       // (b) where to store our context
     current_p().save_mt  = self              // (c) who is being suspended
@@ -104,14 +104,14 @@ switch_to(target, data):
 ```
 
 Steps (a) and (e) form an acquire-release pair. When an OS thread saves a
-microthread's context via release-store, any other OS thread that later
+imp's context via release-store, any other OS thread that later
 acquire-loads `ctx_` is guaranteed to see the saved register data on the
-microthread's stack. This is critical in M:N mode where a microthread may
+imp's stack. This is critical in M:N mode where an imp may
 resume on a different OS thread than it was suspended on.
 
 The `save_ctx` and `save_mt` fields are stored in the `Processor` struct
-(per-OS-thread state), not in the `Microthread`, because between the
-`jump_fcontext` call and its resumption, the calling microthread's struct
+(per-OS-thread state), not in the `Imp`, because between the
+`jump_fcontext` call and its resumption, the calling imp's struct
 may be on another thread's stack. Using processor-local storage avoids
 cross-thread data races.
 
@@ -122,7 +122,7 @@ cross-thread data races.
 ### Local Run Queue
 
 Each processor maintains a **circular doubly-linked list** (DLL) of runnable
-microthreads. The `busy` pointer is the head of the queue; the sentinel
+imps. The `busy` pointer is the head of the queue; the sentinel
 `main` is always present.
 
 ```
@@ -134,17 +134,17 @@ microthreads. The `busy` pointer is the head of the queue; the sentinel
 
 All DLL mutations are protected by `Processor::run_mu`. The key operations:
 
-- **`schedule_local()`**: Insert a microthread into the DLL (no-op if
+- **`schedule_local()`**: Insert an imp into the DLL (no-op if
   already linked, detected by `next_ != nullptr`).
-- **`deschedule()`**: Remove a microthread from the DLL, nulling its links.
+- **`deschedule()`**: Remove an imp from the DLL, nulling its links.
 - **Inline deschedule/schedule in `run()`**: When context-switching from
-  one microthread to another, both the deschedule of the old and the
+  one imp to another, both the deschedule of the old and the
   schedule of the new happen in a single critical section inside `run()`,
   avoiding the overhead of separate lock acquisitions.
 
 ### Scheduling States
 
-A microthread transitions through these scheduling states:
+A imp transitions through these scheduling states:
 
 ```
          schedule_local()            local_next()
@@ -163,19 +163,19 @@ The `Status` enum drives transitions inside `run()` and `do_switch()`:
 | `run`    | Normal switch (yield). Caller stays in the DLL. |
 | `sleep`  | Block on I/O. `busy` advances past the caller.  |
 | `detach` | Suspend for channel wait. Caller is delinked.   |
-| `exit`   | Microthread finished. Caller is delinked and its stack is passed to the target for deallocation. |
+| `exit`   | Imp finished. Caller is delinked and its stack is passed to the target for deallocation. |
 
 ### do_switch and run
 
 `do_switch(Status)` is the main entry point for context switching from a
-microthread's perspective. It selects the next target from the DLL and calls
+imp's perspective. It selects the next target from the DLL and calls
 `target->run(status)`:
 
 ```
 do_switch(status):
     lock run_mu
-        running = g_self           // protect active MT from work stealing
-        if busy == g_self:         // advance past self
+        running = g_imp           // protect active MT from work stealing
+        if busy == g_imp:         // advance past self
             busy = busy->next_
         target = busy
     unlock run_mu
@@ -184,14 +184,14 @@ do_switch(status):
 
 `run(Status)` performs the actual context switch. Under `run_mu`, it:
 
-1. Delinks `g_self` from the DLL (for detach/exit).
+1. Delinks `g_imp` from the DLL (for detach/exit).
 2. Links `this` (the target) into the DLL (if not already present).
 3. Releases the lock.
 4. Calls `switch_to(*this, killme)` to transfer control.
 
 On return from `switch_to` (when someone later switches back to this frame),
-`run()` processes any `killyou` pointer (a dead microthread whose stack can
-now be freed) and restores `g_self`.
+`run()` processes any `killyou` pointer (a dead imp whose stack can
+now be freed) and restores `g_imp`.
 
 ---
 
@@ -210,9 +210,9 @@ A `Channel` (`channel.cc`) contains:
 - **`endpts_[2]`**: Writer (index 0) and reader (index 1) endpoints,
   each containing:
   - `refcount`: Atomic reference count for that endpoint.
-  - `waiters`: `RingBuffer<ChanopWaiter>` of microthreads ready to
+  - `waiters`: `RingBuffer<ChanopWaiter>` of imps ready to
     send/receive.
-  - `vultures`: `RingBuffer<ChanopWaiter>` of microthreads waiting
+  - `vultures`: `RingBuffer<ChanopWaiter>` of imps waiting
     for endpoint closure.
 
 ### Endpoint Encoding
@@ -265,7 +265,7 @@ For each chanop (in priority order, rotated by offset for alt):
 ```
 
 The CAS on `alt_state` ensures that exactly one waker can claim a sleeping
-microthread. If the CAS fails, another thread already claimed it.
+imp. If the CAS fails, another thread already claimed it.
 
 This is a **two-phase protocol**: `prialt_begin` returns an `AltMatch` with
 source and destination pointers while the channel locks are still held. The
@@ -299,8 +299,8 @@ suspending_ = false
 
 The `suspending_` flag is set **before** unlocking. This is critical: after
 the unlock, a waker on another OS thread could immediately find this
-microthread in a channel's waiters queue and call `schedule()`. If the
-microthread hasn't finished its context switch yet (the `do_switch` hasn't
+imp in a channel's waiters queue and call `schedule()`. If the
+imp hasn't finished its context switch yet (the `do_switch` hasn't
 completed), running it would cause double execution. The `suspending_` flag
 tells `schedule()` to set `wake_pending_` instead of pushing to the global
 queue. After the context switch completes, `drain_suspended()` checks
@@ -308,7 +308,7 @@ queue. After the context switch completes, `drain_suspended()` checks
 
 ### Phase 3: Cleanup
 
-When the microthread is woken:
+When the imp is woken:
 
 ```
 Lock all channels (same sorted order)
@@ -324,7 +324,7 @@ indicate which chanop matched; bitwise-complemented values indicate endpoint clo
 ### Lock Ordering
 
 All channel locks are acquired in order of `Channel::id_` (a monotonically
-increasing counter). This prevents deadlock when a microthread waits on
+increasing counter). This prevents deadlock when an imp waits on
 multiple channels simultaneously. The small-channel fast path uses a
 fixed-size array of 8 pointers; larger alt sets spill to a heap-allocated
 vector.
@@ -333,7 +333,7 @@ vector.
 
 ## 6. M:N Runtime
 
-The M:N runtime maps G microthreads onto P processors running on M OS
+The M:N runtime maps G imps onto P processors running on M OS
 threads, following the GMP model (similar to Go's runtime).
 
 ### Initialisation
@@ -374,7 +374,7 @@ while not stopping:
 
 The global run queue (`Runtime::global_run_queue`) is a `std::deque`
 protected by `Runtime::global_mu`. It serves as the primary distribution
-mechanism: newly spawned microthreads and woken microthreads (from channel
+mechanism: newly spawned imps and woken imps (from channel
 operations) are pushed here, and workers pull from it.
 
 `take_from_global` transfers a fair share (total / num_procs, at least 1)
@@ -433,11 +433,11 @@ steal_work(thief):
 
 ### Safety Invariants
 
-Three categories of microthreads must not be stolen:
+Three categories of imps must not be stolen:
 
 1. **The sentinel** (`victim.main`): Anchors the DLL; never runnable.
 2. **The DLL head** (`victim.busy`): About to be picked by `local_next`.
-3. **The active microthread** (`victim.running`): Currently executing on the
+3. **The active imp** (`victim.running`): Currently executing on the
    victim's OS thread. Its context hasn't been saved yet, so switching to
    it from another thread would cause double execution.
 
@@ -445,9 +445,9 @@ The `running` pointer is maintained in two places:
 
 - **`local_next()`** sets `running` to the candidate it returns (the initial
   pick from the worker loop).
-- **`do_switch()`** sets `running = g_self` under `run_mu` before selecting
+- **`do_switch()`** sets `running = g_imp` under `run_mu` before selecting
   the next target. This keeps `running` current as execution chains through
-  microthreads via yield, channel operations, and exit.
+  imps via yield, channel operations, and exit.
 
 ### Lock Ordering
 
@@ -457,7 +457,7 @@ holds `global_mu` and then acquires `run_mu` (via `schedule_local`). If
 `try_to_lock` fails, the thief skips that victim and tries the next.
 
 By holding both locks during the delink-and-push sequence, the stolen
-microthread is never in a state where `next_ == nullptr` and
+imp is never in a state where `next_ == nullptr` and
 `in_global_ == false` simultaneously---preventing `schedule()` on another
 thread from seeing inconsistent state.
 
@@ -469,13 +469,13 @@ thread from seeing inconsistent state.
 
 | Field                | Ordering        | Purpose                              |
 |----------------------|-----------------|--------------------------------------|
-| `Microthread::ctx_`  | acquire/release | Cross-thread context visibility      |
+| `Imp::ctx_`  | acquire/release | Cross-thread context visibility      |
 | `alt_state`          | CAS (seq_cst)   | Exclusive wakeup claim               |
 | `suspending_`        | acquire/release | Prevent premature scheduling         |
 | `wake_pending_`      | acq_rel exchange| Deferred wakeup during suspension    |
 | `in_global_`         | (under mutex)   | Prevent duplicate global queue entry |
 | `Runtime::stopping`  | acquire/release | Shutdown coordination                |
-| `Runtime::live_gs`   | acq_rel         | Track active microthread count       |
+| `Runtime::live_gs`   | acq_rel         | Track active imp count       |
 | `EndPoint::refcount` | acq_rel         | Endpoint lifecycle                   |
 | `Channel::alive_`    | acq_rel         | Channel deallocation                 |
 
@@ -531,17 +531,17 @@ uses `try_to_lock` to avoid deadlock.
 
 ## 9. Timer System
 
-Timers are per-processor min-heaps of `(deadline, Microthread*)` pairs:
+Timers are per-processor min-heaps of `(deadline, Imp*)` pairs:
 
 ```cpp
 struct TimerEntry {
     steady_clock::time_point deadline;
-    Microthread* thread;
+    Imp* thread;
 };
 // std::priority_queue with std::greater<> for min-heap
 ```
 
-**`internal::sleep_until(deadline_ns)`**: Pushes the current microthread
+**`internal::sleep_until(deadline_ns)`**: Pushes the current imp
 onto the local processor's timer heap, sets `suspending_ = true`, and calls
 `do_switch(Status::detach)`. On wakeup, clears `suspending_`.
 
@@ -556,36 +556,36 @@ next timer deadline (if any), ensuring timers fire even when there is no
 other work.
 
 **High-level API**: `sleep()`, `after()`, and `tick()` are thin wrappers.
-`after()` and `tick()` are implemented as producer microthreads that
+`after()` and `tick()` are implemented as producer imps that
 sleep and then write to a channel, making timers composable with `alt`.
 
 ---
 
-## 10. Lifecycle of a Microthread
+## 10. Lifecycle of an Imp
 
 ### Spawn
 
 ```
 csp_spawn(entry_f, data):
     Allocate stack from StackPool (1MB mmap region with guard page)
-    Placement-construct Microthread at top of stack
+    Placement-construct Imp at top of stack
     make_fcontext(start, stack_top)     // create initial context
     switch_to(mt, &start_data)          // warmup handshake
-    g_self = self                       // restore caller's identity
+    g_imp = self                       // restore caller's identity
     live_gs++
     push_to_global(mt)                  // M:N mode
     notify workers
 ```
 
-The warmup `switch_to` enters the microthread's `start()` function, which
+The warmup `switch_to` enters the imp's `start()` function, which
 copies `StartData` (entry function, data pointer, caller reference) to local
-variables, then switches back to the spawner. This ensures the microthread
+variables, then switches back to the spawner. This ensures the imp
 has valid state even after the spawner's stack frame is gone.
 
 ### Execution
 
-A worker picks the microthread from the global queue, adds it to its local
-DLL, and calls `mt->run()`. This resumes the microthread in its `start()`
+A worker picks the imp from the global queue, adds it to its local
+DLL, and calls `mt->run()`. This resumes the imp in its `start()`
 function after the warmup switch. The user function runs until it blocks
 (channel op, timer, yield) or returns.
 
@@ -595,25 +595,25 @@ When the user function returns (or throws), `start()` calls
 `do_switch(Status::exit)`. The exit path:
 
 1. `do_switch` selects the next target from the DLL.
-2. `target->run(Status::exit)`: delinks the exiting microthread from the
+2. `target->run(Status::exit)`: delinks the exiting imp from the
    DLL, links the target, and calls `switch_to(target, killme)` with the
-   exiting microthread as `killme`.
-3. The target's context resumes. It receives `killme` (a dying microthread)
+   exiting imp as `killme`.
+3. The target's context resumes. It receives `killme` (a dying imp)
    and destroys it: calls the destructor, deletes the stack.
 4. Decrements `live_gs`. If it reaches zero, notifies `park_cv` to wake the
    main thread.
 
-The `killme`/`killyou` handoff ensures the exiting microthread's stack is
+The `killme`/`killyou` handoff ensures the exiting imp's stack is
 not freed while it is still in use. The stack is freed by the *next*
-microthread to run, which by definition is on a different stack.
+imp to run, which by definition is on a different stack.
 
 ### Same-Thread Migration
 
-When a microthread is stolen from one processor's DLL and later picked up by
+When an imp is stolen from one processor's DLL and later picked up by
 a different worker, the `switch_to` mechanism transparently handles the
 cross-thread migration. The `ctx_` acquire/release pair ensures the new OS
-thread sees the saved register state. Thread-local state (`g_self`,
-`current_p()`) is re-evaluated on each function entry, so the microthread
+thread sees the saved register state. Thread-local state (`g_imp`,
+`current_p()`) is re-evaluated on each function entry, so the imp
 naturally adapts to its new host thread.
 
 ---
@@ -621,7 +621,7 @@ naturally adapts to its new host thread.
 ## 11. Stream Combinators
 
 Stream combinators are templates in `namespace csp::part` that spawn internal
-microthreads pre-wired to channel endpoints. The system is built on three
+imps pre-wired to channel endpoints. The system is built on three
 wrapper types:
 
 - **`producer<T, F>`**: Wraps `F(writer<T>)`. `.spawn()` returns `reader<T>`.
@@ -661,11 +661,11 @@ auto r = pipeline.spawn();  // reader<int>
 ```
 
 When both operands are parts (filter|filter, producer|filter, etc.), the
-result is a new part capturing both stages—no microthread is spawned yet.
-When a concrete endpoint (reader or writer) appears, the microthread
+result is a new part capturing both stages—no imp is spawned yet.
+When a concrete endpoint (reader or writer) appears, the imp
 spawns immediately.
 
-Each stage is an independent microthread. The microthreads coordinate
+Each stage is an independent imp. The imps coordinate
 through synchronous channel operations, with backpressure propagating
 naturally through the blocking send/receive semantics.
 
@@ -674,18 +674,18 @@ naturally through the blocking send/receive semantics.
 ## 12. I/O Reactor
 
 The I/O reactor (`reactor.h`, `reactor.cc`) provides non-blocking file
-descriptor readiness notification, allowing microthreads to suspend on I/O
+descriptor readiness notification, allowing imps to suspend on I/O
 without stalling their processor.
 
 ### Architecture
 
 The reactor is a singleton (`Reactor::instance()`) running a kqueue event
 loop on a dedicated OS thread. This thread is not a Processor---it does not
-run microthreads. Its sole purpose is to monitor file descriptors and
-reschedule waiting microthreads when I/O readiness events fire.
+run imps. Its sole purpose is to monitor file descriptors and
+reschedule waiting imps when I/O readiness events fire.
 
 ```
-Microthread                    Reactor thread              Global queue
+Imp                    Reactor thread              Global queue
     │                              │                           │
     │ wait_read(fd, mt)            │                           │
     ├─────────────────────────────→│                           │
@@ -708,7 +708,7 @@ wakeup, and spawns the reactor thread.
 ### Event Registration
 
 `wait_read(fd, mt)` and `wait_write(fd, mt)` register a kevent with
-`EV_ADD | EV_ONESHOT`. The microthread pointer is stored in the kevent's
+`EV_ADD | EV_ONESHOT`. The imp pointer is stored in the kevent's
 `udata` field. `EV_ONESHOT` semantics mean each registration fires at most
 once---the caller must re-register for subsequent waits. This avoids stale
 event accumulation and simplifies cancellation.
@@ -731,10 +731,10 @@ io_wait_readable(fd):
 
 Step (1) must happen **before** step (2). Once the kevent is registered,
 the reactor thread can call `mt->schedule()` at any moment. If the
-microthread has not yet completed its context switch (step 3), the
+imp has not yet completed its context switch (step 3), the
 `suspending_` flag tells `schedule()` to set `wake_pending_` instead of
 pushing directly to the global queue. After the context switch completes,
-`drain_suspended()` checks `wake_pending_` and pushes the microthread if
+`drain_suspended()` checks `wake_pending_` and pushes the imp if
 set. This is the same TOCTOU prevention mechanism used by the channel path
 (see [Section 8](#8-concurrency-control)).
 
@@ -745,8 +745,8 @@ output buffer and no timeout (blocking indefinitely). For each event:
 
 - `EVFILT_USER` events are skipped---they exist only to break the
   `kevent()` block during shutdown.
-- All other events extract the `Microthread*` from `udata` and call
-  `mt->schedule()`, which pushes the microthread to the global run queue
+- All other events extract the `Imp*` from `udata` and call
+  `mt->schedule()`, which pushes the imp to the global run queue
   and calls `unpark_one()` to wake a worker.
 
 `EINTR` is handled by retrying the `kevent()` call.
@@ -764,7 +764,7 @@ the kqueue descriptor.
 The `csp::io` namespace (`io.h`) provides non-blocking wrappers around
 standard POSIX calls (`read`, `write`, `accept`, `connect`). Each wrapper
 retries on `EINTR`, and on `EAGAIN`/`EWOULDBLOCK` it calls
-`wait_readable`/`wait_writable` to suspend the microthread until the
+`wait_readable`/`wait_writable` to suspend the imp until the
 descriptor is ready, then retries the syscall. This gives callers
 synchronous-looking I/O semantics while cooperating with the scheduler.
 
@@ -773,17 +773,17 @@ synchronous-looking I/O semantics while cooperating with the scheduler.
 ## 13. Blocking Pool
 
 The blocking pool (`blocking_pool.h`, `blocking_pool.cc`) offloads
-blocking OS calls to a dedicated thread pool so that microthreads can
+blocking OS calls to a dedicated thread pool so that imps can
 invoke them without stalling their processor.
 
 ### Motivation
 
 Some operations---DNS resolution (`getaddrinfo`), synchronous file I/O,
 third-party library calls---cannot be made non-blocking. Running them
-directly on a processor thread would stall all microthreads on that
-processor. The blocking pool solves this by detaching the microthread from
+directly on a processor thread would stall all imps on that
+processor. The blocking pool solves this by detaching the imp from
 its processor, running the blocking function on a pool thread, and
-rescheduling the microthread when it completes.
+rescheduling the imp when it completes.
 
 ### Architecture
 
@@ -793,7 +793,7 @@ time blocked in the kernel, not consuming CPU, so a relatively large pool
 is cheap.
 
 ```
-Microthread                  Pool thread              Global queue
+Imp                  Pool thread              Global queue
     │                            │                        │
     │ submit(mt, fn)             │                        │
     ├───────────────────────────→│                        │
@@ -826,7 +826,7 @@ run_blocking(fn):
 As with I/O waits, `suspending_` is set before `submit` because the pool
 thread can call `mt->schedule()` immediately upon completion. The
 `suspending_`/`wake_pending_`/`drain_suspended` protocol prevents the
-microthread from being pushed to the global queue before its context switch
+imp from being pushed to the global queue before its context switch
 completes.
 
 ### Return Value Forwarding
@@ -834,14 +834,14 @@ completes.
 The public `csp::blocking<Fn>(fn)` template (`blocking.h`) supports
 arbitrary return types. For non-void return types, it captures the result
 in a local variable via a lambda wrapper, so the blocking function's return
-value is available to the microthread when it resumes. For void functions,
+value is available to the imp when it resumes. For void functions,
 no wrapper is needed.
 
 ### Worker Loop
 
 Each pool thread blocks on a condition variable waiting for work or a
 shutdown signal. When work arrives, it pops from the back of the queue,
-runs `fn()`, then calls `mt->schedule()` to reschedule the microthread.
+runs `fn()`, then calls `mt->schedule()` to reschedule the imp.
 
 ### Shutdown
 
@@ -864,7 +864,7 @@ POSIX signal handlers run asynchronously in an unspecified context and are
 severely restricted in what they can safely do. Most library functions,
 mutex operations, and memory allocations are forbidden. The signal delivery
 system bridges this gap by having the handler perform only async-signal-safe
-operations, with all complex logic running in microthreads.
+operations, with all complex logic running in imps.
 
 ### Self-Pipe Trick
 
@@ -884,7 +884,7 @@ Signal handler               Pipe                 Producer MT          Channel
 ```
 
 The signal handler writes the signal number (as a single byte) to the pipe.
-A producer microthread reads bytes from the pipe (using the I/O reactor for
+A producer imp reads bytes from the pipe (using the I/O reactor for
 non-blocking reads) and writes them to the output CSP channel.
 
 ### Lock-Free Signal-Safe Data Structures
@@ -918,13 +918,13 @@ The ordering constraints form two acquire-release pairs:
    initialised `write_fd` and `sig_mask`.
 
 2. **Cleanup (release) / handler (acquire) on `sig_mask`**: When the
-   sentinel microthread clears a pipe's `sig_mask` to zero with release
+   sentinel imp clears a pipe's `sig_mask` to zero with release
    ordering, subsequent handler invocations that acquire-load `sig_mask`
    see zero and skip the pipe, preventing writes to a closed fd.
 
-### Sentinel Microthread Pattern
+### Sentinel Imp Pattern
 
-Each `notify()` call spawns two microthreads:
+Each `notify()` call spawns two imps:
 
 - **Producer**: Reads bytes from the pipe read end via `io::read()` and
   writes signal numbers to the output channel. Runs until EOF (pipe write
@@ -950,7 +950,7 @@ notify() creates:
     (kill_w destroyed)          (producer sees EOF)
 ```
 
-This two-microthread pattern ensures clean shutdown regardless of which
+This two-imp pattern ensures clean shutdown regardless of which
 side initiates teardown:
 
 - **Reader dropped**: `~out_copy` fires in the sentinel, which closes the
@@ -980,14 +980,14 @@ become harmless no-ops since no pipe's `sig_mask` includes the signal.
 ## 15. Stack Pool
 
 The stack pool (`stack_pool.h`, `stack_pool.cc`) provides efficient stack
-allocation for microthreads using virtual memory and demand paging.
+allocation for imps using virtual memory and demand paging.
 
 ### Design
 
 `StackPool` is a per-process singleton that allocates 1 MB virtual regions
 via `mmap` with `PROT_READ | PROT_WRITE`. Each region has a guard page
 (`PROT_NONE`) at the low end to catch stack overflow. Physical pages are
-demand-faulted by the kernel, so a microthread that uses only a few KB of
+demand-faulted by the kernel, so an imp that uses only a few KB of
 stack consumes only a few KB of physical memory.
 
 ### Pooling
@@ -1004,7 +1004,7 @@ cached region if available, avoiding the syscall overhead of `mmap`.
 to reclaim unused stack pages below the current stack pointer. It keeps
 a 2-page headroom above the current SP and calls `madvise` on everything
 below that, releasing physical pages for stack space that is no longer
-needed. This prevents microthreads that had a deep call stack transiently
+needed. This prevents imps that had a deep call stack transiently
 from holding physical memory indefinitely.
 
 ### Sanitizer Fallback
@@ -1017,13 +1017,13 @@ mmap'd regions cause shadow-memory bloat under sanitizers.
 
 ## 16. Dynamic Scoping
 
-Dynamic scoping (`dynamic.h`, `hamt.h`, `hamt.cc`) provides microthread-
+Dynamic scoping (`dynamic.h`, `hamt.h`, `hamt.cc`) provides imp-
 local variables with copy-on-write isolation, inherited by child
-microthreads on spawn.
+imps on spawn.
 
 ### Data Structure
 
-Each microthread stores a HAMT (Hash Array Mapped Trie) root in its
+Each imp stores a HAMT (Hash Array Mapped Trie) root in its
 `dyn_ctx_` field (`uintptr_t`). The HAMT is a persistent data structure:
 writes create new path-copied nodes, leaving existing references intact.
 Nodes use intrusive reference counting for memory management.
@@ -1043,27 +1043,27 @@ hash chunks per level.
 
 - **`dynamic<T>`**: A typed dynamic-scoped variable. Each instance has a
   unique auto-incrementing `context_key`. Dereferencing (`*var`) looks up
-  the current microthread's HAMT. Assignment (`var = val`) returns a
+  the current imp's HAMT. Assignment (`var = val`) returns a
   deferred `dynamic_binding` for use with `local`.
 - **`local`**: RAII scoped binding. `local l{var = val}` saves the current
   `dyn_ctx_`, applies the binding (path-copy), and restores the saved root
   on destruction. Accepts multiple bindings. Bare `var = val;` without
   `local` asserts in the binding's destructor.
 - **`context`**: A copyable handle to a HAMT root snapshot. Can be sent
-  over channels to transfer scope state between microthreads.
-  `context::current()` captures the calling microthread's current context.
+  over channels to transfer scope state between imps.
+  `context::current()` captures the calling imp's current context.
 - **`context_scope`**: RAII guard that saves the current `dyn_ctx_` on
   construction and installs a foreign `context`; restores on destruction.
-- **`mt_local<T>`**: Microthread-local variable. Per-microthread storage
+- **`imp_local<T>`**: Imp-local variable. Per-imp storage
   using a lazily allocated `unordered_map<uint64_t, std::any>` on the
-  Microthread struct (`local_ctx_`). Not inherited on spawn. Direct
+  Imp struct (`local_ctx_`). Not inherited on spawn. Direct
   read/write (no deferred binding).
 
 ### Inheritance
 
-When `spawn()` creates a new microthread, the child's `dyn_ctx_` is
+When `spawn()` creates a new imp, the child's `dyn_ctx_` is
 initialised from the parent's `dyn_ctx_` (with a HAMT root retain). This
 gives the child a snapshot of the parent's dynamic variables. Subsequent
 writes by either parent or child are isolated via path-copying.
-`local_ctx_` (microthread-local storage) is NOT inherited — each
-microthread starts with an empty map.
+`local_ctx_` (imp-local storage) is NOT inherited — each
+imp starts with an empty map.

@@ -1,4 +1,4 @@
-# A TOCTOU Race in M:N Microthread Suspension and its Verification with TLA+
+# A TOCTOU Race in M:N Imp Suspension and its Verification with TLA+
 
 > **Note:** Source file references (e.g. `src/csp.cc`) refer to the development
 > source tree. In the distribution (`dist/`), these live in `csp.cpp`.
@@ -6,8 +6,8 @@
 ## Abstract
 
 We describe a time-of-check-to-time-of-use (TOCTOU) race that arises in
-the suspension protocol of an M:N microthread scheduler, where a
-microthread suspending on a channel and a waker calling `schedule()` on
+the suspension protocol of an M:N imp scheduler, where a
+imp suspending on a channel and a waker calling `schedule()` on
 its behalf can interleave in a way that permanently loses the wakeup. We
 present the protocol that eliminates the race, construct TLA+
 specifications for both the correct and buggy variants, and use the TLC
@@ -15,15 +15,15 @@ model checker to exhaustively verify correctness and reproduce the bug.
 
 ## 1. Context
 
-CSP is a C++ microthreading library implementing typed synchronous
-channels. Microthreads (MTs) are multiplexed across OS threads in an M:N
-arrangement: N microthreads run on M OS worker threads, with
+CSP is a C++ imp-based concurrency library implementing typed synchronous
+channels. Imps (MTs) are multiplexed across OS threads in an M:N
+arrangement: N imps run on M OS worker threads, with
 cooperative context switching within each worker and work-stealing across
 workers.
 
-When a microthread performs a channel operation (read or write) and no
+When an imp performs a channel operation (read or write) and no
 peer is ready, it must *suspend* — remove itself from its worker's local
-run queue and context-switch to another microthread. Later, when a peer
+run queue and context-switch to another imp. Later, when a peer
 arrives on another thread, that peer calls `schedule()` to wake the
 suspended MT by pushing it onto the global run queue.
 
@@ -38,7 +38,7 @@ would cause double execution.
 
 ## 2. The suspension protocol
 
-Two boolean flags on each microthread coordinate suspension:
+Two boolean flags on each imp coordinate suspension:
 
 ```
 std::atomic<bool> suspending_{false};
@@ -67,7 +67,7 @@ The protocol in the source code (`src/csp.cc`):
 
 ```cpp
 // drain_suspended — called after context switch completes
-static void drain_suspended(Microthread* suspended) {
+static void drain_suspended(Imp* suspended) {
     auto& rt = Runtime::instance();
     std::lock_guard<std::mutex> lk(rt.global_mu);      // (A)
     suspended->suspending_.store(false, release);        // (B)
@@ -78,7 +78,7 @@ static void drain_suspended(Microthread* suspended) {
 }
 
 // schedule — called by waker on another thread
-void Microthread::schedule(bool make_current) {
+void Imp::schedule(bool make_current) {
     auto& rt = Runtime::instance();
     std::lock_guard<std::mutex> lk(rt.global_mu);      // (D)
     if (suspending_.load(acquire)) {                     // (E)
@@ -260,6 +260,6 @@ dominates manual reasoning about interleavings.
 | `formal/DrainSuspended_Bug.tla` | Buggy specification (no mutex in drain) |
 | `formal/DrainSuspended_Bug.cfg` | TLC config for buggy spec |
 | `src/csp.cc:45-65` | `drain_suspended()` implementation |
-| `src/csp.cc:120-147` | `Microthread::schedule()` implementation |
-| `src/csp.cc:176-242` | `Microthread::run()` with early-wakeup check |
+| `src/csp.cc:120-147` | `Imp::schedule()` implementation |
+| `src/csp.cc:176-242` | `Imp::run()` with early-wakeup check |
 | `src/channel.cc:314-324` | Suspension site in `prialt_begin_impl` |

@@ -1,8 +1,8 @@
 # Channels
 
-Channels are the backbone of CSP. Every interaction between microthreads flows
+Channels are the backbone of CSP. Every interaction between imps flows
 through a channel -- there is no shared mutable state, no locking, and no
-condition variables. If a microthread needs to communicate, it sends or
+condition variables. If an imp needs to communicate, it sends or
 receives on a channel.
 
 A channel is a typed, synchronous, unbuffered conduit. It carries values of a
@@ -61,7 +61,7 @@ auto r2 = r.copy();   // r and r2 both refer to the same channel
 
 Each `.copy()` increments the reference count. The channel's write side stays
 alive until *all* writer copies are dropped, and likewise for the read side.
-This is the typical pattern for passing an endpoint into a spawned microthread
+This is the typical pattern for passing an endpoint into a spawned imp
 while keeping a copy for later use:
 
 ```cpp
@@ -117,10 +117,10 @@ The primary operators for channel I/O are `<<` (send) and `>>` (receive):
 ```cpp
 auto [w, r] = csp::chan<int>{};
 
-// In a sender microthread:
+// In a sender imp:
 w << 42;              // send 42, block until received
 
-// In a receiver microthread:
+// In a receiver imp:
 int n;
 r >> n;               // receive into n, block until sent
 ```
@@ -154,11 +154,11 @@ received value directly:
 
 ```cpp
 int n = r.read();   // blocks, returns value
-                    // throws microthread_error if channel is dead
+                    // throws csp::error if channel is dead
 ```
 
 This is convenient when you know the channel is alive and want a one-liner. It
-throws `microthread_error` if the channel has no writers.
+throws `csp::error` if the channel has no writers.
 
 ### Range-based for
 

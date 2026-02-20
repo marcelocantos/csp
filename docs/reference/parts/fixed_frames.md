@@ -17,7 +17,7 @@ graph LR
     A["reader&lt;vector&lt;uint8_t&gt;&gt;"] --> F["fixed_frames(N)"] --> B["reader&lt;vector&lt;uint8_t&gt;&gt;"]
 ```
 
-One internal microthread reads byte chunks from the input, accumulates them
+One internal imp reads byte chunks from the input, accumulates them
 into frames of exactly `frame_size` bytes, and emits each complete frame.
 
 ## Semantics
@@ -34,7 +34,7 @@ into frames of exactly `frame_size` bytes, and emits each complete frame.
 - **Output close**: Uses `csp::alt(in >> chunk, ~out)` to detect downstream
   reader drop. If the output reader is dropped, the filter exits immediately
   without draining the input.
-- **Backpressure**: The microthread blocks on each output write, so a slow
+- **Backpressure**: The imp blocks on each output write, so a slow
   consumer throttles the entire pipeline.
 - **No I/O dependency**: `fixed_frames()` operates purely on channels. It can be
   tested with synthetic `chan<std::vector<uint8_t>>` data or composed with

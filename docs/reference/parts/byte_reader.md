@@ -18,28 +18,28 @@ graph LR
     FD["fd (pipe, socket, ...)"] --> BR["byte_reader(fd)"] --> R["reader&lt;vector&lt;uint8_t&gt;&gt;"]
 ```
 
-One internal microthread reads from the fd in a loop. Each successful `read()`
+One internal imp reads from the fd in a loop. Each successful `read()`
 produces one channel message containing the bytes that were available.
 
 ## Semantics
 
 - **fd ownership**: `byte_reader` takes ownership of `fd`. It sets the fd to
-  non-blocking mode (`O_NONBLOCK`) and closes it when the microthread exits.
+  non-blocking mode (`O_NONBLOCK`) and closes it when the imp exits.
   The caller must not read from or close the fd after passing it.
-- **Non-blocking I/O**: Uses `csp::io::read()`, which suspends the microthread
+- **Non-blocking I/O**: Uses `csp::io::read()`, which suspends the imp
   on `EAGAIN`/`EWOULDBLOCK` (via `io::wait_readable`) and retries on `EINTR`.
   The processor is never blocked.
 - **Chunk sizing**: The `chunk_size` parameter controls the read buffer size.
   Each message may contain fewer bytes than `chunk_size` (whatever the kernel
   returned). The default is 4096 bytes.
-- **EOF**: When `read()` returns 0, the microthread closes the fd and exits,
+- **EOF**: When `read()` returns 0, the imp closes the fd and exits,
   closing the output channel. Downstream readers see channel death.
 - **Backpressure**: When the downstream consumer is slow, the channel write
-  (`out << ...`) blocks the microthread. During this time, data accumulates
+  (`out << ...`) blocks the imp. During this time, data accumulates
   in kernel buffers. If kernel buffers fill, the writing end of the pipe or
   socket will also block (or signal `EAGAIN` to its writer).
 - **Error handling**: Any read error other than `EAGAIN`/`EINTR` causes the
-  microthread to close the fd and exit.
+  imp to close the fd and exit.
 
 ## Example
 

@@ -2,7 +2,7 @@
 
 CSP ships with a library of composable stream-processing building blocks in
 `namespace csp::part`. Each part is a self-contained unit -- a producer, a
-consumer, or a filter -- that spawns its own microthread and communicates
+consumer, or a filter -- that spawns its own imp and communicates
 through channels. You snap parts together to build pipelines without writing
 any scheduling or lifecycle code yourself.
 
@@ -65,12 +65,12 @@ auto to_string = make_filter<int, std::string>(
 
 ## Spawning parts
 
-Calling `.spawn()` on a part creates a channel, launches a microthread, and
+Calling `.spawn()` on a part creates a channel, launches an imp, and
 returns the endpoint you need to connect to the rest of your pipeline.
 
 ### producer::spawn()
 
-Creates a channel, spawns a microthread that calls the body with the writer,
+Creates a channel, spawns an imp that calls the body with the writer,
 and returns the reader:
 
 ```cpp
@@ -80,13 +80,13 @@ auto nums = count<int>(0, 100, 1).spawn();
 
 ```mermaid
 graph LR
-    MT["microthread<br/>(writes)"] -->|writer&lt;int&gt;| CH["channel"]
+    MT["imp<br/>(writes)"] -->|writer&lt;int&gt;| CH["channel"]
     CH -->|reader&lt;int&gt;| YOU["caller"]
 ```
 
 ### consumer::spawn()
 
-Creates a channel, spawns a microthread that calls the body with the reader,
+Creates a channel, spawns an imp that calls the body with the reader,
 and returns the writer:
 
 ```cpp
@@ -98,7 +98,7 @@ dest << 42;
 ```mermaid
 graph LR
     YOU["caller"] -->|writer&lt;int&gt;| CH["channel"]
-    CH -->|reader&lt;int&gt;| MT["microthread<br/>(reads)"]
+    CH -->|reader&lt;int&gt;| MT["imp<br/>(reads)"]
 ```
 
 ### filter::spawn(reader)
@@ -147,7 +147,7 @@ auto [w, r] = buffer<int>(16).spawn();
 ## Building pipelines
 
 Chain `.spawn()` calls to wire parts together. Each call launches a
-microthread and connects it to the next stage:
+imp and connects it to the next stage:
 
 ```cpp
 // Source → map → where → sink
@@ -162,7 +162,7 @@ auto evens = where<int>([](int n) { return n % 2 == 0; })
 sink<int>([](int n) { printf("%d\n", n); })(std::move(evens));
 ```
 
-Each stage is an independent microthread with its own stack. Data flows
+Each stage is an independent imp with its own stack. Data flows
 through synchronous channels -- no shared memory, no locks.
 
 ```mermaid
@@ -190,7 +190,7 @@ calling `.spawn()` explicitly. The result type depends on the operands:
 
 ### Composing parts (deferred)
 
-When you pipe two parts together, no microthread is spawned yet. The result
+When you pipe two parts together, no imp is spawned yet. The result
 is a new part that captures both stages:
 
 ```cpp
@@ -205,13 +205,13 @@ auto result = process.spawn(std::move(nums));
 
 ### Connecting to live endpoints (immediate)
 
-When you pipe a `reader` or `writer` into a part, the microthread spawns
+When you pipe a `reader` or `writer` into a part, the imp spawns
 immediately:
 
 ```cpp
 auto nums = count<int>(1, 100, 1).spawn();
 
-// Each | spawns a filter microthread immediately
+// Each | spawns a filter imp immediately
 auto result = std::move(nums)
     | map<int>([](int n) { return n * n; })
     | where<int>([](int n) { return n > 10; });
@@ -317,7 +317,7 @@ The steps are always the same:
 3. **Write the body** -- a lambda that receives the channel endpoint(s).
    Use the canonical loop for filters.
 4. **Call `internal::descr()`** at the top of the body to name the
-   microthread for debugging.
+   imp for debugging.
 
 Your custom combinator is now fully composable with every other part in the
 library -- it works with `.spawn()`, `|` composition, and `.bind()`.

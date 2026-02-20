@@ -1,7 +1,7 @@
 # Getting Started
 
-CSP is a C++ microthreading library with typed, synchronous channels inspired
-by [Communicating Sequential Processes][wp-csp]. Lightweight microthreads
+CSP is a C++ imp-based concurrency library with typed, synchronous channels inspired
+by [Communicating Sequential Processes][wp-csp]. Lightweight imps
 (32 KB stacks) communicate exclusively through blocking channels -- no shared
 memory, no locks.
 
@@ -19,8 +19,8 @@ are no external dependencies.
 
 ## Your first program
 
-The program below spawns a producer microthread that sends the numbers 0--9
-over a channel, and a main microthread that reads and prints them.
+The program below spawns a producer imp that sends the numbers 0--9
+over a channel, and a main imp that reads and prints them.
 
 ```cpp
 #include "csp.h"
@@ -29,7 +29,7 @@ over a channel, and a main microthread that reads and prints them.
 int main() {
     using namespace csp;
 
-    // Wrap all work in a microthread, then run the scheduler.
+    // Wrap all work in an imp, then run the scheduler.
     spawn([] {
         // Create a channel. ch.w is the writer endpoint, ch.r is the reader.
         chan<int> ch;
@@ -46,7 +46,7 @@ int main() {
             std::cout << n << "\n";
     });
 
-    schedule();   // drive microthreads to completion
+    schedule();   // drive imps to completion
 }
 ```
 
@@ -54,7 +54,7 @@ int main() {
 
 1. `chan<int>` creates an unbuffered, synchronous channel with two endpoints:
    a `writer<int>` (`ch.w`) and a `reader<int>` (`ch.r`).
-2. `spawn` launches a new microthread. The writer is *moved* into the lambda
+2. `spawn` launches a new imp. The writer is *moved* into the lambda
    -- endpoints are move-only, so forgetting `std::move` is a compile error,
    not a silent deadlock.
 3. `w << i` blocks the producer until the consumer is ready to receive.
@@ -62,7 +62,7 @@ int main() {
    producer sends.
 4. When the producer lambda returns, the writer is destroyed. The consumer's
    range-for loop sees the closed channel and exits.
-5. `schedule()` runs the cooperative scheduler until all microthreads have
+5. `schedule()` runs the cooperative scheduler until all imps have
    completed.
 
 ### Structured bindings

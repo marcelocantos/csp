@@ -22,7 +22,7 @@ graph LR
     Merge --> Out[reader&lt;T&gt;]
 ```
 
-One internal microthread uses a dynamic `alt` to read from whichever input
+One internal imp uses a dynamic `alt` to read from whichever input
 is ready first, then writes the value to the single output.
 
 ## Semantics
@@ -34,7 +34,7 @@ is ready first, then writes the value to the single output.
   inputs continue to be merged.
 - Exits when all inputs are exhausted (output channel closes naturally)
   or when the output reader is dropped (output death terminates the merge).
-- Backpressure: the microthread blocks on each write to the output, so a
+- Backpressure: the imp blocks on each write to the output, so a
   slow consumer throttles all inputs.
 - Merging zero inputs produces an immediately-closed output.
 

@@ -59,7 +59,7 @@ sleep completes.
   sleep finishes and the output value is accepted.
 - **Control closes:** the output closes (no more values to sleep on).
 - **Output closes:** the timer returns immediately (the next write after sleep
-  fails, ending the microthread).
+  fails, ending the imp).
 - The emitted time_point is the *actual* fire time, which may be slightly later
   than the requested deadline due to scheduling.
 

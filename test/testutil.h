@@ -34,9 +34,9 @@ public:
                     try {
                         std::rethrow_exception(ep);
                     } catch (std::exception const & e) {
-                        FAIL_CHECK("Microthread threw exception: " << e.what());
+                        FAIL_CHECK("Imp threw exception: " << e.what());
                     } catch (...) {
-                        FAIL_CHECK("Microthread threw exception");
+                        FAIL_CHECK("Imp threw exception");
                     }
                 }
             }

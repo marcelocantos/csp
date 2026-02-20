@@ -88,12 +88,12 @@ namespace csp {
             park_cv.notify_all();
         }
 
-        void Runtime::push_to_global(Microthread* mt) {
+        void Runtime::push_to_global(Imp* imp) {
             // Caller must hold global_mu.
-            assert(!mt->next_);
-            assert(!mt->in_global_);
-            mt->in_global_ = true;
-            global_run_queue.push_back(mt);
+            assert(!imp->next_);
+            assert(!imp->in_global_);
+            imp->in_global_ = true;
+            global_run_queue.push_back(imp);
         }
 
         void Runtime::worker_loop() {
@@ -107,7 +107,7 @@ namespace csp {
                 fire_timers(p);
 
                 // Try local run queue.
-                Microthread* next = local_next(p);
+                Imp* next = local_next(p);
                 if (next) {
                     next->run();
                     continue;
@@ -169,7 +169,7 @@ namespace csp {
         }
 
         void Runtime::main_loop() {
-            // Main thread waits for all microthreads to complete.
+            // Main thread waits for all imps to complete.
             // Workers do all the actual execution.
             std::unique_lock<std::mutex> lk(park_mu);
             park_cv.wait(lk, [this] {
@@ -224,7 +224,7 @@ namespace csp {
         }
 
         // TLA:StealWork.VLocalNext
-        Microthread* Runtime::local_next(Processor& p) {
+        Imp* Runtime::local_next(Processor& p) {
             std::lock_guard<std::mutex> lk(p.run_mu);
             auto& busy = p.busy;
             if (!busy) {
@@ -232,12 +232,12 @@ namespace csp {
                 return nullptr;
             }
 
-            // Skip past g_self (the sentinel/main) to find real work.
+            // Skip past g_imp (the sentinel/main) to find real work.
             auto* candidate = busy;
-            if (candidate == g_self) {
+            if (candidate == g_imp) {
                 candidate = candidate->next_;
             }
-            if (candidate == g_self || candidate == &p.main) {
+            if (candidate == g_imp || candidate == &p.main) {
                 p.running = nullptr;
                 return nullptr;
             }
@@ -258,10 +258,10 @@ namespace csp {
             int np = num_procs_.load(std::memory_order_relaxed);
             int n = std::max(1, avail / np);
             for (int i = 0; i < n; ++i) {
-                auto* mt = global_run_queue.front();
+                auto* imp = global_run_queue.front();
                 global_run_queue.pop_front();
-                mt->in_global_ = false;
-                mt->schedule_local();
+                imp->in_global_ = false;
+                imp->schedule_local();
             }
             return true;
         }
@@ -273,7 +273,7 @@ namespace csp {
             // owning worker fires its own timers), and std::mutex is
             // not recursive. It also allows the watchdog (which has no
             // P) to fire timers from stalled Ps via the global queue.
-            Microthread* expired[64];
+            Imp* expired[64];
             int count = 0;
             {
                 std::lock_guard<std::mutex> lk(p.run_mu);
@@ -297,7 +297,7 @@ namespace csp {
                 if (&victim == &thief) continue;
                 if (!victim.alive.load(std::memory_order_acquire)) continue;
 
-                Microthread* stolen = nullptr;
+                Imp* stolen = nullptr;
                 {
                     std::lock_guard<std::mutex> lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
 

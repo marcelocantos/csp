@@ -2,12 +2,12 @@
 (*******************************************************************************
  * Models the drain_suspended / schedule() protocol from csp/src/csp.cc.
  *
- * The protocol ensures that when a microthread (MT) suspends and a waker
+ * The protocol ensures that when an imp (MT) suspends and a waker
  * calls schedule(), the wakeup is never lost — regardless of how the
  * two threads interleave.
  *
  * Participants:
- *   MT    — the suspending microthread (+ the drain context that runs
+ *   MT    — the suspending imp (+ the drain context that runs
  *           drain_suspended on its behalf after context switch)
  *   Waker — another thread calling mt->schedule()
  *
@@ -77,7 +77,7 @@ BeginSuspend ==
  * If wake_pending was FALSE: no wakeup yet. MT context-switches out
  * and awaits drain_suspended.
  *
- * Code: if (g_self->wake_pending_.exchange(false, acq_rel)) {
+ * Code: if (g_imp->wake_pending_.exchange(false, acq_rel)) {
  *           re-add to queue; return;
  *       } else { jump_fcontext(...); }
  *
@@ -98,7 +98,7 @@ CheckWP ==
  * could observe suspending=TRUE in between.
  *
  * Code: do_switch(Status::detach);
- *       g_self->suspending_.store(false, release);  // after return
+ *       g_imp->suspending_.store(false, release);  // after return
  *
  * TLA:DrainSuspended.ClearSusp *)
 ClearSusp ==

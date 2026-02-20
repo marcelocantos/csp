@@ -1,7 +1,7 @@
 # Channels Reference
 
 Channels are the core communication primitive in CSP. They provide typed,
-unbuffered, synchronous message passing between microthreads. A channel
+unbuffered, synchronous message passing between imps. A channel
 connects exactly one write endpoint to one read endpoint; the value is
 transferred directly from writer to reader with no intermediate storage.
 
@@ -85,7 +85,7 @@ csp::schedule();
 ## writer\<T\>
 
 The write endpoint of a channel. Sending a value through a writer suspends the
-current microthread until a reader is ready to receive it.
+current imp until a reader is ready to receive it.
 
 ### Signature
 
@@ -205,7 +205,7 @@ csp::schedule();
 ## reader\<T\>
 
 The read endpoint of a channel. Reading from a reader suspends the current
-microthread until a writer provides a value.
+imp until a writer provides a value.
 
 ### Signature
 
@@ -284,7 +284,7 @@ live.operator>>(dest)  ─┤writer ready├──➤ move(writer.val, dest); tr
 live.operator>>(dest)  ─┤no writers├────➤ false
 live.operator>>(dest)  ─┤waiting├───────➤ suspend until writer ready v no writers
 live.read()            ─┤writer ready├──➤ move(writer.val, local); return local
-live.read()            ─┤no writers├────➤ throw microthread_error("reader exhausted")
+live.read()            ─┤no writers├────➤ throw csp::error("reader exhausted")
 live.read()            ─┤waiting├───────➤ suspend until writer ready v no writers
 live.single()          ─────────────────➤ read one value; assert no more follow
 live.operator~()       ─────────────────➤ chan_op that matches when all writers die
@@ -304,7 +304,7 @@ channel is exhausted.
 
 **Blocking read.** `read()` is a convenience that reads one value and returns
 it directly. If the channel is exhausted (all writers destroyed, no pending
-value), it throws `microthread_error`.
+value), it throws `csp::error`.
 
 **Single.** `single()` reads exactly one value, then asserts that no more
 values follow. Useful for one-shot reply channels.
@@ -531,11 +531,11 @@ A rendezvous proceeds in two phases:
 1. **Match** (`prialt_begin` / `alt_begin`). The scheduler scans the set of
    channel operations. If a peer is already suspended and waiting on the
    opposite endpoint, a match is found. If no peer is ready, the current
-   microthread suspends until one becomes available or all peer endpoints die.
+   imp suspends until one becomes available or all peer endpoints die.
 
 2. **Transfer** (`alt_end`). The value is moved from the writer's message
    buffer to the reader's destination using `chan_op<T>::transfer` (a typed
-   `std::move` assignment). Both microthreads are then made runnable.
+   `std::move` assignment). Both imps are then made runnable.
 
 ### Rules
 
@@ -558,7 +558,7 @@ reader.suspend ─┤last writer dies├─➤ unblock reader; result = false
   side may arrive first; the first to arrive suspends until the other is ready.
 
 - **Death notification.** When all endpoints on one side are destroyed, any
-  microthreads suspended on the opposite side are unblocked with a failure
+  imps suspended on the opposite side are unblocked with a failure
   result. This allows loops to terminate naturally:
 
   ```cpp

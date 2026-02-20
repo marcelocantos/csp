@@ -30,7 +30,7 @@ graph LR
     P -->|"f(t)=2"| O2[reader&lt;T&gt; 2]
 ```
 
-One internal microthread reads each input element, evaluates the classifier,
+One internal imp reads each input element, evaluates the classifier,
 and writes the element to the corresponding output channel.
 
 ## Semantics

@@ -49,11 +49,11 @@ void BlockingPool::shutdown() {
     running_.store(false, std::memory_order_release);
 }
 
-void BlockingPool::submit(Microthread* mt, std::function<void()> fn) {
+void BlockingPool::submit(Imp* imp, std::function<void()> fn) {
     ensure_started();
     {
         std::lock_guard<std::mutex> lk(mu_);
-        queue_.push_back({mt, std::move(fn)});
+        queue_.push_back({imp, std::move(fn)});
     }
     cv_.notify_one();
 }
@@ -72,7 +72,7 @@ void BlockingPool::worker() {
             queue_.pop_back();
         }
         w.fn();
-        w.mt->schedule();
+        w.imp->schedule();
     }
 }
 
@@ -82,10 +82,10 @@ void BlockingPool::worker() {
 namespace csp::internal {
 
 void run_blocking(std::function<void()> fn) {
-    detail::g_self->suspending_.store(true, std::memory_order_release);
-    detail::BlockingPool::instance().submit(detail::g_self, std::move(fn));
+    detail::g_imp->suspending_.store(true, std::memory_order_release);
+    detail::BlockingPool::instance().submit(detail::g_imp, std::move(fn));
     detail::do_switch(detail::Status::detach);
-    detail::g_self->suspending_.store(false, std::memory_order_release);
+    detail::g_imp->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal
@@ -126,12 +126,12 @@ namespace {
 
     struct ChanopWaiter {
         ChanOp const * chanop;
-        Microthread * thread;
+        Imp * thread;
 
         bool operator==(ChanopWaiter const & cw) const { return chanop == cw.chanop && thread == cw.thread; }
         bool operator!=(ChanopWaiter const & cw) const { return !(*this == cw); }
 
-        ChanopWaiter(ChanOp const * chanop, Microthread * thread) : chanop{chanop}, thread{thread} { }
+        ChanopWaiter(ChanOp const * chanop, Imp * thread) : chanop{chanop}, thread{thread} { }
     };
 
 }
@@ -218,8 +218,8 @@ namespace {
                         // Wake waiters via CAS. Don't remove from queues —
                         // woken threads clean up their own registrations.
                         for (auto const & cw : ep.waiters) {
-                            uint32_t expected = Microthread::ALT_WAITING;
-                            if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
+                            uint32_t expected = Imp::ALT_WAITING;
+                            if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_);
                                 cw.thread->signal_ = ~idx;
                                 cw.thread->schedule();
@@ -227,8 +227,8 @@ namespace {
                         }
 
                         for (auto const & cv : ep.vultures) {
-                            uint32_t expected = Microthread::ALT_WAITING;
-                            if (cv.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
+                            uint32_t expected = Imp::ALT_WAITING;
+                            if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                                 int idx = int(cv.chanop - cv.thread->chanops_);
                                 cv.thread->signal_ = ~idx;
                                 cv.thread->schedule();
@@ -256,7 +256,7 @@ namespace {
             Channel** sorted;       // points to fixed_sorted or heap_alloc
             Channel** heap_alloc;   // non-null if heap-allocated
             int n_sorted;
-            Microthread* peer;
+            Imp* peer;
             bool needs_unlock;
             bool use_run;           // single-P writer: unlock then run
         };
@@ -264,9 +264,9 @@ namespace {
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
-            if (g_self->stk_) {
+            if (g_imp->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_self->stk_, __builtin_frame_address(0));
+                    g_imp->stk_, __builtin_frame_address(0));
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -351,8 +351,8 @@ namespace {
                     if ((flags & ready_flag)) {
                         // TLA:AltStateCAS.WakerStart TLA:AltStateCAS.WakerCAS
                         for (auto & cw : them) {
-                            uint32_t expected = Microthread::ALT_WAITING;
-                            if (cw.thread->alt_state.compare_exchange_strong(expected, Microthread::ALT_CLAIMED)) {
+                            uint32_t expected = Imp::ALT_WAITING;
+                            if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_);
                                 cw.thread->signal_ = idx;
 
@@ -393,7 +393,7 @@ namespace {
 
             // Phase 2: Register on all channels and sleep.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
-            g_self->alt_state.store(Microthread::ALT_WAITING, std::memory_order_release);
+            g_imp->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
@@ -402,8 +402,8 @@ namespace {
                 }
             }
 
-            g_self->chanops_ = chanops;
-            g_self->n_chanops_ = count;
+            g_imp->chanops_ = chanops;
+            g_imp->n_chanops_ = count;
             // Mark suspending_ before unlock_all so that schedule()
             // (called by a waker on another thread) will set
             // wake_pending_ instead of pushing to the global queue.
@@ -412,26 +412,26 @@ namespace {
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
-            g_self->suspending_.store(true, std::memory_order_release);
+            g_imp->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            g_self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < g_self->n_chanops_; ++i) {
-                auto const & chop = g_self->chanops_[i];
+            for (int i = 0; i < g_imp->n_chanops_; ++i) {
+                auto const & chop = g_imp->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, g_self);
+                    ch->endpts_[flags & endpt_flag].remove(&chop, g_imp);
                 }
             }
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
 
-            g_self->alt_state.store(Microthread::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
-            out->result = g_self->signal_;
-            g_self->chanops_ = nullptr;
-            g_self->n_chanops_ = 0;
+            g_imp->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+            out->result = g_imp->signal_;
+            g_imp->chanops_ = nullptr;
+            g_imp->n_chanops_ = 0;
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
@@ -471,13 +471,13 @@ namespace {
             void wait(ChanOp const * chop) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
-                    waiters.emplace(chop, g_self);
+                    waiters.emplace(chop, g_imp);
                 } else {
-                    vultures.emplace(chop, g_self);
+                    vultures.emplace(chop, g_imp);
                 }
             }
 
-            void remove(ChanOp const * chop, Microthread * t) {
+            void remove(ChanOp const * chop, Imp * t) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
                     waiters.remove({chop, t});
@@ -579,22 +579,22 @@ namespace csp {
             char c[16];
         };
 
-        static void vstatus(Microthread * mt, char const * msg, va_list args) {
-            char * buf = mt->status_;
-            int len = sizeof(mt->status_);
-            int n = snprintf(buf, len, "§%lu ", mt->id_);
+        static void vstatus(Imp * imp, char const * msg, va_list args) {
+            char * buf = imp->status_;
+            int len = sizeof(imp->status_);
+            int n = snprintf(buf, len, "§%lu ", imp->id_);
             vsnprintf(buf += n, len -= n, msg, args);
         }
 
         // After a context save completes, clear the suspended
-        // microthread's suspending_ flag and drain any deferred
+        // imp's suspending_ flag and drain any deferred
         // wake_pending_.  In M:N mode, both operations are done
         // under global_mu so they are mutually exclusive with
         // schedule()'s suspending_ check — eliminating the TOCTOU
         // race where schedule() sees suspending_==true and sets
         // wake_pending_, but the drain clears suspending_ and checks
         // wake_pending_ in between (seeing false both times).
-        static void drain_suspended(Microthread* suspended) {
+        static void drain_suspended(Imp* suspended) {
             auto& rt = Runtime::instance();
             if (rt.mn_mode_) {
                 bool need_unpark = false;
@@ -617,43 +617,43 @@ namespace csp {
             }
         }
 
-        static intptr_t switch_to(Microthread & mt, intptr_t data) {
-            auto self = g_self;
+        static intptr_t switch_to(Imp & target, intptr_t data) {
+            auto self = g_imp;
             // Acquire-load ctx_ to synchronize with the release-store
             // that saved the target's context on a (possibly different)
             // OS thread.  This ensures the saved register data on the
             // target's stack is visible to us before we jump.
-            auto ctx = mt.ctx_.load(std::memory_order_acquire);
+            auto ctx = target.ctx_.load(std::memory_order_acquire);
             current_p().save_ctx = &self->ctx_;
-            current_p().save_mt = self;
+            current_p().save_imp = self;
 #if CSP_TSAN
-            __tsan_switch_to_fiber(mt.tsan_fiber_, 0);
+            __tsan_switch_to_fiber(target.tsan_fiber_, 0);
 #endif
             auto t = jump_fcontext(ctx, (void *)data);
             // Release-store our caller's saved SP so that any thread
             // that later acquire-loads ctx_ will also see the register
             // data that jump_fcontext wrote to the caller's stack.
             current_p().save_ctx->store(t.fctx, std::memory_order_release);
-            drain_suspended(current_p().save_mt);
+            drain_suspended(current_p().save_imp);
             return (intptr_t)t.data;
         }
 
-        Microthread::Microthread(fcontext_t ctx, StackRegion stk) : ctx_(ctx), stk_(stk) {
+        Imp::Imp(fcontext_t ctx, StackRegion stk) : ctx_(ctx), stk_(stk) {
             prev_ = next_ = nullptr;
             snprintf(status_, sizeof(status_), "§%lu", id_);
         }
 
-        Microthread::Microthread() : Microthread(nullptr, {}) {
+        Imp::Imp() : Imp(nullptr, {}) {
             prev_ = next_ = this;
             snprintf(status_, sizeof(status_), "§main");
         }
 
-        Microthread::~Microthread() {
+        Imp::~Imp() {
             if (dyn_ctx_) csp::internal::hamt_release(dyn_ctx_);
             delete local_ctx_;
         }
 
-        void Microthread::schedule_local(bool make_current) {
+        void Imp::schedule_local(bool make_current) {
             std::lock_guard<std::mutex> lk(current_p().run_mu);
             if (next_) {
                 return;
@@ -671,7 +671,7 @@ namespace csp {
             }
         }
 
-        void Microthread::schedule(bool make_current) {
+        void Imp::schedule(bool make_current) {
             auto& rt = Runtime::instance();
 
             // In M:N mode, push to the global run queue so any worker
@@ -685,7 +685,7 @@ namespace csp {
                         return;
                     }
                     // TLA:DrainSuspended.DoSchedule
-                    // If the microthread is in the unlock_all→do_switch
+                    // If the imp is in the unlock_all→do_switch
                     // window, it's still running and can't be safely
                     // pushed to the global queue.  Set wake_pending_
                     // so the detach path will re-add it to a queue.
@@ -702,7 +702,7 @@ namespace csp {
             schedule_local(make_current);
         }
 
-        void Microthread::deschedule() {
+        void Imp::deschedule() {
             std::lock_guard<std::mutex> lk(current_p().run_mu);
             assert(next_);
             auto& busy = current_p().busy;
@@ -715,12 +715,12 @@ namespace csp {
             prev_ = nullptr;
         }
 
-        static void destroy_microthread(Microthread* mt) {
+        static void destroy_imp(Imp* imp) {
 #if CSP_TSAN
-            if (mt->tsan_fiber_) __tsan_destroy_fiber(mt->tsan_fiber_);
+            if (imp->tsan_fiber_) __tsan_destroy_fiber(imp->tsan_fiber_);
 #endif
-            auto region = mt->stk_;
-            mt->~Microthread();
+            auto region = imp->stk_;
+            imp->~Imp();
             StackPool::instance().release(region);
             auto& rt = Runtime::instance();
             if (rt.live_gs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -729,11 +729,11 @@ namespace csp {
             }
         }
 
-        void Microthread::run(Status status) {
+        void Imp::run(Status status) {
             auto& p = current_p();
             auto& busy = p.busy;
-            assert(this != g_self);
-            auto self = g_self;
+            assert(this != g_imp);
+            auto self = g_imp;
 
             // Manipulate run queue under lock, but release before context switch.
             {
@@ -743,31 +743,31 @@ namespace csp {
                 case Status::run:
                     break;
                 case Status::sleep:
-                    if (g_self == busy) {
+                    if (g_imp == busy) {
                         busy = busy->next_;
                     }
                     break;
                 case Status::detach: // TLA:StealWork.VDeschedule
                 case Status::exit:
                     // Inline deschedule without re-acquiring run_mu.
-                    assert(g_self->next_);
-                    if (busy == g_self && (busy = g_self->next_) == g_self) {
+                    assert(g_imp->next_);
+                    if (busy == g_imp && (busy = g_imp->next_) == g_imp) {
                         busy = nullptr;
                     }
-                    if (g_self->next_) g_self->next_->prev_ = g_self->prev_;
-                    if (g_self->prev_) g_self->prev_->next_ = g_self->next_;
-                    g_self->next_ = nullptr;
-                    g_self->prev_ = nullptr;
+                    if (g_imp->next_) g_imp->next_->prev_ = g_imp->prev_;
+                    if (g_imp->prev_) g_imp->prev_->next_ = g_imp->next_;
+                    g_imp->next_ = nullptr;
+                    g_imp->prev_ = nullptr;
 
                     // TLA:DrainSuspended.CheckWP
                     if (status == Status::detach &&
-                        g_self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                        g_imp->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                         if (busy) {
-                            g_self->next_ = busy;
-                            g_self->prev_ = busy->prev_;
-                            g_self->next_->prev_ = g_self->prev_->next_ = g_self;
+                            g_imp->next_ = busy;
+                            g_imp->prev_ = busy->prev_;
+                            g_imp->next_->prev_ = g_imp->prev_->next_ = g_imp;
                         } else {
-                            busy = g_self->next_ = g_self->prev_ = g_self;
+                            busy = g_imp->next_ = g_imp->prev_ = g_imp;
                         }
                         return;
                     }
@@ -787,34 +787,34 @@ namespace csp {
                 }
             }
 
-            auto killme = status == Status::exit ? g_self : nullptr;
-            auto killyou = reinterpret_cast<Microthread *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
+            auto killme = status == Status::exit ? g_imp : nullptr;
+            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
             if (killyou) {
-                destroy_microthread(killyou);
+                destroy_imp(killyou);
             }
 
             if (!killme) {
-                g_self = self;
+                g_imp = self;
             }
         }
 
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
             // Reclaim unused stack pages before suspending.
-            if (g_self->stk_) {
+            if (g_imp->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_self->stk_, __builtin_frame_address(0));
+                    g_imp->stk_, __builtin_frame_address(0));
             }
-            Microthread* target;
+            Imp* target;
             {
                 std::lock_guard<std::mutex> lk(current_p().run_mu);
                 // Update running to the active MT so steal_work skips it.
                 // (local_next sets running for the initial pick; chained
                 // do_switch calls keep it current as execution moves
-                // between microthreads.)
-                current_p().running = g_self;
+                // between imps.)
+                current_p().running = g_imp;
                 auto& busy = current_p().busy;
-                if (busy == g_self) {
+                if (busy == g_imp) {
                     busy = busy->next_;
                 }
                 target = busy;
@@ -842,8 +842,8 @@ namespace {
     struct StartData {
         void (* start_f)(void *);
         void * data;
-        Microthread & self;
-        Microthread & caller;
+        Imp & self;
+        Imp & caller;
     };
 
 }
@@ -851,29 +851,29 @@ namespace {
 static void start(transfer_t t) {
     if (current_p().save_ctx) {
         current_p().save_ctx->store(t.fctx, std::memory_order_release);
-        drain_suspended(current_p().save_mt);
+        drain_suspended(current_p().save_imp);
     }
     // Copy all data from StartData before the warmup switch, because
     // StartData lives on the spawner's stack and may be freed before
-    // this microthread resumes (in M:N mode, resumption happens on a
+    // this imp resumes (in M:N mode, resumption happens on a
     // different OS thread after the spawner has returned).
     auto & sd = *reinterpret_cast<StartData const *>(t.data);
     auto start_f = sd.start_f;
     auto data = sd.data;
     auto * self = &sd.self;
     auto parent_dyn_ctx = sd.caller.dyn_ctx_;
-    g_self = self;
+    g_imp = self;
     auto killyou_val = switch_to(sd.caller, 0);
     // After warmup switch, sd may be invalid. Use local copies only.
-    g_self = self;
+    g_imp = self;
     self->dyn_ctx_ = parent_dyn_ctx;
     if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
 
     // In M:N mode, the resuming switch may carry a killyou pointer — a
-    // dying microthread that exited and chained into us via run(exit).
+    // dying imp that exited and chained into us via run(exit).
     // Clean it up before running our own function.
-    if (auto* killyou = reinterpret_cast<Microthread*>(killyou_val)) {
-        destroy_microthread(killyou);
+    if (auto* killyou = reinterpret_cast<Imp*>(killyou_val)) {
+        destroy_imp(killyou);
     }
 
     try {
@@ -887,11 +887,11 @@ static void start(transfer_t t) {
 namespace csp::internal {
 
 int spawn(EntryFn start_f, void * data) {
-    (void)current_p(); // Ensure g_self is bound before use.
+    (void)current_p(); // Ensure g_imp is bound before use.
     // Reclaim unused stack pages at this API boundary.
-    if (g_self->stk_) {
+    if (g_imp->stk_) {
         StackPool::instance().maybe_shrink(
-            g_self->stk_, __builtin_frame_address(0));
+            g_imp->stk_, __builtin_frame_address(0));
     }
     try {
 #if CSP_USE_MMAP_STACKS
@@ -899,46 +899,46 @@ int spawn(EntryFn start_f, void * data) {
         auto region = pool.allocate();
         auto page_sz = pool.page_size();
         auto* top = static_cast<char*>(region.base) + region.total_size;
-        auto* mt = reinterpret_cast<Microthread*>(top) - 1;
-        assert(((uintptr_t)mt % 16) == 0);
+        auto* imp = reinterpret_cast<Imp*>(top) - 1;
+        assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
-        auto ctx = make_fcontext(mt, (char*)mt - usable_base, start);
-        new (mt) Microthread(ctx, region);
+        auto ctx = make_fcontext(imp, (char*)imp - usable_base, start);
+        new (imp) Imp(ctx, region);
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
         auto region = StackPool::instance().allocate();
         size_t S = region.total_size / 16;
-        auto* stk = static_cast<Microthread::StackSlot*>(region.base);
-        auto* mt = reinterpret_cast<Microthread*>(stk + S) - 1;
-        assert(((uintptr_t)mt % 16) == 0);
-        auto ctx = make_fcontext(mt, (char*)mt - (char*)stk, start);
-        new (mt) Microthread(ctx, region);
+        auto* stk = static_cast<Imp::StackSlot*>(region.base);
+        auto* imp = reinterpret_cast<Imp*>(stk + S) - 1;
+        assert(((uintptr_t)imp % 16) == 0);
+        auto ctx = make_fcontext(imp, (char*)imp - (char*)stk, start);
+        new (imp) Imp(ctx, region);
 #endif
 #if CSP_TSAN
-        mt->tsan_fiber_ = __tsan_create_fiber(0);
+        imp->tsan_fiber_ = __tsan_create_fiber(0);
 #endif
 
-        StartData const start_data = {start_f, data, *mt, *g_self};
-        auto self = g_self;
-        switch_to(*mt, reinterpret_cast<intptr_t>(&start_data));
-        g_self = self;
+        StartData const start_data = {start_f, data, *imp, *g_imp};
+        auto self = g_imp;
+        switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
+        g_imp = self;
 
         auto& rt = Runtime::instance();
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
 
         if (rt.mn_mode_) {
-            // M:N mode: after the handshake switch_to, mt is initialized
+            // M:N mode: after the handshake switch_to, imp is initialized
             // and suspended but NOT on any run queue. Push it to the
             // global queue for workers to pick up and run.
             {
                 std::lock_guard<std::mutex> lk(rt.global_mu);
-                rt.push_to_global(mt);
+                rt.push_to_global(imp);
             }
             rt.park_cv.notify_all();
         } else {
-            // Single-P mode: run the microthread on the main thread
+            // Single-P mode: run the imp on the main thread
             // (original behavior — run until it yields).
-            mt->run(Status::run);
+            imp->run(Status::run);
             rt.unpark_one();
         }
 
@@ -955,36 +955,36 @@ void sleep_until(int64_t deadline_ns) {
     auto deadline = steady_clock::time_point(nanoseconds(deadline_ns));
     {
         std::lock_guard<std::mutex> lk(current_p().run_mu);
-        current_p().timer_heap.push({deadline, g_self});
+        current_p().timer_heap.push({deadline, g_imp});
     }
-    g_self->suspending_.store(true, std::memory_order_release); // TLA:DrainSuspended.BeginSuspend
+    g_imp->suspending_.store(true, std::memory_order_release); // TLA:DrainSuspended.BeginSuspend
     do_switch(Status::detach);
-    g_self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+    g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 }
 
 int run() {
     auto& p = current_p();
     auto& timer_heap = p.timer_heap;
 
-    // Fire expired timers — reschedule their microthreads.
+    // Fire expired timers — reschedule their imps.
     {
         auto now = std::chrono::steady_clock::now();
         while (!timer_heap.empty() && timer_heap.top().deadline <= now) {
-            auto mt = timer_heap.top().thread;
+            auto imp = timer_heap.top().thread;
             timer_heap.pop();
-            mt->schedule_local();
+            imp->schedule_local();
         }
     }
 
-    Microthread* target = nullptr;
+    Imp* target = nullptr;
     bool has_timers = false;
     {
         std::lock_guard<std::mutex> lk(p.run_mu);
         auto& busy = p.busy;
-        if (busy == g_self) {
+        if (busy == g_imp) {
             busy = busy->next_;
         }
-        if (busy != g_self) {
+        if (busy != g_imp) {
             target = busy;
         }
         has_timers = !timer_heap.empty();
@@ -993,7 +993,7 @@ int run() {
     if (target) {
         target->run();
     } else if (has_timers) {
-        // All microthreads blocked, but timers pending — sleep until next deadline.
+        // All imps blocked, but timers pending — sleep until next deadline.
         std::this_thread::sleep_until(timer_heap.top().deadline);
     }
 
@@ -1018,14 +1018,14 @@ void yield() {
 void descr(char const * fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    vstatus(g_self, fmt, args);
+    vstatus(g_imp, fmt, args);
     va_end(args);
 
-    pthread_setname_np(getstatus(g_self));
+    pthread_setname_np(getstatus(g_imp));
 }
 
 char const * get_descr(void * thr) {
-    return getfullstatus(thr ? static_cast<Microthread const *>(thr) : g_self);
+    return getfullstatus(thr ? static_cast<Imp const *>(thr) : g_imp);
 }
 
 } // namespace csp::internal
@@ -1166,7 +1166,7 @@ uintptr_t hamt_assoc(uintptr_t root, uint64_t key, std::any value) {
 
 } // namespace csp::internal
 
-/* mt_log.cc */
+/* log.cc */
 
 
 #include <errno.h>
@@ -1390,7 +1390,7 @@ namespace csp {
             {
                 std::vector<std::string> ignore{
                     "csp::Logger::",
-                    "_ZN3csp6detailL9switch_toERNS0_11MicrothreadEl",
+                    "_ZN3csp6detailL9switch_toERNS0_3ImpEl",
                     "std::__1::",
                     "<redacted>",
                 };
@@ -1511,16 +1511,16 @@ void Reactor::wake() {
     kevent(kq_, &ev, 1, nullptr, 0, nullptr);
 }
 
-void Reactor::wait_read(int fd, Microthread* mt) {
+void Reactor::wait_read(int fd, Imp* imp) {
     struct kevent ev;
-    EV_SET(&ev, fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, mt);
+    EV_SET(&ev, fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, imp);
     int rc = kevent(kq_, &ev, 1, nullptr, 0, nullptr);
     assert(rc == 0);
 }
 
-void Reactor::wait_write(int fd, Microthread* mt) {
+void Reactor::wait_write(int fd, Imp* imp) {
     struct kevent ev;
-    EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, mt);
+    EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, imp);
     int rc = kevent(kq_, &ev, 1, nullptr, 0, nullptr);
     assert(rc == 0);
 }
@@ -1543,8 +1543,8 @@ void Reactor::loop() {
         }
         for (int i = 0; i < n; ++i) {
             if (events[i].filter == EVFILT_USER) continue;
-            auto* mt = static_cast<Microthread*>(events[i].udata);
-            mt->schedule();
+            auto* imp = static_cast<Imp*>(events[i].udata);
+            imp->schedule();
         }
     }
 }
@@ -1563,20 +1563,20 @@ void io_wait_readable(int fd) {
     auto& reactor = detail::Reactor::instance();
     reactor.ensure_started();
 
-    detail::g_self->suspending_.store(true, std::memory_order_release);
-    reactor.wait_read(fd, detail::g_self);
+    detail::g_imp->suspending_.store(true, std::memory_order_release);
+    reactor.wait_read(fd, detail::g_imp);
     detail::do_switch(detail::Status::detach);
-    detail::g_self->suspending_.store(false, std::memory_order_release);
+    detail::g_imp->suspending_.store(false, std::memory_order_release);
 }
 
 void io_wait_writable(int fd) {
     auto& reactor = detail::Reactor::instance();
     reactor.ensure_started();
 
-    detail::g_self->suspending_.store(true, std::memory_order_release);
-    reactor.wait_write(fd, detail::g_self);
+    detail::g_imp->suspending_.store(true, std::memory_order_release);
+    reactor.wait_write(fd, detail::g_imp);
     detail::do_switch(detail::Status::detach);
-    detail::g_self->suspending_.store(false, std::memory_order_release);
+    detail::g_imp->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal
@@ -1669,12 +1669,12 @@ namespace csp {
             park_cv.notify_all();
         }
 
-        void Runtime::push_to_global(Microthread* mt) {
+        void Runtime::push_to_global(Imp* imp) {
             // Caller must hold global_mu.
-            assert(!mt->next_);
-            assert(!mt->in_global_);
-            mt->in_global_ = true;
-            global_run_queue.push_back(mt);
+            assert(!imp->next_);
+            assert(!imp->in_global_);
+            imp->in_global_ = true;
+            global_run_queue.push_back(imp);
         }
 
         void Runtime::worker_loop() {
@@ -1688,7 +1688,7 @@ namespace csp {
                 fire_timers(p);
 
                 // Try local run queue.
-                Microthread* next = local_next(p);
+                Imp* next = local_next(p);
                 if (next) {
                     next->run();
                     continue;
@@ -1750,7 +1750,7 @@ namespace csp {
         }
 
         void Runtime::main_loop() {
-            // Main thread waits for all microthreads to complete.
+            // Main thread waits for all imps to complete.
             // Workers do all the actual execution.
             std::unique_lock<std::mutex> lk(park_mu);
             park_cv.wait(lk, [this] {
@@ -1805,7 +1805,7 @@ namespace csp {
         }
 
         // TLA:StealWork.VLocalNext
-        Microthread* Runtime::local_next(Processor& p) {
+        Imp* Runtime::local_next(Processor& p) {
             std::lock_guard<std::mutex> lk(p.run_mu);
             auto& busy = p.busy;
             if (!busy) {
@@ -1813,12 +1813,12 @@ namespace csp {
                 return nullptr;
             }
 
-            // Skip past g_self (the sentinel/main) to find real work.
+            // Skip past g_imp (the sentinel/main) to find real work.
             auto* candidate = busy;
-            if (candidate == g_self) {
+            if (candidate == g_imp) {
                 candidate = candidate->next_;
             }
-            if (candidate == g_self || candidate == &p.main) {
+            if (candidate == g_imp || candidate == &p.main) {
                 p.running = nullptr;
                 return nullptr;
             }
@@ -1839,10 +1839,10 @@ namespace csp {
             int np = num_procs_.load(std::memory_order_relaxed);
             int n = std::max(1, avail / np);
             for (int i = 0; i < n; ++i) {
-                auto* mt = global_run_queue.front();
+                auto* imp = global_run_queue.front();
                 global_run_queue.pop_front();
-                mt->in_global_ = false;
-                mt->schedule_local();
+                imp->in_global_ = false;
+                imp->schedule_local();
             }
             return true;
         }
@@ -1854,7 +1854,7 @@ namespace csp {
             // owning worker fires its own timers), and std::mutex is
             // not recursive. It also allows the watchdog (which has no
             // P) to fire timers from stalled Ps via the global queue.
-            Microthread* expired[64];
+            Imp* expired[64];
             int count = 0;
             {
                 std::lock_guard<std::mutex> lk(p.run_mu);
@@ -1878,7 +1878,7 @@ namespace csp {
                 if (&victim == &thief) continue;
                 if (!victim.alive.load(std::memory_order_acquire)) continue;
 
-                Microthread* stolen = nullptr;
+                Imp* stolen = nullptr;
                 {
                     std::lock_guard<std::mutex> lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
 
@@ -1967,11 +1967,11 @@ namespace csp {
 //
 // Each notify() call creates a pipe. The signal handler writes the
 // signal number (as a byte) to every pipe whose mask includes that
-// signal. A microthread per pipe reads bytes and writes them to a
+// signal. An imp per pipe reads bytes and writes them to a
 // CSP channel.
 //
 // The handler only touches: atomic loads, pipe write() — both
-// async-signal-safe. All complex logic lives in the microthreads.
+// async-signal-safe. All complex logic lives in the imps.
 
 namespace {
 
@@ -2058,7 +2058,7 @@ reader<int> notify(std::initializer_list<int> sigs) {
     return spawn_producer<int>([rfd, wfd, idx](writer<int> out) {
         internal::descr("signal");
 
-        // Sentinel MT: watches for output reader death or producer exit.
+        // Sentinel imp: watches for output reader death or producer exit.
         // Closes the pipe write end so the producer's io::read() returns
         // EOF and the loop terminates.  The kill channel detects producer
         // exit (kill_w destroyed → ~kill_r fires in sentinel).
@@ -3226,7 +3226,7 @@ void StackPool::munmap_region(StackRegion region) {
 }
 
 StackRegion StackPool::allocate() {
-    // Under sanitizers: use the fixed stack size from Microthread.
+    // Under sanitizers: use the fixed stack size from Imp.
     // 128KB under sanitizers = 8192 StackSlotAlloc (16 bytes each).
     static constexpr size_t kSanitStack = 128 << 10;
     static constexpr size_t S = kSanitStack / 16;

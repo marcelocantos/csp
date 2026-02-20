@@ -22,13 +22,13 @@ graph LR
     FW --> V["T value"]
 ```
 
-No microthreads are spawned. `first_wins` blocks the calling microthread using
+No imps are spawned. `first_wins` blocks the calling imp using
 `alt` until one of the inputs produces a value. All remaining readers are
 dropped when the function returns.
 
 ## Semantics
 
-- **Blocking call**: `first_wins` suspends the calling microthread until at
+- **Blocking call**: `first_wins` suspends the calling imp until at
   least one input delivers a value.
 - **First value wins**: The first reader to produce a value determines the
   result. All other readers are dropped (their channels close from the reader

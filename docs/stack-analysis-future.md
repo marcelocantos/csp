@@ -465,8 +465,8 @@ analyses, rather than an arbitrary constant.
 
 `analyze_stack_depth` is called from system-thread spawns (which can
 afford the cost) but `analyze_stack_depth_cached` is used for
-microthread spawns (where latency matters). If a function hasn't been
-analyzed yet, the microthread gets the 32 KB conservative default.
+imp spawns (where latency matters). If a function hasn't been
+analyzed yet, the imp gets the 32 KB conservative default.
 
 ### Design
 
@@ -609,7 +609,7 @@ callee result is in `g_eval_cache` and the bytecode evaluator reuses it.
 The sub-cache avoids even running the bytecode replay — it short-circuits
 the entire evaluation for a known (fn, targets) pair.
 
-For programs that spawn many microthreads with the same closure type but
+For programs that spawn many imps with the same closure type but
 different captured values, the first spawn evaluates fully, and all
 subsequent spawns with the same function-pointer layout hit the sub-cache
 in ~5 ns.

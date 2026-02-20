@@ -50,21 +50,21 @@ inline constexpr none_t none{};
 ## Lifecycle
 
 ```cpp
-// Spawn a microthread. Returns reader<exception_ptr> (join handle).
-// f is taken BY VALUE (moved into the microthread).
+// Spawn an imp. Returns reader<exception_ptr> (join handle).
+// f is taken BY VALUE (moved into the imp).
 template <typename F> reader<std::exception_ptr> spawn(F&& f);
 
-// Block until spawned microthread finishes; rethrows its exception.
+// Block until spawned imp finishes; rethrows its exception.
 void join(reader<std::exception_ptr> const& r);
 
-// Run the scheduler (blocks until all microthreads complete).
+// Run the scheduler (blocks until all imps complete).
 void schedule();
 
 // M:N runtime (required for I/O, timers, signals, blocking).
 void init_runtime(int num_procs = 0);  // 0 = hardware_concurrency
 void shutdown_runtime();
 
-// Cooperative yield (no-op outside a microthread).
+// Cooperative yield (no-op outside an imp).
 void yield();
 ```
 
@@ -87,7 +87,7 @@ int v;
 r >> v;                      // statement: blocks
 if (r >> v) { /* got v */ }  // expression: blocks, tests success
 
-// Read and return (throws microthread_error if dead).
+// Read and return (throws csp::error if dead).
 int v = r.read();
 
 // Range-for over reader (reads until channel dies).
@@ -154,17 +154,17 @@ int result = alt(ops, csp::none);  // or prialt(ops, csp::none)
 ## Spawn Helpers
 
 ```cpp
-// Spawn a producer microthread, return its output reader.
+// Spawn a producer imp, return its output reader.
 template <typename T, typename F>
 reader<T> spawn_producer(F&& f);
 // f signature: void(writer<T>)
 
-// Spawn a consumer microthread, return its input writer.
+// Spawn a consumer imp, return its input writer.
 template <typename T, typename F>
 writer<T> spawn_consumer(F&& f);
 // f signature: void(reader<T>)
 
-// Spawn a filter microthread, return {input_writer, output_reader}.
+// Spawn a filter imp, return {input_writer, output_reader}.
 template <typename T, typename F>
 chan<T> spawn_filter(F&& f);
 // f signature: void(reader<T>, writer<T>)
@@ -263,7 +263,7 @@ switch (prialt(data >> v, sig >> s)) {
 ## Blocking
 
 ```cpp
-// Run fn on OS thread pool; suspend calling microthread until done.
+// Run fn on OS thread pool; suspend calling imp until done.
 template <typename Fn> auto blocking(Fn&& fn) -> invoke_result_t<Fn>;
 
 // Example:
@@ -294,13 +294,13 @@ spawn([ctx] {
     // *depth == 1 here
 });
 
-// Spawned microthreads inherit parent's context automatically.
+// Spawned imps inherit parent's context automatically.
 
-// Microthread-local (not inherited, direct write).
-csp::mt_local<int> counter;
+// Imp-local (not inherited, direct write).
+csp::imp_local<int> counter;
 counter = 42;       // direct write, no local needed
 int v = *counter;   // 42
-// Child microthreads start with default (0), not parent's value.
+// Child imps start with default (0), not parent's value.
 ```
 
 ## Parts System
@@ -423,7 +423,7 @@ All in `namespace csp::part` (included via `csp.h`).
    the return: `auto op = w << val; op.disarm();`.
 
 5. **`spawn(f)` takes f by value**: The callable is moved into the
-   microthread. Ensure captured state is either moved or intentionally
+   imp. Ensure captured state is either moved or intentionally
    shared (via `shared_ptr` or `.copy()`).
 
 6. **Reader range-for copies**: `for (T v : reader)` copies each value.
@@ -443,8 +443,8 @@ All in `namespace csp::part` (included via `csp.h`).
     binding, not a mutation. Always wrap in `csp::local l{var = val}`.
     Bare `var = val;` asserts in debug builds.
 
-11. **Dynamic scoping is per-microthread**: Bindings via `local` use
-    COW (path-copy HAMT). Changes are invisible to other microthreads
+11. **Dynamic scoping is per-imp**: Bindings via `local` use
+    COW (path-copy HAMT). Changes are invisible to other imps
     unless explicitly shared via `context::current()` + `context_scope`.
 
 ## Integration

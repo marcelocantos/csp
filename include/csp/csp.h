@@ -1,6 +1,6 @@
 #pragma once
 
-#include <csp/internal/mt_log.h>
+#include <csp/internal/log.h>
 
 #include <cassert>
 #include <climits>
@@ -50,10 +50,10 @@ struct AltMatch {
     alignas(8) char opaque_[128];
 };
 
-// Microthread entry function.
+// Imp entry function.
 using EntryFn = void (*)(void *);
 
-// Microthread management.
+// Imp management.
 int spawn(EntryFn entry, void * data);
 int run();
 void yield();
@@ -106,8 +106,7 @@ extern Logger g_descrlog;
 void set_scheduler(std::function<void()> f);
 void schedule();
 
-// Yield control so other microthreads can run. Does nothing outside a
-// microthread.
+// Yield control so other imps can run. Does nothing outside an imp.
 inline void yield() { internal::yield(); }
 
 // Initialize the M:N runtime with the given number of processors (0 = auto).
@@ -115,7 +114,7 @@ inline void yield() { internal::yield(); }
 void init_runtime(int num_procs = 0);
 void shutdown_runtime();
 
-class microthread_error : public std::runtime_error {
+class error : public std::runtime_error {
 public:
     using std::runtime_error::runtime_error;
 };
@@ -387,7 +386,7 @@ public:
     T read() const {
         T t;
         if (!(*this >> t)) {
-            throw microthread_error("reader exhausted");
+            throw error("reader exhausted");
         }
         return t;
     }
@@ -467,7 +466,7 @@ struct chan {
         internal::WriterRef cw;
         internal::ReaderRef cr;
         if (!internal::make_chan(&cw, &cr)) {
-            throw microthread_error("channel creation failed");
+            throw error("channel creation failed");
         }
         w.assign(cw);
         r.assign(cr);
@@ -508,7 +507,7 @@ void make_channel(writer<T> & w, reader<T> & r) {
 template <typename T>
 reader<T> operator--(writer<T> & w) {
     if (w) {
-        throw microthread_error("writer already attached channel");
+        throw error("writer already attached channel");
     }
     auto [cw, cr] = chan<T>{};
     w = std::move(cw);
@@ -519,7 +518,7 @@ reader<T> operator--(writer<T> & w) {
 template <typename T>
 writer<T> operator++(reader<T> & r) {
     if (r) {
-        throw microthread_error("reader already attached to channel");
+        throw error("reader already attached to channel");
     }
     auto [cw, cr] = chan<T>{};
     r = std::move(cr);
@@ -576,7 +575,7 @@ reader<std::exception_ptr> spawn(F && f) {
     reader<std::exception_ptr> r;
     auto sd = new detail::spawn_data<F>{std::move(f), ++r};
     if (!internal::spawn(detail::spawn_entry<F>, sd)) {
-        throw microthread_error("spawn failed");
+        throw error("spawn failed");
     }
     return r;
 }

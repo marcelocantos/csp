@@ -19,13 +19,13 @@ graph LR
     A[reader&lt;A&gt;] --> B["map(f)"] --> C[reader&lt;B&gt;]
 ```
 
-One internal microthread reads from the input, applies `f`, and writes the
+One internal imp reads from the input, applies `f`, and writes the
 result to the output.
 
 ## Semantics
 
 - Exits when the input is exhausted or the output reader is dropped.
-- Backpressure: the microthread blocks on each output write, so a slow
+- Backpressure: the imp blocks on each output write, so a slow
   consumer throttles the entire pipeline.
 - Each input value is passed by value to `f`. The result of `f` is written
   to the output channel.

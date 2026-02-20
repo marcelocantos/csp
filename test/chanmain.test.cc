@@ -64,7 +64,7 @@ auto worker = [](auto && o, auto && i) {
     };
 };
 
-// First confirm that it runs as a regular microthread.
+// First confirm that it runs as a regular imp.
 TEST_CASE("ChanMain - WriteReadNormal") {
     RunStats stats;
 

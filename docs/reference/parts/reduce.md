@@ -18,7 +18,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["reduce(init, f)"] --> C[reader&lt;S&gt;]
 ```
 
-A microthread is spawned to consume the input. The output reader produces
+A imp is spawned to consume the input. The output reader produces
 exactly one value (the final accumulator) when the input is exhausted.
 
 ## Semantics

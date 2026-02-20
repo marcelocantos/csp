@@ -452,13 +452,13 @@ def main():
 
     # --- csp.cpp: all source files except csp_globals.cpp ---
     # csp_globals.cpp MUST be a separate TU.  It defines the
-    # thread_local variable g_self.  When the definition and the
+    # thread_local variable g_imp.  When the definition and the
     # extern declaration (from csp_internal.h) are in the same TU,
     # Clang generates direct TLV-descriptor access and may cache the
     # resolved TLS address across jump_fcontext calls.  Because
-    # jump_fcontext can resume a microthread on a different OS thread,
+    # jump_fcontext can resume an imp on a different OS thread,
     # the cached address becomes stale and writes to the wrong TLS
-    # slot — corrupting g_self and crashing the M:N scheduler.
+    # slot — corrupting g_imp and crashing the M:N scheduler.
     # Keeping csp_globals.cpp separate forces the wrapper-call
     # pattern, which re-resolves the TLS address on every access.
     globals_file = src_dir / 'csp_globals.cpp'

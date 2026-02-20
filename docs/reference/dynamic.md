@@ -1,8 +1,8 @@
 # Dynamic Scoping Reference
 
 Dynamic-scoped variables provide implicit context that flows through the
-microthread call and spawn hierarchy. Unlike lexical variables, dynamic
-variables are visible to all callees and child microthreads without explicit
+imp call and spawn hierarchy. Unlike lexical variables, dynamic
+variables are visible to all callees and child imps without explicit
 parameter passing. All types live in `namespace csp`. Header:
 `#include "csp.h"`.
 
@@ -16,16 +16,16 @@ parameter passing. All types live in `namespace csp`. Header:
 4. [local](#local) -- scoped binding installer
 5. [context](#context) -- portable context handle
 6. [context\_scope](#context_scope) -- foreign context installer
-7. [mt\_local\<T\>](#mt_localt) -- microthread-local variable
+7. [imp\_local\<T\>](#imp_localt) -- imp-local variable
 
 ---
 
 ## Overview
 
 Dynamic variables form a layered binding environment carried by each
-microthread. The environment is stored as a persistent hash array mapped trie
-(HAMT) rooted at `Microthread::dyn_ctx_`. Each `local` scope creates a new
-HAMT root via path-copy, leaving the parent root untouched. When a microthread
+imp. The environment is stored as a persistent hash array mapped trie
+(HAMT) rooted at `Imp::dyn_ctx_`. Each `local` scope creates a new
+HAMT root via path-copy, leaving the parent root untouched. When an imp
 spawns a child, the child inherits the parent's current HAMT root, giving it
 a snapshot of all bindings at the point of spawn.
 
@@ -67,8 +67,8 @@ public:
 
 Each default-constructed `context_key` receives a globally unique ID from a
 monotonic atomic counter. Copies compare and hash equal to the original.
-`dynamic<T>` and `mt_local<T>` each hold one `context_key` as their identity
-in the HAMT or per-microthread map.
+`dynamic<T>` and `imp_local<T>` each hold one `context_key` as their identity
+in the HAMT or per-imp map.
 
 Users do not construct `context_key` directly; it is an implementation detail
 exposed for completeness.
@@ -77,7 +77,7 @@ exposed for completeness.
 
 ## dynamic\<T\>
 
-A typed dynamic-scoped variable. The value is inherited by child microthreads
+A typed dynamic-scoped variable. The value is inherited by child imps
 via `spawn` and scoped via `local`.
 
 ### Signature
@@ -105,7 +105,7 @@ local scope -- it holds a unique `context_key` and an optional default value.
 If `T` is default-constructible, the parameterless constructor stores `T{}` as
 the default. Otherwise, an explicit default must be provided.
 
-**Reading.** `operator*()` performs an HAMT lookup on the current microthread's
+**Reading.** `operator*()` performs an HAMT lookup on the current imp's
 `dyn_ctx_` using the variable's key. If a binding exists, the value is returned
 by value via `std::any_cast<T>`. If no binding exists, the default is returned.
 It is undefined behaviour to dereference a `dynamic<T>` that has no binding and
@@ -291,7 +291,7 @@ csp::schedule();
 ## context
 
 A copyable, sendable handle to a snapshot of an HAMT root. Allows dynamic
-variable bindings to be transferred across microthread boundaries.
+variable bindings to be transferred across imp boundaries.
 
 ### Signature
 
@@ -315,19 +315,19 @@ public:
 
 `context` wraps a refcounted HAMT root pointer. Copying a `context` retains
 the root; destruction releases it. The HAMT is persistent, so a snapshot
-remains valid regardless of subsequent mutations in the original microthread.
+remains valid regardless of subsequent mutations in the original imp.
 
-**`current()`** captures the calling microthread's `dyn_ctx_` as a `context`.
-This is the primary way to obtain a `context` for cross-microthread transfer.
+**`current()`** captures the calling imp's `dyn_ctx_` as a `context`.
+This is the primary way to obtain a `context` for cross-imp transfer.
 
 **Sendable.** `context` is copyable and can be sent over a `chan<context>`. The
-receiving microthread can install it via `context_scope` to temporarily adopt
+receiving imp can install it via `context_scope` to temporarily adopt
 the sender's dynamic variable bindings.
 
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-context::current()     ────────➤ retain(g_self->dyn_ctx_); context{root}
+context::current()     ────────➤ retain(g_imp->dyn_ctx_); context{root}
 context(copy)          ────────➤ retain(copy.root_)
 context(move)          ────────➤ transfer root_; source.root_ = 0
 ~context()             ─┤root != 0├───➤ release(root_)
@@ -366,8 +366,8 @@ csp::schedule();
 
 ## context\_scope
 
-RAII guard that saves the current microthread's dynamic context and installs
-a foreign context obtained from another microthread.
+RAII guard that saves the current imp's dynamic context and installs
+a foreign context obtained from another imp.
 
 ### Signature
 
@@ -402,7 +402,7 @@ with the provided context's root (with retain). The old root is released.
 **Destruction.** Restores the saved `dyn_ctx_` and releases the installed
 foreign root.
 
-Use `context_scope` when a microthread receives a `context` over a channel and
+Use `context_scope` when an imp receives a `context` over a channel and
 needs to temporarily operate under the sender's dynamic variable bindings. For
 binding variables directly, prefer `local`.
 
@@ -443,54 +443,54 @@ csp::schedule();
 
 ---
 
-## mt\_local\<T\>
+## imp\_local\<T\>
 
-A microthread-local variable. Each microthread has its own independent value,
-stored in a lazily allocated per-microthread map. Unlike `dynamic<T>`,
-`mt_local<T>` is **not** inherited by child microthreads and supports direct
+A imp-local variable. Each imp has its own independent value,
+stored in a lazily allocated per-imp map. Unlike `dynamic<T>`,
+`imp_local<T>` is **not** inherited by child imps and supports direct
 assignment without `local`.
 
 ### Signature
 
 ```cpp
 template <typename T>
-class mt_local {
+class imp_local {
 public:
-    mt_local();                         // default T{} if default-constructible
-    explicit mt_local(T def);           // explicit default value
+    imp_local();                         // default T{} if default-constructible
+    explicit imp_local(T def);           // explicit default value
 
     T operator*() const;                // read current value
 
-    mt_local& operator=(T val);         // direct write
+    imp_local& operator=(T val);         // direct write
 
-    mt_local(const mt_local&) = delete;
-    mt_local& operator=(const mt_local&) = delete;
+    imp_local(const imp_local&) = delete;
+    imp_local& operator=(const imp_local&) = delete;
 };
 ```
 
 ### Description
 
-**Construction.** Like `dynamic<T>`, an `mt_local<T>` should be declared at
+**Construction.** Like `dynamic<T>`, an `imp_local<T>` should be declared at
 namespace or `static` local scope. If `T` is default-constructible, the
 parameterless constructor stores `T{}` as the default.
 
 **Reading.** `operator*()` looks up the variable's key in the current
-microthread's `local_ctx_` map. If found, the value is returned via
+imp's `local_ctx_` map. If found, the value is returned via
 `std::any_cast<T>`. If not found, the default is returned. It is undefined
-behaviour to dereference an `mt_local<T>` with no stored value and no default.
+behaviour to dereference an `imp_local<T>` with no stored value and no default.
 
 **Writing.** `operator=(T val)` stores the value directly in the current
-microthread's `local_ctx_` map (lazily allocated on first write). No `local`
-scope is needed. The write is visible only to the current microthread.
+imp's `local_ctx_` map (lazily allocated on first write). No `local`
+scope is needed. The write is visible only to the current imp.
 
-**Not inherited.** When a microthread spawns a child, the child starts with an
-empty `local_ctx_`. The child sees only default values for all `mt_local`
+**Not inherited.** When an imp spawns a child, the child starts with an
+empty `local_ctx_`. The child sees only default values for all `imp_local`
 variables, regardless of the parent's state. This is the key distinction from
 `dynamic<T>`.
 
-**Storage.** Each microthread's `local_ctx_` is an
+**Storage.** Each imp's `local_ctx_` is an
 `unordered_map<uint64_t, std::any>`, allocated on first write and destroyed
-with the microthread.
+with the imp.
 
 ### Transition rules ([syntax](transition-rules.md))
 
@@ -505,7 +505,7 @@ operator=(v)  ──────────────────────
 ```cpp
 #include "csp.h"
 
-static csp::mt_local<int> call_count;
+static csp::imp_local<int> call_count;
 
 csp::spawn([] {
     assert(*call_count == 0);
@@ -533,12 +533,12 @@ csp::schedule();
 
 ---
 
-## dynamic\<T\> vs mt\_local\<T\>
+## dynamic\<T\> vs imp\_local\<T\>
 
-| Property | `dynamic<T>` | `mt_local<T>` |
+| Property | `dynamic<T>` | `imp_local<T>` |
 |----------|-------------|---------------|
 | Inherited by children | Yes (HAMT snapshot at spawn) | No |
 | Write mechanism | `local` scope (RAII, path-copy) | Direct `operator=` |
-| Isolation | Copy-on-write per scope | Per-microthread map |
+| Isolation | Copy-on-write per scope | Per-imp map |
 | Storage | Persistent HAMT (shared structure) | `unordered_map` per MT |
 | Use case | Request context, trace IDs, config | Counters, caches, scratch state |

@@ -88,7 +88,7 @@ TEST_CASE("Timer - TickCancellation") {
     });
 
     csp::schedule();
-    // If the tick microthread didn't exit, schedule() would hang.
+    // If the tick imp didn't exit, schedule() would hang.
 }
 
 TEST_CASE("Timer - MultipleTimersOrdering") {

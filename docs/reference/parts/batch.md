@@ -20,7 +20,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["batch(n)"] --> C["reader&lt;vector&lt;T&gt;&gt;"]
 ```
 
-One internal microthread accumulates up to `n` elements, then writes the
+One internal imp accumulates up to `n` elements, then writes the
 vector to the output channel.
 
 ## Semantics
@@ -32,7 +32,7 @@ vector to the output channel.
   vector is emitted.
 - Exits when the input is exhausted (after flushing) or the output reader
   is dropped.
-- Backpressure: the microthread blocks on each vector write, so a slow
+- Backpressure: the imp blocks on each vector write, so a slow
   consumer throttles the pipeline.
 
 ## Example

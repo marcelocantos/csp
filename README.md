@@ -1,11 +1,11 @@
 # CSP
 
-A C++ microthreading library with typed, synchronous channels inspired by
+A C++ imp-based concurrency library with typed, synchronous channels inspired by
 [Communicating Sequential Processes](https://en.wikipedia.org/wiki/Communicating_sequential_processes).
 
 ## Features
 
-- **Lightweight userspace threads** with M:N scheduling and work stealing
+- **Lightweight userspace threads (imps)** with M:N scheduling and work stealing
 - **Typed synchronous channels** — unbuffered, blocking send/receive
 - **Per-endpoint lifecycle** — either end can close independently; death is
   observable via `alt`/`prialt`
@@ -16,7 +16,7 @@ A C++ microthreading library with typed, synchronous channels inspired by
 - **Non-blocking I/O and Unix signals** via kqueue reactor
 - **Dynamic scoping** — inherited variables with scoped bindings and copy-on-write
   isolation
-- **Microthread-local storage** — per-microthread variables (not inherited)
+- **Imp-local storage** — per-imp variables (not inherited)
 
 ## Quick start
 
@@ -49,7 +49,7 @@ int main() {
     spawn([] {
         chan<int> ch;
 
-        // Producer — move the writer into the spawned microthread.
+        // Producer — move the writer into the spawned imp.
         spawn([w = std::move(ch.w)] {
             for (int i = 0; i < 10; ++i)
                 w << i;
@@ -69,7 +69,7 @@ int main() {
 error, not a silent deadlock. `w << i` blocks until the consumer is ready;
 the range-for blocks until the producer sends. When the producer returns, the
 writer is destroyed and the consumer's loop exits. `schedule()` drives
-microthreads to completion.
+imps to completion.
 
 ## Documentation
 

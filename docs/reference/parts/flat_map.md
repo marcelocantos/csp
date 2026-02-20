@@ -26,7 +26,7 @@ graph LR
     SN --> OUT
 ```
 
-One internal microthread manages the main loop. For each input element, `f`
+One internal imp manages the main loop. For each input element, `f`
 returns a `reader<B>` sub-stream. All active sub-streams are polled
 concurrently via `alt`, and their values are forwarded to the single output.
 
@@ -37,7 +37,7 @@ concurrently via `alt`, and their values are forwarded to the single output.
   data ready first -- it is **not** guaranteed to match input order.
 - Exits when the input is exhausted **and** all sub-streams are drained, or
   when the output reader is dropped.
-- Backpressure: the microthread blocks on each output write. While blocked,
+- Backpressure: the imp blocks on each output write. While blocked,
   no new sub-stream data is consumed, but sub-stream producers may continue
   buffering internally.
 - `A` and `B` can be different types.

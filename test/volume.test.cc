@@ -56,7 +56,7 @@ TEST_CASE("Volume - RapidChannelLifecycle") {
     CHECK_EQ(before_r, csp::internal::channel_count(1));
 }
 
-TEST_CASE("Volume - ManyMicrothreads") {
+TEST_CASE("Volume - ManyImps") {
     constexpr int N = 2000 / SCALE_LIGHT;
     int completed = 0;
 

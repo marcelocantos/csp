@@ -18,7 +18,7 @@ graph LR
     A["reader&lt;vector&lt;T&gt;&gt;"] --> B["flatten()"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread reads each container from the input, then iterates
+One internal imp reads each container from the input, then iterates
 over its elements and writes them individually to the output.
 
 ## Semantics
@@ -26,7 +26,7 @@ over its elements and writes them individually to the output.
 - Exits when the input is exhausted or the output reader is dropped.
 - Empty containers are silently skipped (no output for that input).
 - Elements within each container are emitted in iteration order.
-- Backpressure: the microthread blocks on each element write. If the output
+- Backpressure: the imp blocks on each element write. If the output
   consumer is slow, the producer is stalled mid-container.
 - Elements are moved out of the container via `std::move`.
 - The container type `C` defaults to `std::vector<T>` but can be any type

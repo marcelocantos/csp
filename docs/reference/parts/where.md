@@ -17,7 +17,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["where(pred)"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread reads from the input, tests each value with `pred`,
+One internal imp reads from the input, tests each value with `pred`,
 and writes matching values to the output.
 
 ## Semantics
@@ -25,7 +25,7 @@ and writes matching values to the output.
 - Exits when the input is exhausted or the output reader is dropped.
 - Elements that fail the predicate are silently discarded. If the predicate
   rejects everything, the output channel closes once the input is exhausted.
-- Backpressure: the microthread blocks on each output write, so the
+- Backpressure: the imp blocks on each output write, so the
   producer is only throttled when a matching element is being forwarded. The
   producer can run ahead while the filter is discarding elements.
 - Values are moved into the output channel when the predicate passes.

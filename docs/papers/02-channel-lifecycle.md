@@ -6,7 +6,7 @@ Most channel implementations treat a channel as a single object with
 a single lifecycle: it is created, used, and then closed. CSP takes a
 different approach. Each channel has two independently reference-counted
 endpoints — a writer and a reader — each of which can be closed,
-copied, or passed to another microthread without affecting the other.
+copied, or passed to another imp without affecting the other.
 Endpoint death is a first-class event that can be multiplexed alongside
 data operations. This paper describes the design, the subtle bug it
 revealed, and how the model enables a combinator library of 50+
@@ -265,7 +265,7 @@ for (auto& vec : batches)
 ```
 
 `count(1)` is a `producer<int>`; each `|` appends a filter stage;
-`.spawn()` materializes the pipeline into running microthreads and
+`.spawn()` materializes the pipeline into running imps and
 returns a `reader<std::vector<int>>`. When that reader is dropped
 (here, when the for-loop exits), death propagates
 backward through the pipeline: each stage's `~out` fires, the stage
@@ -296,7 +296,7 @@ auto filtered = where<int>(pred);
 
 The Go version requires explicit `close(out)` — forget it and
 downstream blocks forever. The CSP version handles cleanup
-through endpoint lifecycle: when the filter's microthread exits,
+through endpoint lifecycle: when the filter's imp exits,
 its `writer<int>` is destroyed, the output channel's write side
 dies, and any downstream reader observes this via `alt` or loop
 termination.
@@ -323,7 +323,7 @@ cannot copy a writer and forget about it, accidentally keeping a
 channel alive. Shared ownership requires `.copy()`, which is a
 deliberate, visible action.
 
-**Death propagation is automatic.** When a microthread exits, its
+**Death propagation is automatic.** When an imp exits, its
 stack is unwound, its endpoints are destroyed, and the reference
 counts decrement. If the last writer is destroyed, all blocked
 readers unblock. No explicit notification is needed.

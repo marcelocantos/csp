@@ -1,7 +1,7 @@
 # take_while
 
 Forwards elements from the input while a predicate returns true. As soon as an
-element fails the predicate, the output is closed and the microthread exits.
+element fails the predicate, the output is closed and the imp exits.
 The failing element is not forwarded.
 
 ## Signature
@@ -19,7 +19,7 @@ graph LR
     A[reader&lt;T&gt;] --> B["take_while(pred)"] --> C[reader&lt;T&gt;]
 ```
 
-One internal microthread reads from the input, tests each value with `pred`,
+One internal imp reads from the input, tests each value with `pred`,
 and writes it to the output. On the first failure, the output is closed.
 
 ## Semantics

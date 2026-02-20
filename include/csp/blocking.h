@@ -7,8 +7,8 @@
 
 namespace csp::internal {
 
-// Suspend the calling microthread and run fn on the blocking pool.
-// Resumes the microthread when fn returns. Declared in csp.h's
+// Suspend the calling imp and run fn on the blocking pool.
+// Resumes the imp when fn returns. Declared in csp.h's
 // internal namespace; defined in blocking_pool.cc.
 void run_blocking(std::function<void()> fn);
 
@@ -16,7 +16,7 @@ void run_blocking(std::function<void()> fn);
 
 namespace csp {
 
-// Run fn on an OS thread pool, suspending the calling microthread until
+// Run fn on an OS thread pool, suspending the calling imp until
 // it completes. Use this for blocking OS calls (DNS, file I/O on
 // non-fd-based APIs, third-party libraries) that would otherwise stall
 // the processor.

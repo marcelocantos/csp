@@ -2,8 +2,8 @@
 
 ## Project Overview
 
-CSP is a C++ microthreading library with typed, synchronous channels based on
-Communicating Sequential Processes. Namespace: `csp`.
+CSP is a C++ imp-based concurrency library with typed, synchronous channels
+based on Communicating Sequential Processes. Namespace: `csp`.
 
 ## Build System
 
@@ -48,11 +48,11 @@ These are generated from the development sources by `scripts/amalgamate.py`
 - **include/csp/dynamic.h** — `dynamic<T>` dynamic-scoped variables (HAMT).
 - **include/csp/part/** — 50+ stream combinators (`filter`, `producer`,
   `consumer` with `operator|` composition).
-- **include/csp/internal/** — Microthread struct, runtime, processor,
+- **include/csp/internal/** — Imp struct, runtime, processor,
   stack pool, HAMT, reactor, blocking pool.
 - **src/** — Implementation files (`csp.cc`, `channel.cc`, `runtime.cpp`,
   `csp_globals.cpp`, `reactor.cc`, `blocking_pool.cc`, `signal.cc`,
-  `stack_pool.cc`, `hamt.cc`, `stack_analysis_arm64.cc`, `mt_log.cc`).
+  `stack_pool.cc`, `hamt.cc`, `stack_analysis_arm64.cc`, `log.cc`).
 
 ### Stream combinator conventions
 
@@ -68,7 +68,7 @@ These are generated from the development sources by `scripts/amalgamate.py`
 - **Per-endpoint lifecycle**: Channels have independent write/read endpoint
   refcounts. Either end can be closed independently, and endpoint death is
   observable via `alt`/`prialt`.
-- **M:N threading**: Microthreads are multiplexed across OS threads via a
+- **M:N threading**: Imps are multiplexed across OS threads via a
   work-stealing scheduler. `init_runtime(n)` enables multi-threaded mode;
   defaults to single-threaded cooperative scheduling.
 - **Type-erased compilation firewall**: Templates in the header dispatch
@@ -95,7 +95,7 @@ When making code changes, keep the following documentation in sync:
   - **Signature**: fenced C++ block with template signature and return type.
   - **Parameters** (if any): table with type and description.
   - **Topology**: Mermaid `graph LR` showing input/output channels and the
-    internal microthread. Add a `stateDiagram-v2` when the part has non-trivial
+    internal imp. Add a `stateDiagram-v2` when the part has non-trivial
     lifecycle states.
   - **Semantics**: bulleted list covering backpressure, exit conditions, edge
     cases (empty input, output death, input close).

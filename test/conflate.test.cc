@@ -29,7 +29,7 @@ TEST_CASE("Conflate - merges when consumer is slow") {
 
     // Write several values while nobody is reading.
     // The producer will block after the first write (synchronous channel).
-    // We need to use microthreads to get ahead.
+    // We need to use imps to get ahead.
 
     // Write 1, then 2, then 3 rapidly.
     stats.spawn([w = std::move(w)] {

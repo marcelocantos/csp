@@ -2,7 +2,7 @@
 //
 // The quintessential CSP demo, straight from Hoare's 1978 paper.
 // Generate natural numbers starting at 2. The first number out is
-// prime; spawn a new filter microthread that removes its multiples,
+// prime; spawn a new filter imp that removes its multiples,
 // and repeat. The pipeline grows dynamically — one new concurrent
 // stage per prime discovered.
 //

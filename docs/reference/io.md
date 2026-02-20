@@ -1,13 +1,13 @@
 # I/O Reference
 
-Non-blocking I/O primitives that integrate with the microthread scheduler via
+Non-blocking I/O primitives that integrate with the imp scheduler via
 a kqueue reactor. All functions live in `namespace csp::io`.
 
 Header: `#include "csp/io.h"` (or `#include "csp.h"`)
 
-All I/O functions must be called from within a microthread. The reactor is a
+All I/O functions must be called from within an imp. The reactor is a
 singleton kqueue event loop running on a dedicated OS thread; when a
-microthread calls an I/O function and the fd is not ready, the microthread
+imp calls an I/O function and the fd is not ready, the imp
 suspends cooperatively and is woken by the reactor when the fd becomes ready.
 
 ---
@@ -26,7 +26,7 @@ suspends cooperatively and is woken by the reactor when the fd becomes ready.
 
 ## wait_readable / wait_writable
 
-Suspend the current microthread until a file descriptor is ready for reading
+Suspend the current imp until a file descriptor is ready for reading
 or writing.
 
 ### Signature
@@ -40,8 +40,8 @@ void wait_writable(int fd);
 
 These are the low-level reactor primitives. `wait_readable` registers an
 `EVFILT_READ` interest with the kqueue reactor and suspends the calling
-microthread. When the reactor detects that `fd` has data available (or has
-reached EOF or error), it wakes the microthread. `wait_writable` does the same
+imp. When the reactor detects that `fd` has data available (or has
+reached EOF or error), it wakes the imp. `wait_writable` does the same
 with `EVFILT_WRITE`.
 
 The higher-level wrappers (`read`, `write`, `accept`, `connect`) call these
@@ -52,9 +52,9 @@ descriptors.
 
 ```
 wait_readable(fd) ─┤fd ready├──➤ return
-wait_readable(fd) ─┤fd not ready├─➤ suspend; reactor wakes microthread when readable
+wait_readable(fd) ─┤fd not ready├─➤ suspend; reactor wakes imp when readable
 wait_writable(fd) ─┤fd ready├──➤ return
-wait_writable(fd) ─┤fd not ready├─➤ suspend; reactor wakes microthread when writable
+wait_writable(fd) ─┤fd not ready├─➤ suspend; reactor wakes imp when writable
 ```
 
 ### Example
@@ -88,7 +88,7 @@ int set_nonblock(int fd);
 
 Calls `fcntl` to add `O_NONBLOCK` to the file descriptor's flags. Returns 0
 on success, -1 on error (with `errno` set). This is a utility function -- not
-microthread-specific -- but is typically the first thing called after creating
+imp-specific -- but is typically the first thing called after creating
 a socket that will be used with the `csp::io` wrappers.
 
 ### Transition rules ([syntax](transition-rules.md))
@@ -121,7 +121,7 @@ ssize_t read(int fd, void* buf, size_t len);
 
 Attempts to read up to `len` bytes from `fd` into `buf`. If the fd is not
 ready (the underlying `::read` returns `EAGAIN` / `EWOULDBLOCK`), the
-microthread suspends via `wait_readable` until data is available, then retries.
+imp suspends via `wait_readable` until data is available, then retries.
 Interrupted calls (`EINTR`) are retried automatically.
 
 Returns the number of bytes read on success, 0 on EOF, or -1 on error (with
@@ -175,7 +175,7 @@ ssize_t write(int fd, const void* buf, size_t len);
 Writes exactly `len` bytes from `buf` to `fd`. Unlike a raw `::write`, this
 function handles partial writes automatically: if only some bytes are written,
 it advances the buffer pointer and retries. If the fd is not ready (`EAGAIN` /
-`EWOULDBLOCK`), the microthread suspends via `wait_writable` until the fd can
+`EWOULDBLOCK`), the imp suspends via `wait_writable` until the fd can
 accept data. Interrupted calls (`EINTR`) are retried automatically.
 
 Returns `len` on success (all bytes written), or -1 on error (with `errno`
@@ -220,7 +220,7 @@ int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen);
 ### Description
 
 Accepts an incoming connection on `listen_fd`. If no connection is pending
-(`EAGAIN` / `EWOULDBLOCK`), the microthread suspends via `wait_readable` until
+(`EAGAIN` / `EWOULDBLOCK`), the imp suspends via `wait_readable` until
 the reactor signals that a connection is ready. Interrupted calls (`EINTR`)
 are retried automatically.
 
@@ -254,7 +254,7 @@ csp::spawn([] {
     bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr));
     listen(listen_fd, 128);
 
-    // Accept loop -- each connection handled in its own microthread
+    // Accept loop -- each connection handled in its own imp
     for (;;) {
         int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
         if (client_fd < 0) break;
@@ -288,7 +288,7 @@ int connect(int fd, const struct sockaddr* addr, socklen_t addrlen);
 
 Starts a connection to `addr` on a non-blocking socket `fd`. The fd must
 already be in non-blocking mode (via `set_nonblock`). If the kernel returns
-`EINPROGRESS` (the usual case for non-blocking connect), the microthread
+`EINPROGRESS` (the usual case for non-blocking connect), the imp
 suspends via `wait_writable` until the connection attempt completes. On
 resumption, `getsockopt(SO_ERROR)` is checked to determine whether the
 connection succeeded or failed.
@@ -357,7 +357,7 @@ resolve_result resolve(const std::string& host,
 
 Resolves a hostname and/or service name to a list of socket addresses.
 Internally, `getaddrinfo` is offloaded to the blocking thread pool via
-`csp::blocking`, so the calling microthread suspends cooperatively instead
+`csp::blocking`, so the calling imp suspends cooperatively instead
 of blocking its processor. This is important because `getaddrinfo` is a
 blocking system call that can take an unpredictable amount of time (DNS
 lookups, `/etc/hosts` parsing, mDNS).
@@ -375,7 +375,7 @@ argument to `getaddrinfo(3)`.
 
 ```
 resolve(host, svc, hints) ──────────➤ offload getaddrinfo to blocking pool;
-                                      suspend calling microthread;
+                                      suspend calling imp;
                                       return resolve_result
 
 resolve_result.error == 0 ──────────➤ info contains addrinfo linked list

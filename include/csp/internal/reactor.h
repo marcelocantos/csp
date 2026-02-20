@@ -6,17 +6,17 @@
 
 namespace csp::detail {
 
-struct Microthread;
+struct Imp;
 
 class Reactor {
 public:
     static Reactor& instance();
 
-    // Register fd for read/write readiness. The microthread will be
-    // rescheduled via mt->schedule() when the event fires. EV_ONESHOT
+    // Register fd for read/write readiness. The imp will be
+    // rescheduled via imp->schedule() when the event fires. EV_ONESHOT
     // semantics: each registration fires at most once.
-    void wait_read(int fd, Microthread* mt);
-    void wait_write(int fd, Microthread* mt);
+    void wait_read(int fd, Imp* imp);
+    void wait_write(int fd, Imp* imp);
 
     // Remove all registrations for fd.
     void cancel(int fd);

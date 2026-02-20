@@ -13,11 +13,11 @@
 //
 // Each notify() call creates a pipe. The signal handler writes the
 // signal number (as a byte) to every pipe whose mask includes that
-// signal. A microthread per pipe reads bytes and writes them to a
+// signal. An imp per pipe reads bytes and writes them to a
 // CSP channel.
 //
 // The handler only touches: atomic loads, pipe write() — both
-// async-signal-safe. All complex logic lives in the microthreads.
+// async-signal-safe. All complex logic lives in the imps.
 
 namespace {
 
@@ -104,7 +104,7 @@ reader<int> notify(std::initializer_list<int> sigs) {
     return spawn_producer<int>([rfd, wfd, idx](writer<int> out) {
         internal::descr("signal");
 
-        // Sentinel MT: watches for output reader death or producer exit.
+        // Sentinel imp: watches for output reader death or producer exit.
         // Closes the pipe write end so the producer's io::read() returns
         // EOF and the loop terminates.  The kill channel detects producer
         // exit (kill_w destroyed → ~kill_r fires in sentinel).

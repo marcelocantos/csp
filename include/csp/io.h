@@ -38,7 +38,7 @@ inline int set_nonblock(int fd) {
 }
 
 // --- Layer 2: Non-blocking wrappers ---
-// These retry on EAGAIN by suspending the microthread until the fd
+// These retry on EAGAIN by suspending the imp until the fd
 // is ready, then retrying the syscall. All retry on EINTR.
 
 // Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
@@ -107,7 +107,7 @@ inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
 
 // --- DNS resolution ---
 // Offloads getaddrinfo to the blocking thread pool so the calling
-// microthread suspends cooperatively instead of blocking its processor.
+// imp suspends cooperatively instead of blocking its processor.
 
 struct addrinfo_deleter {
     void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }

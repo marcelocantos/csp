@@ -2,7 +2,7 @@
 //
 // Build a data processing pipeline from composable combinators,
 // just like Unix pipes: source | map | where | buffer | tee | sink.
-// Each stage runs as its own microthread with zero shared state.
+// Each stage runs as its own imp with zero shared state.
 // The combinators (map, where, buffer, tee, sink, enumerate) are
 // all provided by the library — you just snap them together.
 

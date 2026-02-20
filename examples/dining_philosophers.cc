@@ -1,7 +1,7 @@
 // dining_philosophers.cc — Classic concurrency problem
 //
 // Five philosophers sit around a table, each needing two forks to eat.
-// Each fork is a microthread that serves as a mutex — it offers itself
+// Each fork is an imp that serves as a mutex — it offers itself
 // via a channel, and a philosopher "picks up" a fork by reading from
 // its channel. Philosophers use alt to request both forks, breaking
 // symmetry by having one philosopher reach for forks in reverse order.
@@ -20,7 +20,7 @@ int main() {
         constexpr int N = 5;
         constexpr int MEALS = 3;
 
-        // Each fork is a channel. A fork microthread repeatedly offers
+        // Each fork is a channel. A fork imp repeatedly offers
         // itself; a philosopher picks it up by reading, and returns it
         // by reading again (the fork blocks until returned).
         std::array<chan<>, N> forks;

@@ -19,7 +19,7 @@ struct Runtime {
     std::vector<std::thread> workers;               // M1..Mn
 
     std::mutex global_mu;
-    std::deque<Microthread*> global_run_queue;
+    std::deque<Imp*> global_run_queue;
 
     std::mutex park_mu;
     std::condition_variable park_cv;
@@ -39,18 +39,18 @@ struct Runtime {
     void shutdown();
     void unpark_one();
 
-    // Push a microthread to the global run queue.  Caller must
-    // hold global_mu.  The microthread must already be delinked
-    // from any local queue (next_==nullptr).  The happens-before
-    // chain through global_mu guarantees that the next P to pop
-    // this MT from the queue will see the null next_/prev_.
-    void push_to_global(Microthread* mt);
+    // Push an imp to the global run queue.  Caller must hold
+    // global_mu.  The imp must already be delinked from any local
+    // queue (next_==nullptr).  The happens-before chain through
+    // global_mu guarantees that the next P to pop this imp from
+    // the queue will see the null next_/prev_.
+    void push_to_global(Imp* imp);
 
     void worker_loop();
     void main_loop();
     void watchdog_loop();
     void add_processor();
-    Microthread* local_next(Processor& p);
+    Imp* local_next(Processor& p);
     bool take_from_global(Processor& p);
     void fire_timers(Processor& p);
     bool steal_work(Processor& thief);
