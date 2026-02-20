@@ -33,5 +33,6 @@ debugging of the CSP imp-based concurrency library.
    channel-sendable per-imp variables.
 
 7. **[Topology Surgery on Live Channels](07-channel-fuse-split.md)**
-   — Fuse and split rewire channel graphs at runtime by composing
-   slot swaps with temporary channels and RAII endpoint death.
+   — Fuse and split splice instrumentation, diagnostics, and
+   replacement processes into live channel graphs without modifying
+   application logic.

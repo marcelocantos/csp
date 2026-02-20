@@ -5,29 +5,63 @@
 Synchronous channel systems form static graphs at construction time:
 each channel connects one writer group to one reader group, and data
 flows along fixed edges. We describe a pair of operations — *fuse* and
-*split* — that rewire channel topology at runtime. Both are built from
-a single primitive: a four-argument `swap` that exchanges the channels
-targeted by two endpoint pairs. A temporary channel, created and
-destroyed within the swap, acts as a bridge that redirects traffic
+*split* — that splice auxiliary channels into a live graph without
+modifying application logic. The primary uses are instrumentation
+(tapping a channel for logging, metrics, or test assertions),
+diagnostics (injecting a recording stage between two pipeline
+components), and supervision (resplicing channels around a dead
+process to restore the intended topology). Both operations are built
+from a single primitive: a four-argument `swap` that exchanges the
+channels targeted by two endpoint pairs. A temporary channel, created
+and destroyed within the swap, acts as a bridge that redirects traffic
 while ensuring that orphaned sides observe clean endpoint death. The
 construction requires no new runtime machinery — it composes entirely
 from the existing slot-based indirection layer and the per-endpoint
 lifecycle model.
 
-## 1. The problem: static topology
+## 1. Why touch a running graph?
 
 In a CSP system, channels are created and connected at spawn time.
 A pipeline `A → B → C` is wired by passing writers and readers into
-successive imp closures. Once running, the graph is fixed. If an
-application needs to splice a new stage into a running pipeline, or
-remove one, the only option is to tear down the downstream graph and
-rebuild it.
+successive imp closures. Once running, the graph is fixed — and
+usually that is exactly what you want. Static topology is easy to
+reason about: data flows along edges that are visible in the source
+code, and the structure of the program *is* the structure of the
+graph.
 
-This is a fundamental limitation. Real systems need dynamic topology:
-load balancers redirect traffic, circuit breakers splice in fallback
-paths, and hot-swap upgrades replace pipeline stages without dropping
-messages. These patterns require rewiring channels while data is in
-flight.
+The question, then, is not "how do we redesign applications around
+dynamic topology" but "what legitimate reasons exist for touching a
+graph that is already running?" Three categories stand out.
+
+**Testing and diagnostics.** A test harness wants to tap a channel
+between two stages to assert on the values flowing through it, without
+modifying the stages themselves. A diagnostic tool wants to splice a
+recording imp into a live pipeline to capture a traffic sample. In
+both cases the application topology is unchanged — the tooling is
+attached from the outside.
+
+**Telemetry and metrics.** A metrics collector can be fused into an
+existing channel to count messages, measure latency, or sample
+throughput. The application code neither knows nor cares that the
+channel has been instrumented. When the collector is removed, the
+original topology is restored.
+
+**Supervision and fault recovery.** When a process in a pipeline
+dies, its channels become half-dead: the surviving endpoints on the
+other sides observe endpoint death. A supervisor that wants to restart
+the failed process needs to wire the replacement into the same
+position in the graph. Without a splice operation, this requires the
+supervisor to tear down and rebuild the entire downstream graph.
+With fuse and split, the supervisor resplices the replacement's
+endpoints into the existing channels, restoring the intended topology
+without disturbing the rest of the pipeline. This is not changing the
+application's structure — it is *maintaining* it in the face of
+failure.
+
+All three categories share a common trait: the application topology is
+a fixed design-time decision; the rewiring serves a non-functional
+concern (observability, testability, fault tolerance) that is
+orthogonal to the data flow itself.
 
 The challenge is that endpoints are shared. A `writer<T>` can be
 copied: multiple imps may hold copies of the same writer, all
