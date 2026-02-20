@@ -408,6 +408,12 @@ void sleep_until(int64_t deadline_ns) {
     g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 }
 
+void suspend() {
+    g_imp->suspending_.store(true, std::memory_order_release);
+    do_switch(Status::detach);
+    g_imp->suspending_.store(false, std::memory_order_release);
+}
+
 int run() {
     auto& p = current_p();
     auto& timer_heap = p.timer_heap;

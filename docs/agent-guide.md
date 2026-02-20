@@ -201,6 +201,35 @@ switch (prialt(r >> v, after(100ms) >> nullptr)) {
 }
 ```
 
+### Fake Clock (testing)
+
+```cpp
+class fake_clock;
+extern dynamic<fake_clock*> clock_override;   // nullptr = real clock
+
+clock::time_point now();   // Returns fake time if overridden, real otherwise.
+
+class fake_clock {
+public:
+    explicit fake_clock(clock::time_point start = clock::time_point{});
+    clock::time_point now() const;
+    bool has_pending() const;
+    void advance(clock::duration d);       // Advance time, fire expired timers.
+    bool advance_to_next();                // Jump to next deadline (false if empty).
+    void run();                            // Scheduler loop with auto-advance.
+    void run_until_idle();                 // Run ready imps, don't advance time.
+};
+```
+
+Bind via dynamic scoping — inherited by child imps automatically:
+```cpp
+fake_clock fc;
+csp::local l{clock_override = &fc};
+// All sleep/after/tick calls now use fc.
+```
+
+Single-threaded only. `sleep`, `after`, `tick` all respect the override.
+
 ## I/O
 
 Requires `init_runtime()`. Uses kqueue reactor (macOS).

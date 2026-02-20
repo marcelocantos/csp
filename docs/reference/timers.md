@@ -11,10 +11,13 @@ All types and functions live in `namespace csp`. Header: `#include "csp/timer.h"
 ## Table of Contents
 
 1. [clock](#clock) -- time types and current time
-2. [sleep](#sleep) -- suspend for a duration
-3. [sleep_until](#sleep_until) -- suspend until a time point
-4. [after](#after) -- one-shot timer
-5. [tick](#tick) -- periodic timer
+2. [now](#now) -- current time (respects fake clock)
+3. [sleep](#sleep) -- suspend for a duration
+4. [sleep_until](#sleep_until) -- suspend until a time point
+5. [after](#after) -- one-shot timer
+6. [tick](#tick) -- periodic timer
+7. [fake_clock](#fake_clock) -- deterministic time for testing
+8. [clock_override](#clock_override) -- dynamic variable for clock injection
 
 ---
 
@@ -52,6 +55,41 @@ Commonly used nested types:
 auto start = csp::clock::now();
 // ... work ...
 auto elapsed = csp::clock::now() - start;
+```
+
+---
+
+## now
+
+Current time, respecting clock override.
+
+### Signature
+
+```cpp
+clock::time_point now();
+```
+
+### Description
+
+`now()` returns the current time. If `clock_override` is bound to a
+`fake_clock*` in the current dynamic scope, it returns the fake clock's time.
+Otherwise it returns `std::chrono::steady_clock::now()`.
+
+All timer primitives (`sleep`, `sleep_until`, `after`, `tick`) use `now()`
+internally, so binding a fake clock affects all time-dependent code
+transparently.
+
+### Example
+
+```cpp
+#include "csp/timer.h"
+
+csp::fake_clock fc;
+csp::local l{csp::clock_override = &fc};
+
+auto t1 = csp::now();     // epoch (fake clock starts at 0)
+fc.advance(1s);
+auto t2 = csp::now();     // epoch + 1s
 ```
 
 ---
@@ -294,3 +332,112 @@ csp::spawn([] {
 });
 csp::schedule();
 ```
+
+---
+
+## fake_clock
+
+Deterministic clock for testing time-dependent code.
+
+### Signature
+
+```cpp
+class fake_clock {
+public:
+    explicit fake_clock(clock::time_point start = clock::time_point{});
+
+    clock::time_point now() const;
+    bool has_pending() const;
+
+    void advance(clock::duration d);
+    bool advance_to_next();
+
+    void run();
+    void run_until_idle();
+
+    void sleep_until_impl(clock::time_point tp);
+};
+```
+
+### Description
+
+`fake_clock` replaces the real clock for testing. When bound via
+`csp::local l{csp::clock_override = &fc}`, all calls to `csp::now()`,
+`sleep`, `sleep_until`, `after`, and `tick` within that dynamic scope (and
+any child imps) use the fake clock instead of the real steady clock.
+
+Time only advances when you tell it to:
+
+| Method | Effect |
+|--------|--------|
+| `advance(d)` | Move time forward by `d`; fire any timers whose deadline has passed. |
+| `advance_to_next()` | Jump to the next pending deadline and fire it. Returns `false` if no timers are pending. |
+| `run()` | Scheduler loop with auto-advance: alternates between running ready imps and advancing to the next deadline until no work remains. |
+| `run_until_idle()` | Run all currently-ready imps without advancing time. Useful for inspecting intermediate state. |
+
+`sleep_until_impl` is called internally by `csp::sleep_until()` when the fake
+clock is active. It pushes the current imp onto the fake clock's internal timer
+queue and suspends it.
+
+**Constraints.** Single-threaded only (default scheduler or `init_runtime(1)`).
+Non-copyable.
+
+### Example
+
+Auto-advance (simplest):
+```cpp
+csp::fake_clock fc;
+csp::local l{csp::clock_override = &fc};
+
+csp::spawn([&] {
+    csp::sleep(1s);
+    // ... runs instantly when fc.run() advances time
+});
+fc.run();
+```
+
+Manual advance (inspect intermediate state):
+```cpp
+csp::fake_clock fc;
+csp::local l{csp::clock_override = &fc};
+
+bool woke = false;
+csp::spawn([&] { csp::sleep(100ms); woke = true; });
+csp::schedule();
+
+fc.advance(50ms);
+fc.run_until_idle();
+assert(!woke);      // Not yet.
+
+fc.advance(50ms);
+fc.run_until_idle();
+assert(woke);       // Now.
+```
+
+---
+
+## clock_override
+
+Dynamic variable for injecting a fake clock.
+
+### Signature
+
+```cpp
+extern dynamic<fake_clock*> clock_override;
+```
+
+### Description
+
+`clock_override` is a dynamically-scoped variable (see
+[dynamic scoping](dynamic.md)). Its default value is `nullptr`, meaning the
+real steady clock is used. Bind it to a `fake_clock*` to redirect all timer
+primitives:
+
+```cpp
+csp::fake_clock fc;
+csp::local l{csp::clock_override = &fc};
+```
+
+The binding is automatically inherited by child imps spawned within the scope,
+with no explicit parameter threading required. When the `local` goes out of
+scope, the override is removed and subsequent calls revert to the real clock.

@@ -77,6 +77,10 @@ void alt_end(AltMatch * m);
 // Timer.
 void sleep_until(int64_t deadline_ns);
 
+// Suspend current imp without placing it in any timer queue.
+// Caller must ensure the imp will be rescheduled later.
+void suspend();
+
 // Debug/test.
 char const * get_descr(void * thr);
 char const * get_chan_descr(void * ch);

@@ -87,6 +87,7 @@ else
 LIB_SRCS := src/csp.cc \
             src/csp_globals.cpp \
             src/channel.cc \
+            src/clock.cc \
             src/hamt.cc \
             src/log.cc \
             src/runtime.cpp \
