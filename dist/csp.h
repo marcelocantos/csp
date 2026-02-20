@@ -2599,6 +2599,23 @@ auto chain(R rr) {
 
 }
 
+/* csp/part/collect.h */
+
+
+
+namespace csp::part {
+
+// Consume all values into an output iterator.
+template <typename T, typename Iter>
+auto collect(Iter it) {
+    return make_consumer<T>([it](reader<T> in) mutable {
+        internal::descr("collect");
+        for (T v; in >> v;) *it++ = std::move(v);
+    });
+}
+
+}
+
 /* csp/part/concat_all.h */
 
 
@@ -2617,6 +2634,44 @@ inline auto const concat_all = make_filter<reader<B>, B>([](reader<reader<B>> in
         }
     }
 });
+
+}
+
+/* csp/part/conflate.h */
+
+
+
+namespace csp::part {
+
+// When downstream is slow, merge pending upstream values via a combining
+// function instead of buffering or dropping.  Each value passes through
+// individually when the consumer keeps up; when it falls behind, pending
+// values are folded with f(accumulated, new_value).
+template <typename T, typename F>
+auto conflate(F&& f) {
+    return make_filter<T>([f = std::forward<F>(f)](reader<T> in, writer<T> out) {
+        internal::descr("conflate");
+
+        T pending;
+        if (!(in >> pending)) return;
+
+        for (;;) {
+            T next;
+            switch (csp::alt(out << pending, in >> next)) {
+            case 0:  // sent pending downstream
+                if (!(in >> pending)) return;
+                break;
+            case 1:  // got new value while pending unsent
+                pending = f(std::move(pending), std::move(next));
+                break;
+            case ~0: return;  // output died
+            case ~1:          // input died — flush last value
+                out << std::move(pending);
+                return;
+            }
+        }
+    });
+}
 
 }
 
@@ -2701,11 +2756,12 @@ inline void sleep(clock::duration d) {
     sleep_until(clock::now() + d);
 }
 
-// Return a reader that fires once after the given duration.
-inline reader<> after(clock::duration d) {
-    return spawn_producer<poke_t>([d](writer<> w) {
+// Return a reader that fires once after the given duration,
+// delivering the current time.
+inline reader<clock::time_point> after(clock::duration d) {
+    return spawn_producer<clock::time_point>([d](writer<clock::time_point> w) {
         csp::sleep(d);
-        w << poke;
+        w << clock::now();
     });
 }
 
@@ -2735,7 +2791,7 @@ auto debounce(csp::clock::duration d, writer<T> dead_letter = {}) {
     return make_filter<T>([d, dead_letter = std::move(dead_letter)](reader<T> in, writer<T> out) mutable {
         internal::descr("debounce");
         T pending;
-        reader<> timer;
+        reader<clock::time_point> timer;
 
         for (;;) {
             if (!timer) {
@@ -2745,8 +2801,7 @@ auto debounce(csp::clock::duration d, writer<T> dead_letter = {}) {
             } else {
                 // Pending value — wait for input, timer, or death.
                 T next;
-                poke_t p;
-                switch (csp::alt(in >> next, timer >> p, ~out)) {
+                switch (csp::alt(in >> next, timer >> nullptr, ~out)) {
                 case 0:  // New value supersedes pending.
                     if (dead_letter) dead_letter << std::move(pending);
                     pending = std::move(next);
@@ -2826,8 +2881,7 @@ auto delay(csp::clock::duration d) {
                 // Wait for input or oldest item's deadline.
                 auto timer = csp::after(q.front().second - csp::clock::now());
                 T t;
-                poke_t p;
-                switch (csp::alt(in >> t, timer >> p, ~out)) {
+                switch (csp::alt(in >> t, timer >> nullptr, ~out)) {
                 case 0:  // New value — enqueue.
                     q.emplace_back(std::move(t), csp::clock::now() + d);
                     break;
@@ -2847,6 +2901,130 @@ auto delay(csp::clock::duration d) {
             }
         }
     });
+}
+
+}
+
+/* csp/part/demux.h */
+
+
+/* csp/part/unzip.h */
+
+
+
+namespace csp::part {
+
+namespace detail {
+
+template <typename Tuple, size_t... Is>
+auto make_chans(std::index_sequence<Is...>) {
+    return std::make_tuple(csp::chan<std::tuple_element_t<Is, Tuple>>{}...);
+}
+
+template <typename Tuple, typename Chans, size_t... Is>
+void unzip_write(Tuple& vals, Chans& chans, std::index_sequence<Is...>) {
+    // Write each element to its channel. Short-circuit if any write fails.
+    (void)((std::get<Is>(chans).w << std::get<Is>(vals)) && ...);
+}
+
+template <typename Chans, size_t... Is>
+auto extract_readers(Chans& chans, std::index_sequence<Is...>) {
+    return std::make_tuple(std::move(std::get<Is>(chans).r)...);
+}
+
+} // namespace detail
+
+// Unzip a reader of tuples into N readers, one per tuple element.
+// reader<tuple<A, B, ...>> → tuple<reader<A>, reader<B>, ...>
+template <typename... Ts>
+auto unzip(reader<std::tuple<Ts...>> in) {
+    using Tup = std::tuple<Ts...>;
+    constexpr auto N = sizeof...(Ts);
+    auto seq = std::make_index_sequence<N>{};
+
+    auto chans = detail::make_chans<Tup>(seq);
+    auto readers = detail::extract_readers(chans, seq);
+
+    csp::spawn([in = std::move(in), chans = std::move(chans)]() mutable {
+        internal::descr("unzip");
+        constexpr auto seq = std::make_index_sequence<N>{};
+        for (Tup t; in >> t;) {
+            detail::unzip_write(t, chans, seq);
+        }
+    });
+
+    return readers;
+}
+
+// Unzip through a decomposing function: f(In) → tuple-like<A, B, ...>.
+// reader<In> → tuple<reader<A>, reader<B>, ...>
+template <typename In, typename F>
+auto unzip(reader<In> in, F&& f) {
+    using Ret = std::invoke_result_t<std::decay_t<F>&, In>;
+    constexpr auto N = std::tuple_size_v<Ret>;
+    auto seq = std::make_index_sequence<N>{};
+
+    auto chans = detail::make_chans<Ret>(seq);
+    auto readers = detail::extract_readers(chans, seq);
+
+    csp::spawn([in = std::move(in), f = std::forward<F>(f),
+                chans = std::move(chans)]() mutable {
+        internal::descr("unzip");
+        constexpr auto seq = std::make_index_sequence<N>{};
+        for (In v; in >> v;) {
+            auto t = f(std::move(v));
+            detail::unzip_write(t, chans, seq);
+        }
+    });
+
+    return readers;
+}
+
+}
+
+#include <variant>
+
+namespace csp::part {
+
+namespace detail {
+
+template <typename T, typename V, size_t I = 0>
+constexpr size_t variant_index() {
+    static_assert(I < std::variant_size_v<V>, "T not found in variant");
+    if constexpr (std::is_same_v<T, std::variant_alternative_t<I, V>>)
+        return I;
+    else
+        return variant_index<T, V, I + 1>();
+}
+
+template <typename T, typename V>
+inline constexpr size_t variant_index_v = variant_index<T, V>();
+
+} // namespace detail
+
+// Split a variant stream into N typed readers, one per alternative.
+// reader<variant<A, B, ...>> → tuple<reader<A>, reader<B>, ...>
+template <typename... Ts>
+auto demux(reader<std::variant<Ts...>> in) {
+    using V = std::variant<Ts...>;
+    constexpr auto N = sizeof...(Ts);
+    auto seq = std::make_index_sequence<N>{};
+
+    auto chans = detail::make_chans<std::tuple<Ts...>>(seq);
+    auto readers = detail::extract_readers(chans, seq);
+
+    csp::spawn([in = std::move(in), chans = std::move(chans)]() mutable {
+        internal::descr("demux");
+        for (V v; in >> v;) {
+            std::visit([&chans](auto&& val) {
+                using T = std::decay_t<decltype(val)>;
+                constexpr size_t I = detail::variant_index_v<T, V>;
+                std::get<I>(chans).w << std::move(val);
+            }, std::move(v));
+        }
+    });
+
+    return readers;
 }
 
 }
@@ -2884,8 +3062,9 @@ auto distinct(Eq eq = {}) {
 namespace csp::part {
 
 // Stream elements from a container or initializer list.
-template <typename T, typename C>
+template <typename C>
 auto enumerate(C&& c, bool cyclic = false) {
+    using T = std::decay_t<decltype(*std::begin(c))>;
     return make_producer<T>([c = std::forward<C>(c), cyclic](writer<T> sink) {
         internal::descr("enumerate");
 
@@ -2901,18 +3080,18 @@ auto enumerate(C&& c, bool cyclic = false) {
 
 template <typename T>
 auto enumerate(std::initializer_list<T> c, bool cyclic = false) {
-    return enumerate<T>(std::vector<T>(c), cyclic);
+    return enumerate(std::vector<T>(c), cyclic);
 }
 
 // Stream elements from a container, repeating forever.
-template <typename T, typename C>
+template <typename C>
 auto cycle(C&& c) {
-    return enumerate<T>(std::forward<C>(c), true);
+    return enumerate(std::forward<C>(c), true);
 }
 
 template <typename T>
 auto cycle(std::initializer_list<T> c) {
-    return enumerate<T>(c, true);
+    return enumerate(c, true);
 }
 
 }
@@ -3809,6 +3988,112 @@ std::pair<reader<T>, reader<metrics_snapshot>> metrics(reader<T> data) {
 
 }
 
+/* csp/part/mux.h */
+
+
+
+namespace csp::part {
+
+namespace detail {
+
+// Set up ChanOp read slots and buffer pointer array for mux.
+template <size_t... Is, typename Bufs, typename Inputs>
+void mux_setup(internal::ChanOp* chanops, void** buf_ptrs,
+               Bufs& bufs, Inputs& inputs,
+               std::index_sequence<Is...>) {
+    ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
+                     &std::get<Is>(bufs)}), ...);
+    ((buf_ptrs[Is] = &std::get<Is>(bufs)), ...);
+}
+
+// Transfer and wrapper dispatch tables, built at compile time via
+// index_sequence expansion.
+template <typename V, typename... Ts>
+struct mux_dispatch {
+    using xfer_fn = void(*)(void*, void*);
+    using wrap_fn = V(*)(void*);
+
+    template <size_t I>
+    static void transfer(void* d, void* s) {
+        using T = std::tuple_element_t<I, std::tuple<Ts...>>;
+        *static_cast<T*>(d) = std::move(*static_cast<T*>(s));
+    }
+
+    template <size_t I>
+    static V wrap(void* p) {
+        using T = std::tuple_element_t<I, std::tuple<Ts...>>;
+        return V{std::in_place_index<I>, std::move(*static_cast<T*>(p))};
+    }
+
+    template <size_t... Is>
+    static constexpr auto make_transfers(std::index_sequence<Is...>) {
+        return std::array<xfer_fn, sizeof...(Is)>{{&transfer<Is>...}};
+    }
+
+    template <size_t... Is>
+    static constexpr auto make_wrappers(std::index_sequence<Is...>) {
+        return std::array<wrap_fn, sizeof...(Is)>{{&wrap<Is>...}};
+    }
+
+    static constexpr auto transfers =
+        make_transfers(std::index_sequence_for<Ts...>{});
+    static constexpr auto wrappers =
+        make_wrappers(std::index_sequence_for<Ts...>{});
+};
+
+} // namespace detail
+
+// Non-deterministic merge of N heterogeneous readers into a variant stream.
+// Reads from whichever input is ready first. When an input dies it is
+// disabled; output closes when all inputs are exhausted or output dies.
+template <typename... Ts>
+auto mux(reader<Ts>... inputs) {
+    using V = std::variant<Ts...>;
+    constexpr size_t N = sizeof...(Ts);
+    using Dispatch = detail::mux_dispatch<V, Ts...>;
+
+    return make_producer<V>(
+        [inputs = std::make_tuple(std::move(inputs)...)](writer<V> out) mutable {
+            internal::descr("mux");
+
+            std::tuple<Ts...> bufs;
+            internal::ChanOp chanops[N + 1];
+            void* buf_ptrs[N];
+
+            // Slot 0: death-watch on output.
+            chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr};
+            // Slots 1..N: reads, each pointing at its typed buffer.
+            detail::mux_setup(
+                chanops + 1, buf_ptrs, bufs, inputs,
+                std::index_sequence_for<Ts...>{});
+
+            size_t live = N;
+            while (live > 0) {
+                internal::AltMatch m;
+                internal::alt_begin(&m, chanops, N + 1, 0);
+                if (m.src && m.dst) {
+                    int idx = (m.result >= 0 ? m.result : ~m.result) - 1;
+                    Dispatch::transfers[idx](m.dst, m.src);
+                }
+                internal::alt_end(&m);
+
+                if (m.result == ~0) {
+                    return; // output died
+                } else if (m.result > 0) {
+                    size_t i = static_cast<size_t>(m.result) - 1;
+                    if (!(out << Dispatch::wrappers[i](buf_ptrs[i]))) return;
+                } else if (m.result < 0) {
+                    // Input died.
+                    size_t slot = static_cast<size_t>(~m.result);
+                    chanops[slot] = {{}, nullptr};
+                    --live;
+                }
+            }
+        });
+}
+
+}
+
 /* csp/part/nwise.h */
 
 
@@ -3857,6 +4142,33 @@ auto nwise() {
                     return;
             }
         });
+}
+
+}
+
+/* csp/part/pace.h */
+
+
+namespace csp::part {
+
+// Rate-limited passthrough: ensure at least d between consecutive emissions.
+// All values are preserved (backpressure, no drops). The first value passes
+// immediately; subsequent values block until the interval has elapsed.
+template <typename T>
+auto pace(csp::clock::duration d) {
+    return make_filter<T>([d](reader<T> in, writer<T> out) {
+        internal::descr("pace");
+        T t;
+        if (csp::alt(in >> t, ~out) != 0) return;
+        if (!(out << std::move(t))) return;
+
+        auto next = csp::clock::now() + d;
+        while (csp::alt(in >> t, ~out) == 0) {
+            csp::sleep_until(next);
+            if (!(out << std::move(t))) return;
+            next = csp::clock::now() + d;
+        }
+    });
 }
 
 }
@@ -4768,21 +5080,21 @@ auto tee(writer<T> side) {
 
 namespace csp::part {
 
-// Rate-limit: forward up to n values per interval, drop excess.
-// Budget starts at n (first n values pass immediately).
-// Resets every interval via tick().
-// Optional dead_letter: excess values are written here instead of discarded.
-template <typename T>
-auto throttle(csp::clock::duration d, size_t n = 1, writer<T> dead_letter = {}) {
-    return make_filter<T>([d, n, dead_letter = std::move(dead_letter)](reader<T> in, writer<T> out) mutable {
+// Rate-limit: forward up to n values per trigger, drop (or dead-letter) excess.
+// Each value received on the trigger channel resets the remaining budget to n.
+// Use with tick(d) for periodic resets: throttle<int>(tick(100ms), 3).
+template <typename T, typename Trigger = poke_t>
+auto throttle(reader<Trigger> trigger, size_t n = 1, writer<T> dead_letter = {}) {
+    return make_filter<T>([trigger = std::move(trigger), n,
+                           dead_letter = std::move(dead_letter)]
+                          (reader<T> in, writer<T> out) mutable {
         internal::descr("throttle");
-        auto ticker = csp::tick(d);
         size_t remaining = n;
 
         for (;;) {
             T t;
-            csp::clock::time_point tp;
-            switch (csp::alt(in >> t, ticker >> tp, ~out)) {
+            Trigger trig;
+            switch (csp::alt(in >> t, trigger >> trig, ~out)) {
             case 0:  // Value arrived.
                 if (remaining > 0) {
                     --remaining;
@@ -4791,10 +5103,10 @@ auto throttle(csp::clock::duration d, size_t n = 1, writer<T> dead_letter = {}) 
                     dead_letter << std::move(t);
                 }
                 break;
-            case 1:  // Tick — reset budget.
+            case 1:  // Trigger — reset budget.
                 remaining = n;
                 break;
-            default:  // Input, ticker, or output died.
+            default:  // Input, trigger, or output died.
                 return;
             }
         }
@@ -4818,8 +5130,7 @@ auto timeout(csp::clock::duration d) {
 
         for (;;) {
             T t;
-            poke_t p;
-            switch (csp::alt(in >> t, timer >> p, ~out)) {
+            switch (csp::alt(in >> t, timer >> nullptr, ~out)) {
             case 0:  // Value arrived — forward and reset timer.
                 if (!(out << std::move(t))) return;
                 timer = csp::after(d);
@@ -4902,80 +5213,6 @@ auto unique(size_t max_remembered = 0, Hash hash = {}, Eq eq = {}) {
                 }
             }
         });
-}
-
-}
-
-/* csp/part/unzip.h */
-
-
-
-namespace csp::part {
-
-namespace detail {
-
-template <typename Tuple, size_t... Is>
-auto make_chans(std::index_sequence<Is...>) {
-    return std::make_tuple(csp::chan<std::tuple_element_t<Is, Tuple>>{}...);
-}
-
-template <typename Tuple, typename Chans, size_t... Is>
-void unzip_write(Tuple& vals, Chans& chans, std::index_sequence<Is...>) {
-    // Write each element to its channel. Short-circuit if any write fails.
-    (void)((std::get<Is>(chans).w << std::get<Is>(vals)) && ...);
-}
-
-template <typename Chans, size_t... Is>
-auto extract_readers(Chans& chans, std::index_sequence<Is...>) {
-    return std::make_tuple(std::move(std::get<Is>(chans).r)...);
-}
-
-} // namespace detail
-
-// Unzip a reader of tuples into N readers, one per tuple element.
-// reader<tuple<A, B, ...>> → tuple<reader<A>, reader<B>, ...>
-template <typename... Ts>
-auto unzip(reader<std::tuple<Ts...>> in) {
-    using Tup = std::tuple<Ts...>;
-    constexpr auto N = sizeof...(Ts);
-    auto seq = std::make_index_sequence<N>{};
-
-    auto chans = detail::make_chans<Tup>(seq);
-    auto readers = detail::extract_readers(chans, seq);
-
-    csp::spawn([in = std::move(in), chans = std::move(chans)]() mutable {
-        internal::descr("unzip");
-        constexpr auto seq = std::make_index_sequence<N>{};
-        for (Tup t; in >> t;) {
-            detail::unzip_write(t, chans, seq);
-        }
-    });
-
-    return readers;
-}
-
-// Unzip through a decomposing function: f(In) → tuple-like<A, B, ...>.
-// reader<In> → tuple<reader<A>, reader<B>, ...>
-template <typename In, typename F>
-auto unzip(reader<In> in, F&& f) {
-    using Ret = std::invoke_result_t<std::decay_t<F>&, In>;
-    constexpr auto N = std::tuple_size_v<Ret>;
-    auto seq = std::make_index_sequence<N>{};
-
-    auto chans = detail::make_chans<Ret>(seq);
-    auto readers = detail::extract_readers(chans, seq);
-
-    csp::spawn([in = std::move(in), f = std::forward<F>(f),
-                chans = std::move(chans)]() mutable {
-        internal::descr("unzip");
-        constexpr auto seq = std::make_index_sequence<N>{};
-        for (In v; in >> v;) {
-            auto t = f(std::move(v));
-            detail::unzip_write(t, chans, seq);
-        }
-    });
-
-    return readers;
 }
 
 }

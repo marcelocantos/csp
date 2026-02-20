@@ -130,9 +130,9 @@ value is **complemented** (`~k` for the `k`-th operation). All death
 events — both explicit vultures and implicit death on data operations —
 return complemented indices.
 
-**`after()` returns non-negative**: `after(d)` sends a `poke` then dies, so
-`prialt(ch >> v, after(1s) >> nullptr)` returns `1` on timeout (data match
-on the poke value), not `~1`.
+**`after()` returns non-negative**: `after(d)` sends a `time_point` then
+dies, so `prialt(ch >> v, after(1s) >> nullptr)` returns `1` on timeout (data
+match on the time_point value), not `~1`.
 
 ```cpp
 // Vector overload (all ops must be same type T).
@@ -185,8 +185,8 @@ using clock = std::chrono::steady_clock;
 void sleep(clock::duration d);
 void sleep_until(clock::time_point tp);
 
-// One-shot: reader<> that receives poke after duration, then dies.
-reader<> after(clock::duration d);
+// One-shot: reader<time_point> that fires after duration, then dies.
+reader<clock::time_point> after(clock::duration d);
 
 // Periodic: reader<clock::time_point> that fires at interval (drift-free).
 reader<clock::time_point> tick(clock::duration interval);
@@ -197,7 +197,7 @@ Timeout idiom:
 int v;
 switch (prialt(r >> v, after(100ms) >> nullptr)) {
     case 0:  handle(v);  break;
-    case 1:  timeout();  break;   // after() sent poke → non-negative match
+    case 1:  timeout();  break;   // after() sent time_point → non-negative match
 }
 ```
 
@@ -349,6 +349,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `blackhole<T>()` | consumer | Discard all values |
 | `buffer<T>(n)` | filter | Bounded async FIFO buffer (size n) |
 | `chain<T>(readers...)` | producer | Concatenate readers sequentially |
+| `collect<T>(iter)` | consumer | Consume stream into output iterator |
+| `conflate<T>(f)` | filter | Merge pending values when downstream is slow |
 | `count<T>(start,stop,step)` | producer | Numeric sequence [start,stop) |
 | `count_forever<T>(start,step)` | producer | Unbounded numeric sequence |
 | `deaf<T>()` | consumer | Never-accepting endpoint |
@@ -370,6 +372,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `latch<T>()` | filter | Serve most recent value on demand |
 | `map<In,Out>(f)` | filter | Transform each element |
 | `merge<T>(readers...)` | producer | Non-deterministic merge |
+| `mux(reader<Ts>...)` | producer | Heterogeneous merge into `variant<Ts...>` |
+| `demux(reader<variant<Ts...>>)` | function | Split variant stream into N typed readers |
 | `metrics<T>()` | function | Passthrough with stats reporting |
 | `mute<T>()` | producer | Never-producing endpoint |
 | `nwise<T>(n)` | filter | Sliding n-element window as tuple |
@@ -391,7 +395,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `stride<T>(n)` | filter | Every Nth element |
 | `take_while<T>(pred)` | filter | Forward while predicate true |
 | `tee<T>(side_writer)` | filter | Duplicate: main first, then side |
-| `throttle<T>(n,dur)` | filter | Rate-limit: n per interval |
+| `throttle<T>(trigger,n)` | filter | Rate-limit: n per trigger, use with `tick(d)` |
 | `timeout<T>(dur)` | filter | Close if no value within duration |
 | `timer(control)` | producer | Sleep per control, emit fire times |
 | `unique<T>(cap)` | filter | All-time dedup with optional eviction |
@@ -406,9 +410,9 @@ All in `namespace csp::part` (included via `csp.h`).
    constructors. Use `std::move()` when passing to spawn/lambdas. Use
    `.copy()` for deliberate shared ownership.
 
-2. **`after()` is non-negative**: `after(d)` sends a `poke` before dying. In
-   prialt, the timeout case is a non-negative match (e.g., `case 1:`), not a
-   death event (`case ~1:`).
+2. **`after()` is non-negative**: `after(d)` sends a `time_point` before
+   dying. In prialt, the timeout case is a non-negative match (e.g.,
+   `case 1:`), not a death event (`case ~1:`).
 
 3. **`~endpoint` returns complemented**: Death-watch operations (`~w`, `~r`)
    return complemented indices (`~k`) when they fire, just like implicit death
