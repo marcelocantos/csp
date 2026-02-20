@@ -76,6 +76,7 @@
 #include "csp/part/throttle.h"
 #include "csp/part/timeout.h"
 #include "csp/part/timer.h"
+#include "csp/part/try_map.h"
 #include "csp/part/unique.h"
 #include "csp/part/unzip.h"
 #include "csp/part/where.h"

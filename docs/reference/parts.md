@@ -48,6 +48,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | Part | Type | Description |
 |---|---|---|
 | [map](parts/map.md) | filter | Apply a function to each element (`A -> B`) |
+| [try_map](parts/try_map.md) | filter | Map with exception catching; errors to a side channel |
 | [where](parts/where.md) | filter | Forward only elements matching a predicate |
 | [scan](parts/scan.md) | filter | Running fold (accumulator) with intermediate results |
 | [flat_map](parts/flat_map.md) | filter | Map each element to a sub-stream, then merge |
@@ -87,6 +88,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [sample](parts/sample.md) | filter | On each trigger, emit the most recent value |
 | [timeout](parts/timeout.md) | filter | Close output if no value arrives within a deadline |
 | [gate](parts/gate.md) | filter | Pause/resume a stream via a boolean control channel |
+| [pace](parts/pace.md) | filter | Rate-limited passthrough: one value per trigger, backpressure on excess |
 | [timer](parts/timer.md) | filter | Convert sleep-duration requests into fire-time outputs |
 
 ## Fan-out / Fan-in
@@ -96,9 +98,13 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [tee](parts/tee.md) | filter | Duplicate a stream to a side channel |
 | [fanout](parts/fanout.md) | producer | Broadcast input to a dynamic set of subscribers |
 | [chain](parts/chain.md) | producer | Concatenate multiple readers sequentially |
+| [concat_all](parts/concat_all.md) | filter | Flatten sub-streams sequentially (each completes before the next) |
+| [switch_all](parts/switch_all.md) | filter | Flatten sub-streams with latest-wins cancellation |
+| [exhaust_all](parts/exhaust_all.md) | filter | Flatten sub-streams, ignoring new inputs while active |
 | [merge](parts/merge.md) | producer | Non-deterministic merge of N inputs |
-| mux | producer | Non-deterministic merge of N heterogeneous inputs into `variant` |
-| demux | function | Split a `variant` stream into N typed readers |
+| [mux](parts/mux.md) | producer | Non-deterministic merge of N heterogeneous inputs into `variant` |
+| [demux](parts/demux.md) | function | Split a `variant` stream into N typed readers |
+| [combine_latest](parts/combine_latest.md) | producer | Emit tuple of latest values whenever any input updates |
 | [zip](parts/zip.md) | producer | Combine N inputs element-wise into tuples |
 | [unzip](parts/unzip.md) | filter | Split a tuple stream into N independent readers |
 
@@ -110,6 +116,12 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [interleave](parts/interleave.md) | producer | Merge N inputs in strict round-robin order |
 | [partition](parts/partition.md) | filter | Route elements to one of N outputs by classifier |
 | [group_by](parts/group_by.md) | filter | Partition by key; each unique key spawns a sub-stream |
+
+## Concurrency
+
+| Part | Type | Description |
+|---|---|---|
+| [parallel_map](parts/parallel_map.md) | filter | Concurrent transform: fan out to N workers with demand-driven dispatch |
 
 ## Advanced
 

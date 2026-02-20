@@ -62,6 +62,10 @@ These are generated from the development sources by `scripts/amalgamate.py`
   a function returning the filter. Users write `foo<int>` not `foo<int>()`.
   Exception: parts that need local type aliases or `static_assert` (e.g.
   `nwise`) may remain functions.
+- **Always add documentation when implementing a new part.** Create a detail
+  page in `docs/reference/parts/<name>.md`, add an entry to the catalog table
+  in `docs/reference/parts.md`, and add a row to the Combinator Reference table
+  in `docs/agent-guide.md`.
 
 ### Key design points
 

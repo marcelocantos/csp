@@ -350,6 +350,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `buffer<T>(n)` | filter | Bounded async FIFO buffer (size n) |
 | `chain<T>(readers...)` | producer | Concatenate readers sequentially |
 | `collect<T>(iter)` | consumer | Consume stream into output iterator |
+| `concat_all<T>` | filter | Flatten `reader<reader<T>>` sequentially |
+| `combine_latest<Ts...>(readers...)` | producer | Emit tuple of latest values whenever any input updates |
 | `conflate<T>(f)` | filter | Merge pending values when downstream is slow |
 | `count<T>(start,stop,step)` | producer | Numeric sequence [start,stop) |
 | `count_forever<T>(start,step)` | producer | Unbounded numeric sequence |
@@ -359,6 +361,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `delay<T>(dur)` | filter | Delay each value independently |
 | `distinct<T>()` | filter | Suppress consecutive duplicates |
 | `enumerate<T>(container)` | producer | Stream container elements |
+| `exhaust_all<T>` | filter | Flatten sub-streams, ignoring new while active |
 | `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
 | `first<T>(n)` | filter | Take first n elements |
 | `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
@@ -377,7 +380,9 @@ All in `namespace csp::part` (included via `csp.h`).
 | `metrics<T>()` | function | Passthrough with stats reporting |
 | `mute<T>()` | producer | Never-producing endpoint |
 | `nwise<T>(n)` | filter | Sliding n-element window as tuple |
+| `pace<T>(trigger)` | filter | Rate-limited passthrough: one value per trigger, backpressure on excess |
 | `pairwise<T>` | filter | Consecutive pairs (a,b), (b,c)... |
+| `parallel_map<A,B>(n,f,cfg)` | filter | Concurrent N-worker transform; `cfg.ordered` preserves input order |
 | `partition<T>(n,f)` | function | Route to N outputs by classifier |
 | `quantize<T>(f)` | function | Variable-size batching |
 | `reduce<T,A>(init,f)` | filter | Fold to single value |
@@ -393,11 +398,13 @@ All in `namespace csp::part` (included via `csp.h`).
 | `skip_while<T>(pred)` | filter | Drop while predicate true |
 | `slide<T>(params)` | function | Sliding window with expiry |
 | `stride<T>(n)` | filter | Every Nth element |
+| `switch_all<T>` | filter | Flatten sub-streams with latest-wins cancellation |
 | `take_while<T>(pred)` | filter | Forward while predicate true |
 | `tee<T>(side_writer)` | filter | Duplicate: main first, then side |
 | `throttle<T>(trigger,n)` | filter | Rate-limit: n per trigger, use with `tick(d)` |
 | `timeout<T>(dur)` | filter | Close if no value within duration |
 | `timer(control)` | producer | Sleep per control, emit fire times |
+| `try_map<A,B>(f,err)` | filter | Map with exception catching; errors to side channel |
 | `unique<T>(cap)` | filter | All-time dedup with optional eviction |
 | `unzip<Tuple>()` | function | Split tuple stream into N streams |
 | `where<T>(pred)` | filter | Filter by predicate |
