@@ -813,3 +813,191 @@ TEST_CASE("MN Fuse - racing with endpoint death") {
 }
 
 } // TEST_SUITE("fuse MN")
+
+// ---------------------------------------------------------------------------
+// Tap tests
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("tap") {
+
+TEST_CASE("tap - basic observation") {
+    chan<int> ch;
+
+    auto h = tap(ch.w, ch.r);
+
+    spawn([w = ch.w.copy()] {
+        w << 1;
+        w << 2;
+        w << 3;
+    });
+
+    // Both tap and original reader must be consumed — the forwarder
+    // writes to tap first, then forwards to the original reader.
+    // Interleave reads so the forwarder can make progress.
+    for (int i = 1; i <= 3; ++i) {
+        CHECK_EQ(i, h.output.read());
+        CHECK_EQ(i, ch.r.read());
+    }
+
+    ch.w = {};
+    ch.r = {};
+    h = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("tap - data reaches original reader") {
+    chan<int> ch;
+
+    auto h = tap(ch.w, ch.r);
+
+    spawn([w = ch.w.copy()] { w << 42; });
+
+    // Read from tap first (forwarder writes tap before forwarding).
+    CHECK_EQ(42, h.output.read());
+
+    // Then the original reader gets the value.
+    CHECK_EQ(42, ch.r.read());
+
+    ch.w = {};
+    ch.r = {};
+    h = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("tap - auto-fuse on handle destruction") {
+    chan<int> ch;
+
+    {
+        auto h = tap(ch.w, ch.r);
+        // h goes out of scope — fuses w and r back together.
+    }
+
+    // After untap, w and r should communicate directly.
+    spawn([w = ch.w.copy()] { w << 99; });
+    CHECK_EQ(99, ch.r.read());
+
+    ch.w = {};
+    ch.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("tap - copies follow redirection") {
+    chan<int> ch;
+
+    auto w_copy = ch.w.copy();
+    auto r_copy = ch.r.copy();
+
+    auto h = tap(ch.w, ch.r);
+
+    // Copies share the same slots, so they also go through the tap.
+    spawn([w = std::move(w_copy)] { w << 55; });
+
+    CHECK_EQ(55, h.output.read());
+    CHECK_EQ(55, r_copy.read());
+
+    ch.w = {};
+    ch.r = {};
+    r_copy = {};
+    h = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("tap - death propagation after untap") {
+    chan<int> ch;
+
+    {
+        auto h = tap(ch.w, ch.r);
+    }
+
+    // Drop writer — reader should see death.
+    ch.w = {};
+
+    int v;
+    CHECK_FALSE(bool(ch.r >> v));
+
+    ch.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("tap - channel leak check") {
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
+}
+
+} // TEST_SUITE("tap")
+
+TEST_SUITE("tap MN") {
+
+TEST_CASE("MN Tap - observe pipeline") {
+    csp::init_runtime(4);
+
+    constexpr int MSGS = 500 / SCALE_MEDIUM;
+    std::atomic<int64_t> tap_total{0};
+    std::atomic<int64_t> reader_total{0};
+
+    chan<int> ch;
+
+    auto h = tap(ch.w, ch.r);
+
+    // Producer.
+    csp::spawn([w = ch.w.copy(), MSGS] {
+        for (int i = 1; i <= MSGS; ++i) w << i;
+    });
+
+    // Tap observer.
+    csp::spawn([r = h.output.copy(), &tap_total] {
+        for (int v; r >> v;) tap_total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    // Original consumer.
+    csp::spawn([r = ch.r.copy(), &reader_total] {
+        for (int v; r >> v;) reader_total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    ch.w = {};
+    ch.r = {};
+    h = {};
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
+    CHECK_EQ(expected, tap_total.load());
+    CHECK_EQ(expected, reader_total.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Tap - auto-fuse restores direct path") {
+    csp::init_runtime(4);
+
+    constexpr int MSGS = 200 / SCALE_MEDIUM;
+    std::atomic<int64_t> total{0};
+
+    chan<int> ch;
+
+    // Tap, then immediately untap.
+    {
+        auto h = tap(ch.w, ch.r);
+    }
+
+    // Traffic should flow directly.
+    csp::spawn([w = ch.w.copy(), MSGS] {
+        for (int i = 1; i <= MSGS; ++i) w << i;
+    });
+
+    csp::spawn([r = ch.r.copy(), &total] {
+        for (int v; r >> v;) total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    ch.w = {};
+    ch.r = {};
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
+    CHECK_EQ(expected, total.load());
+
+    csp::shutdown_runtime();
+}
+
+} // TEST_SUITE("tap MN")

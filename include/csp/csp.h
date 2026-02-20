@@ -570,6 +570,15 @@ void swap(reader<T>& a, reader<T>& b) {
 //
 //   Fuse:  swap(a.w, {}, {}, b.r)
 //   Split: swap(w, std::move(a.r), std::move(b.w), r)
+//
+// TODO: Improve behavior when fusing/splitting channels with active waiters.
+// Currently, waiters blocked in prialt on a channel whose slot is redirected
+// remain registered on the old channel until something wakes them (typically
+// endpoint death when the old channel becomes orphaned).  Ideally, swap_slots
+// would deregister and re-register affected waiters on the new channel so that
+// fuse/split can be applied mid-flight without a re-resolution stall.  The two
+// sequential swaps also create a brief intermediate state visible under M:N
+// concurrency; an atomic multi-swap could eliminate this window.
 template <typename T>
 void swap(writer<T>& w1, reader<T> r1, writer<T> w2, reader<T>& r2) {
     if (!r1 && !w2) {
@@ -587,6 +596,59 @@ void swap(writer<T>& w1, reader<T> r1, writer<T> w2, reader<T>& r2) {
 template <typename T>
 void fuse(writer<T>& w, reader<T>& r) {
     swap(w, {}, {}, r);
+}
+
+// Tap: splice a pass-through observer into the channel between w and r.
+// Returns a tap_handle whose `output` reader receives a copy of every value
+// flowing from w to r.  Destroying the handle fuses w and r back together,
+// removing the forwarding imp from the data path.
+template <typename T>
+struct tap_handle {
+    reader<T> output;   // tap stream — reads a copy of each forwarded value
+
+    tap_handle() = default;
+    tap_handle(tap_handle const &) = delete;
+    tap_handle(tap_handle &&) = default;
+    tap_handle & operator=(tap_handle const &) = delete;
+    tap_handle & operator=(tap_handle &&) = default;
+
+    ~tap_handle() {
+        if (!w_copy_) return;       // moved-from or default-constructed
+        output = {};                // kill tap reader
+        fuse(w_copy_, r_copy_);     // redirect w,r back together
+    }
+
+private:
+    writer<T> w_copy_;  // shares slot with caller's w
+    reader<T> r_copy_;  // shares slot with caller's r
+
+    template <typename U>
+    friend tap_handle<U> tap(writer<U>& w, reader<U>& r);
+};
+
+template <typename T>
+tap_handle<T> tap(writer<T>& w, reader<T>& r) {
+    chan<T> a, b, tap_ch;
+
+    // Split: w → [B], [A] → r.  Original channel dies.
+    swap(w, std::move(a.r), std::move(b.w), r);
+
+    // Forwarder: reads from B (what w writes to), writes to A (what r reads
+    // from) and to tap_ch.  When tap_ch's reader dies, stops tapping but
+    // continues forwarding.  When B or A dies, exits.
+    spawn([br = std::move(b.r), aw = std::move(a.w),
+           tw = std::move(tap_ch.w)]() mutable {
+        for (T t; prialt(~aw, br >> t) >= 0;) {
+            if (tw && !(tw << t)) tw = {};  // tap reader gone — stop tapping
+            if (!(aw << t)) break;          // downstream dead — exit
+        }
+    });
+
+    tap_handle<T> h;
+    h.output = std::move(tap_ch.r);
+    h.w_copy_ = w.copy();
+    h.r_copy_ = r.copy();
+    return h;
 }
 
 // Backward compatibility.
