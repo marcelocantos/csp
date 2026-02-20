@@ -103,6 +103,21 @@ auto r2 = r.copy();
 // Death watch (fires when the other endpoint is dropped).
 chan_op<T> op = ~w;    // fires when all readers of w's channel die
 chan_op<T> op = ~r;    // fires when all writers of r's channel die
+
+// Topology: swap, fuse, tap.
+swap(a.w, b.w);         // redirect a's writers to b's channel and vice versa
+swap(a.r, b.r);         // same for readers
+fuse(a.w, b.r);         // redirect a.w and b.r onto a shared temp channel
+                         // a.r sees writer death; b.w sees reader death
+
+// 4-arg swap (fuse/split modes):
+swap(a.w, {}, {}, b.r);                             // fuse mode
+swap(w, std::move(a.r), std::move(b.w), r);          // split mode
+
+// Tap: observe values on a channel without modifying the pipeline.
+auto h = tap(ch.w, ch.r);   // h.output is reader<T> seeing every value
+// Both h.output and ch.r must be consumed for the pipeline to flow.
+h = {};                      // destroying the handle auto-fuses w,r back
 ```
 
 ## Alt / Prialt

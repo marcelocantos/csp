@@ -100,7 +100,6 @@ public:
     ~writer();
 
     writer& operator=(writer&&);
-    void swap(writer&);
 
     explicit operator bool() const;                  // non-null test
 
@@ -220,7 +219,6 @@ public:
     ~reader();
 
     reader& operator=(reader&&);
-    void swap(reader&);
 
     explicit operator bool() const;                  // non-null test
 
@@ -568,3 +566,107 @@ reader.suspend ─┤last writer dies├─➤ unblock reader; result = false
 - **No priority.** When multiple peers are waiting, the channel selects one.
   The selection order is not specified. Use `prialt` (not the channel itself)
   when priority among multiple channels matters.
+
+---
+
+## Topology Operations
+
+Free functions that rewire channel connectivity at runtime. All operate
+through the slot indirection layer: every endpoint handle points to a
+shared *slot*, and the slot points to the channel. Swapping slots
+transparently redirects all copies of an endpoint.
+
+### swap
+
+```cpp
+template <typename T> void swap(writer<T>& a, writer<T>& b);
+template <typename T> void swap(reader<T>& a, reader<T>& b);
+```
+
+Atomically exchange which channels two same-side endpoint groups target.
+If `a` targeted Channel X and `b` targeted Channel Y, afterward `a`
+targets Y and `b` targets X. All copies of each endpoint (made via
+`.copy()`) follow the redirection through the shared slot.
+
+### swap (4-argument)
+
+```cpp
+template <typename T>
+void swap(writer<T>& w1, reader<T> r1, writer<T> w2, reader<T>& r2);
+```
+
+Exchange which channels two (writer, reader) pairs target. The middle
+parameters (`r1`, `w2`) are taken by value; their destruction on return
+triggers endpoint death on the channels they were swapped onto.
+
+Two calling patterns:
+
+- **Fuse mode** (`r1` and `w2` are empty): a temporary channel is
+  created as a bridge. `w1` and `r2` are redirected onto it; the
+  orphaned sides of their original channels see clean endpoint death.
+- **Split mode** (`r1` and `w2` are valid): two 2-arg swaps execute,
+  then the consumed middle endpoints die on return, killing the
+  original channel.
+
+### fuse
+
+```cpp
+template <typename T> void fuse(writer<T>& w, reader<T>& r);
+```
+
+Redirect `w` and `r` onto a shared temporary channel. Equivalent to
+`swap(w, {}, {}, r)`. The orphaned writer side of `w`'s original
+channel and the orphaned reader side of `r`'s original channel observe
+endpoint death.
+
+```
+Before fuse(a.w, b.r):
+  a.w ──→ [Channel A] ──→ a.r
+  b.w ──→ [Channel B] ──→ b.r
+
+After fuse(a.w, b.r):
+  a.w ──→ [Temp] ──→ b.r
+          ╳ Channel A (a.r sees writer death)
+          ╳ Channel B (b.w sees reader death)
+```
+
+### tap
+
+```cpp
+template <typename T> struct tap_handle;
+template <typename T> tap_handle<T> tap(writer<T>& w, reader<T>& r);
+```
+
+Splice a pass-through observer into the channel between `w` and `r`.
+Returns a `tap_handle` whose `output` reader receives a copy of every
+value flowing from `w` to `r`.
+
+Internally, `tap` splits the original channel and spawns a forwarding
+imp that reads from `w`'s channel, writes to the tap channel, then
+forwards to `r`'s channel. If the tap reader dies (or the handle is
+destroyed), the forwarder stops tapping but continues forwarding until
+the pipeline terminates.
+
+Destroying the `tap_handle` fuses `w` and `r` back together, removing
+the forwarding imp from the data path. This works because the handle
+holds `.copy()` references that share the original slots.
+
+```cpp
+csp::chan<int> ch;
+
+// Attach a tap.
+auto h = csp::tap(ch.w, ch.r);
+
+// h.output is a reader<int> that sees every value.
+csp::spawn([r = h.output.copy()] {
+    for (int v : r) { log(v); }
+});
+
+// ... later, remove the tap (auto-fuses w and r back together).
+h = {};
+```
+
+**Important:** both the tap reader and the original reader must be
+consumed for the pipeline to make progress. The forwarding imp writes
+to the tap channel first, then forwards to the original reader. If
+either side stalls, the entire pipeline stalls.

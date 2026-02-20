@@ -244,40 +244,27 @@ with entropy-seeded default, so configurable seeding is built in.
 
 ## Channel topology operations
 
-- [ ] **Channel fusing, cutting, and splicing** — Investigate primitives for
-      dynamically rewiring channel topology at runtime. Currently, channel
-      endpoints are fixed at creation — once a writer and reader are connected,
-      that connection is permanent until one side dies. This is limiting for
-      supervision trees (restart rewiring), live reconfiguration, and hot
-      code reload.
+- [x] **Swap, fuse, split** — Slot-based indirection enables atomic endpoint
+      redirection. `swap(a.w, b.w)` exchanges which channels two endpoint
+      groups target. The 4-arg `swap(w1, r1, w2, r2)` gives fuse (empty
+      middle: create temp channel) and split (valid middle: consumed on
+      return). `fuse(w, r)` is shorthand for `swap(w, {}, {}, r)`.
 
-  ### Fuse
-  Connect two previously independent channels by splicing a reader to a
-  writer. Conceptually: given `reader<T> r` and `writer<T> w` on different
-  channels, create a forwarding imp that drains r into w. This already works
-  via `spawn(r.stream_to(std::move(w)))` — but a first-class fuse could
-  be zero-copy (directly connect the channel internals) rather than requiring
-  an intermediate imp and double synchronization.
+- [x] **Tap** — `tap(w, r)` splices a forwarding imp into a channel,
+      returning a `tap_handle` whose `output` reader sees copies of every
+      value. Destroying the handle auto-fuses `w` and `r` back together via
+      slot-shared `.copy()` endpoints.
 
-  ### Cut
-  Sever an existing channel connection, yielding two independent halves.
-  Given a live channel, produce a new `writer<T>` that the reader now sees,
-  and a new `reader<T>` that the writer now feeds. The original endpoints
-  remain valid but are now on separate channels. Use cases:
-  - Insert a filter into a live pipeline (cut, then fuse through the filter)
-  - Supervision restart: cut the old child's channels, fuse to the new child
+- [ ] **Improve mid-flight behavior** — Waiters blocked in prialt on a
+      channel whose slot is redirected remain registered on the old channel
+      until endpoint death wakes them. Ideally `swap_slots` would deregister
+      and re-register affected waiters on the new channel. The two sequential
+      swaps in the 4-arg swap also create a brief intermediate state under
+      M:N concurrency; an N-channel locking protocol could eliminate this
+      window.
 
-  ### Splice
-  Compound operation: cut a channel and insert a new stage (filter, buffer,
-  monitor) between the halves. Equivalent to cut + fuse + fuse but could be
-  atomic to avoid message loss during the transition.
+  ### Remaining design questions
 
-  ### Design questions
-
-  - **Atomicity**: Can fuse/cut/splice be atomic with respect to in-flight
-    messages? A naïve cut might lose a message that's mid-transfer. May need
-    a "drain then cut" protocol, or accept that cut is only safe at quiescent
-    points.
   - **Zero-copy fuse**: Could the runtime directly connect two channel
     internals (bypass the forwarding imp)? This would require channels to
     support re-parenting of waiters. Complex but eliminates the extra
@@ -289,11 +276,6 @@ with entropy-seeded default, so configurable seeding is built in.
     persistent outer channel fused to a series of inner channels over time
     (one per child lifetime). Each restart is a cut of the old inner + fuse
     to the new inner.
-  - **Hot pipeline reconfiguration**: With splice, you could insert a
-    `metrics` tap, `buffer`, or `throttle` into a running pipeline without
-    restarting it. This is powerful for operational debugging.
-  - **Type safety**: Fuse and splice need type compatibility at the join
-    point. Cut preserves the type trivially.
 
 ## Buffered channels
 
