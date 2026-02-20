@@ -31,3 +31,7 @@ debugging of the CSP imp-based concurrency library.
 6. **[Dynamic Scoping for Imps](06-dynamic-scoping.md)** — A
    persistent HAMT provides inherited, copy-on-write-isolated,
    channel-sendable per-imp variables.
+
+7. **[Topology Surgery on Live Channels](07-channel-fuse-split.md)**
+   — Fuse and split rewire channel graphs at runtime by composing
+   slot swaps with temporary channels and RAII endpoint death.
