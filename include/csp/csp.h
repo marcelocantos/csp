@@ -25,9 +25,17 @@ namespace csp::internal {
 // (for death detection); channel pointer is swappable.
 struct alignas(16) Slot {
     std::atomic<void*> channel{nullptr};   // Channel* (type-erased)
-    std::atomic<size_t> refcount{1};       // live endpoint handles
+    std::atomic<size_t> refcount{1};       // strong refs (death detection)
+    std::atomic<size_t> mem_refcount{1};   // memory refs: 1 from channel + N from weak refs
 
     explicit Slot(void* ch) : channel(ch) {}
+
+    // Release one memory ref. Deletes the slot when the last ref is released.
+    void mem_release() {
+        if (mem_refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            delete this;
+        }
+    }
 };
 
 // Extract Slot* from an endpoint ref (mask off low flag bits).
@@ -102,6 +110,17 @@ WriterRef writer_addref(WriterRef w);
 void writer_release(WriterRef w);
 ReaderRef reader_addref(ReaderRef r);
 void reader_release(ReaderRef r);
+
+// Weak endpoint references: keep slot memory alive without participating
+// in death detection (refcount). Increment mem_refcount instead.
+// try_upgrade atomically increments refcount (CAS from N>0 to N+1),
+// returning true on success. On failure the endpoint is dead.
+void writer_weak_addref(WriterRef w);
+void writer_weak_release(WriterRef w);
+void reader_weak_addref(ReaderRef r);
+void reader_weak_release(ReaderRef r);
+bool try_upgrade_weak_writer(WriterRef w);
+bool try_upgrade_weak_reader(ReaderRef r);
 
 // Channel swap: atomically exchange which channels two endpoint groups target.
 void swap_slots(void* slot_a, void* slot_b);
@@ -187,6 +206,8 @@ extern struct poke_t {
 } poke;
 
 template <typename T> struct chan;
+template <typename T> class weak_writer;
+template <typename T> class weak_reader;
 
 namespace detail {
 
@@ -380,6 +401,7 @@ private:
     void assign(internal::WriterRef w) { w_ = w; }
 
     friend struct chan<T>;
+    friend class weak_writer<T>;
 };
 
 namespace { Logger g_reader_log("reader"); }
@@ -501,6 +523,80 @@ private:
     void assign(internal::ReaderRef r) { r_ = r; }
 
     friend struct chan<T>;
+    friend class weak_reader<T>;
+};
+
+// Weak endpoint reference: keeps slot memory alive without contributing to
+// death detection. Like std::weak_ptr, use try_lock() to attempt upgrade
+// to a strong reference.
+template <typename T = poke_t>
+class weak_writer {
+public:
+    weak_writer() = default;
+    explicit weak_writer(writer<T> const& w) : w_(w.internal_writer()) {
+        if (w_) internal::writer_weak_addref(w_);
+    }
+    weak_writer(weak_writer const&) = delete;
+    weak_writer(weak_writer&& o) : w_(o.w_) { o.w_ = {}; }
+    ~weak_writer() { if (w_) internal::writer_weak_release(w_); }
+
+    weak_writer& operator=(weak_writer const&) = delete;
+    weak_writer& operator=(weak_writer&& o) {
+        if (w_) internal::writer_weak_release(w_);
+        w_ = o.w_;
+        o.w_ = {};
+        return *this;
+    }
+
+    // Upgrade to a strong reference. Returns an empty writer if the
+    // endpoint is dead (refcount already 0).
+    writer<T> try_lock() const {
+        if (w_ && internal::try_upgrade_weak_writer(w_)) {
+            writer<T> result;
+            result.w_ = w_;
+            return result;
+        }
+        return {};
+    }
+
+private:
+    internal::WriterRef w_;
+    friend class writer<T>;
+};
+
+template <typename T = poke_t>
+class weak_reader {
+public:
+    weak_reader() = default;
+    explicit weak_reader(reader<T> const& r) : r_(r.internal_reader()) {
+        if (r_) internal::reader_weak_addref(r_);
+    }
+    weak_reader(weak_reader const&) = delete;
+    weak_reader(weak_reader&& o) : r_(o.r_) { o.r_ = {}; }
+    ~weak_reader() { if (r_) internal::reader_weak_release(r_); }
+
+    weak_reader& operator=(weak_reader const&) = delete;
+    weak_reader& operator=(weak_reader&& o) {
+        if (r_) internal::reader_weak_release(r_);
+        r_ = o.r_;
+        o.r_ = {};
+        return *this;
+    }
+
+    // Upgrade to a strong reference. Returns an empty reader if the
+    // endpoint is dead (refcount already 0).
+    reader<T> try_lock() const {
+        if (r_ && internal::try_upgrade_weak_reader(r_)) {
+            reader<T> result;
+            result.r_ = r_;
+            return result;
+        }
+        return {};
+    }
+
+private:
+    internal::ReaderRef r_;
+    friend class reader<T>;
 };
 
 template <typename T = poke_t>
@@ -609,52 +705,112 @@ void fuse(writer<T>& w, reader<T>& r) {
 
 // Tap: splice a pass-through observer into the channel between w and r.
 // Returns a reader whose values mirror every value flowing from w to r.
-// Dropping the returned reader triggers automatic fuse-back: the forwarder
-// detects reader death via ~tw (vulture on the tap writer), fuses w and r
-// back together, and exits.
+// Both the tap reader and the original reader must be consumed for the
+// pipeline to flow (the forwarder writes to the tap first, then forwards).
 //
-// The forwarder holds .copy() references to w and r for fuse-back.  These
-// copies mask natural pipeline death (same as any extra endpoint copy), so
-// the pipeline only terminates when the tap reader is dropped first.
+// When the tap reader dies (~tw fires), the forwarder fuses w and r back
+// together, restoring the direct path. Weak refs to w/r keep the slots
+// alive without masking natural pipeline death.
 template <typename T>
 reader<T> tap(writer<T>& w, reader<T>& r) {
     chan<T> a, b, tap_ch;
 
+    // Take weak refs to original w/r slots BEFORE the swap redirects them.
+    weak_writer<T> ww(w);
+    weak_reader<T> wr(r);
+
     // Split: w → [B], [A] → r.  Original channel dies.
     swap(w, std::move(a.r), std::move(b.w), r);
 
-    // Forwarder: reads from B (what w writes to), writes to tap_ch and
-    // then to A (what r reads from).  Holds copies of w and r for
-    // fuse-back.  When the tap reader dies, fuses w and r back together
-    // and exits.
-    // Prialt returns ~index (negative) for vulture/death matches.
-    // ~tw is at index 0 in both prialts, so its match result is ~0.
+    // Forwarder: reads from B (what w writes to), writes to A (what r reads
+    // from) and to tap_ch.  Holds weak refs to the original w/r for fuse-back.
+    // When ~tw fires (tap reader died), upgrades weak refs and fuses w/r.
+    // Since the weak refs don't contribute to death detection, ~aw and br
+    // can properly detect natural pipeline death.
     spawn([br = std::move(b.r), aw = std::move(a.w),
            tw = std::move(tap_ch.w),
-           wc = w.copy(), rc = r.copy()]() mutable {
+           ww = std::move(ww), wr = std::move(wr)]() mutable {
         for (T t;;) {
             int i = prialt(~tw, br >> t);
-            if (i == ~0) { fuse(wc, rc); return; }  // tap reader died
-            if (i < 0) return;                        // br dead
+            if (i == ~0) {
+                // Tap reader died. Upgrade weak refs and fuse back.
+                auto wc = ww.try_lock();
+                auto rc = wr.try_lock();
+                if (wc && rc) fuse(wc, rc);
+                return;
+            }
+            if (i < 0) return;  // upstream dead
 
             if (!(tw << t)) {
                 // Tap reader died during write.
-                fuse(wc, rc);
-                wc << t;  // deliver in-flight value through fused path
+                auto wc = ww.try_lock();
+                auto rc = wr.try_lock();
+                if (wc && rc) {
+                    fuse(wc, rc);
+                    wc << t;  // deliver in-flight value
+                }
                 return;
             }
 
             int j = prialt(~tw, aw << t);
             if (j == ~0) {
-                fuse(wc, rc);
-                wc << t;  // deliver in-flight value
+                // Tap reader died while forwarding.
+                auto wc = ww.try_lock();
+                auto rc = wr.try_lock();
+                if (wc && rc) {
+                    fuse(wc, rc);
+                    wc << t;  // deliver in-flight value
+                }
                 return;
             }
-            if (j < 0) return;  // aw dead
+            if (j < 0) return;  // downstream dead
         }
     });
 
     return std::move(tap_ch.r);
+}
+
+// Splice: insert a user-defined filter between w and r.
+// The filter function f(reader<T>, writer<T>) receives internal endpoints
+// created by splitting the original channel and runs its own forwarding
+// loop. When f returns -- for any reason (normal exit, upstream death,
+// downstream death, exception, or filter decision) -- w and r are
+// automatically fused back together, restoring the direct path.
+//
+// Weak refs prevent the forwarder from masking natural pipeline death
+// (same pattern as tap).
+template <typename T, typename F>
+void splice(writer<T>& w, reader<T>& r, F&& f) {
+    chan<T> a, b;
+
+    // Take weak refs BEFORE the swap redirects slots.
+    weak_writer<T> ww(w);
+    weak_reader<T> wr(r);
+
+    // Split: w → [B], [A] → r.
+    swap(w, std::move(a.r), std::move(b.w), r);
+
+    // Forwarder imp: runs f with copies of the internal endpoints,
+    // keeping the originals alive so the intermediate channels survive
+    // until after fuse-back.  Without this, the filter's endpoint
+    // destruction would kill the intermediate channels before the fuse
+    // can redirect w and r, causing the producer to see a dead channel.
+    spawn([br = std::move(b.r), aw = std::move(a.w),
+           f = std::forward<F>(f),
+           ww = std::move(ww), wr = std::move(wr)]() mutable {
+        try {
+            f(br.copy(), aw.copy());
+        } catch (...) {
+            auto wc = ww.try_lock();
+            auto rc = wr.try_lock();
+            if (wc && rc) fuse(wc, rc);
+            throw;
+        }
+        auto wc = ww.try_lock();
+        auto rc = wr.try_lock();
+        if (wc && rc) fuse(wc, rc);
+        // br and aw destroyed here — intermediate channels die after fuse.
+    });
 }
 
 // Backward compatibility.

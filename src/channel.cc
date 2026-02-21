@@ -171,10 +171,13 @@ namespace {
             // when both endpoints reach refcount 0 concurrently
             // on different OS threads.
             if (alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                // Both endpoint slots are dead. Delete slots and channel.
-                delete write_slot_;
-                delete read_slot_;
+                // Both endpoint slots are dead. Release channel's memory
+                // refs on slots (weak refs may keep slots alive longer).
+                auto* ws = write_slot_;
+                auto* rs = read_slot_;
                 delete this;
+                ws->mem_release();
+                rs->mem_release();
             }
         }
 
@@ -286,6 +289,25 @@ namespace {
             auto unlock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock(); };
 
             lock_all(); // TLA:ChannelLifecycle.WaiterAcquire
+
+            // Verify channels haven't changed (concurrent swap_slots).
+            {
+                bool stale = false;
+                for (int i = 0; i < count && !stale; ++i) {
+                    if (chanops[i].slot) {
+                        auto * slot = static_cast<Slot *>(chanops[i].slot);
+                        auto * now = slot->channel.load(std::memory_order_acquire);
+                        if (now != get_chan(chanops[i])) {
+                            stale = true;
+                        }
+                    }
+                }
+                if (stale) {
+                    unlock_all();
+                    delete[] mi->heap_alloc;
+                    goto retry;
+                }
+            }
 
             // TLA:ChannelLifecycle.WaiterPhase1
             // Phase 1: Scan for ready peer (priority order, rotated by offset).
@@ -410,9 +432,11 @@ namespace {
             for (int i = 0; i < mi->n_sorted; ++i) {
                 Channel * ch = mi->sorted[i];
                 if (ch->alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    delete ch->write_slot_;
-                    delete ch->read_slot_;
+                    auto* ws = ch->write_slot_;
+                    auto* rs = ch->read_slot_;
                     delete ch;
+                    ws->mem_release();
+                    rs->mem_release();
                 }
             }
 
@@ -573,6 +597,50 @@ void reader_release(ReaderRef r) {
             Channel::resolve_endpoint_death(slot, rd);
         }
     }
+}
+
+void writer_weak_addref(WriterRef w) {
+    if (w) get_slot(w.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void writer_weak_release(WriterRef w) {
+    if (w) get_slot(w.ptr)->mem_release();
+}
+
+void reader_weak_addref(ReaderRef r) {
+    if (r) get_slot(r.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void reader_weak_release(ReaderRef r) {
+    if (r) get_slot(r.ptr)->mem_release();
+}
+
+bool try_upgrade_weak_writer(WriterRef w) {
+    if (!w) return false;
+    auto* slot = get_slot(w.ptr);
+    size_t old = slot->refcount.load(std::memory_order_acquire);
+    while (old > 0) {
+        if (slot->refcount.compare_exchange_weak(old, old + 1,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            ++counterses()[wr].refs;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool try_upgrade_weak_reader(ReaderRef r) {
+    if (!r) return false;
+    auto* slot = get_slot(r.ptr);
+    size_t old = slot->refcount.load(std::memory_order_acquire);
+    while (old > 0) {
+        if (slot->refcount.compare_exchange_weak(old, old + 1,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            ++counterses()[rd].refs;
+            return true;
+        }
+    }
+    return false;
 }
 
 void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {

@@ -251,9 +251,15 @@ with entropy-seeded default, so configurable seeding is built in.
       return). `fuse(w, r)` is shorthand for `swap(w, {}, {}, r)`.
 
 - [x] **Tap** — `tap(w, r)` splices a forwarding imp into a channel,
-      returning a `tap_handle` whose `output` reader sees copies of every
-      value. Destroying the handle auto-fuses `w` and `r` back together via
-      slot-shared `.copy()` endpoints.
+      returning a `reader<T>` that sees copies of every value. Destroying
+      the reader triggers fuse-back via `~tw` vulture and weak endpoint
+      references (`weak_writer`/`weak_reader`).
+
+- [x] **Splice** — `splice(w, r, f)` inserts a user-defined filter
+      `f(reader<T>, writer<T>)` between `w` and `r`. Auto-fuses back when
+      `f` returns via weak refs (same pattern as tap). The filter receives
+      copies of the internal endpoints; originals are kept alive until
+      after fuse-back.
 
 - [x] **Mid-flight behavior is correct** — `swap_slots` already wakes all
       waiters on both channels with `signal_ = INT_MIN`, causing `prialt` to

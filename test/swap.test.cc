@@ -1254,3 +1254,282 @@ TEST_CASE("MN Tap - remove mid-flight") {
 }
 
 } // TEST_SUITE("tap MN")
+
+// ---------------------------------------------------------------------------
+// Splice tests (single-threaded cooperative)
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("splice") {
+
+TEST_CASE("splice - basic forwarding") {
+    chan<int> ch;
+
+    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+        for (int v; in >> v;) out << v;
+    });
+
+    spawn([w = ch.w.copy()] {
+        w << 1;
+        w << 2;
+        w << 3;
+    });
+
+    CHECK_EQ(1, ch.r.read());
+    CHECK_EQ(2, ch.r.read());
+    CHECK_EQ(3, ch.r.read());
+
+    ch.w = {};
+    ch.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("splice - filter transforms values") {
+    chan<int> ch;
+
+    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+        for (int v; in >> v;) out << v * 2;
+    });
+
+    spawn([w = ch.w.copy()] {
+        w << 1;
+        w << 2;
+        w << 3;
+    });
+
+    CHECK_EQ(2, ch.r.read());
+    CHECK_EQ(4, ch.r.read());
+    CHECK_EQ(6, ch.r.read());
+
+    ch.w = {};
+    ch.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("splice - filter drops values") {
+    chan<int> ch;
+
+    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+        for (int v; in >> v;) {
+            if (v % 2 == 0) out << v;
+        }
+    });
+
+    spawn([w = ch.w.copy()] {
+        for (int i = 1; i <= 6; ++i) w << i;
+    });
+
+    CHECK_EQ(2, ch.r.read());
+    CHECK_EQ(4, ch.r.read());
+    CHECK_EQ(6, ch.r.read());
+
+    ch.w = {};
+    ch.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("splice - auto-fuse on filter return") {
+    chan<int> ch;
+
+    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+        // Forward exactly 2 values then return.
+        for (int i = 0; i < 2; ++i) {
+            int v;
+            if (!(in >> v)) return;
+            out << v;
+        }
+    });
+
+    spawn([w = ch.w.copy()] {
+        w << 10;
+        w << 20;
+        w << 30;
+        w << 40;
+    });
+
+    // First 2 values go through the filter.
+    CHECK_EQ(10, ch.r.read());
+    CHECK_EQ(20, ch.r.read());
+
+    // Run scheduler to let filter return and fuse back.
+    while (csp::internal::run()) { }
+
+    // After fuse-back, values flow directly.
+    CHECK_EQ(30, ch.r.read());
+    CHECK_EQ(40, ch.r.read());
+
+    ch.w = {};
+    ch.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("splice - auto-fuse on upstream death") {
+    chan<int> ch;
+
+    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+        for (int v; in >> v;) out << v;
+    });
+
+    spawn([w = ch.w.copy()] {
+        w << 42;
+        // Writer destroyed on scope exit — upstream dies.
+    });
+
+    CHECK_EQ(42, ch.r.read());
+
+    ch.w = {};
+
+    // Reader should see death after filter returns and fuses back.
+    int v;
+    CHECK_FALSE(bool(ch.r >> v));
+
+    ch.r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("splice - auto-fuse on downstream death") {
+    chan<int> ch;
+
+    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+        for (int v; in >> v;) {
+            if (!(out << v)) return;
+        }
+    });
+
+    // Drop the reader — downstream dies.
+    ch.r = {};
+
+    // Send a value — the filter's write should fail, filter returns.
+    spawn([w = ch.w.copy()] { w << 1; });
+
+    ch.w = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("splice - channel leak check") {
+    CHECK_EQ(0, csp::internal::channel_count(0));
+    CHECK_EQ(0, csp::internal::channel_count(1));
+}
+
+} // TEST_SUITE("splice")
+
+// ---------------------------------------------------------------------------
+// Splice tests (M:N concurrency)
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("splice MN") {
+
+TEST_CASE("MN Splice - data integrity") {
+    csp::init_runtime(4);
+
+    constexpr int MSGS = 500 / SCALE_MEDIUM;
+    std::atomic<int64_t> total{0};
+
+    chan<int> ch;
+
+    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+        for (int v; in >> v;) out << v;
+    });
+
+    // Consumer.
+    csp::spawn([r = ch.r.copy(), &total] {
+        for (int v; r >> v;) total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    // Producer.
+    csp::spawn([w = ch.w.copy()] {
+        for (int i = 1; i <= MSGS; ++i) w << i;
+    });
+
+    ch.w = {};
+    ch.r = {};
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
+    CHECK_EQ(expected, total.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Splice - filter exits mid-stream") {
+    csp::init_runtime(4);
+
+    constexpr int MSGS = 500 / SCALE_MEDIUM;
+    constexpr int LIMIT = MSGS / 4;
+    std::atomic<int64_t> total{0};
+
+    chan<int> ch;
+
+    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+        int count = 0;
+        for (int v; in >> v;) {
+            out << v;
+            if (++count >= LIMIT) return;
+        }
+    });
+
+    // Consumer.
+    csp::spawn([r = ch.r.copy(), &total] {
+        for (int v; r >> v;) total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    // Producer.
+    csp::spawn([w = ch.w.copy()] {
+        for (int i = 1; i <= MSGS; ++i) w << i;
+    });
+
+    ch.w = {};
+    ch.r = {};
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
+    CHECK_EQ(expected, total.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Splice - splice mid-flight") {
+    csp::init_runtime(4);
+
+    constexpr int MSGS = 500 / SCALE_MEDIUM;
+    std::atomic<int64_t> total{0};
+
+    chan<int> ch;
+
+    // Consumer.
+    csp::spawn([r = ch.r.copy(), &total] {
+        for (int v; r >> v;) total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    // Producer.
+    csp::spawn([w = ch.w.copy()] {
+        for (int i = 1; i <= MSGS; ++i) w << i;
+    });
+
+    // Splicer: wait for some data to flow, then splice mid-flight.
+    // The filter forwards everything until upstream dies, then returns
+    // triggering auto fuse-back.
+    csp::spawn([w = ch.w.copy(), r = ch.r.copy()]() mutable {
+        for (int i = 0; i < MSGS / 4; ++i) csp::yield();
+
+        splice(w, r, [](reader<int> in, writer<int> out) {
+            for (int v; in >> v;) out << v;
+        });
+        w = {};
+        r = {};
+    });
+
+    ch.w = {};
+    ch.r = {};
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
+    CHECK_GE(total.load(), expected - MSGS);
+    CHECK_LE(total.load(), expected);
+
+    csp::shutdown_runtime();
+}
+
+} // TEST_SUITE("splice MN")

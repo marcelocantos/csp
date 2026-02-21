@@ -315,42 +315,71 @@ operations in the same `prialt`, with no polling, no flags, and no races.
 
 ### Example: tap's forwarding loop
 
-The `tap` function splices a forwarder between a writer and reader. It needs
-to exit promptly when the downstream channel's read side dies (which happens
-when the `tap_handle` fuses the endpoints back together):
+The `tap` function splices a forwarder between a writer and reader. It uses
+weak endpoint references (`weak_writer`/`weak_reader`) to keep the original
+slots alive for fuse-back without masking pipeline death. The `~tw` vulture
+detects when the tap reader dies:
 
 ```cpp
 spawn([br = std::move(b.r), aw = std::move(a.w),
-       tw = std::move(tap_ch.w)]() mutable {
-    for (T t; prialt(~aw, br >> t) >= 0;) {
-        if (tw && !(tw << t)) tw = {};  // tap reader gone -- stop tapping
-        if (!(aw << t)) break;          // downstream dead -- exit
+       tw = std::move(tap_ch.w),
+       ww = std::move(ww), wr = std::move(wr)]() mutable {
+    for (T t;;) {
+        int i = prialt(~tw, br >> t);
+        if (i == ~0) {
+            // Tap reader died. Upgrade weak refs and fuse back.
+            auto wc = ww.try_lock();
+            auto rc = wr.try_lock();
+            if (wc && rc) fuse(wc, rc);
+            return;
+        }
+        if (i < 0) return;  // upstream dead
+        // ... write to tap, forward to downstream
     }
 });
 ```
 
-Here `~aw` is a death-watch on the A channel's writer. When the `tap_handle`
-destructor fuses w and r back together, the intermediate A channel loses its
-external reader, `~aw` fires, and the forwarder exits -- even if no value is
-currently in flight. Without the vulture, the forwarder would block on
-`br >> t` indefinitely, waiting for a value that might never come.
+Here `~tw` is a death-watch on the tap channel's writer. When the tap reader
+is destroyed, `~tw` fires and the forwarder upgrades its weak references to
+strong references and fuses `w` and `r` back together. Since weak references
+don't contribute to death detection, the forwarder can also see natural
+pipeline death via `br >> t` (upstream EOF) and `aw << t` (downstream death).
 
 ### Pitfall: reference cycles with control copies
 
 When using vultures for control, be careful that the watching imp does not
-itself hold a copy of the endpoint it is watching. An imp that holds both the
-endpoint and watches `~ep` for the peer's death creates a reference cycle: the
-imp's copy keeps the endpoint alive, so the death event never fires.
+itself hold a strong copy of the endpoint it is watching. An imp that holds
+both the endpoint and watches `~ep` for the peer's death creates a reference
+cycle: the imp's copy keeps the endpoint alive, so the death event never fires.
 
-This came up in the `tap` implementation. An earlier design stored the
-fuse-back endpoint copies inside the forwarder so it could fuse on its own.
-But those copies kept the intermediate channels' endpoint groups alive,
-preventing the forwarder from ever seeing upstream/downstream death -- a
-deadlock under M:N concurrency. The fix was to store the copies in the external
-`tap_handle`, not in the forwarder.
+The `tap` implementation avoids this pitfall by using **weak references**
+(`weak_writer`/`weak_reader`) instead of strong copies. Weak references keep
+slot memory alive (for the fuse-back upgrade) without incrementing the death
+detection refcount. This allows the forwarder to detect both natural pipeline
+death and tap reader death without deadlocking.
 
-**Rule of thumb:** the entity that *signals* (by destroying endpoints) should
-hold the copies; the entity that *watches* (via vultures) should not.
+**Rule of thumb:** if an imp needs to hold endpoint references for later use
+but must not mask death detection, use `weak_writer`/`weak_reader` with
+`try_lock()` to upgrade when needed.
+
+### splice: generalised tap
+
+While `tap` provides read-only observation, `splice` inserts an arbitrary
+filter between a writer and reader:
+
+```cpp
+splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+    for (int v; in >> v;) {
+        if (v % 2 == 0) out << v;  // drop odd values
+    }
+});
+```
+
+The filter function receives internal endpoints and runs its own forwarding
+loop. When it returns — whether from upstream death, downstream death, or its
+own decision — the original `w` and `r` are automatically fused back together.
+`splice` uses the same weak-reference pattern as `tap` to prevent masking
+pipeline death.
 
 ## Comparison with Go's select
 

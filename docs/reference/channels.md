@@ -633,40 +633,85 @@ After fuse(a.w, b.r):
 ### tap
 
 ```cpp
-template <typename T> struct tap_handle;
-template <typename T> tap_handle<T> tap(writer<T>& w, reader<T>& r);
+template <typename T> reader<T> tap(writer<T>& w, reader<T>& r);
 ```
 
 Splice a pass-through observer into the channel between `w` and `r`.
-Returns a `tap_handle` whose `output` reader receives a copy of every
-value flowing from `w` to `r`.
+Returns a `reader<T>` that receives a copy of every value flowing from
+`w` to `r`.
 
 Internally, `tap` splits the original channel and spawns a forwarding
 imp that reads from `w`'s channel, writes to the tap channel, then
-forwards to `r`'s channel. If the tap reader dies (or the handle is
-destroyed), the forwarder stops tapping but continues forwarding until
-the pipeline terminates.
+forwards to `r`'s channel. The forwarder holds weak references to the
+original `w` and `r` slots (via `weak_writer`/`weak_reader`), which
+keep the slot memory alive without masking natural pipeline death.
 
-Destroying the `tap_handle` fuses `w` and `r` back together, removing
-the forwarding imp from the data path. This works because the handle
-holds `.copy()` references that share the original slots.
+When the tap reader dies, the forwarder detects this via a `~tw`
+vulture, upgrades its weak references to strong references, and fuses
+`w` and `r` back together, restoring the direct path.
 
 ```cpp
 csp::chan<int> ch;
 
 // Attach a tap.
-auto h = csp::tap(ch.w, ch.r);
+auto tr = csp::tap(ch.w, ch.r);
 
-// h.output is a reader<int> that sees every value.
-csp::spawn([r = h.output.copy()] {
+// tr is a reader<int> that sees every value.
+csp::spawn([r = tr.copy()] {
     for (int v : r) { log(v); }
 });
 
 // ... later, remove the tap (auto-fuses w and r back together).
-h = {};
+tr = {};
 ```
 
 **Important:** both the tap reader and the original reader must be
 consumed for the pipeline to make progress. The forwarding imp writes
 to the tap channel first, then forwards to the original reader. If
 either side stalls, the entire pipeline stalls.
+
+### splice
+
+```cpp
+template <typename T, typename F>
+void splice(writer<T>& w, reader<T>& r, F&& f);
+// F is callable as f(reader<T>, writer<T>)
+```
+
+Insert a user-defined filter between `w` and `r`. The filter function
+`f(reader<T>, writer<T>)` receives internal endpoints created by
+splitting the original channel and runs its own forwarding loop.
+
+When `f` returns — for any reason (normal exit, upstream death,
+downstream death, exception, or the filter's own decision) — `w` and
+`r` are automatically fused back together, restoring the direct path.
+
+```
+Before splice:   w ──→ [Channel] ──→ r
+During splice:   w ──→ [B] ──→ f() ──→ [A] ──→ r
+After f returns: w ──→ [Channel'] ──→ r   (fused back)
+```
+
+Like `tap`, `splice` uses weak references to keep the original slots
+alive for fuse-back without masking natural pipeline death. The filter
+receives copies of the internal endpoints; the originals are kept alive
+until after fuse-back completes, so the producer never sees a dead
+intermediate channel during the transition.
+
+Unlike `tap`, the filter owns the forwarding loop entirely. In-flight
+values (read from upstream but not yet written downstream) are the
+filter's responsibility — they are not automatically delivered after
+fuse-back.
+
+```cpp
+csp::chan<int> ch;
+
+// Insert a doubling filter.
+csp::splice(ch.w, ch.r, [](csp::reader<int> in, csp::writer<int> out) {
+    for (int v; in >> v;) out << v * 2;
+});
+
+// Values through ch.w are now doubled before reaching ch.r.
+// When the filter's input exhausts (upstream death), it returns
+// and fuse-back restores the direct ch.w → ch.r path.
+```

@@ -115,9 +115,14 @@ swap(a.w, {}, {}, b.r);                             // fuse mode
 swap(w, std::move(a.r), std::move(b.w), r);          // split mode
 
 // Tap: observe values on a channel without modifying the pipeline.
-auto h = tap(ch.w, ch.r);   // h.output is reader<T> seeing every value
-// Both h.output and ch.r must be consumed for the pipeline to flow.
-h = {};                      // destroying the handle auto-fuses w,r back
+auto tr = tap(ch.w, ch.r);   // tr is reader<T> seeing every value
+// Both tr and ch.r must be consumed for the pipeline to flow.
+tr = {};                      // destroying the reader auto-fuses w,r back
+
+// Splice: insert a custom filter between w and r; auto-fuses back on return.
+splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+    for (int v; in >> v;) out << v * 2;   // transform, filter, rate-limit, etc.
+});
 ```
 
 ## Alt / Prialt
