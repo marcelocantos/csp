@@ -25,6 +25,8 @@ whether the buffer is full, empty, or neither.
 
 ## Semantics
 
+- **Capacity must be at least 1.** Passing `capacity == 0` throws
+  `std::invalid_argument`.
 - **Bounded mode** (`buffer<T>(N)`): the internal ring buffer holds at most
   `N` elements. When full, the imp stops reading from the input until
   a consumer takes a value, providing backpressure to the producer.

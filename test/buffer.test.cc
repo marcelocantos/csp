@@ -121,3 +121,37 @@ TEST_CASE("ChanUtil - BufferSingle") {
     ch.release();
     csp::schedule();
 }
+
+TEST_CASE("ChanUtil - BufferZeroThrows") {
+    CHECK_THROWS_AS(buffer<int>(0), std::invalid_argument);
+}
+
+TEST_CASE("ChanUtil - BufferCapacityExact") {
+    // Verify buffer(N) holds exactly N items, not N+1 (off-by-one check).
+    for (size_t cap = 1; cap <= 5; ++cap) {
+        RunStats stats;
+        auto ch = buffer<int>(cap).spawn();
+
+        size_t sent = 0;
+        stats.spawn([out = std::move(ch.w), &sent] {
+            for (int i = 0; i < 100; ++i) {
+                out << i;
+                ++sent;
+            }
+        });
+
+        // Run with no consumer — writer blocks after filling buffer.
+        while (csp::internal::run()) { }
+
+        INFO("capacity=", cap);
+        CHECK_EQ(cap, sent);
+
+        // Add consumer to drain and let writer finish.
+        stats.spawn([in = std::move(ch.r)] {
+            int v;
+            while (in >> v) { }
+        });
+
+        while (csp::internal::run()) { }
+    }
+}

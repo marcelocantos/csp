@@ -4,6 +4,7 @@
 #include <csp/ringbuffer.h>
 
 #include <cassert>
+#include <stdexcept>
 
 namespace csp::part {
 
@@ -11,6 +12,9 @@ namespace csp::part {
 // Decouples production rate from consumption rate up to the given capacity.
 template <typename T>
 auto buffer(size_t capacity = size_t(-1)) {
+    if (capacity == 0) {
+        throw std::invalid_argument("buffer capacity must be at least 1");
+    }
     return make_filter<T>([capacity](reader<T> in, writer<T> out) {
         internal::descr("buffer");
 
