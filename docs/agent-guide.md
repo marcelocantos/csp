@@ -66,6 +66,14 @@ void shutdown_runtime();
 
 // Cooperative yield (no-op outside an imp).
 void yield();
+
+// Worker group: monitors imps, restarts on failure, escalates on max_restarts.
+struct restart_policy { int max_restarts=3; duration window=5s; duration backoff=0s; };
+worker_group wg;
+wg.workers = {{"name", factory}, ...};  // public unordered_map
+wg.policy.max_restarts = 5;             // public restart_policy
+wg.run();                               // blocks until all done or escalation
+// worker_group is callable (operator()) — nests as a worker in a parent group.
 ```
 
 ## Channel Operations

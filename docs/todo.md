@@ -2,9 +2,11 @@
 
 ## Tier C — Coordination and resilience
 
-- [ ] **Supervision trees** — Imp lifecycle management with automatic restart,
-      structured shutdown, and failure escalation. Not a stream combinator —
-      a runtime construct that owns a set of imps and their restart policies.
+- [x] **Supervision trees (v1: worker\_group)** — `worker_group` class with
+      `restart_policy`, one-for-one restart, sliding window, backoff, and
+      escalation via `max_restarts_exceeded`. Nests via `operator()`.
+      Remaining: one\_for\_all / rest\_for\_one strategies, graceful shutdown
+      (killswitch), dynamic child add/remove, `retry` combinator.
 
   ### Design overview
 

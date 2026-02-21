@@ -27,6 +27,12 @@ state.operation(args) ─┤guard├──➤ effects; result
 | [Signals](signals.md) | `csp/signal.h` | `signal::notify` (self-pipe trick, reactor-driven) |
 | [Blocking](blocking.md) | `csp/blocking.h` | `blocking(fn)` (offload to OS thread pool) |
 
+## Supervision
+
+| Document | Header | Contents |
+|---|---|---|
+| [Supervision](supervisor.md) | `csp/supervisor.h` | `restart_policy`, `worker_group`, `max_restarts_exceeded` |
+
 ## Scoping
 
 | Document | Header | Contents |
