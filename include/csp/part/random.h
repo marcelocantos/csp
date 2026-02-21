@@ -78,12 +78,12 @@ auto choice(std::initializer_list<T> c,
 template <typename Engine = std::mt19937_64>
 auto random_bytes(size_t chunk_size,
                   Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<std::vector<uint8_t>>(
+    return make_producer<bytes>(
         [chunk_size, eng = std::move(eng)](
-            writer<std::vector<uint8_t>> sink) mutable {
+            writer<bytes> sink) mutable {
             internal::descr("random_bytes");
             std::uniform_int_distribution<unsigned> dist(0, 255);
-            std::vector<uint8_t> buf(chunk_size);
+            bytes buf(chunk_size);
             for (;;) {
                 for (auto& b : buf) b = static_cast<uint8_t>(dist(eng));
                 if (!(sink << buf)) return;

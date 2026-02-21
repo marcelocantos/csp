@@ -12,12 +12,12 @@ namespace csp::part::io {
 // as much data as was available from a single read() call. Owns the
 // fd and closes it on exit.
 inline auto byte_reader(int fd, size_t chunk_size = 4096) {
-    return make_producer<std::vector<uint8_t>>(
-        [fd, chunk_size](writer<std::vector<uint8_t>> out) {
+    return make_producer<bytes>(
+        [fd, chunk_size](writer<bytes> out) {
             internal::descr("byte_reader");
             csp::io::set_nonblock(fd);
 
-            std::vector<uint8_t> buf(chunk_size);
+            bytes buf(chunk_size);
             for (;;) {
                 ssize_t n = csp::io::read(fd, buf.data(), buf.size());
                 if (n <= 0) break;
@@ -32,12 +32,12 @@ inline auto byte_reader(int fd, size_t chunk_size = 4096) {
 // Consume byte chunks and write them to an fd. Owns the fd and
 // closes it on exit.
 inline auto byte_writer(int fd) {
-    return make_consumer<std::vector<uint8_t>>(
-        [fd](reader<std::vector<uint8_t>> in) {
+    return make_consumer<bytes>(
+        [fd](reader<bytes> in) {
             internal::descr("byte_writer");
             csp::io::set_nonblock(fd);
 
-            for (std::vector<uint8_t> chunk; in >> chunk;) {
+            for (bytes chunk; in >> chunk;) {
                 if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
             }
             ::close(fd);
@@ -48,12 +48,12 @@ inline auto byte_writer(int fd) {
 // transform — no I/O knowledge, testable with synthetic data.
 // Flushes any partial trailing line (no trailing newline) on input
 // close.
-inline auto const split_lines = make_filter<std::vector<uint8_t>, std::string>(
-    [](reader<std::vector<uint8_t>> in, writer<std::string> out) {
+inline auto const split_lines = make_filter<bytes, std::string>(
+    [](reader<bytes> in, writer<std::string> out) {
         internal::descr("split_lines");
 
         std::string pending;
-        for (std::vector<uint8_t> chunk;
+        for (bytes chunk;
              csp::alt(in >> chunk, ~out) >= 0;) {
             size_t start = 0;
             for (size_t i = 0; i < chunk.size(); ++i) {
@@ -80,14 +80,14 @@ inline auto const split_lines = make_filter<std::vector<uint8_t>, std::string>(
 // Split a byte stream into fixed-size frames. Discards any partial
 // trailing frame on input close.
 inline auto fixed_frames(size_t frame_size) {
-    return make_filter<std::vector<uint8_t>>(
-        [frame_size](reader<std::vector<uint8_t>> in,
-                     writer<std::vector<uint8_t>> out) {
+    return make_filter<bytes>(
+        [frame_size](reader<bytes> in,
+                     writer<bytes> out) {
             internal::descr("fixed_frames");
 
-            std::vector<uint8_t> frame;
+            bytes frame;
             frame.reserve(frame_size);
-            for (std::vector<uint8_t> chunk;
+            for (bytes chunk;
                  csp::alt(in >> chunk, ~out) >= 0;) {
                 size_t i = 0;
                 while (i < chunk.size()) {

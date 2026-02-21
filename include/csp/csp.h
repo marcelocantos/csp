@@ -141,6 +141,9 @@ int channel_count(int endpt);
 namespace csp
 {
 
+using byte = uint8_t;
+using bytes = std::vector<byte>;
+
 namespace detail {
 
 extern Logger g_descrlog;
@@ -571,14 +574,20 @@ void swap(reader<T>& a, reader<T>& b) {
 //   Fuse:  swap(a.w, {}, {}, b.r)
 //   Split: swap(w, std::move(a.r), std::move(b.w), r)
 //
-// TODO: Improve behavior when fusing/splitting channels with active waiters.
-// Currently, waiters blocked in prialt on a channel whose slot is redirected
-// remain registered on the old channel until something wakes them (typically
-// endpoint death when the old channel becomes orphaned).  Ideally, swap_slots
-// would deregister and re-register affected waiters on the new channel so that
-// fuse/split can be applied mid-flight without a re-resolution stall.  The two
-// sequential swaps also create a brief intermediate state visible under M:N
-// concurrency; an atomic multi-swap could eliminate this window.
+// Waiters blocked in prialt when a swap occurs are handled correctly:
+// swap_slots wakes all waiters on both channels with a special signal
+// (INT_MIN), causing prialt to re-resolve each chanop's channel pointer
+// through its slot and re-scan.  This means fuse/split can be applied
+// mid-flight without stale waiters or false death signals.
+//
+// The two sequential swaps create a brief intermediate state under M:N
+// concurrency, but this is benign.  Between the first and second swap, the
+// topology is inconsistent (one pair redirected, the other not yet) but
+// coherent — every slot points to a valid channel with valid waiter lists.
+// A concurrent operation hitting the half-swapped topology either targets the
+// already-redirected endpoint (correct) or the not-yet-redirected one (old
+// channel, blocks until the second swap completes and the topology settles).
+// The worst case is a transient stall, never data loss or corruption.
 template <typename T>
 void swap(writer<T>& w1, reader<T> r1, writer<T> w2, reader<T>& r2) {
     if (!r1 && !w2) {
