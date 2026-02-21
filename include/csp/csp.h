@@ -602,6 +602,12 @@ void fuse(writer<T>& w, reader<T>& r) {
 // Returns a tap_handle whose `output` reader receives a copy of every value
 // flowing from w to r.  Destroying the handle fuses w and r back together,
 // removing the forwarding imp from the data path.
+//
+// Note: the fuse-back copies (w_copy_, r_copy_) must live in the handle,
+// not in the forwarding imp.  If the imp held them, the copies would keep
+// the intermediate channels' endpoint groups alive, creating a reference
+// cycle that prevents the forwarder from ever seeing upstream/downstream
+// death — a deadlock under M:N concurrency.
 template <typename T>
 struct tap_handle {
     reader<T> output;   // tap stream — reads a copy of each forwarded value
@@ -635,7 +641,8 @@ tap_handle<T> tap(writer<T>& w, reader<T>& r) {
 
     // Forwarder: reads from B (what w writes to), writes to A (what r reads
     // from) and to tap_ch.  When tap_ch's reader dies, stops tapping but
-    // continues forwarding.  When B or A dies, exits.
+    // continues forwarding.  When B or A dies (from the handle's fuse-back
+    // or natural endpoint death), exits.
     spawn([br = std::move(b.r), aw = std::move(a.w),
            tw = std::move(tap_ch.w)]() mutable {
         for (T t; prialt(~aw, br >> t) >= 0;) {

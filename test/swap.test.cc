@@ -833,7 +833,6 @@ TEST_CASE("tap - basic observation") {
 
     // Both tap and original reader must be consumed — the forwarder
     // writes to tap first, then forwards to the original reader.
-    // Interleave reads so the forwarder can make progress.
     for (int i = 1; i <= 3; ++i) {
         CHECK_EQ(i, h.output.read());
         CHECK_EQ(i, ch.r.read());
@@ -869,8 +868,11 @@ TEST_CASE("tap - auto-fuse on handle destruction") {
 
     {
         auto h = tap(ch.w, ch.r);
-        // h goes out of scope — fuses w and r back together.
+        // ~tap_handle kills output, then fuses w,r back together.
     }
+
+    // Run scheduler to let the forwarder detect death and exit.
+    while (csp::internal::run()) { }
 
     // After untap, w and r should communicate directly.
     spawn([w = ch.w.copy()] { w << 99; });
@@ -908,6 +910,9 @@ TEST_CASE("tap - death propagation after untap") {
     {
         auto h = tap(ch.w, ch.r);
     }
+
+    // Run scheduler to let forwarder exit.
+    while (csp::internal::run()) { }
 
     // Drop writer — reader should see death.
     ch.w = {};
@@ -975,10 +980,10 @@ TEST_CASE("MN Tap - auto-fuse restores direct path") {
 
     chan<int> ch;
 
-    // Tap, then immediately untap.
-    {
-        auto h = tap(ch.w, ch.r);
-    }
+    // Tap, then immediately destroy the handle.  ~tap_handle kills the
+    // tap reader and fuses w,r back together; the forwarder detects
+    // death on its intermediate channels and exits.
+    { auto h = tap(ch.w, ch.r); }
 
     // Traffic should flow directly.
     csp::spawn([w = ch.w.copy(), MSGS] {

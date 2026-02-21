@@ -166,6 +166,12 @@ switch (prialt(r >> v, csp::none)) {
 int result = alt(ops, csp::none);  // or prialt(ops, csp::none)
 ```
 
+**Vultures as control signals:** Destroying an endpoint deliberately fires
+`~ep` in any imp watching it, giving you a composable interrupt. The signaller
+holds the endpoint copy; the watcher uses the vulture. **Never** store a copy
+of the watched endpoint inside the watching imp -- the copy keeps it alive,
+creating a reference cycle that prevents the death event from ever firing.
+
 ## Spawn Helpers
 
 ```cpp

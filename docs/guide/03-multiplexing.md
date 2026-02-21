@@ -297,6 +297,61 @@ out -"~out"->   (prialt)
 -->
 ![prialt merge](diagrams/prialt-merge.svg)
 
+## Vultures as control signals
+
+The examples above use vultures reactively -- detecting when a peer dies so the
+imp can clean up. But vultures are also a powerful *active* control mechanism:
+destroy an endpoint deliberately to trigger an immediate response in an imp
+that is watching for it.
+
+### The pattern
+
+1. Give an imp an endpoint it will watch with `~ep` in its `prialt`.
+2. When you want to signal the imp, destroy the peer endpoint.
+3. The imp sees the death immediately -- no data needs to be in flight.
+
+This turns channel death into a composable interrupt that works alongside data
+operations in the same `prialt`, with no polling, no flags, and no races.
+
+### Example: tap's forwarding loop
+
+The `tap` function splices a forwarder between a writer and reader. It needs
+to exit promptly when the downstream channel's read side dies (which happens
+when the `tap_handle` fuses the endpoints back together):
+
+```cpp
+spawn([br = std::move(b.r), aw = std::move(a.w),
+       tw = std::move(tap_ch.w)]() mutable {
+    for (T t; prialt(~aw, br >> t) >= 0;) {
+        if (tw && !(tw << t)) tw = {};  // tap reader gone -- stop tapping
+        if (!(aw << t)) break;          // downstream dead -- exit
+    }
+});
+```
+
+Here `~aw` is a death-watch on the A channel's writer. When the `tap_handle`
+destructor fuses w and r back together, the intermediate A channel loses its
+external reader, `~aw` fires, and the forwarder exits -- even if no value is
+currently in flight. Without the vulture, the forwarder would block on
+`br >> t` indefinitely, waiting for a value that might never come.
+
+### Pitfall: reference cycles with control copies
+
+When using vultures for control, be careful that the watching imp does not
+itself hold a copy of the endpoint it is watching. An imp that holds both the
+endpoint and watches `~ep` for the peer's death creates a reference cycle: the
+imp's copy keeps the endpoint alive, so the death event never fires.
+
+This came up in the `tap` implementation. An earlier design stored the
+fuse-back endpoint copies inside the forwarder so it could fuse on its own.
+But those copies kept the intermediate channels' endpoint groups alive,
+preventing the forwarder from ever seeing upstream/downstream death -- a
+deadlock under M:N concurrency. The fix was to store the copies in the external
+`tap_handle`, not in the forwarder.
+
+**Rule of thumb:** the entity that *signals* (by destroying endpoints) should
+hold the copies; the entity that *watches* (via vultures) should not.
+
 ## Comparison with Go's select
 
 If you know Go, CSP's `alt` and `prialt` correspond to Go's `select`
