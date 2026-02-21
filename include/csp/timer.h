@@ -14,9 +14,18 @@ namespace csp {
 using time_point = std::chrono::steady_clock::time_point;
 using duration = std::chrono::steady_clock::duration;
 
+// Abstract clock source. The dynamic variable csp::clock always holds a
+// valid pointer — real_clock by default, fake_clock when bound via
+// csp::local l{csp::clock = &fc}.
+struct clock_source {
+    virtual time_point now() const = 0;
+    virtual void sleep_until(time_point tp) = 0;
+    virtual ~clock_source() = default;
+};
+
 // Fake clock for testing time-dependent code.
 // Bind via csp::local l{csp::clock = &fc}.
-class fake_clock {
+class fake_clock : public clock_source {
     time_point current_;
     struct Entry {
         time_point deadline;
@@ -30,7 +39,9 @@ class fake_clock {
 public:
     explicit fake_clock(time_point start = time_point{});
 
-    time_point now() const { return current_; }
+    time_point now() const override { return current_; }
+    void sleep_until(time_point tp) override;
+
     bool has_pending() const { return !pending_.empty(); }
 
     // Advance time and fire expired timers.
@@ -45,27 +56,20 @@ public:
     // Run scheduler until no imps are runnable (don't advance time).
     void run_until_idle();
 
-    // Called by sleep_until when this clock is active.
-    void sleep_until_impl(time_point tp);
-
     fake_clock(fake_clock const&) = delete;
     fake_clock& operator=(fake_clock const&) = delete;
 };
 
-extern dynamic<fake_clock*> clock;
+extern dynamic<clock_source*> clock;
 
-// Current time: fake if clock is bound, real otherwise.
+// Current time.
 inline time_point now() {
-    if (auto* fc = *clock)
-        return fc->now();
-    return std::chrono::steady_clock::now();
+    return (*clock)->now();
 }
 
 // Block the current imp until the given deadline.
 inline void sleep_until(time_point tp) {
-    if (auto* fc = *clock)
-        return fc->sleep_until_impl(tp);
-    internal::sleep_until(tp.time_since_epoch().count());
+    (*clock)->sleep_until(tp);
 }
 
 // Block the current imp for the given duration.

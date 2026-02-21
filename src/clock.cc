@@ -3,11 +3,26 @@
 
 namespace csp {
 
-dynamic<fake_clock*> clock{nullptr};
+namespace {
+
+struct real_clock : clock_source {
+    time_point now() const override {
+        return std::chrono::steady_clock::now();
+    }
+    void sleep_until(time_point tp) override {
+        internal::sleep_until(tp.time_since_epoch().count());
+    }
+};
+
+real_clock real_clock_instance;
+
+} // namespace
+
+dynamic<clock_source*> clock{&real_clock_instance};
 
 fake_clock::fake_clock(time_point start) : current_(start) {}
 
-void fake_clock::sleep_until_impl(time_point tp) {
+void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
     pending_.push({tp, detail::g_imp});
     internal::suspend();
