@@ -1,0 +1,28 @@
+<svg viewBox="0 0 576 112" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="86" y1="20" x2="126" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="86" y1="56" x2="126" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="163" y1="56" x2="203" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="363" y1="56" x2="403" y2="56" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <line x1="82" y1="92" x2="126" y2="56" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <line x1="82" y1="92" x2="126" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <rect x="5" y="5" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="45" y="24" text-anchor="middle">reader&lt;A&gt;</text>
+  <rect x="5" y="41" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="45" y="60" text-anchor="middle">reader&lt;B&gt;</text>
+  <rect x="126" y="41" width="38" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="145" y="60" text-anchor="middle">zip</text>
+  <rect x="203" y="41" width="160" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="283" y="60" text-anchor="middle">reader&lt;tuple&lt;A, B, .</text>
+  <rect x="403" y="41" width="167" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="487" y="60" text-anchor="middle">&gt; or reader&lt;R&gt; with f</text>
+  <rect x="9" y="77" width="74" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="45" y="96" text-anchor="middle">reader&lt;.</text>
+</svg>

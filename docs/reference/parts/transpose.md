@@ -14,13 +14,12 @@ auto transpose(std::vector<reader<T>> inputs);
 
 ## Topology
 
-```mermaid
-graph LR
-    In1[reader&lt;T&gt; #1] --> TR["transpose"]
-    In2[reader&lt;T&gt; #2] --> TR
-    InN[reader&lt;T&gt; ...N] --> TR
-    TR --> Out["reader&lt;vector&lt;T&gt;&gt;"]
-```
+<!-- csp-flow
+reader<T> #1   ->
+reader<T> #2   -> {transpose} -> reader<vector<T>>
+reader<T> ...N ->
+-->
+![transpose topology](diagrams/transpose.svg)
 
 One internal imp reads from each input in sequence per round, collects
 the values into a vector, and writes the vector to the output.

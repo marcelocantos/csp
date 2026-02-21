@@ -26,13 +26,12 @@ For the function overload, explicit template parameters are required:
 
 ## Topology
 
-```mermaid
-graph LR
-    In1[reader&lt;A&gt;] --> Zip[zip]
-    In2[reader&lt;B&gt;] --> Zip
-    InN[reader&lt;...&gt;] --> Zip
-    Zip --> Out["reader&lt;tuple&lt;A, B, ...&gt;&gt;<br/>or reader&lt;R&gt; with f"]
-```
+<!-- csp-flow
+reader<A>   ->
+reader<B>   -> {zip} -> reader<tuple<A, B, ...>> or reader<R> with f
+reader<...> ->
+-->
+![zip topology](diagrams/zip.svg)
 
 One internal imp reads from each input in sequence (using `alt` to
 also watch for output death), then writes the combined result.

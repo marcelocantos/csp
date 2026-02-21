@@ -18,10 +18,10 @@ inline auto const deaf;
 
 ## Topology
 
-```mermaid
-graph LR
-    A["writer (blocked)"] -. never reads .-> B["deaf"]
-```
+<!-- csp-flow
+writer (blocked) ..> {deaf}
+-->
+![deaf topology](diagrams/deaf.svg)
 
 The internal imp does not read from the channel. It waits for the
 channel to close (all writer copies dropped), then exits.

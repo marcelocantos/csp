@@ -20,11 +20,12 @@ auto try_map(F&& f);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;A&gt;] --> B["try_map(f, err)"] --> C[reader&lt;B&gt;]
-    B --> D["writer&lt;exception_ptr&gt;"]
-```
+<!-- csp-flow
+reader<A> -> {try_map(f, err)} -> reader<B>
+                    |
+       writer<exception_ptr>
+-->
+![try_map topology](diagrams/try_map.svg)
 
 One internal imp reads from the input, applies `f`, and writes the result to the
 output. If `f` throws, the exception is caught and sent to `err`.

@@ -14,25 +14,24 @@ reader<reader<T>> share(reader<T> source);
 
 ## Topology
 
-```mermaid
-graph LR
-    S[reader&lt;T&gt;] --> SH["share"]
-    SH --> SUB["reader&lt;reader&lt;T&gt;&gt;"]
-    SUB -->|".read()"| R1[reader&lt;T&gt;]
-    SUB -->|".read()"| R2[reader&lt;T&gt;]
-    SUB -->|".read()"| R3[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {share} -> reader<reader<T>>
+                     ..> reader<T> #1
+                     ..> reader<T> #2
+                     ..> reader<T> #3
+-->
+![share topology](diagrams/share.svg)
 
 Each call to `.read()` on the returned meta-reader creates a new subscription.
 Internally, each subscription spawns a per-subscriber latch imp that
 mediates delivery.
 
-```mermaid
-graph LR
-    source[source] --> share_mt["share MT"]
-    share_mt -->|feed 1| L1["latch MT 1"] --> sub1[subscriber 1]
-    share_mt -->|feed 2| L2["latch MT 2"] --> sub2[subscriber 2]
-```
+<!-- csp-flow
+                  -> {latch 1} -> subscriber 1
+source -> {share}
+                  -> {latch 2} -> subscriber 2
+-->
+![share topology](diagrams/share_internal.svg)
 
 ## Semantics
 

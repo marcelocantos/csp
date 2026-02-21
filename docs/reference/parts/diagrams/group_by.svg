@@ -1,0 +1,27 @@
+<svg viewBox="0 0 469 148" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="86" y1="74" x2="126" y2="74" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="221" y1="74" x2="261" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="221" y1="74" x2="301" y2="56" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <line x1="221" y1="74" x2="301" y2="92" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <line x1="221" y1="74" x2="293" y2="128" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <rect x="5" y="59" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="45" y="78" text-anchor="middle">reader&lt;T&gt;</text>
+  <rect x="126" y="59" width="95" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="173" y="78" text-anchor="middle">group_by(f)</text>
+  <rect x="261" y="5" width="203" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="363" y="24" text-anchor="middle">reader&lt;pair&lt;K, reader&lt;T&gt;&gt;&gt;</text>
+  <rect x="301" y="41" width="124" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="363" y="60" text-anchor="middle">reader&lt;T&gt; key=A</text>
+  <rect x="301" y="77" width="124" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="363" y="96" text-anchor="middle">reader&lt;T&gt; key=B</text>
+  <rect x="293" y="113" width="138" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="363" y="132" text-anchor="middle">reader&lt;T&gt; key=...</text>
+</svg>

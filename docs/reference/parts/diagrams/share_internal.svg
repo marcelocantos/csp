@@ -1,0 +1,27 @@
+<svg viewBox="0 0 212 184" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="129" y1="92" x2="189" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="122" y1="20" x2="207" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="64" y1="92" x2="129" y2="92" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="129" y1="92" x2="189" y2="128" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="122" y1="128" x2="207" y2="164" stroke="#333" marker-end="url(#arr)"/>
+  <rect x="122" y="5" width="66" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="155" y="24" text-anchor="middle">latch 1</text>
+  <rect x="104" y="41" width="102" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="155" y="60" text-anchor="middle">subscriber 1</text>
+  <rect x="5" y="77" width="59" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="35" y="96" text-anchor="middle">source</text>
+  <rect x="129" y="77" width="52" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="155" y="96" text-anchor="middle">share</text>
+  <rect x="122" y="113" width="66" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="155" y="132" text-anchor="middle">latch 2</text>
+  <rect x="104" y="149" width="102" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="155" y="168" text-anchor="middle">subscriber 2</text>
+</svg>

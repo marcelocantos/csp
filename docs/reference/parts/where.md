@@ -12,10 +12,10 @@ auto where(Pred&& pred);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["where(pred)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {where(pred)} -> reader<T>
+-->
+![where topology](diagrams/where.svg)
 
 One internal imp reads from the input, tests each value with `pred`,
 and writes matching values to the output.

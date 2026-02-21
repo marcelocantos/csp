@@ -15,13 +15,12 @@ auto chain(R rr);
 
 ## Topology
 
-```mermaid
-graph LR
-    In1[reader&lt;T&gt; #1] --> Chain[chain]
-    In2[reader&lt;T&gt; #2] --> Chain
-    InN[reader&lt;T&gt; ...N] --> Chain
-    Chain --> Out[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> #1   ->
+reader<T> #2   -> {chain} -> reader<T>
+reader<T> ...N ->
+-->
+![chain topology](diagrams/chain.svg)
 
 One internal imp reads each input reader to exhaustion in sequence,
 writing every value to the single output.

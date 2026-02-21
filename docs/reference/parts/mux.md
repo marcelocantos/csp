@@ -24,13 +24,12 @@ Returns a `producer<std::variant<Ts...>>`.
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;A&gt;] --> M[mux imp]
-    B[reader&lt;B&gt;] --> M
-    N[reader&lt;...&gt;] --> M
-    M --> Out["reader&lt;variant&lt;A,B,...&gt;&gt;"]
-```
+<!-- csp-flow
+reader<A>   ->
+reader<B>   -> {mux} -> reader<variant<A,B,...>>
+reader<...> ->
+-->
+![mux topology](diagrams/mux.svg)
 
 ## Semantics
 

@@ -14,13 +14,12 @@ auto sort_merge(std::vector<reader<T>> inputs, Cmp cmp = {});
 
 ## Topology
 
-```mermaid
-graph LR
-    In1["reader&lt;T&gt; (sorted)"] --> SM["sort_merge"]
-    In2["reader&lt;T&gt; (sorted)"] --> SM
-    InN["reader&lt;T&gt; (sorted)"] --> SM
-    SM --> Out["reader&lt;T&gt; (sorted)"]
-```
+<!-- csp-flow
+reader<T> (sorted) ->
+reader<T> (sorted) -> sort_merge -> reader<T> (sorted)
+reader<T> (sorted) ->
+-->
+![sort_merge topology](diagrams/sort_merge.svg)
 
 One internal imp maintains a min-heap over the head elements of all live
 inputs. Each step pops the minimum, emits it, and refills from the

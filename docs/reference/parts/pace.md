@@ -25,12 +25,12 @@ Returns a `filter<T>`.
 
 ## Topology
 
-```mermaid
-graph LR
-    In[reader&lt;T&gt;] --> P[pace imp]
-    Trig[reader&lt;Trigger&gt;] --> P
-    P --> Out[reader&lt;T&gt;]
-```
+<!-- csp-flow
+       reader<Trigger>
+             |
+reader<T> -> {pace} -> reader<T>
+-->
+![pace topology](diagrams/pace.svg)
 
 ## Semantics
 

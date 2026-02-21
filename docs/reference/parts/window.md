@@ -17,10 +17,10 @@ auto window(size_t n);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["window(n)"] --> C["reader&lt;vector&lt;T&gt;&gt;"]
-```
+<!-- csp-flow
+reader<T> -> {window(n)} -> reader<vector<T>>
+-->
+![window topology](diagrams/window.svg)
 
 One internal imp maintains a deque, copying it to a vector for each
 output.

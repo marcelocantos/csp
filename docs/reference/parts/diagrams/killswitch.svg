@@ -1,0 +1,22 @@
+<svg viewBox="0 0 340 107" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="86" y1="73" x2="126" y2="73" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="214" y1="73" x2="254" y2="73" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="170" y1="31" x2="170" y2="58" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <text x="178" y="48" fill="#666" font-size="10">death signal</text>
+  <rect x="133" y="5" width="74" height="26" rx="4" fill="#d4edda" stroke="#888"/>
+  <text x="170" y="22" text-anchor="middle">reader&lt;&gt;</text>
+  <rect x="5" y="58" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="45" y="77" text-anchor="middle">reader&lt;A&gt;</text>
+  <rect x="126" y="58" width="88" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="170" y="77" text-anchor="middle">killswitch</text>
+  <rect x="254" y="58" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="294" y="77" text-anchor="middle">reader&lt;A&gt;</text>
+</svg>

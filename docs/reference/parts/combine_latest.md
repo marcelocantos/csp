@@ -32,13 +32,12 @@ The function overload returns a `producer<std::invoke_result_t<F&, Ts&...>>`.
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;A&gt;] --> CL[combine_latest imp]
-    B[reader&lt;B&gt;] --> CL
-    N[reader&lt;...&gt;] --> CL
-    CL --> Out["reader&lt;tuple&lt;A,B,...&gt;&gt;"]
-```
+<!-- csp-flow
+reader<A>   ->
+reader<B>   -> {combine_latest} -> reader<tuple<A,B,...>>
+reader<...> ->
+-->
+![combine_latest topology](diagrams/combine_latest.svg)
 
 ## Semantics
 

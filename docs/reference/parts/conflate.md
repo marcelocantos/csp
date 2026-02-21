@@ -21,24 +21,24 @@ auto conflate(F&& f);
 
 ## Topology
 
-```mermaid
-graph LR
-    in["reader&lt;T&gt;"] --> C["conflate(f)"] --> out["reader&lt;T&gt;"]
-```
+<!-- csp-flow
+reader<T> -> {conflate(f)} -> reader<T>
+-->
+![conflate topology](diagrams/conflate.svg)
 
 One internal imp uses `alt` to race writing the pending value
 downstream against reading the next value upstream.
 
-```mermaid
-stateDiagram-v2
-    [*] --> ReadFirst: spawn
-    ReadFirst --> Race: first value read
-    ReadFirst --> [*]: input closed empty
-    Race --> Race: write wins → send, read next / read wins → merge
-    Race --> Flush: input closed
-    Race --> [*]: output died
-    Flush --> [*]: send last pending value
-```
+<!-- csp-state
+[*] -> ReadFirst: spawn
+ReadFirst -> Race: first value read
+ReadFirst -> [*]: input closed empty
+Race -> Race: write wins → send, read next / read wins → merge
+Race -> Flush: input closed
+Race -> [*]: output died
+Flush -> [*]: send last pending value
+-->
+![conflate states](diagrams/conflate-states.svg)
 
 ## Semantics
 

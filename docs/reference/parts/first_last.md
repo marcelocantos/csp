@@ -19,10 +19,10 @@ auto first(size_t n);
 
 ### Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["first(n)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {first(n)} -> reader<T>
+-->
+![first_last topology](diagrams/first.svg)
 
 ### Semantics
 
@@ -61,10 +61,10 @@ auto last(size_t n);
 
 ### Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["last(n)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {last(n)} -> reader<T>
+-->
+![first_last topology](diagrams/last.svg)
 
 ### Semantics
 
@@ -99,10 +99,10 @@ auto skip_first(size_t n);
 
 ### Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["skip_first(n)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {skip_first(n)} -> reader<T>
+-->
+![first_last topology](diagrams/skip_first.svg)
 
 ### Semantics
 
@@ -136,10 +136,10 @@ auto skip_last(size_t n);
 
 ### Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["skip_last(n)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {skip_last(n)} -> reader<T>
+-->
+![first_last topology](diagrams/skip_last.svg)
 
 ### Semantics
 

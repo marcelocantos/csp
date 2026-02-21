@@ -14,13 +14,12 @@ T first_wins(std::vector<reader<T>> inputs);
 
 ## Topology
 
-```mermaid
-graph LR
-    R1[reader&lt;T&gt; 1] --> FW["first_wins"]
-    R2[reader&lt;T&gt; 2] --> FW
-    R3[reader&lt;T&gt; 3] --> FW
-    FW --> V["T value"]
-```
+<!-- csp-flow
+reader<T> 1 ->
+reader<T> 2 -> {first_wins} -> T value
+reader<T> 3 ->
+-->
+![first_wins topology](diagrams/first_wins.svg)
 
 No imps are spawned. `first_wins` blocks the calling imp using
 `alt` until one of the inputs produces a value. All remaining readers are

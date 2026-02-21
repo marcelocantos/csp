@@ -16,10 +16,10 @@ inline auto const pairwise = /* ... */;
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["pairwise"] --> C["reader&lt;pair&lt;T,T&gt;&gt;"]
-```
+<!-- csp-flow
+reader<T> -> {pairwise} -> reader<pair<T,T>>
+-->
+![pairwise topology](diagrams/pairwise.svg)
 
 One internal imp reads pairs of adjacent elements and writes each
 pair to the output.

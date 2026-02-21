@@ -14,10 +14,10 @@ auto chunk_by(F&& f);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["chunk_by(f)"] --> C["reader&lt;vector&lt;T&gt;&gt;"]
-```
+<!-- csp-flow
+reader<T> -> {chunk_by(f)} -> reader<vector<T>>
+-->
+![chunk_by topology](diagrams/chunk_by.svg)
 
 One internal imp reads from the input, accumulates elements into a
 chunk while `f(prev, curr)` returns true, and emits each completed

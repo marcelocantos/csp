@@ -21,11 +21,10 @@ template, not a function call).
 
 ## Topology
 
-```mermaid
-graph LR
-    In["reader&lt;reader&lt;B&gt;&gt;"] --> C[concat_all imp]
-    C --> Out[reader&lt;B&gt;]
-```
+<!-- csp-flow
+reader<reader<B>> -> {concat_all} -> reader<B>
+-->
+![concat_all topology](diagrams/concat_all.svg)
 
 ## Semantics
 

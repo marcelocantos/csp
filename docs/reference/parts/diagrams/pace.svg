@@ -1,0 +1,21 @@
+<svg viewBox="0 0 376 93" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="86" y1="73" x2="165" y2="73" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="210" y1="73" x2="290" y2="73" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="188" y1="31" x2="188" y2="58" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <rect x="126" y="5" width="124" height="26" rx="4" fill="#d4edda" stroke="#888"/>
+  <text x="188" y="22" text-anchor="middle">reader&lt;Trigger&gt;</text>
+  <rect x="5" y="58" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="45" y="77" text-anchor="middle">reader&lt;T&gt;</text>
+  <rect x="165" y="58" width="45" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="188" y="77" text-anchor="middle">pace</text>
+  <rect x="290" y="58" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="330" y="77" text-anchor="middle">reader&lt;T&gt;</text>
+</svg>

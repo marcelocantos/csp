@@ -14,10 +14,10 @@ auto stride(size_t n);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["stride(n)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {stride(n)} -> reader<T>
+-->
+![stride topology](diagrams/stride.svg)
 
 One internal imp reads from the input, emits every Nth value, and
 discards the rest.

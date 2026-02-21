@@ -73,12 +73,11 @@ This is the mechanism behind channel lifecycle awareness. Instead of polling
 or checking flags, you multiplex death-watches alongside data operations and
 the scheduler tells you what happened.
 
-```mermaid
-graph LR
-    A[reader r] -->|"r >> n (case 0)"| ALT((alt))
-    B[writer w] -->|"~w (case ~1)"| ALT
-    ALT --> handler["switch on result"]
-```
+<!-- csp-flow
+reader r -"r >> n (case 0)"-> (alt) -> handler
+writer w -"~w (case ~1)"-> (alt)
+-->
+![alt usage](diagrams/alt-usage.svg)
 
 ## alt vs prialt
 
@@ -142,13 +141,11 @@ spawn(in.stream_to(std::move(out)));
 
 which expands to exactly the loop above.
 
-```mermaid
-graph LR
-    IN["in (reader)"] -->|"in >> t"| PRIALT((prialt))
-    OUT["out (writer)"] -->|"~out"| PRIALT
-    PRIALT -->|"t"| WRITE["out << t"]
-    WRITE -->|"loop"| PRIALT
-```
+<!-- csp-flow
+in (reader) -"in >> t"-> (prialt) -"t"-> out << t
+out (writer) -"~out"-> (prialt)
+-->
+![prialt forward](diagrams/prialt-forward.svg)
 
 ## Non-blocking poll with `none`
 
@@ -293,13 +290,12 @@ spawn([out = std::move(out), in0 = std::move(in0), in1 = std::move(in1)] {
 });
 ```
 
-```mermaid
-graph LR
-    IN0["in0"] -->|"in0 >> t"| P((prialt))
-    IN1["in1"] -->|"in1 >> t"| P
-    OUT["out"] -->|"~out"| P
-    P -->|"t"| OUT2["out << t"]
-```
+<!-- csp-flow
+in0 -"in0 >> t"->
+in1 -"in1 >> t"-> (prialt) -"t"-> out << t
+out -"~out"->   (prialt)
+-->
+![prialt merge](diagrams/prialt-merge.svg)
 
 ## Comparison with Go's select
 

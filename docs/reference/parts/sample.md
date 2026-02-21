@@ -30,14 +30,12 @@ Returns a `producer<T>`.
 
 ## Diagram
 
-```mermaid
-graph LR
-    src["reader&lt;T&gt;<br/>(source)"] --> S["sample"]
-    trig["reader&lt;Trigger&gt;<br/>(trigger)"] --> S
-    S --> out["reader&lt;T&gt;"]
-    style S fill:#f5d6a8
-    style trig fill:#d4edda
-```
+<!-- csp-flow
+       reader<Trigger>
+             |
+reader<T> -> {sample} -> reader<T>
+-->
+![sample topology](diagrams/sample.svg)
 
 ### Timing
 

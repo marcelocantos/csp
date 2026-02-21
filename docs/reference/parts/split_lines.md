@@ -12,10 +12,10 @@ inline auto const split_lines = /* ... */;
 
 ## Topology
 
-```mermaid
-graph LR
-    A["reader&lt;vector&lt;uint8_t&gt;&gt;"] --> L["split_lines"] --> B["reader&lt;string&gt;"]
-```
+<!-- csp-flow
+reader<vector<uint8_t>> -> split_lines -> reader<string>
+-->
+![split_lines topology](diagrams/split_lines.svg)
 
 One internal imp reads byte chunks from the input, scans for `'\n'`
 characters, and emits one `std::string` per complete line.

@@ -6,17 +6,17 @@ internally; they differ only in scan order.
 
 ## Operation Flow
 
-```mermaid
-stateDiagram-v2
-    [*] --> scanning : alt(ops...) / prialt(ops...)
-    scanning --> matched : peer ready
-    scanning --> death : peer dead
-    scanning --> suspended : none ready
-    suspended --> matched : peer becomes ready
-    suspended --> death : peer dies
-    matched --> [*] : return index
-    death --> [*] : return ~index
-```
+<!-- csp-state
+[*] -> scanning : alt(ops...) / prialt(ops...)
+scanning -> matched : peer ready
+scanning -> death : peer dead
+scanning -> suspended : none ready
+suspended -> matched : peer becomes ready
+suspended -> death : peer dies
+matched -> [*] : return index
+death -> [*] : return ~index
+-->
+![alt states](diagrams/alt-states.svg)
 
 ---
 

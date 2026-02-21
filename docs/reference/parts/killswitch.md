@@ -18,11 +18,13 @@ closes.
 
 ## Topology
 
-```mermaid
-graph LR
-    K["keepalive<br>reader&lt;&gt;"] -.->|death signal| KS["killswitch MT"]
-    IN["reader&lt;A&gt;"] --> KS --> OUT["reader&lt;A&gt;"]
-```
+<!-- csp-flow
+         reader<>
+              |
+        "death signal"
+reader<A> -> {killswitch} -> reader<A>
+-->
+![killswitch topology](diagrams/killswitch.svg)
 
 One internal imp uses `prialt` to monitor three events simultaneously:
 keepalive death, output reader death, and incoming data. A second `prialt`

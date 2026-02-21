@@ -13,10 +13,10 @@ auto byte_reader(int fd, size_t chunk_size = 4096);
 
 ## Topology
 
-```mermaid
-graph LR
-    FD["fd (pipe, socket, ...)"] --> BR["byte_reader(fd)"] --> R["reader&lt;vector&lt;uint8_t&gt;&gt;"]
-```
+<!-- csp-flow
+fd -> {byte_reader(fd)} -> reader<vector<uint8_t>>
+-->
+![byte_reader topology](diagrams/byte_reader.svg)
 
 One internal imp reads from the fd in a loop. Each successful `read()`
 produces one channel message containing the bytes that were available.

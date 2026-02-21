@@ -1,0 +1,38 @@
+<svg viewBox="0 0 648 235" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <rect x="23" y="5" width="63" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="55" y="24" text-anchor="middle">Kernel</text>
+  <line x1="55" y1="35" x2="55" y2="230" stroke="#888" stroke-dasharray="5,3"/>
+  <rect x="127" y="5" width="70" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="162" y="24" text-anchor="middle">Handler</text>
+  <line x1="162" y1="35" x2="162" y2="230" stroke="#888" stroke-dasharray="5,3"/>
+  <rect x="237" y="5" width="49" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="261" y="24" text-anchor="middle">Pipe</text>
+  <line x1="261" y1="35" x2="261" y2="230" stroke="#888" stroke-dasharray="5,3"/>
+  <rect x="326" y="5" width="78" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="365" y="24" text-anchor="middle">Producer</text>
+  <line x1="365" y1="35" x2="365" y2="230" stroke="#888" stroke-dasharray="5,3"/>
+  <rect x="443" y="5" width="70" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="479" y="24" text-anchor="middle">Channel</text>
+  <line x1="479" y1="35" x2="479" y2="230" stroke="#888" stroke-dasharray="5,3"/>
+  <rect x="554" y="5" width="78" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="593" y="24" text-anchor="middle">Consumer</text>
+  <line x1="593" y1="35" x2="593" y2="230" stroke="#888" stroke-dasharray="5,3"/>
+  <line x1="55" y1="80" x2="162" y2="80" stroke="#333" marker-end="url(#arr)"/>
+  <text x="108" y="74" text-anchor="middle" font-size="10">deliver signal</text>
+  <line x1="162" y1="110" x2="261" y2="110" stroke="#333" marker-end="url(#arr)"/>
+  <text x="212" y="104" text-anchor="middle" font-size="10">write(signal_byte)</text>
+  <line x1="261" y1="140" x2="365" y2="140" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <text x="313" y="134" text-anchor="middle" font-size="10">io::read() returns</text>
+  <line x1="365" y1="170" x2="479" y2="170" stroke="#333" marker-end="url(#arr)"/>
+  <text x="422" y="164" text-anchor="middle" font-size="10">out &lt;&lt; signal_number</text>
+  <line x1="479" y1="200" x2="593" y2="200" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <text x="536" y="194" text-anchor="middle" font-size="10">reader receives</text>
+</svg>

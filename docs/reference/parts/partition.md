@@ -22,13 +22,12 @@ auto partition(reader<T> in, Pred pred);
 
 ## Topology
 
-```mermaid
-graph LR
-    In[reader&lt;T&gt;] --> P["partition(f, n=3)"]
-    P -->|"f(t)=0"| O0[reader&lt;T&gt; 0]
-    P -->|"f(t)=1"| O1[reader&lt;T&gt; 1]
-    P -->|"f(t)=2"| O2[reader&lt;T&gt; 2]
-```
+<!-- csp-flow
+                              -> reader<T> 0
+reader<T> -> {partition(f)} -> reader<T> 1
+                              -> reader<T> 2
+-->
+![partition topology](diagrams/partition.svg)
 
 One internal imp reads each input element, evaluates the classifier,
 and writes the element to the corresponding output channel.

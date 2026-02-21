@@ -32,13 +32,12 @@ or
 
 ## Topology
 
-```mermaid
-graph LR
-    ctrl["reader&lt;duration&gt;<br/>or reader&lt;time_point&gt;<br/>(control)"] --> T["timer"]
-    T --> out["reader&lt;time_point&gt;"]
-    style T fill:#f5d6a8
-    style ctrl fill:#d4edda
-```
+<!-- csp-flow
+  reader<duration>
+         |
+   {timer} -> reader<time_point>
+-->
+![timer topology](diagrams/timer.svg)
 
 ### Timing (duration overload)
 

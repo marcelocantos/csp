@@ -22,10 +22,10 @@ Both return a `producer<T>`.
 
 ## Topology
 
-```mermaid
-graph LR
-    C["count(start, stop)"] --> Out["reader&lt;T&gt;"]
-```
+<!-- csp-flow
+{count(start, stop)} -> reader<T>
+-->
+![count topology](diagrams/count.svg)
 
 No input channel. The producer spawns an imp that writes values to its
 output.

@@ -1,0 +1,26 @@
+<svg viewBox="0 0 363 142" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+  </defs>
+  <line x1="186" y1="13" x2="280" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="233" y="10" text-anchor="middle" fill="#666" font-size="10">spawn(f)</text>
+  <line x1="280" y1="20" x2="75" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="178" y="14" text-anchor="middle" fill="#666" font-size="10">scheduled</text>
+  <line x1="75" y1="20" x2="280" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="178" y="14" text-anchor="middle" fill="#666" font-size="10">yield / preempt</text>
+  <line x1="75" y1="20" x2="135" y2="86" stroke="#333" marker-end="url(#arr)"/>
+  <text x="105" y="47" text-anchor="middle" fill="#666" font-size="10">channel op / sleep</text>
+  <line x1="220" y1="86" x2="280" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="250" y="47" text-anchor="middle" fill="#666" font-size="10">peer ready / timer fires</text>
+  <line x1="75" y1="20" x2="170" y2="13" stroke="#333" marker-end="url(#arr)"/>
+  <text x="123" y="10" text-anchor="middle" fill="#666" font-size="10">f() returns / throws</text>
+  <circle cx="178" cy="13" r="8" fill="#333" stroke="#333"/>
+  <rect x="280" y="5" width="78" height="30" rx="12" fill="#d4e6f1" stroke="#888"/>
+  <text x="319" y="24" text-anchor="middle">runnable</text>
+  <rect x="5" y="5" width="70" height="30" rx="12" fill="#d4e6f1" stroke="#888"/>
+  <text x="40" y="24" text-anchor="middle">running</text>
+  <rect x="135" y="71" width="85" height="30" rx="12" fill="#d4e6f1" stroke="#888"/>
+  <text x="178" y="90" text-anchor="middle">suspended</text>
+</svg>

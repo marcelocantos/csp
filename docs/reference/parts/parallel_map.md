@@ -39,15 +39,12 @@ Returns a `filter<A, B>`.
 
 ### Unordered (default)
 
-```mermaid
-graph LR
-    In[reader&lt;A&gt;] --> W1[worker 1]
-    In --> W2[worker 2]
-    In --> WN[worker ...N]
-    W1 --> Out[reader&lt;B&gt;]
-    W2 --> Out
-    WN --> Out
-```
+<!-- csp-flow
+              -> {worker 1} ->
+reader<A> ->                  -> reader<B>
+              -> {worker N} ->
+-->
+![parallel_map topology](diagrams/parallel_map.svg)
 
 Workers share the input reader (demand-driven). Each reads a value, applies
 `f`, and writes to the shared output. Faster workers naturally process more
@@ -55,17 +52,12 @@ items.
 
 ### Ordered
 
-```mermaid
-graph LR
-    In[reader&lt;A&gt;] --> D[dispatcher]
-    D -->|"(seq, A)"| W1[worker 1]
-    D -->|"(seq, A)"| W2[worker 2]
-    D -->|"(seq, A)"| WN[worker ...N]
-    W1 -->|"(seq, B)"| C[collector]
-    W2 -->|"(seq, B)"| C
-    WN -->|"(seq, B)"| C
-    C --> Out[reader&lt;B&gt;]
-```
+<!-- csp-flow
+                         -> {worker 1} ->
+reader<A> -> {dispatch}                   -> {collect} -> reader<B>
+                         -> {worker N} ->
+-->
+![parallel_map topology](diagrams/parallel_map_ordered.svg)
 
 A dispatcher imp assigns sequence numbers. Workers process items concurrently.
 A collector imp buffers out-of-order results and emits in sequence.

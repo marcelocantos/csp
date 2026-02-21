@@ -121,17 +121,17 @@ public:
 
 ### States
 
-```mermaid
-stateDiagram-v2
-    [*] --> null : default construct
-    null --> live : chan() / copy()
-    live --> dead : last reader destroyed
-    live --> null : move-from
-    dead --> null : move-from
-    live --> [*] : ~writer() [refcount = 1]
-    null --> [*] : ~writer()
-    dead --> [*] : ~writer() [refcount = 1]
-```
+<!-- csp-state
+[*] -> null : default construct
+null -> live : chan() / copy()
+live -> dead : last reader destroyed
+live -> null : move-from
+dead -> null : move-from
+live -> [*] : ~writer() [refcount = 1]
+null -> [*] : ~writer()
+dead -> [*] : ~writer() [refcount = 1]
+-->
+![Writer states](diagrams/writer-states.svg)
 
 ```
 null ──➤ live ──➤ dead
@@ -250,17 +250,17 @@ public:
 
 ### States
 
-```mermaid
-stateDiagram-v2
-    [*] --> null : default construct
-    null --> live : chan() / copy()
-    live --> dead : last writer destroyed
-    live --> null : move-from
-    dead --> null : move-from
-    live --> [*] : ~reader() [refcount = 1]
-    null --> [*] : ~reader()
-    dead --> [*] : ~reader() [refcount = 1]
-```
+<!-- csp-state
+[*] -> null : default construct
+null -> live : chan() / copy()
+live -> dead : last writer destroyed
+live -> null : move-from
+dead -> null : move-from
+live -> [*] : ~reader() [refcount = 1]
+null -> [*] : ~reader()
+dead -> [*] : ~reader() [refcount = 1]
+-->
+![Reader states](diagrams/reader-states.svg)
 
 ```
 null ──➤ live ──➤ dead
@@ -418,15 +418,15 @@ Copy construction and copy assignment are deleted.
 
 ### States
 
-```mermaid
-stateDiagram-v2
-    [*] --> active : w << val / r >> dest / ~ep
-    [*] --> inactive : chan_op()
-    active --> inactive : disarm()
-    active --> [*] : ~chan_op() [prialt]
-    active --> [*] : operator bool() [prialt]
-    inactive --> [*] : ~chan_op() [no-op]
-```
+<!-- csp-state
+[*] -> active : w << val / r >> dest / ~ep
+[*] -> inactive : chan_op()
+active -> inactive : disarm()
+active -> [*] : ~chan_op() [prialt]
+active -> [*] : operator bool() [prialt]
+inactive -> [*] : ~chan_op() [no-op]
+-->
+![chan_op states](diagrams/chan-op-states.svg)
 
 ### Transition rules ([syntax](transition-rules.md))
 

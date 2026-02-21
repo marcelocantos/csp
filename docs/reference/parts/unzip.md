@@ -23,13 +23,12 @@ then distributes the elements across the output readers.
 
 ## Topology
 
-```mermaid
-graph LR
-    In["reader&lt;tuple&lt;A, B, ...&gt;&gt;"] --> Unzip[unzip]
-    Unzip --> OutA[reader&lt;A&gt;]
-    Unzip --> OutB[reader&lt;B&gt;]
-    Unzip --> OutN[reader&lt;...&gt;]
-```
+<!-- csp-flow
+                                   -> reader<A>
+reader<tuple<A, B, ...>> -> {unzip} -> reader<B>
+                                   -> reader<...>
+-->
+![unzip topology](diagrams/unzip.svg)
 
 A spawned imp reads tuples from the input and writes each element to
 its corresponding output channel.

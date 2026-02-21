@@ -1,0 +1,27 @@
+<svg viewBox="0 0 446 112" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="320" y1="56" x2="360" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="165" y1="56" x2="205" y2="56" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <line x1="228" y1="56" x2="268" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="320" y1="56" x2="360" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="320" y1="56" x2="364" y2="92" stroke="#333" marker-end="url(#arr)"/>
+  <rect x="360" y="5" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="401" y="24" text-anchor="middle">reader&lt;A&gt;</text>
+  <rect x="5" y="41" width="160" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="85" y="60" text-anchor="middle">reader&lt;variant&lt;A,B,.</text>
+  <rect x="205" y="41" width="23" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="217" y="60" text-anchor="middle">&gt;</text>
+  <rect x="268" y="41" width="52" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="294" y="60" text-anchor="middle">demux</text>
+  <rect x="360" y="41" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="401" y="60" text-anchor="middle">reader&lt;B&gt;</text>
+  <rect x="364" y="77" width="74" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="401" y="96" text-anchor="middle">reader&lt;.</text>
+</svg>

@@ -122,13 +122,12 @@ case 1: handle_timeout();     break;
 }
 ```
 
-```mermaid
-graph LR
-    P["producer"] -->|"int"| R["data reader"]
-    T["after(100ms)"] -->|"time_point"| D["deadline reader"]
-    R --> A["prialt"]
-    D --> A
-```
+<!-- csp-flow
+{producer} -"int"-> data reader   ->
+                                     (prialt)
+{after(100ms)} -"time_point"-> deadline reader ->
+-->
+![timeout pattern](diagrams/timeout-pattern.svg)
 
 ### Periodic heartbeat interleaved with work
 
@@ -150,15 +149,12 @@ for (;;) {
 done:;
 ```
 
-```mermaid
-graph LR
-    D["data source"] -->|"int"| DR["data reader"]
-    T["tick(50ms)"] -->|"time_point"| TR["tick reader"]
-    DR --> A["alt loop"]
-    TR --> A
-    A -->|"case 1"| P["process"]
-    A -->|"case 2"| H["heartbeat"]
-```
+<!-- csp-flow
+{data source} -"int"-> data reader   ->
+                                        {alt loop} -> process
+{tick(50ms)} -"time_point"-> tick reader ->
+-->
+![tick heartbeat](diagrams/tick-heartbeat.svg)
 
 ### Racing multiple timers
 
@@ -195,13 +191,11 @@ for (int req; requests >> req;) {
 tokens, absorbing bursts. Each request consumes one token by reading from the
 bucket.
 
-```mermaid
-graph LR
-    T["tick(100ms)"] -->|"token"| B["buffer(3)"]
-    B -->|"token"| G["gate read"]
-    R["requests"] -->|"req"| H["handler"]
-    G -.->|"unblocks"| H
-```
+<!-- csp-flow
+{tick(100ms)} -"token"-> {buffer(3)} -"token"-> gate read
+requests -"req"-> handler
+-->
+![rate limiter](diagrams/rate-limiter.svg)
 
 ### Timeout-guarded pipeline
 

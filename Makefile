@@ -120,13 +120,19 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench test-dist check check-tla-tags check-md-links examples run-examples dist iwyu clean
+.PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples dist iwyu clean
 
 test: $(TARGET) check-md-links
 	./$(TARGET)
 
-check-md-links:
+check-md-links: diagrams
 	@python3 scripts/check_md_links.py
+
+# --- Diagram generation ---
+# Scans docs/**/*.md for <!-- csp-flow ... --> blocks and emits SVGs.
+
+diagrams:
+	@python3 scripts/gen_diagrams.py
 
 build: $(TARGET)
 

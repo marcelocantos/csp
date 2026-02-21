@@ -23,12 +23,10 @@ Returns a `filter<T, T>`.
 
 ## Diagram
 
-```mermaid
-graph LR
-    in["reader&lt;T&gt;"] --> D["delay(d)"]
-    D --> out["reader&lt;T&gt;"]
-    style D fill:#f5d6a8
-```
+<!-- csp-flow
+reader<T> -> {delay(d)} -> reader<T>
+-->
+![delay topology](diagrams/delay.svg)
 
 ## Semantics
 

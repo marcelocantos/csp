@@ -15,10 +15,10 @@ auto foreach_emit(S init, Update&& update, Extract&& extract);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["foreach_emit(init, update, extract)"] --> C[reader&lt;U&gt;]
-```
+<!-- csp-flow
+reader<T> -> {foreach_emit(init, update, extract)} -> reader<U>
+-->
+![foreach_emit topology](diagrams/foreach_emit.svg)
 
 One internal imp maintains the state, reads each input, applies `update`
 to advance the state, then writes `extract(state)` to the output.

@@ -14,10 +14,10 @@ auto take_while(Pred&& pred);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["take_while(pred)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {take_while(pred)} -> reader<T>
+-->
+![take_while topology](diagrams/take_while.svg)
 
 One internal imp reads from the input, tests each value with `pred`,
 and writes it to the output. On the first failure, the output is closed.

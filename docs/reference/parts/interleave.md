@@ -13,13 +13,12 @@ auto interleave(std::vector<reader<T>> inputs);
 
 ## Topology
 
-```mermaid
-graph LR
-    I0[reader&lt;T&gt; 0] --> IL["interleave"]
-    I1[reader&lt;T&gt; 1] --> IL
-    I2[reader&lt;T&gt; 2] --> IL
-    IL --> Out[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> 0 ->
+reader<T> 1 -> {interleave} -> reader<T>
+reader<T> 2 ->
+-->
+![interleave topology](diagrams/interleave.svg)
 
 One internal imp reads from each input in cyclic order and writes each
 value to a single output channel.

@@ -15,10 +15,10 @@ auto take_until(Pred&& pred);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["take_until(pred)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {take_until(pred)} -> reader<T>
+-->
+![take_until topology](diagrams/take_until.svg)
 
 One internal imp reads from the input, writes each value to the output,
 and tests it with `pred`. When `pred` returns true, the value is emitted

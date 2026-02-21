@@ -44,13 +44,12 @@ writer<double> spawn_quantize(T quantum, writer<T> sink,
 
 ## Topology
 
-```mermaid
-graph LR
-    S[reader&lt;T&gt; source] --> Q[quantize]
-    QC[reader&lt;T&gt; quanta] --> Q
-    Q --> SK[writer&lt;T&gt; sink]
-    Q --> R[writer&lt;T&gt; residue]
-```
+<!-- csp-flow
+reader<T> source ->                -> writer<T> sink
+                    {quantize}
+reader<T> quanta ->                -> writer<T> residue
+-->
+![quantize topology](diagrams/quantize.svg)
 
 One imp manages all four channels using `alt` to multiplex reads
 and writes.

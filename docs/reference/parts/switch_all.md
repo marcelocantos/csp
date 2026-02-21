@@ -22,11 +22,10 @@ template, not a function call).
 
 ## Topology
 
-```mermaid
-graph LR
-    In["reader&lt;reader&lt;B&gt;&gt;"] --> S[switch_all imp]
-    S --> Out[reader&lt;B&gt;]
-```
+<!-- csp-flow
+reader<reader<B>> -> {switch_all} -> reader<B>
+-->
+![switch_all topology](diagrams/switch_all.svg)
 
 ## Semantics
 

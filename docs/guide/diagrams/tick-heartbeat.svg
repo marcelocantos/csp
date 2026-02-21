@@ -1,0 +1,29 @@
+<svg viewBox="0 0 240 176" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="100" y1="56" x2="140" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="120" y="32" text-anchor="middle" fill="#666" font-size="10">int</text>
+  <line x1="140" y1="20" x2="225" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="151" y1="56" x2="221" y2="92" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="97" y1="92" x2="140" y2="128" stroke="#333" marker-end="url(#arr)"/>
+  <text x="118" y="104" text-anchor="middle" fill="#666" font-size="10">time_point</text>
+  <line x1="140" y1="128" x2="225" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <rect x="5" y="41" width="95" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="53" y="60" text-anchor="middle">data source</text>
+  <rect x="140" y="5" width="95" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="188" y="24" text-anchor="middle">data reader</text>
+  <rect x="151" y="41" width="74" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="188" y="60" text-anchor="middle">alt loop</text>
+  <rect x="155" y="77" width="66" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="188" y="96" text-anchor="middle">process</text>
+  <rect x="9" y="77" width="88" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="53" y="96" text-anchor="middle">tick(50ms)</text>
+  <rect x="140" y="113" width="95" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="188" y="132" text-anchor="middle">tick reader</text>
+</svg>

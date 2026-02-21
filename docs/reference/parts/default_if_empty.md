@@ -13,10 +13,10 @@ auto default_if_empty(T def);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["default_if_empty(def)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {default_if_empty(def)} -> reader<T>
+-->
+![default_if_empty topology](diagrams/default_if_empty.svg)
 
 One internal imp reads from the input and forwards values. When the
 input closes, if no values were seen, the default value is written to the

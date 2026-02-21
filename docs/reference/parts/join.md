@@ -13,13 +13,12 @@ void join(std::vector<reader<T>> inputs);
 
 ## Topology
 
-```mermaid
-graph LR
-    R1[reader&lt;T&gt; 1] --> J["join"]
-    R2[reader&lt;T&gt; 2] --> J
-    R3[reader&lt;T&gt; 3] --> J
-    J --> done["(returns)"]
-```
+<!-- csp-flow
+reader<T> 1 ->
+reader<T> 2 -> {join} -> (returns)
+reader<T> 3 ->
+-->
+![join topology](diagrams/join.svg)
 
 No imps are spawned. `join` blocks the calling imp using `alt`,
 draining and discarding all values until every reader is dead.

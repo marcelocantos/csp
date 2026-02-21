@@ -13,10 +13,10 @@ auto reduce(S init, F&& f);  // returns filter<T, S>
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["reduce(init, f)"] --> C[reader&lt;S&gt;]
-```
+<!-- csp-flow
+reader<T> -> {reduce(init, f)} -> reader<S>
+-->
+![reduce topology](diagrams/reduce.svg)
 
 A imp is spawned to consume the input. The output reader produces
 exactly one value (the final accumulator) when the input is exhausted.

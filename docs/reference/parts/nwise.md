@@ -18,10 +18,10 @@ auto nwise();
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["nwise&lt;N&gt;()"] --> C["reader&lt;tuple&lt;T,...&gt;&gt;"]
-```
+<!-- csp-flow
+reader<T> -> nwise<N>() -> reader<tuple<T,...>>
+-->
+![nwise topology](diagrams/nwise.svg)
 
 One internal imp maintains a fixed-size array that slides through
 the input.

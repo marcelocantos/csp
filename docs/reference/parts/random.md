@@ -30,10 +30,10 @@ auto uniform_int(T lo, T hi,
 
 ### Topology
 
-```mermaid
-graph LR
-    U["uniform_int(lo, hi)"] --> Out["reader&lt;T&gt;"]
-```
+<!-- csp-flow
+{uniform_int(lo, hi)} -> reader<T>
+-->
+![random topology](diagrams/uniform_int.svg)
 
 ### Semantics
 
@@ -69,10 +69,10 @@ auto uniform_real(T lo, T hi,
 
 ### Topology
 
-```mermaid
-graph LR
-    U["uniform_real(lo, hi)"] --> Out["reader&lt;T&gt;"]
-```
+<!-- csp-flow
+{uniform_real(lo, hi)} -> reader<T>
+-->
+![random topology](diagrams/uniform_real.svg)
 
 ### Semantics
 
@@ -106,10 +106,10 @@ auto bernoulli(double p = 0.5,
 
 ### Topology
 
-```mermaid
-graph LR
-    B["bernoulli(p)"] --> Out["reader&lt;bool&gt;"]
-```
+<!-- csp-flow
+{bernoulli(p)} -> reader<bool>
+-->
+![random topology](diagrams/bernoulli.svg)
 
 ### Semantics
 
@@ -144,10 +144,10 @@ auto normal(T mean = 0, T stddev = 1,
 
 ### Topology
 
-```mermaid
-graph LR
-    N["normal(mean, stddev)"] --> Out["reader&lt;T&gt;"]
-```
+<!-- csp-flow
+{normal(mean, stddev)} -> reader<T>
+-->
+![random topology](diagrams/normal.svg)
 
 ### Semantics
 
@@ -189,10 +189,10 @@ auto choice(std::initializer_list<T> c,
 
 ### Topology
 
-```mermaid
-graph LR
-    Ch["choice({a, b, c})"] --> Out["reader&lt;T&gt;"]
-```
+<!-- csp-flow
+{choice({a, b, c})} -> reader<T>
+-->
+![random topology](diagrams/choice.svg)
 
 ### Semantics
 
@@ -233,10 +233,10 @@ auto shuffle(size_t n,
 
 ### Topology
 
-```mermaid
-graph LR
-    A["reader&lt;T&gt;"] --> S["shuffle(n)"] --> B["reader&lt;T&gt;"]
-```
+<!-- csp-flow
+reader<T> -> {shuffle(n)} -> reader<T>
+-->
+![random topology](diagrams/shuffle.svg)
 
 ### Semantics
 

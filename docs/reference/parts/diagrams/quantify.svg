@@ -1,0 +1,18 @@
+<svg viewBox="0 0 484 40" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="86" y1="20" x2="126" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="336" y1="20" x2="376" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <rect x="5" y="5" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="45" y="24" text-anchor="middle">reader&lt;T&gt;</text>
+  <rect x="126" y="5" width="210" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="231" y="24" text-anchor="middle">any_of(pred) / all_of(pred)</text>
+  <rect x="376" y="5" width="102" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="427" y="24" text-anchor="middle">reader&lt;bool&gt;</text>
+</svg>

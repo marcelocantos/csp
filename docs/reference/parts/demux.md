@@ -23,13 +23,12 @@ Returns `std::tuple<reader<Ts>...>`.
 
 ## Topology
 
-```mermaid
-graph LR
-    In["reader&lt;variant&lt;A,B,...&gt;&gt;"] --> D[demux imp]
-    D --> A[reader&lt;A&gt;]
-    D --> B[reader&lt;B&gt;]
-    D --> N[reader&lt;...&gt;]
-```
+<!-- csp-flow
+                                  -> reader<A>
+reader<variant<A,B,...>> -> {demux} -> reader<B>
+                                  -> reader<...>
+-->
+![demux topology](diagrams/demux.svg)
 
 ## Semantics
 

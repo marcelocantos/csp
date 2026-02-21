@@ -19,10 +19,10 @@ to `poke_t` for signaling channels.
 
 ## Topology
 
-```mermaid
-graph LR
-    A["mute"] -. never writes .-> B["reader (blocked)"]
-```
+<!-- csp-flow
+{mute} ..> reader (blocked)
+-->
+![mute topology](diagrams/mute.svg)
 
 The internal imp does not write to the channel. It waits for the
 channel to close (all reader copies dropped), then exits.

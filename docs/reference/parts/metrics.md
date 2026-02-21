@@ -21,12 +21,12 @@ stats channel that delivers `metrics_snapshot` values on demand.
 
 ## Topology
 
-```mermaid
-graph LR
-    S[reader&lt;T&gt;] --> M["metrics MT"]
-    M --> D["reader&lt;T&gt;<br>(data)"]
-    M --> ST["reader&lt;metrics_snapshot&gt;<br>(stats)"]
-```
+<!-- csp-flow
+reader<T> -> {metrics} -> reader<T>
+                  |
+    reader<metrics_snapshot>
+-->
+![metrics topology](diagrams/metrics.svg)
 
 One internal imp uses `alt` to service three events: incoming data,
 stats pull requests, and output reader death.

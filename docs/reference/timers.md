@@ -196,12 +196,12 @@ reader<time_point> after(duration d);
 
 ### States
 
-```mermaid
-stateDiagram-v2
-    [*] --> waiting : after(d)
-    waiting --> fired : duration elapses
-    fired --> [*] : value read
-```
+<!-- csp-state
+[*] -> waiting : after(d)
+waiting -> fired : duration elapses
+fired -> [*] : value read
+-->
+![after states](diagrams/after-states.svg)
 
 | State | Meaning |
 |-------|---------|
@@ -278,12 +278,12 @@ reader<time_point> tick(duration interval);
 
 ### States
 
-```mermaid
-stateDiagram-v2
-    [*] --> running : tick(interval)
-    running --> running : interval elapses, value read
-    running --> [*] : reader dropped
-```
+<!-- csp-state
+[*] -> running : tick(interval)
+running -> running : interval elapses, value read
+running -> [*] : reader dropped
+-->
+![tick states](diagrams/tick-states.svg)
 
 | State | Meaning |
 |-------|---------|

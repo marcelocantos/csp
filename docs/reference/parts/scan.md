@@ -14,10 +14,10 @@ auto scan(S init, F&& f);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["scan(init, f)"] --> C[reader&lt;S&gt;]
-```
+<!-- csp-flow
+reader<T> -> {scan(init, f)} -> reader<S>
+-->
+![scan topology](diagrams/scan.svg)
 
 One internal imp maintains the accumulator, reads each input, applies
 `f`, and writes the updated accumulator to the output.

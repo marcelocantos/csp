@@ -13,10 +13,10 @@ auto skip_while(Pred&& pred);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["skip_while(pred)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {skip_while(pred)} -> reader<T>
+-->
+![skip_while topology](diagrams/skip_while.svg)
 
 One internal imp reads from the input. While the predicate returns
 true, elements are discarded. Once the predicate fails, the failing element

@@ -14,12 +14,12 @@ auto tee(writer<T> side);
 
 ## Topology
 
-```mermaid
-graph LR
-    In[reader&lt;T&gt;] --> Tee["tee(side)"]
-    Tee --> Out[reader&lt;T&gt;]
-    Tee --> Side[writer&lt;T&gt; side]
-```
+<!-- csp-flow
+reader<T> -> {tee} -> reader<T>
+               |
+         writer<T> side
+-->
+![tee topology](diagrams/tee.svg)
 
 One internal imp reads from the input and writes each value to both
 the main output and the side channel.

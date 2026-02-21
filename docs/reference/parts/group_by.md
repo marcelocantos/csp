@@ -16,14 +16,13 @@ reader<std::pair<K, reader<T>>> group_by(reader<T> input, F f);
 
 ## Topology
 
-```mermaid
-graph LR
-    In[reader&lt;T&gt;] --> GB["group_by(f)"]
-    GB --> Meta["reader&lt;pair&lt;K, reader&lt;T&gt;&gt;&gt;"]
-    Meta -.->|"key=A"| GA[reader&lt;T&gt;]
-    Meta -.->|"key=B"| GB2[reader&lt;T&gt;]
-    Meta -.->|"key=..."| GN[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {group_by(f)} -> reader<pair<K, reader<T>>>
+                           ..> reader<T> key=A
+                           ..> reader<T> key=B
+                           ..> reader<T> key=...
+-->
+![group_by topology](diagrams/group_by.svg)
 
 One internal imp reads input elements and evaluates `f` on each.
 When a new key is seen, a fresh channel is created and a `(key, reader<T>)`

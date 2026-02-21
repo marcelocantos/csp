@@ -41,13 +41,12 @@ auto rpc_server(reader<std::pair<std::tuple<Args...>, writer<Rep>>> req, F&& f);
 
 ### Channel-pair
 
-```mermaid
-graph LR
-    C[client] -- "tuple&lt;Args...&gt;" --> ReqCh["req channel"]
-    ReqCh --> S[server]
-    S -- Rep --> RepCh["rep channel"]
-    RepCh --> C
-```
+<!-- csp-flow
+          -"tuple<Args...>"->
+{client}                      {server}
+          <-"Rep"-
+-->
+![rpc topology](diagrams/rpc_pair.svg)
 
 The client and server share a matched pair of channels. The server processes
 one request at a time: it reads a request, applies `f`, writes the reply, then
@@ -55,13 +54,12 @@ loops.
 
 ### Reply-in-request
 
-```mermaid
-graph LR
-    C[client] -- "pair&lt;tuple&lt;Args...&gt;, writer&lt;Rep&gt;&gt;" --> ReqCh["req channel"]
-    ReqCh --> S[server]
-    S -- Rep --> ReplyCh["per-call reply channel"]
-    ReplyCh --> C
-```
+<!-- csp-flow
+          -"pair<tuple<Args...>, writer<Rep>>"->
+{client}                                        {server}
+          <-"Rep"-
+-->
+![rpc topology](diagrams/rpc_reply.svg)
 
 Each call creates a fresh `chan<Rep>`. The client sends the request arguments
 together with the write end of the reply channel, then blocks on the read end.

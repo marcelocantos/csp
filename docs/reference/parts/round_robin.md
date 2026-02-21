@@ -14,13 +14,12 @@ auto round_robin(reader<T> in, size_t n);
 
 ## Topology
 
-```mermaid
-graph LR
-    In[reader&lt;T&gt;] --> RR["round_robin(n=3)"]
-    RR --> O0[reader&lt;T&gt; 0]
-    RR --> O1[reader&lt;T&gt; 1]
-    RR --> O2[reader&lt;T&gt; 2]
-```
+<!-- csp-flow
+                                -> reader<T> 0
+reader<T> -> {round_robin(n)} -> reader<T> 1
+                                -> reader<T> 2
+-->
+![round_robin topology](diagrams/round_robin.svg)
 
 One internal imp reads from the input and writes to output channels in
 strict cyclic order: element 0 goes to output 0, element 1 to output 1, and so

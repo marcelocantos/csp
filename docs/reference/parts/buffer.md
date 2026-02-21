@@ -14,10 +14,10 @@ auto buffer(size_t capacity = size_t(-1));
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["buffer(N)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {buffer(N)} -> reader<T>
+-->
+![buffer topology](diagrams/buffer.svg)
 
 One internal imp manages a ring buffer between the input and output
 channels, using `alt` to simultaneously offer reads and writes depending on

@@ -15,16 +15,12 @@ auto flat_map(F&& f);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;A&gt;] --> FM["flat_map(f)"]
-    FM --> S1[sub-stream 1]
-    FM --> S2[sub-stream 2]
-    FM --> SN[sub-stream N]
-    S1 --> OUT[reader&lt;B&gt;]
-    S2 --> OUT
-    SN --> OUT
-```
+<!-- csp-flow
+                   -> {sub 1} ->
+reader<A> -> {flat_map(f)}     -> reader<B>
+                   -> {sub N} ->
+-->
+![flat_map topology](diagrams/flat_map.svg)
 
 One internal imp manages the main loop. For each input element, `f`
 returns a `reader<B>` sub-stream. All active sub-streams are polled

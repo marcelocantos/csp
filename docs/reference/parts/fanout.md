@@ -18,14 +18,13 @@ inline auto const fanout;
 
 ## Topology
 
-```mermaid
-graph LR
-    NewOut["reader&lt;writer&lt;T&gt;&gt;<br/>new subscribers"] --> Fanout[fanout]
-    Fanout --> NewIn["reader&lt;writer&lt;T&gt;&gt;<br/>input channel"]
-    Fanout -.-> Out1["writer&lt;T&gt; #1"]
-    Fanout -.-> Out2["writer&lt;T&gt; #2"]
-    Fanout -.-> OutN["writer&lt;T&gt; ...N"]
-```
+<!-- csp-flow
+reader<writer<T>> -> {fanout} -> reader<writer<T>>
+                             ..> writer<T> #1
+                             ..> writer<T> #2
+                             ..> writer<T> ...N
+-->
+![fanout topology](diagrams/fanout.svg)
 
 The fanout imp manages a two-phase lifecycle:
 

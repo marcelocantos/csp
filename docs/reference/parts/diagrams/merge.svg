@@ -1,0 +1,24 @@
+<svg viewBox="0 0 340 112" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="115" y1="20" x2="162" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="115" y1="56" x2="162" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="214" y1="56" x2="254" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="122" y1="92" x2="162" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <rect x="12" y="5" width="102" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="63" y="24" text-anchor="middle">reader&lt;T&gt; #1</text>
+  <rect x="12" y="41" width="102" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="63" y="60" text-anchor="middle">reader&lt;T&gt; #2</text>
+  <rect x="162" y="41" width="52" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="188" y="60" text-anchor="middle">merge</text>
+  <rect x="254" y="41" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="294" y="60" text-anchor="middle">reader&lt;T&gt;</text>
+  <rect x="5" y="77" width="117" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="63" y="96" text-anchor="middle">reader&lt;T&gt; ...N</text>
+</svg>

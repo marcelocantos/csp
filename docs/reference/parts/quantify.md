@@ -18,10 +18,10 @@ auto all_of(Pred&& pred);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["any_of(pred)<br/>all_of(pred)"] --> C[reader&lt;bool&gt;]
-```
+<!-- csp-flow
+reader<T> -> {any_of(pred) / all_of(pred)} -> reader<bool>
+-->
+![quantify topology](diagrams/quantify.svg)
 
 One internal imp reads from the input, tests each element, and emits a
 single `bool` to the output.

@@ -16,10 +16,10 @@ inline auto const blackhole;
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["blackhole"]
-```
+<!-- csp-flow
+reader<T> -> {blackhole}
+-->
+![blackhole topology](diagrams/blackhole.svg)
 
 One internal imp reads and discards every value until the input closes.
 

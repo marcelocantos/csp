@@ -21,11 +21,10 @@ template, not a function call).
 
 ## Topology
 
-```mermaid
-graph LR
-    In["reader&lt;reader&lt;B&gt;&gt;"] --> E[exhaust_all imp]
-    E --> Out[reader&lt;B&gt;]
-```
+<!-- csp-flow
+reader<reader<B>> -> {exhaust_all} -> reader<B>
+-->
+![exhaust_all topology](diagrams/exhaust_all.svg)
 
 ## Semantics
 

@@ -14,13 +14,12 @@ auto fallback(std::vector<reader<T>> inputs);
 
 ## Topology
 
-```mermaid
-graph LR
-    R1[reader&lt;T&gt; #1] --> FB["fallback"]
-    R2[reader&lt;T&gt; #2] --> FB
-    RN[reader&lt;T&gt; ...N] --> FB
-    FB --> Out[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> #1   ->
+reader<T> #2   -> {fallback} -> reader<T>
+reader<T> ...N ->
+-->
+![fallback topology](diagrams/fallback.svg)
 
 One internal imp tries each reader in sequence, forwarding values from
 the first reader that produces output.

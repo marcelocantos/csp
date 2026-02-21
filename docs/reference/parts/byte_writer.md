@@ -12,10 +12,10 @@ auto byte_writer(int fd);
 
 ## Topology
 
-```mermaid
-graph LR
-    W["writer&lt;vector&lt;uint8_t&gt;&gt;"] --> BW["byte_writer(fd)"] --> FD["fd (pipe, socket, ...)"]
-```
+<!-- csp-flow
+writer<vector<uint8_t>> -> {byte_writer(fd)} -> fd
+-->
+![byte_writer topology](diagrams/byte_writer.svg)
 
 One internal imp reads byte chunks from the input channel and writes
 each one to the fd using `csp::io::write()`.

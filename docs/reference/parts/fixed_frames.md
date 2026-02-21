@@ -12,10 +12,10 @@ auto fixed_frames(size_t frame_size);
 
 ## Topology
 
-```mermaid
-graph LR
-    A["reader&lt;vector&lt;uint8_t&gt;&gt;"] --> F["fixed_frames(N)"] --> B["reader&lt;vector&lt;uint8_t&gt;&gt;"]
-```
+<!-- csp-flow
+reader<vector<uint8_t>> -> {fixed_frames(N)} -> reader<vector<uint8_t>>
+-->
+![fixed_frames topology](diagrams/fixed_frames.svg)
 
 One internal imp reads byte chunks from the input, accumulates them
 into frames of exactly `frame_size` bytes, and emits each complete frame.

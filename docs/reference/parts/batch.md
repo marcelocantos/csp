@@ -15,10 +15,10 @@ auto batch(size_t n);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["batch(n)"] --> C["reader&lt;vector&lt;T&gt;&gt;"]
-```
+<!-- csp-flow
+reader<T> -> {batch(n)} -> reader<vector<T>>
+-->
+![batch topology](diagrams/batch.svg)
 
 One internal imp accumulates up to `n` elements, then writes the
 vector to the output channel.

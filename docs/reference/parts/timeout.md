@@ -22,14 +22,13 @@ Returns a `filter<T, T>`.
 
 ## Diagram
 
-```mermaid
-graph LR
-    in["reader&lt;T&gt;"] --> T["timeout(d)"]
-    T --> out["reader&lt;T&gt;"]
-    timer["after(d)"] -.->|reset on value| T
-    style T fill:#f5d6a8
-    style timer fill:#d4edda
-```
+<!-- csp-flow
+       after(d)
+           |
+    "reset on value"
+reader<T> -> {timeout(d)} -> reader<T>
+-->
+![timeout topology](diagrams/timeout.svg)
 
 ### Timing
 

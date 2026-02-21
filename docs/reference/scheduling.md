@@ -4,15 +4,15 @@ Functions for creating, running, and cooperatively scheduling imps.
 
 ## Imp Lifecycle
 
-```mermaid
-stateDiagram-v2
-    [*] --> runnable : spawn(f)
-    runnable --> running : scheduled
-    running --> runnable : yield / preempt
-    running --> suspended : channel op / sleep
-    suspended --> runnable : peer ready / timer fires
-    running --> [*] : f() returns / throws
-```
+<!-- csp-state
+[*] -> runnable : spawn(f)
+runnable -> running : scheduled
+running -> runnable : yield / preempt
+running -> suspended : channel op / sleep
+suspended -> runnable : peer ready / timer fires
+running -> [*] : f() returns / throws
+-->
+![Imp lifecycle](diagrams/imp-lifecycle.svg)
 
 ---
 

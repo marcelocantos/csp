@@ -1,0 +1,35 @@
+<svg viewBox="0 0 502 295" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <rect x="34" y="5" width="42" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="55" y="24" text-anchor="middle">Imp</text>
+  <line x1="55" y1="35" x2="55" y2="290" stroke="#888" stroke-dasharray="5,3"/>
+  <rect x="116" y="5" width="85" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="158" y="24" text-anchor="middle">Processor</text>
+  <line x1="158" y1="35" x2="158" y2="290" stroke="#888" stroke-dasharray="5,3"/>
+  <rect x="241" y="5" width="114" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="297" y="24" text-anchor="middle">Blocking Pool</text>
+  <line x1="297" y1="35" x2="297" y2="290" stroke="#888" stroke-dasharray="5,3"/>
+  <rect x="394" y="5" width="106" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="447" y="24" text-anchor="middle">Global Queue</text>
+  <line x1="447" y1="35" x2="447" y2="290" stroke="#888" stroke-dasharray="5,3"/>
+  <line x1="55" y1="80" x2="158" y2="80" stroke="#333" marker-end="url(#arr)"/>
+  <text x="107" y="74" text-anchor="middle" font-size="10">csp::blocking(fn)</text>
+  <text x="158" y="110" text-anchor="middle" fill="#666" font-style="italic" font-size="10">do_switch(detach)</text>
+  <line x1="158" y1="140" x2="297" y2="140" stroke="#333" marker-end="url(#arr)"/>
+  <text x="228" y="134" text-anchor="middle" font-size="10">submit(MT, fn)</text>
+  <line x1="297" y1="170" x2="297" y2="170" stroke="#333" marker-end="url(#arr)"/>
+  <text x="297" y="164" text-anchor="middle" font-size="10">pool thread runs fn()</text>
+  <line x1="297" y1="200" x2="447" y2="200" stroke="#333" marker-end="url(#arr)"/>
+  <text x="372" y="194" text-anchor="middle" font-size="10">MT-&gt;schedule()</text>
+  <line x1="447" y1="230" x2="158" y2="230" stroke="#333" marker-end="url(#arr)"/>
+  <text x="303" y="224" text-anchor="middle" font-size="10">processor picks up MT</text>
+  <line x1="158" y1="260" x2="55" y2="260" stroke="#888" stroke-dasharray="5,3" marker-end="url(#arr-gray)"/>
+  <text x="107" y="254" text-anchor="middle" font-size="10">MT resumes</text>
+</svg>

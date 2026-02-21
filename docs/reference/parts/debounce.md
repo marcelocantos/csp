@@ -28,12 +28,10 @@ Returns a `filter<T, T>`.
 
 ## Diagram
 
-```mermaid
-graph LR
-    in["reader&lt;T&gt;"] --> D["debounce(d)"]
-    D --> out["reader&lt;T&gt;"]
-    style D fill:#f5d6a8
-```
+<!-- csp-flow
+reader<T> -> {debounce(d)} -> reader<T>
+-->
+![debounce topology](diagrams/debounce.svg)
 
 ### Timing
 

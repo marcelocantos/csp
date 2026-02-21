@@ -15,10 +15,10 @@ auto unique(size_t max_remembered = 0, Hash hash = {}, Eq eq = {});
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["unique(N)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {unique(N)} -> reader<T>
+-->
+![unique topology](diagrams/unique.svg)
 
 One internal imp reads from the input, checks a hash set, and forwards
 values not previously seen.

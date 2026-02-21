@@ -29,10 +29,10 @@ All overloads return a `producer<T>`.
 
 ## Topology
 
-```mermaid
-graph LR
-    E["enumerate(container)"] --> Out["reader&lt;T&gt;"]
-```
+<!-- csp-flow
+{enumerate(container)} -> reader<T>
+-->
+![enumerate topology](diagrams/enumerate.svg)
 
 No input channel. The producer spawns an imp that writes each element
 to its output.

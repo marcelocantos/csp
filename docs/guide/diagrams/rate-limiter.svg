@@ -1,0 +1,26 @@
+<svg viewBox="0 0 347 118" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="100" y1="20" x2="140" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="120" y="14" text-anchor="middle" fill="#666" font-size="10">token</text>
+  <line x1="221" y1="20" x2="261" y2="38" stroke="#333" marker-end="url(#arr)"/>
+  <text x="241" y="23" text-anchor="middle" fill="#666" font-size="10">token</text>
+  <line x1="89" y1="56" x2="147" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <text x="118" y="50" text-anchor="middle" fill="#666" font-size="10">req</text>
+  <rect x="5" y="5" width="95" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="53" y="24" text-anchor="middle">tick(100ms)</text>
+  <rect x="140" y="5" width="81" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="181" y="24" text-anchor="middle">buffer(3)</text>
+  <rect x="261" y="23" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="301" y="42" text-anchor="middle">gate read</text>
+  <rect x="16" y="41" width="74" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="53" y="60" text-anchor="middle">requests</text>
+  <rect x="147" y="41" width="66" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="181" y="60" text-anchor="middle">handler</text>
+</svg>

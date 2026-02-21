@@ -29,18 +29,18 @@ HAMT root via path-copy, leaving the parent root untouched. When an imp
 spawns a child, the child inherits the parent's current HAMT root, giving it
 a snapshot of all bindings at the point of spawn.
 
-```mermaid
-stateDiagram-v2
-    state "HAMT root A" as A
-    state "HAMT root B\n(path-copy of A)" as B
-    state "HAMT root C\n(path-copy of B)" as C
+<!-- csp-state
+state "HAMT root A" as A
+state "HAMT root B\n(path-copy of A)" as B
+state "HAMT root C\n(path-copy of B)" as C
 
-    [*] --> A : dynamic&lt;T&gt; default
-    A --> B : local l{var = val}
-    B --> C : spawn (child inherits B)
-    B --> A : ~local (restore)
-    C --> C : local in child (path-copy)
-```
+[*] -> A : dynamic&lt;T&gt; default
+A -> B : local l{var = val}
+B -> C : spawn (child inherits B)
+B -> A : ~local (restore)
+C -> C : local in child (path-copy)
+-->
+![HAMT scoping](diagrams/hamt-scoping.svg)
 
 ---
 
@@ -224,11 +224,11 @@ public:
 
 ### States
 
-```mermaid
-stateDiagram-v2
-    [*] --> active : local l{var = val}
-    active --> [*] : ~local (restore root)
-```
+<!-- csp-state
+[*] -> active : local l{var = val}
+active -> [*] : ~local (restore root)
+-->
+![local states](diagrams/local-states.svg)
 
 | State  | Meaning |
 |--------|---------|
@@ -384,11 +384,11 @@ public:
 
 ### States
 
-```mermaid
-stateDiagram-v2
-    [*] --> installed : context_scope(ctx)
-    installed --> [*] : ~context_scope (restore)
-```
+<!-- csp-state
+[*] -> installed : context_scope(ctx)
+installed -> [*] : ~context_scope (restore)
+-->
+![context_scope states](diagrams/context-scope-states.svg)
 
 | State     | Meaning |
 |-----------|---------|

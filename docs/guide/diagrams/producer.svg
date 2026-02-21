@@ -1,0 +1,20 @@
+<svg viewBox="0 0 318 68" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="107" y1="20" x2="147" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="127" y="14" text-anchor="middle" fill="#666" font-size="10">writer&lt;int&gt;</text>
+  <line x1="214" y1="20" x2="254" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="234" y="14" text-anchor="middle" fill="#666" font-size="10">reader&lt;int&gt;</text>
+  <rect x="5" y="5" width="102" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="56" y="24" text-anchor="middle">imp (writes)</text>
+  <rect x="147" y="5" width="66" height="30" rx="4" fill="#f0f0f0" stroke="#888"/>
+  <text x="181" y="24" text-anchor="middle">channel</text>
+  <rect x="254" y="5" width="59" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="283" y="24" text-anchor="middle">caller</text>
+</svg>

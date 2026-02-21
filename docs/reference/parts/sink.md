@@ -18,10 +18,10 @@ auto sinkhole(T& t);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;A&gt;] --> B["sink(f)"]
-```
+<!-- csp-flow
+reader<A> -> {sink(f)}
+-->
+![sink topology](diagrams/sink.svg)
 
 One internal imp reads every value from the input channel and invokes
 `f` on it. The imp exits when the input closes.

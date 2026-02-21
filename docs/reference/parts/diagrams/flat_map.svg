@@ -1,0 +1,26 @@
+<svg viewBox="0 0 347 112" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="126" y1="56" x2="199" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="199" y1="20" x2="261" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="86" y1="56" x2="126" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="221" y1="56" x2="261" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="126" y1="56" x2="199" y2="92" stroke="#333" marker-end="url(#arr)"/>
+  <line x1="199" y1="92" x2="261" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <rect x="147" y="5" width="52" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="173" y="24" text-anchor="middle">sub 1</text>
+  <rect x="5" y="41" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="45" y="60" text-anchor="middle">reader&lt;A&gt;</text>
+  <rect x="126" y="41" width="95" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="173" y="60" text-anchor="middle">flat_map(f)</text>
+  <rect x="261" y="41" width="81" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="301" y="60" text-anchor="middle">reader&lt;B&gt;</text>
+  <rect x="147" y="77" width="52" height="30" rx="4" fill="#f5d6a8" stroke="#888"/>
+  <text x="173" y="96" text-anchor="middle">sub N</text>
+</svg>

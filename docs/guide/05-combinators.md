@@ -78,11 +78,10 @@ auto nums = count<int>(0, 100, 1).spawn();
 // nums is a reader<int> — the producer is already running
 ```
 
-```mermaid
-graph LR
-    MT["imp<br/>(writes)"] -->|writer&lt;int&gt;| CH["channel"]
-    CH -->|reader&lt;int&gt;| YOU["caller"]
-```
+<!-- csp-flow
+{imp (writes)} -"writer<int>"-> (channel) -"reader<int>"-> caller
+-->
+![producer](diagrams/producer.svg)
 
 ### consumer::spawn()
 
@@ -95,11 +94,10 @@ auto dest = blackhole<int>.spawn();
 dest << 42;
 ```
 
-```mermaid
-graph LR
-    YOU["caller"] -->|writer&lt;int&gt;| CH["channel"]
-    CH -->|reader&lt;int&gt;| MT["imp<br/>(reads)"]
-```
+<!-- csp-flow
+caller -"writer<int>"-> (channel) -"reader<int>"-> {imp (reads)}
+-->
+![consumer](diagrams/consumer.svg)
 
 ### filter::spawn(reader)
 
@@ -112,10 +110,10 @@ auto doubled = map<int>([](int n) { return n * 2; }).spawn(std::move(nums));
 // doubled is a reader<int>
 ```
 
-```mermaid
-graph LR
-    SRC["source"] -->|reader&lt;int&gt;| F["filter MT"] -->|reader&lt;int&gt;| YOU["caller"]
-```
+<!-- csp-flow
+source -"reader<int>"-> {filter} -"reader<int>"-> caller
+-->
+![filter-source](diagrams/filter-source.svg)
 
 ### filter::spawn(writer)
 
@@ -128,10 +126,10 @@ auto input = map<int>([](int n) { return n * 2; }).spawn(std::move(dest));
 // input is a writer<int> — write raw values, the filter doubles them
 ```
 
-```mermaid
-graph LR
-    YOU["caller"] -->|writer&lt;int&gt;| F["filter MT"] -->|writer&lt;int&gt;| DST["sink"]
-```
+<!-- csp-flow
+caller -"writer<int>"-> {filter} -"writer<int>"-> sink
+-->
+![filter-sink](diagrams/filter-sink.svg)
 
 ### filter::spawn() (no arguments, same-type only)
 
@@ -165,12 +163,10 @@ sink<int>([](int n) { printf("%d\n", n); })(std::move(evens));
 Each stage is an independent imp with its own stack. Data flows
 through synchronous channels -- no shared memory, no locks.
 
-```mermaid
-graph LR
-    E["enumerate"] -->|reader| M["map<br/>(square)"]
-    M -->|reader| W["where<br/>(even?)"]
-    W -->|reader| S["sink<br/>(print)"]
-```
+<!-- csp-flow
+{enumerate} -> {map (square)} -> {where (even?)} -> {sink (print)}
+-->
+![pipeline-simple](diagrams/pipeline-simple.svg)
 
 ## Pipe composition with `|`
 
@@ -368,15 +364,10 @@ int main() {
 }
 ```
 
-```mermaid
-graph LR
-    E["enumerate<br/>(1..50)"] --> M["map<br/>(square)"]
-    M --> W["where<br/>(digit sum &gt; 10)"]
-    W --> B["buffer(4)"]
-    B --> T["tee"]
-    T --> TAP["tap<br/>(print)"]
-    T --> S["sink<br/>(total)"]
-```
+<!-- csp-flow
+{enumerate (1..50)} -> {map (square)} -> {where (digit sum > 10)} -> {buffer(4)} -> {tee} -> {sink (total)}
+-->
+![pipeline-complex](diagrams/pipeline-complex.svg)
 
 ## Next steps
 

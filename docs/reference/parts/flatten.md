@@ -13,10 +13,10 @@ inline auto const flatten = /* ... */;
 
 ## Topology
 
-```mermaid
-graph LR
-    A["reader&lt;vector&lt;T&gt;&gt;"] --> B["flatten()"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<vector<T>> -> {flatten()} -> reader<T>
+-->
+![flatten topology](diagrams/flatten.svg)
 
 One internal imp reads each container from the input, then iterates
 over its elements and writes them individually to the output.

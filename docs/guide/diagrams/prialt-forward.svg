@@ -1,0 +1,30 @@
+<svg viewBox="0 0 360 118" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+    <marker id="arr-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888"/>
+    </marker>
+  </defs>
+  <line x1="142" y1="20" x2="182" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="162" y="14" text-anchor="middle" fill="#666" font-size="10">in &gt;&gt; t</text>
+  <line x1="241" y1="20" x2="281" y2="38" stroke="#333" marker-end="url(#arr)"/>
+  <text x="261" y="23" text-anchor="middle" fill="#666" font-size="10">t</text>
+  <line x1="142" y1="56" x2="182" y2="56" stroke="#333" marker-end="url(#arr)"/>
+  <text x="162" y="50" text-anchor="middle" fill="#666" font-size="10">~out</text>
+  <rect x="9" y="5" width="30" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="24" y="24" text-anchor="middle">in</text>
+  <rect x="83" y="5" width="59" height="30" rx="4" fill="#f0f0f0" stroke="#888"/>
+  <text x="112" y="24" text-anchor="middle">reader</text>
+  <rect x="182" y="5" width="59" height="30" rx="4" fill="#f0f0f0" stroke="#888"/>
+  <text x="211" y="24" text-anchor="middle">prialt</text>
+  <rect x="281" y="23" width="74" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="318" y="42" text-anchor="middle">out &lt;&lt; t</text>
+  <rect x="5" y="41" width="38" height="30" rx="4" fill="#e8e8e8" stroke="#888"/>
+  <text x="24" y="60" text-anchor="middle">out</text>
+  <rect x="83" y="41" width="59" height="30" rx="4" fill="#f0f0f0" stroke="#888"/>
+  <text x="112" y="60" text-anchor="middle">writer</text>
+  <rect x="182" y="41" width="59" height="30" rx="4" fill="#f0f0f0" stroke="#888"/>
+  <text x="211" y="60" text-anchor="middle">prialt</text>
+</svg>

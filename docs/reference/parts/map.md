@@ -14,10 +14,10 @@ auto map(F&& f);
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;A&gt;] --> B["map(f)"] --> C[reader&lt;B&gt;]
-```
+<!-- csp-flow
+reader<A> -> {map(f)} -> reader<B>
+-->
+![map topology](diagrams/map.svg)
 
 One internal imp reads from the input, applies `f`, and writes the
 result to the output.

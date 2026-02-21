@@ -25,29 +25,27 @@ Returns a `reader<T>`.
 
 ## Diagram
 
-```mermaid
-graph LR
-    data["reader&lt;T&gt;<br/>(data)"] --> G["gate"]
-    ctrl["reader&lt;bool&gt;<br/>(control)"] --> G
-    G --> out["reader&lt;T&gt;"]
-    style G fill:#f5d6a8
-    style ctrl fill:#d4edda
-```
+<!-- csp-flow
+       reader<bool>
+             |
+reader<T> -> {gate} -> reader<T>
+-->
+![gate topology](diagrams/gate.svg)
 
 ### State machine
 
-```mermaid
-stateDiagram-v2
-    [*] --> Open
-    Open --> Closed: control = false
-    Closed --> Open: control = true
-    Open --> ForwardOnly: control dies (open)
-    Closed --> [*]: control dies (closed)
-    Open --> [*]: data dies
-    ForwardOnly --> [*]: data dies
-    Open --> [*]: output dies
-    Closed --> [*]: output dies
-```
+<!-- csp-state
+[*] -> Open
+Open -> Closed: control = false
+Closed -> Open: control = true
+Open -> ForwardOnly: control dies (open)
+Closed -> [*]: control dies (closed)
+Open -> [*]: data dies
+ForwardOnly -> [*]: data dies
+Open -> [*]: output dies
+Closed -> [*]: output dies
+-->
+![gate states](diagrams/gate-states.svg)
 
 ## Semantics
 

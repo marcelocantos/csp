@@ -112,21 +112,15 @@ allocate memory, acquire mutexes, or interact with CSP channels. The
 `signal::notify` implementation uses the classic **self-pipe trick** to
 bridge from the signal handler into the cooperative world of imps:
 
-```mermaid
-sequenceDiagram
-    participant K as Kernel
-    participant H as Signal Handler
-    participant P as Pipe
-    participant MT as Producer MT
-    participant Ch as Channel
-    participant C as Consumer
-
-    K->>H: deliver signal
-    H->>P: write(signal_byte)
-    P-->>MT: io::read() returns
-    MT->>Ch: out << signal_number
-    Ch-->>C: reader receives
-```
+<!-- csp-seq
+K "Kernel" | H "Handler" | P "Pipe" | MT "Producer" | Ch "Channel" | C "Consumer"
+K ->> H : deliver signal
+H ->> P : write(signal_byte)
+P -->> MT : io::read() returns
+MT ->> Ch : out << signal_number
+Ch -->> C : reader receives
+-->
+![signal sequence](diagrams/signal-sequence.svg)
 
 1. **`notify()` creates a pipe** and registers it in a global table along
    with a bitmask of the requested signal numbers.

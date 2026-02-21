@@ -1,0 +1,32 @@
+<svg viewBox="0 0 363 234" xmlns="http://www.w3.org/2000/svg" font-family="monospace" font-size="12">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#333"/>
+    </marker>
+  </defs>
+  <line x1="315" y1="13" x2="83" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="199" y="10" text-anchor="middle" fill="#666" font-size="10">alt(ops...) / prialt(ops...)</text>
+  <line x1="83" y1="20" x2="287" y2="86" stroke="#333" marker-end="url(#arr)"/>
+  <text x="185" y="47" text-anchor="middle" fill="#666" font-size="10">peer ready</text>
+  <line x1="83" y1="20" x2="295" y2="166" stroke="#333" marker-end="url(#arr)"/>
+  <text x="189" y="87" text-anchor="middle" fill="#666" font-size="10">peer dead</text>
+  <line x1="83" y1="20" x2="143" y2="20" stroke="#333" marker-end="url(#arr)"/>
+  <text x="113" y="14" text-anchor="middle" fill="#666" font-size="10">none ready</text>
+  <line x1="227" y1="20" x2="287" y2="86" stroke="#333" marker-end="url(#arr)"/>
+  <text x="257" y="47" text-anchor="middle" fill="#666" font-size="10">peer becomes ready</text>
+  <line x1="227" y1="20" x2="295" y2="166" stroke="#333" marker-end="url(#arr)"/>
+  <text x="261" y="87" text-anchor="middle" fill="#666" font-size="10">peer dies</text>
+  <line x1="323" y1="86" x2="323" y2="13" stroke="#333" marker-end="url(#arr)"/>
+  <text x="323" y="44" text-anchor="middle" fill="#666" font-size="10">return index</text>
+  <line x1="323" y1="166" x2="323" y2="13" stroke="#333" marker-end="url(#arr)"/>
+  <text x="323" y="84" text-anchor="middle" fill="#666" font-size="10">return ~index</text>
+  <circle cx="323" cy="13" r="8" fill="#333" stroke="#333"/>
+  <rect x="5" y="5" width="78" height="30" rx="12" fill="#d4e6f1" stroke="#888"/>
+  <text x="44" y="24" text-anchor="middle">scanning</text>
+  <rect x="287" y="71" width="70" height="30" rx="12" fill="#d4e6f1" stroke="#888"/>
+  <text x="323" y="90" text-anchor="middle">matched</text>
+  <rect x="295" y="151" width="56" height="30" rx="12" fill="#d4e6f1" stroke="#888"/>
+  <text x="323" y="170" text-anchor="middle">death</text>
+  <rect x="143" y="5" width="85" height="30" rx="12" fill="#d4e6f1" stroke="#888"/>
+  <text x="185" y="24" text-anchor="middle">suspended</text>
+</svg>

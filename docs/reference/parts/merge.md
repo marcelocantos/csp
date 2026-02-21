@@ -14,13 +14,12 @@ auto merge(std::vector<reader<T>> inputs);
 
 ## Topology
 
-```mermaid
-graph LR
-    In1[reader&lt;T&gt; #1] --> Merge[merge]
-    In2[reader&lt;T&gt; #2] --> Merge
-    InN[reader&lt;T&gt; ...N] --> Merge
-    Merge --> Out[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> #1   ->
+reader<T> #2   -> {merge} -> reader<T>
+reader<T> ...N ->
+-->
+![merge topology](diagrams/merge.svg)
 
 One internal imp uses a dynamic `alt` to read from whichever input
 is ready first, then writes the value to the single output.

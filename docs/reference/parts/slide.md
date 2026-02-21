@@ -34,12 +34,12 @@ window_pair<T> slide(reader<T> src, Pred expired, slide_config cfg = {});
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B[slide]
-    B --> C["window_pair.in (entering)"]
-    B --> D["window_pair.out (leaving)"]
-```
+<!-- csp-flow
+                  -> reader<T> window.in
+reader<T> -> {slide}
+                  -> reader<T> window.out
+-->
+![slide topology](diagrams/slide.svg)
 
 One internal imp reads from the source, manages the deque, and
 writes to both output channels.

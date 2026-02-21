@@ -14,10 +14,10 @@ auto distinct(Eq eq = {});
 
 ## Topology
 
-```mermaid
-graph LR
-    A[reader&lt;T&gt;] --> B["distinct(eq)"] --> C[reader&lt;T&gt;]
-```
+<!-- csp-flow
+reader<T> -> {distinct(eq)} -> reader<T>
+-->
+![distinct topology](diagrams/distinct.svg)
 
 One internal imp reads from the input, compares each value with the
 previously emitted value, and forwards it only when it differs.

@@ -50,25 +50,17 @@ csp::blocking([] {
 
 ### How it works
 
-```mermaid
-sequenceDiagram
-    participant MT as Imp
-    participant P as Processor
-    participant BP as Blocking Pool
-    participant GQ as Global Queue
-
-    MT->>P: csp::blocking(fn)
-    P->>P: MT sets suspending_ flag
-    P->>BP: submit(MT, fn)
-    P->>P: do_switch(detach) -- MT detached, processor picks up next MT
-
-    BP->>BP: pool thread runs fn()
-    BP->>GQ: MT->schedule() -- push MT to global queue
-
-    GQ->>P: processor picks up MT (possibly a different processor)
-    P->>MT: MT resumes after blocking() call
-    MT->>MT: clears suspending_ flag
-```
+<!-- csp-seq
+MT "Imp" | P "Processor" | BP "Blocking Pool" | GQ "Global Queue"
+MT ->> P : csp::blocking(fn)
+note P : do_switch(detach)
+P ->> BP : submit(MT, fn)
+BP ->> BP : pool thread runs fn()
+BP ->> GQ : MT->schedule()
+GQ ->> P : processor picks up MT
+P -->> MT : MT resumes
+-->
+![blocking sequence](diagrams/blocking-sequence.svg)
 
 Key properties:
 

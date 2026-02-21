@@ -88,19 +88,16 @@ ready, and a receive blocks until a sender is ready. The value is transferred
 directly from the sender's stack to the receiver's variable -- there is no
 internal queue.
 
-```mermaid
-sequenceDiagram
-    participant S as Sender
-    participant Ch as Channel
-    participant R as Receiver
-
-    S->>Ch: w << 42 (blocks)
-    Note over S: waiting for receiver...
-    R->>Ch: r >> n (blocks)
-    Ch-->>R: n = 42
-    Ch-->>S: unblocks
-    Note over S,R: Both proceed
-```
+<!-- csp-seq
+S "Sender" | Ch "Channel" | R "Receiver"
+S ->> Ch : w << 42 (blocks)
+note S : waiting for receiver...
+R ->> Ch : r >> n (blocks)
+Ch -->> R : n = 42
+Ch -->> S : unblocks
+note S,R : Both proceed
+-->
+![channel rendezvous](diagrams/rendezvous.svg)
 
 This design forces the sender and receiver to synchronize on every value. The
 sender cannot outrun the receiver, because there is nowhere to buffer values.
@@ -185,12 +182,12 @@ When all `writer<T>` copies for a channel are destroyed, the channel's write
 side dies. Any blocked receiver unblocks, and subsequent receives return
 `false`:
 
-```mermaid
-graph LR
-    W1[writer] -->|dropped| Ch((Channel))
-    Ch -->|EOF| R1[reader]
-    Ch -->|EOF| R2[reader]
-```
+<!-- csp-flow
+                              -> reader
+writer -"dropped"-> (channel)
+                              -> reader
+-->
+![writer dropped](diagrams/writer-dropped.svg)
 
 ```cpp
 auto [w, r] = csp::chan<int>{};
@@ -213,12 +210,12 @@ while (r >> n) {
 When all `reader<T>` copies are destroyed, the channel's read side dies. Any
 blocked sender unblocks, and subsequent sends return `false`:
 
-```mermaid
-graph LR
-    W1[writer] -->|fails| Ch((Channel))
-    W2[writer] -->|fails| Ch
-    Ch -->|dropped| R1[reader]
-```
+<!-- csp-flow
+writer ->
+         (channel) -"dropped"-> reader
+writer ->
+-->
+![reader dropped](diagrams/reader-dropped.svg)
 
 ```cpp
 auto [w, r] = csp::chan<int>{};
