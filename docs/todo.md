@@ -224,6 +224,12 @@ with entropy-seeded default, so configurable seeding is built in.
       Implemented: `dynamic<T>`, `local` (scoped bindings), `imp_local<T>`
       (imp-local), `context`/`context_scope` (transfer over channels).
 
+- [ ] **Cancellation and timeouts in dynamic scope** — Add cancellation and
+      deadline/timeout support to dynamic scope, similar to Go's
+      `context.Context` (`WithCancel`, `WithDeadline`, `WithTimeout`). Parent
+      imps could propagate cancellation to child trees via the existing
+      HAMT-based dynamic scoping mechanism.
+
 - [x] **select with default** — `csp::none` guard for alt/prialt. Returns
       `INT_MIN` (`constexpr operator int()`), usable as a switch case label.
       `prialt(r >> n, csp::none)` = Go's `select { case ...: default: }`.
@@ -438,6 +444,11 @@ with entropy-seeded default, so configurable seeding is built in.
         session) should have a direct channel equivalent. If you'd reach
         for a callback, mutex, or condition variable, there's a channel
         pattern instead.
+
+## Test cleanup
+
+- [ ] **Replace CHECK\_\* macros with plain CHECK()** — Use `CHECK(x == y)`
+      instead of `CHECK_EQ(x, y)`, etc. ~789 occurrences across 39 test files.
 
 ## Example applications
 

@@ -1,5 +1,7 @@
 #include "testutil.h"
 
+#include <csp/byte_reader.h>
+
 #include <atomic>
 #include <csignal>
 #include <cstring>
@@ -186,6 +188,99 @@ TEST_CASE("IO - ByteWriter") {
     CHECK(done.load());
     CHECK_EQ("CSP writes!", std::string(result.data(), result.size()));
     csp::shutdown_runtime();
+}
+
+// --- byte_reader (channel-backed) ---
+
+TEST_CASE("IO - byte_reader exact chunk") {
+    auto [w, r] = chan<bytes>{};
+    byte_reader br(std::move(r));
+
+    csp::spawn([w = std::move(w)] {
+        w << bytes{'A', 'B', 'C', 'D'};
+    });
+
+    bytes buf(4);
+    CHECK_EQ(4, br.read(buf));
+    CHECK_EQ(bytes({'A', 'B', 'C', 'D'}), buf);
+}
+
+TEST_CASE("IO - byte_reader spans chunks") {
+    auto [w, r] = chan<bytes>{};
+    byte_reader br(std::move(r));
+
+    csp::spawn([w = std::move(w)] {
+        w << bytes{'A', 'B'};
+        w << bytes{'C', 'D'};
+        w << bytes{'E', 'F'};
+    });
+
+    bytes buf(5);
+    CHECK_EQ(5, br.read(buf));
+    CHECK_EQ(bytes({'A', 'B', 'C', 'D', 'E'}), buf);
+
+    // Leftover 'F' from previous read.
+    bytes buf2(1);
+    CHECK_EQ(1, br.read(buf2));
+    CHECK_EQ(bytes({'F'}), buf2);
+}
+
+TEST_CASE("IO - byte_reader partial on close") {
+    auto [w, r] = chan<bytes>{};
+    byte_reader br(std::move(r));
+
+    csp::spawn([w = std::move(w)] {
+        w << bytes{'X', 'Y'};
+    });
+
+    bytes buf(10);
+    CHECK_EQ(2, br.read(buf));
+    CHECK_EQ('X', buf[0]);
+    CHECK_EQ('Y', buf[1]);
+}
+
+TEST_CASE("IO - byte_reader empty buffer") {
+    auto [w, r] = chan<bytes>{};
+    byte_reader br(std::move(r));
+
+    bytes buf;
+    CHECK_EQ(0, br.read(buf));
+}
+
+TEST_CASE("IO - byte_reader multiple reads with leftover") {
+    auto [w, r] = chan<bytes>{};
+    byte_reader br(std::move(r));
+
+    csp::spawn([w = std::move(w)] {
+        // Send 10 bytes in one chunk.
+        w << bytes{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    });
+
+    bytes buf(3);
+
+    CHECK_EQ(3, br.read(buf));
+    CHECK_EQ(bytes({'0', '1', '2'}), buf);
+
+    CHECK_EQ(3, br.read(buf));
+    CHECK_EQ(bytes({'3', '4', '5'}), buf);
+
+    CHECK_EQ(3, br.read(buf));
+    CHECK_EQ(bytes({'6', '7', '8'}), buf);
+
+    // Only 1 byte left.
+    CHECK_EQ(1, br.read(buf));
+    CHECK_EQ('9', buf[0]);
+}
+
+TEST_CASE("IO - byte_reader closed reader returns zero") {
+    auto [w, r] = chan<bytes>{};
+    byte_reader br(std::move(r));
+
+    // Close the writer immediately.
+    { auto _ = std::move(w); }
+
+    bytes buf(4);
+    CHECK_EQ(0, br.read(buf));
 }
 
 // --- Layer 3: split_lines — pure channel test, no I/O ---

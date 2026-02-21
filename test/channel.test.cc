@@ -934,8 +934,8 @@ TEST_CASE("Channel - AltManyChannels") {
     }
 
     int result = alt(actions);
-    CHECK_GT(result, 0);
-    CHECK_LE(result, N);
+    CHECK_GE(result, 0);
+    CHECK_LT(result, N);
     CHECK_GE(n, 0);
     CHECK_LT(n, N);
 
