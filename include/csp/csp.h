@@ -608,63 +608,53 @@ void fuse(writer<T>& w, reader<T>& r) {
 }
 
 // Tap: splice a pass-through observer into the channel between w and r.
-// Returns a tap_handle whose `output` reader receives a copy of every value
-// flowing from w to r.  Destroying the handle fuses w and r back together,
-// removing the forwarding imp from the data path.
+// Returns a reader whose values mirror every value flowing from w to r.
+// Dropping the returned reader triggers automatic fuse-back: the forwarder
+// detects reader death via ~tw (vulture on the tap writer), fuses w and r
+// back together, and exits.
 //
-// Note: the fuse-back copies (w_copy_, r_copy_) must live in the handle,
-// not in the forwarding imp.  If the imp held them, the copies would keep
-// the intermediate channels' endpoint groups alive, creating a reference
-// cycle that prevents the forwarder from ever seeing upstream/downstream
-// death — a deadlock under M:N concurrency.
+// The forwarder holds .copy() references to w and r for fuse-back.  These
+// copies mask natural pipeline death (same as any extra endpoint copy), so
+// the pipeline only terminates when the tap reader is dropped first.
 template <typename T>
-struct tap_handle {
-    reader<T> output;   // tap stream — reads a copy of each forwarded value
-
-    tap_handle() = default;
-    tap_handle(tap_handle const &) = delete;
-    tap_handle(tap_handle &&) = default;
-    tap_handle & operator=(tap_handle const &) = delete;
-    tap_handle & operator=(tap_handle &&) = default;
-
-    ~tap_handle() {
-        if (!w_copy_) return;       // moved-from or default-constructed
-        output = {};                // kill tap reader
-        fuse(w_copy_, r_copy_);     // redirect w,r back together
-    }
-
-private:
-    writer<T> w_copy_;  // shares slot with caller's w
-    reader<T> r_copy_;  // shares slot with caller's r
-
-    template <typename U>
-    friend tap_handle<U> tap(writer<U>& w, reader<U>& r);
-};
-
-template <typename T>
-tap_handle<T> tap(writer<T>& w, reader<T>& r) {
+reader<T> tap(writer<T>& w, reader<T>& r) {
     chan<T> a, b, tap_ch;
 
     // Split: w → [B], [A] → r.  Original channel dies.
     swap(w, std::move(a.r), std::move(b.w), r);
 
-    // Forwarder: reads from B (what w writes to), writes to A (what r reads
-    // from) and to tap_ch.  When tap_ch's reader dies, stops tapping but
-    // continues forwarding.  When B or A dies (from the handle's fuse-back
-    // or natural endpoint death), exits.
+    // Forwarder: reads from B (what w writes to), writes to tap_ch and
+    // then to A (what r reads from).  Holds copies of w and r for
+    // fuse-back.  When the tap reader dies, fuses w and r back together
+    // and exits.
+    // Prialt returns ~index (negative) for vulture/death matches.
+    // ~tw is at index 0 in both prialts, so its match result is ~0.
     spawn([br = std::move(b.r), aw = std::move(a.w),
-           tw = std::move(tap_ch.w)]() mutable {
-        for (T t; prialt(~aw, br >> t) >= 0;) {
-            if (tw && !(tw << t)) tw = {};  // tap reader gone — stop tapping
-            if (!(aw << t)) break;          // downstream dead — exit
+           tw = std::move(tap_ch.w),
+           wc = w.copy(), rc = r.copy()]() mutable {
+        for (T t;;) {
+            int i = prialt(~tw, br >> t);
+            if (i == ~0) { fuse(wc, rc); return; }  // tap reader died
+            if (i < 0) return;                        // br dead
+
+            if (!(tw << t)) {
+                // Tap reader died during write.
+                fuse(wc, rc);
+                wc << t;  // deliver in-flight value through fused path
+                return;
+            }
+
+            int j = prialt(~tw, aw << t);
+            if (j == ~0) {
+                fuse(wc, rc);
+                wc << t;  // deliver in-flight value
+                return;
+            }
+            if (j < 0) return;  // aw dead
         }
     });
 
-    tap_handle<T> h;
-    h.output = std::move(tap_ch.r);
-    h.w_copy_ = w.copy();
-    h.r_copy_ = r.copy();
-    return h;
+    return std::move(tap_ch.r);
 }
 
 // Backward compatibility.

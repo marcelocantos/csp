@@ -973,7 +973,7 @@ TEST_SUITE("tap") {
 TEST_CASE("tap - basic observation") {
     chan<int> ch;
 
-    auto h = tap(ch.w, ch.r);
+    auto tr = tap(ch.w, ch.r);
 
     spawn([w = ch.w.copy()] {
         w << 1;
@@ -984,44 +984,44 @@ TEST_CASE("tap - basic observation") {
     // Both tap and original reader must be consumed — the forwarder
     // writes to tap first, then forwards to the original reader.
     for (int i = 1; i <= 3; ++i) {
-        CHECK_EQ(i, h.output.read());
+        CHECK_EQ(i, tr.read());
         CHECK_EQ(i, ch.r.read());
     }
 
     ch.w = {};
     ch.r = {};
-    h = {};
+    tr = {};
     while (csp::internal::run()) { }
 }
 
 TEST_CASE("tap - data reaches original reader") {
     chan<int> ch;
 
-    auto h = tap(ch.w, ch.r);
+    auto tr = tap(ch.w, ch.r);
 
     spawn([w = ch.w.copy()] { w << 42; });
 
     // Read from tap first (forwarder writes tap before forwarding).
-    CHECK_EQ(42, h.output.read());
+    CHECK_EQ(42, tr.read());
 
     // Then the original reader gets the value.
     CHECK_EQ(42, ch.r.read());
 
     ch.w = {};
     ch.r = {};
-    h = {};
+    tr = {};
     while (csp::internal::run()) { }
 }
 
-TEST_CASE("tap - auto-fuse on handle destruction") {
+TEST_CASE("tap - auto-fuse on reader destruction") {
     chan<int> ch;
 
     {
-        auto h = tap(ch.w, ch.r);
-        // ~tap_handle kills output, then fuses w,r back together.
+        auto tr = tap(ch.w, ch.r);
+        // Dropping the tap reader triggers fuse-back inside the forwarder.
     }
 
-    // Run scheduler to let the forwarder detect death and exit.
+    // Run scheduler to let the forwarder detect death and fuse back.
     while (csp::internal::run()) { }
 
     // After untap, w and r should communicate directly.
@@ -1039,18 +1039,18 @@ TEST_CASE("tap - copies follow redirection") {
     auto w_copy = ch.w.copy();
     auto r_copy = ch.r.copy();
 
-    auto h = tap(ch.w, ch.r);
+    auto tr = tap(ch.w, ch.r);
 
     // Copies share the same slots, so they also go through the tap.
     spawn([w = std::move(w_copy)] { w << 55; });
 
-    CHECK_EQ(55, h.output.read());
+    CHECK_EQ(55, tr.read());
     CHECK_EQ(55, r_copy.read());
 
     ch.w = {};
     ch.r = {};
     r_copy = {};
-    h = {};
+    tr = {};
     while (csp::internal::run()) { }
 }
 
@@ -1058,10 +1058,10 @@ TEST_CASE("tap - death propagation after untap") {
     chan<int> ch;
 
     {
-        auto h = tap(ch.w, ch.r);
+        auto tr = tap(ch.w, ch.r);
     }
 
-    // Run scheduler to let forwarder exit.
+    // Run scheduler to let forwarder detect tap reader death and fuse back.
     while (csp::internal::run()) { }
 
     // Drop writer — reader should see death.
@@ -1092,7 +1092,7 @@ TEST_CASE("MN Tap - observe pipeline") {
 
     chan<int> ch;
 
-    auto h = tap(ch.w, ch.r);
+    auto tr = tap(ch.w, ch.r);
 
     // Producer.
     csp::spawn([w = ch.w.copy()] {
@@ -1100,7 +1100,7 @@ TEST_CASE("MN Tap - observe pipeline") {
     });
 
     // Tap observer.
-    csp::spawn([r = h.output.copy(), &tap_total] {
+    csp::spawn([r = tr.copy(), &tap_total] {
         for (int v; r >> v;) tap_total.fetch_add(v, std::memory_order_relaxed);
     });
 
@@ -1111,7 +1111,7 @@ TEST_CASE("MN Tap - observe pipeline") {
 
     ch.w = {};
     ch.r = {};
-    h = {};
+    tr = {};
 
     csp::schedule();
 
@@ -1130,10 +1130,9 @@ TEST_CASE("MN Tap - auto-fuse restores direct path") {
 
     chan<int> ch;
 
-    // Tap, then immediately destroy the handle.  ~tap_handle kills the
-    // tap reader and fuses w,r back together; the forwarder detects
-    // death on its intermediate channels and exits.
-    { auto h = tap(ch.w, ch.r); }
+    // Tap, then immediately drop the tap reader.  The forwarder detects
+    // reader death via ~tw, fuses w,r back together, and exits.
+    { auto tr = tap(ch.w, ch.r); }
 
     // Traffic should flow directly.
     csp::spawn([w = ch.w.copy()] {
@@ -1175,28 +1174,25 @@ TEST_CASE("MN Tap - splice mid-flight") {
     });
 
     // Tapper: wait for some data to flow, splice tap mid-flight, spawn
-    // an observer, then keep the handle alive until the producer finishes.
-    // The handle MUST NOT be held by the observer (circular dependency:
-    // handle keeps intermediate channels alive, observer blocks on output
-    // which only dies when the forwarder exits, which needs the channels
-    // to die).
+    // an observer, then keep the tap reader alive until the producer
+    // finishes.  Dropping the tap reader triggers fuse-back.
     csp::spawn([w = ch.w.copy(), r = ch.r.copy(),
                 pj = std::move(pj), &tap_total]() mutable {
         for (int i = 0; i < MSGS / 4; ++i) csp::yield();
 
-        auto h = tap(w, r);
+        auto tr = tap(w, r);
         w = {};
         r = {};
 
         // Observer reads from tap output.
-        csp::spawn([r = std::move(h.output), &tap_total] {
+        csp::spawn([r = tr.copy(), &tap_total] {
             for (int v; r >> v;) tap_total.fetch_add(v, std::memory_order_relaxed);
         });
 
-        // Keep h alive until the producer finishes.
+        // Keep tap reader alive until the producer finishes.
         csp::join(pj);
         pj = {};
-        // h destroyed on scope exit → fuse-back → forwarder exits
+        // tr destroyed on scope exit → forwarder detects ~tw → fuse-back
     });
 
     ch.w = {};
@@ -1205,11 +1201,9 @@ TEST_CASE("MN Tap - splice mid-flight") {
     csp::schedule();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
-    // The forwarder may be mid-cycle when the handle is destroyed (fuse-back
-    // kills the intermediate channels).  A value already read from the
-    // producer side but not yet written to the consumer side is lost.  At
-    // most one value can be in flight, so allow a tolerance of MSGS (the
-    // maximum single value).
+    // The forwarder delivers in-flight values through the fused path,
+    // so no values should be lost.  Allow a tolerance of one value for
+    // edge cases in M:N scheduling.
     CHECK_GE(consumer_total.load(), expected - MSGS);
     CHECK_LE(consumer_total.load(), expected);
     CHECK_GT(tap_total.load(), 0);
@@ -1225,7 +1219,7 @@ TEST_CASE("MN Tap - remove mid-flight") {
 
     chan<int> ch;
 
-    auto h = tap(ch.w, ch.r);
+    auto tr = tap(ch.w, ch.r);
 
     // Consumer.
     csp::spawn([r = ch.r.copy(), &consumer_total] {
@@ -1233,7 +1227,7 @@ TEST_CASE("MN Tap - remove mid-flight") {
     });
 
     // Tap drain (so forwarder doesn't block).
-    csp::spawn([r = h.output.copy()] {
+    csp::spawn([r = tr.copy()] {
         for (int v; r >> v;) { }
     });
 
@@ -1242,10 +1236,10 @@ TEST_CASE("MN Tap - remove mid-flight") {
         for (int i = 1; i <= MSGS; ++i) w << i;
     });
 
-    // Remove tap mid-flight.
-    csp::spawn([&h] {
+    // Remove tap mid-flight by dropping the tap reader.
+    csp::spawn([r = std::move(tr)] {
         for (int i = 0; i < MSGS / 4; ++i) csp::yield();
-        h = {};  // destroy handle: kills tap reader, fuses back
+        // r destroyed on scope exit → forwarder detects ~tw → fuse-back
     });
 
     ch.w = {};
