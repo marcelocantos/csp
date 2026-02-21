@@ -29,16 +29,16 @@ reader<T> -> {conflate(f)} -> reader<T>
 One internal imp uses `alt` to race writing the pending value
 downstream against reading the next value upstream.
 
-<!-- csp-state
-[*] -> ReadFirst: spawn
-ReadFirst -> Race: first value read
-ReadFirst -> [*]: input closed empty
-Race -> Race: write wins → send, read next / read wins → merge
-Race -> Flush: input closed
-Race -> [*]: output died
-Flush -> [*]: send last pending value
--->
-![conflate states](diagrams/conflate-states.svg)
+```mermaid
+stateDiagram-v2
+    [*] --> ReadFirst: spawn
+    ReadFirst --> Race: first value read
+    ReadFirst --> [*]: input closed empty
+    Race --> Race: write wins → send, read next\nread wins → merge
+    Race --> Flush: input closed
+    Race --> [*]: output died
+    Flush --> [*]: send last pending value
+```
 
 ## Semantics
 

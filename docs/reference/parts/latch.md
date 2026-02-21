@@ -26,16 +26,16 @@ writer<T> -> {latch} -> reader<T>
 One internal imp holds the latest value. It uses `prialt` to
 simultaneously accept new writes and serve reads, with writes taking priority.
 
-<!-- csp-state
-[*] -> WaitFirst: spawn
-WaitFirst -> Serving: first value written
-WaitFirst -> [*]: output reader dropped
-Serving -> Serving: write overwrites / read serves
-Serving -> Repeating: writer dies
-Repeating -> Repeating: read serves last value
-Repeating -> [*]: output reader dropped
--->
-![latch states](diagrams/latch-states.svg)
+```mermaid
+stateDiagram-v2
+    [*] --> WaitFirst: spawn
+    WaitFirst --> Serving: first value written
+    WaitFirst --> [*]: output reader dropped
+    Serving --> Serving: write overwrites / read serves
+    Serving --> Repeating: writer dies
+    Repeating --> Repeating: read serves last value
+    Repeating --> [*]: output reader dropped
+```
 
 ## Semantics
 

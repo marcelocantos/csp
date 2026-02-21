@@ -255,20 +255,26 @@ with entropy-seeded default, so configurable seeding is built in.
       value. Destroying the handle auto-fuses `w` and `r` back together via
       slot-shared `.copy()` endpoints.
 
-- [ ] **Improve mid-flight behavior** — Waiters blocked in prialt on a
-      channel whose slot is redirected remain registered on the old channel
-      until endpoint death wakes them. Ideally `swap_slots` would deregister
-      and re-register affected waiters on the new channel. The two sequential
-      swaps in the 4-arg swap also create a brief intermediate state under
-      M:N concurrency; an N-channel locking protocol could eliminate this
-      window.
+- [x] **Mid-flight behavior is correct** — `swap_slots` already wakes all
+      waiters on both channels with `signal_ = INT_MIN`, causing `prialt` to
+      re-resolve each chanop's channel pointer through its slot and re-scan.
+      Fuse/split can be applied mid-flight without stale waiters or false
+      death signals.
+
+      The two sequential swaps in the 4-arg swap create a brief intermediate
+      state under M:N concurrency, but this is benign. The topology is
+      momentarily inconsistent (one pair redirected, the other not yet) but
+      coherent — every slot points to a valid channel. Concurrent operations
+      on the half-swapped topology block until the second swap completes.
+      The worst case is a transient stall, never data loss or corruption.
 
   ### Remaining design questions
 
   - **Zero-copy fuse**: Could the runtime directly connect two channel
-    internals (bypass the forwarding imp)? This would require channels to
-    support re-parenting of waiters. Complex but eliminates the extra
-    context switch per message.
+    internals (bypass the forwarding imp)? Waiter wake-and-re-resolve is
+    already handled by `swap_slots`, but merging two channel internals
+    (waiter lists, lock identity) is a deeper change. Would eliminate the
+    extra context switch per message.
   - **Supervision integration**: Supervised endpoints (from the supervision
     tree design) are essentially auto-fuse-on-restart. A cut/fuse primitive
     would be the mechanism the supervisor uses internally.

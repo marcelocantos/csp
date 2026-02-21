@@ -530,13 +530,13 @@ TEST_CASE("MN Stress - swap during pipeline") {
 
     // Swap middle's writer to alt_middle partway through.
     // Use copies to avoid data race with parent's cleanup.
-    csp::spawn([mw = middle.w.copy(), amw = alt_middle.w.copy(), MSGS]() mutable {
+    csp::spawn([mw = middle.w.copy(), amw = alt_middle.w.copy()]() mutable {
         for (int i = 0; i < MSGS / 2; ++i) csp::yield();
         swap(mw, amw);
     });
 
     // Producer.
-    csp::spawn([w = std::move(source.w), MSGS] {
+    csp::spawn([w = std::move(source.w)] {
         for (int i = 1; i <= MSGS; ++i) w << i;
     });
 
@@ -692,6 +692,75 @@ TEST_CASE("4-arg swap - split") {
     while (csp::internal::run()) { }
 }
 
+TEST_CASE("fuse while reader is blocked") {
+    chan<int> a;
+    chan<int> b;
+
+    bool got_value = false;
+    int result = 0;
+
+    // Reader blocks on b.r.
+    spawn([r = b.r.copy(), &got_value, &result] {
+        int v;
+        if (bool(r >> v)) {
+            got_value = true;
+            result = v;
+        }
+    });
+
+    csp::yield();  // let reader block
+
+    // Fuse a.w onto b.r — b.r's slot redirects to temp channel.
+    fuse(a.w, b.r);
+
+    // Write through a.w (now targets temp channel, same as b.r).
+    a.w << 77;
+
+    a.w = {};
+    a.r = {};
+    b.w = {};
+    b.r = {};
+    while (csp::internal::run()) { }
+
+    CHECK(got_value);
+    CHECK_EQ(77, result);
+}
+
+TEST_CASE("split while reader is blocked") {
+    chan<int> orig;
+    chan<int> a;
+    chan<int> b;
+
+    bool got_value = false;
+    int result = 0;
+
+    // Reader blocks on orig.r.
+    spawn([r = orig.r.copy(), &got_value, &result] {
+        int v;
+        if (bool(r >> v)) {
+            got_value = true;
+            result = v;
+        }
+    });
+
+    csp::yield();  // let reader block
+
+    // Split: orig.w → b's channel, orig.r → a's channel.
+    swap(orig.w, std::move(a.r), std::move(b.w), orig.r);
+
+    // Write through a.w — orig.r now targets a's channel.
+    a.w << 88;
+
+    orig.w = {};
+    orig.r = {};
+    a.w = {};
+    b.r = {};
+    while (csp::internal::run()) { }
+
+    CHECK(got_value);
+    CHECK_EQ(88, result);
+}
+
 TEST_CASE("fuse - channel leak check") {
     CHECK_EQ(0, csp::internal::channel_count(0));
     CHECK_EQ(0, csp::internal::channel_count(1));
@@ -808,6 +877,87 @@ TEST_CASE("MN Fuse - racing with endpoint death") {
 
     csp::schedule();
     CHECK_EQ(CYCLES, completed.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Fuse - fuse while reader is blocked") {
+    csp::init_runtime(4);
+
+    constexpr int N = 200 / SCALE_MEDIUM;
+    std::atomic<int> received{0};
+
+    for (int i = 0; i < N; ++i) {
+        csp::spawn([&received, i] {
+            chan<int> a;
+            chan<int> b;
+
+            // Reader blocks on b.r.
+            csp::spawn([r = b.r.copy(), &received] {
+                int v;
+                if (bool(r >> v)) received.fetch_add(v, std::memory_order_relaxed);
+            });
+
+            csp::yield();  // let reader block
+
+            // Fuse a.w onto b.r while reader is blocked.
+            fuse(a.w, b.r);
+
+            // Write through a.w (now shares temp channel with b.r).
+            a.w << (i + 1);
+
+            a.w = {};
+            a.r = {};
+            b.w = {};
+            b.r = {};
+        });
+    }
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)N * (N + 1) / 2;
+    CHECK_EQ(expected, (int64_t)received.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Split - split while reader is blocked") {
+    csp::init_runtime(4);
+
+    constexpr int N = 200 / SCALE_MEDIUM;
+    std::atomic<int> received{0};
+
+    for (int i = 0; i < N; ++i) {
+        csp::spawn([&received, i] {
+            chan<int> orig;
+            chan<int> a;
+            chan<int> b;
+
+            // Reader blocks on orig.r.
+            csp::spawn([r = orig.r.copy(), &received] {
+                int v;
+                if (bool(r >> v)) received.fetch_add(v, std::memory_order_relaxed);
+            });
+
+            csp::yield();  // let reader block
+
+            // Split while reader is blocked.
+            swap(orig.w, std::move(a.r), std::move(b.w), orig.r);
+
+            // Write through a.w (orig.r now targets a's channel).
+            a.w << (i + 1);
+
+            orig.w = {};
+            orig.r = {};
+            a.w = {};
+            b.r = {};
+        });
+    }
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)N * (N + 1) / 2;
+    CHECK_EQ(expected, (int64_t)received.load());
 
     csp::shutdown_runtime();
 }
@@ -945,7 +1095,7 @@ TEST_CASE("MN Tap - observe pipeline") {
     auto h = tap(ch.w, ch.r);
 
     // Producer.
-    csp::spawn([w = ch.w.copy(), MSGS] {
+    csp::spawn([w = ch.w.copy()] {
         for (int i = 1; i <= MSGS; ++i) w << i;
     });
 
@@ -986,7 +1136,7 @@ TEST_CASE("MN Tap - auto-fuse restores direct path") {
     { auto h = tap(ch.w, ch.r); }
 
     // Traffic should flow directly.
-    csp::spawn([w = ch.w.copy(), MSGS] {
+    csp::spawn([w = ch.w.copy()] {
         for (int i = 1; i <= MSGS; ++i) w << i;
     });
 
@@ -1001,6 +1151,110 @@ TEST_CASE("MN Tap - auto-fuse restores direct path") {
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK_EQ(expected, total.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Tap - splice mid-flight") {
+    csp::init_runtime(4);
+
+    constexpr int MSGS = 500 / SCALE_MEDIUM;
+    std::atomic<int64_t> consumer_total{0};
+    std::atomic<int64_t> tap_total{0};
+
+    chan<int> ch;
+
+    // Consumer.
+    csp::spawn([r = ch.r.copy(), &consumer_total] {
+        for (int v; r >> v;) consumer_total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    // Producer.
+    auto pj = csp::spawn([w = ch.w.copy()] {
+        for (int i = 1; i <= MSGS; ++i) w << i;
+    });
+
+    // Tapper: wait for some data to flow, splice tap mid-flight, spawn
+    // an observer, then keep the handle alive until the producer finishes.
+    // The handle MUST NOT be held by the observer (circular dependency:
+    // handle keeps intermediate channels alive, observer blocks on output
+    // which only dies when the forwarder exits, which needs the channels
+    // to die).
+    csp::spawn([w = ch.w.copy(), r = ch.r.copy(),
+                pj = std::move(pj), &tap_total]() mutable {
+        for (int i = 0; i < MSGS / 4; ++i) csp::yield();
+
+        auto h = tap(w, r);
+        w = {};
+        r = {};
+
+        // Observer reads from tap output.
+        csp::spawn([r = std::move(h.output), &tap_total] {
+            for (int v; r >> v;) tap_total.fetch_add(v, std::memory_order_relaxed);
+        });
+
+        // Keep h alive until the producer finishes.
+        csp::join(pj);
+        pj = {};
+        // h destroyed on scope exit → fuse-back → forwarder exits
+    });
+
+    ch.w = {};
+    ch.r = {};
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
+    // The forwarder may be mid-cycle when the handle is destroyed (fuse-back
+    // kills the intermediate channels).  A value already read from the
+    // producer side but not yet written to the consumer side is lost.  At
+    // most one value can be in flight, so allow a tolerance of MSGS (the
+    // maximum single value).
+    CHECK_GE(consumer_total.load(), expected - MSGS);
+    CHECK_LE(consumer_total.load(), expected);
+    CHECK_GT(tap_total.load(), 0);
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN Tap - remove mid-flight") {
+    csp::init_runtime(4);
+
+    constexpr int MSGS = 500 / SCALE_MEDIUM;
+    std::atomic<int64_t> consumer_total{0};
+
+    chan<int> ch;
+
+    auto h = tap(ch.w, ch.r);
+
+    // Consumer.
+    csp::spawn([r = ch.r.copy(), &consumer_total] {
+        for (int v; r >> v;) consumer_total.fetch_add(v, std::memory_order_relaxed);
+    });
+
+    // Tap drain (so forwarder doesn't block).
+    csp::spawn([r = h.output.copy()] {
+        for (int v; r >> v;) { }
+    });
+
+    // Producer.
+    csp::spawn([w = ch.w.copy()] {
+        for (int i = 1; i <= MSGS; ++i) w << i;
+    });
+
+    // Remove tap mid-flight.
+    csp::spawn([&h] {
+        for (int i = 0; i < MSGS / 4; ++i) csp::yield();
+        h = {};  // destroy handle: kills tap reader, fuses back
+    });
+
+    ch.w = {};
+    ch.r = {};
+
+    csp::schedule();
+
+    int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
+    CHECK_EQ(expected, consumer_total.load());
 
     csp::shutdown_runtime();
 }

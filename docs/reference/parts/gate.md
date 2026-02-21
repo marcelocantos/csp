@@ -34,18 +34,18 @@ reader<T> -> {gate} -> reader<T>
 
 ### State machine
 
-<!-- csp-state
-[*] -> Open
-Open -> Closed: control = false
-Closed -> Open: control = true
-Open -> ForwardOnly: control dies (open)
-Closed -> [*]: control dies (closed)
-Open -> [*]: data dies
-ForwardOnly -> [*]: data dies
-Open -> [*]: output dies
-Closed -> [*]: output dies
--->
-![gate states](diagrams/gate-states.svg)
+```mermaid
+stateDiagram-v2
+    [*] --> Open
+    Open --> Closed: control = false
+    Closed --> Open: control = true
+    Open --> ForwardOnly: control dies (open)
+    Closed --> [*]: control dies (closed)
+    Open --> [*]: data dies
+    ForwardOnly --> [*]: data dies
+    Open --> [*]: output dies
+    Closed --> [*]: output dies
+```
 
 ## Semantics
 
