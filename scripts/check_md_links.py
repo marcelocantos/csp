@@ -154,10 +154,10 @@ def main():
 
     md_files = []
     for dirpath, dirnames, filenames in os.walk('.'):
-        # Skip hidden dirs, build, third_party, node_modules
+        # Skip hidden dirs, build, vendor, node_modules
         dirnames[:] = [d for d in dirnames
                        if not d.startswith('.') and d not in
-                       ('build', 'third_party', 'node_modules', 'states')]
+                       ('build', 'vendor', 'node_modules', 'states')]
         for f in filenames:
             if f.endswith('.md'):
                 md_files.append(os.path.join(dirpath, f))

@@ -51,7 +51,7 @@ endif
 DEPFLAGS = -MMD -MP
 
 INCLUDES := -I$(CSP_INCLUDE) \
-            -Ithird_party
+            -Ivendor/include
 
 # --- TLS support (via mbedTLS) ---
 
@@ -59,12 +59,12 @@ CSP_TLS ?= 1
 
 ifeq ($(CSP_TLS),1)
 CXXFLAGS += -DCSP_TLS
-INCLUDES += -Ithird_party/mbedtls/include
-MBEDTLS_DIR    := third_party/mbedtls/library
+INCLUDES += -Ivendor/github.com/Mbed-TLS/mbedtls/include
+MBEDTLS_DIR    := vendor/github.com/Mbed-TLS/mbedtls/library
 MBEDTLS_SRCS   := $(wildcard $(MBEDTLS_DIR)/*.c)
 MBEDTLS_OBJS   := $(patsubst $(MBEDTLS_DIR)/%.c,$(BUILDDIR)/mbedtls/%.o,$(MBEDTLS_SRCS))
 MBEDTLS_CFLAGS := -O2 -DMBEDTLS_CONFIG_FILE='"mbedtls_config.h"' \
-                  -Ithird_party -Ithird_party/mbedtls/include
+                  -I$(CSP_INCLUDE) -Ivendor/github.com/Mbed-TLS/mbedtls/include
 ifneq ($(SANITIZE),)
 MBEDTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
@@ -89,7 +89,7 @@ else
   FCONTEXT_ABI  := sysv
 endif
 
-FCONTEXT_DIR    := third_party/boost-context/src/asm
+FCONTEXT_DIR    := vendor/github.com/boostorg/context/src/asm
 FCONTEXT_SUFFIX := $(FCONTEXT_ARCH)_$(FCONTEXT_ABI)_$(FCONTEXT_FMT)_gas.S
 FCONTEXT_SRCS   := $(FCONTEXT_DIR)/jump_$(FCONTEXT_SUFFIX) \
                    $(FCONTEXT_DIR)/make_$(FCONTEXT_SUFFIX)

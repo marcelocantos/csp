@@ -1306,7 +1306,7 @@ public:
 #include <cstddef>
 
 // Types and functions matching vendored Boost.Context assembly
-// (third_party/boost-context/src/asm/).  The assembly uses C linkage,
+// (vendor/github.com/boostorg/context/src/asm/).  The assembly uses C linkage,
 // so we declare extern "C" to suppress name mangling.
 
 namespace csp {

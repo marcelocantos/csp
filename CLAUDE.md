@@ -125,15 +125,17 @@ cross-references resolve. Broken links fail the build.
 
 ## Tests
 
-doctest (vendored in `third_party/doctest/`). Test files in `test/`
+doctest (vendored in `vendor/include/doctest/`). Test files in `test/`
 with `.test.cc` extension.
 
 ## Dependencies
 
-- **Boost.Context** (vendored as git submodule in `third_party/boost-context/`;
-  only the fcontext assembly files are compiled)
-- **mbedTLS** (vendored as git submodule in `third_party/mbedtls/` v3.6.2;
-  compiled when `CSP_TLS=1`, which is the default)
+- **Boost.Context** (vendored as git submodule in
+  `vendor/github.com/boostorg/context/`; only the fcontext assembly files are
+  compiled)
+- **mbedTLS** (vendored as git submodule in
+  `vendor/github.com/Mbed-TLS/mbedtls/` v3.6.2; compiled when `CSP_TLS=1`,
+  which is the default)
 - **doctest** (vendored, header-only)
 
 ### Optional tools

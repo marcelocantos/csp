@@ -480,7 +480,7 @@ def main():
     )
 
     # --- Append fcontext inline assembly to csp.cpp ---
-    fcontext_dir = root / 'third_party' / 'boost-context' / 'src' / 'asm'
+    fcontext_dir = root / 'vendor' / 'github.com' / 'boostorg' / 'context' / 'src' / 'asm'
     if fcontext_dir.exists():
         amalgamate_fcontext(fcontext_dir, out_dir / 'csp.cpp')
 

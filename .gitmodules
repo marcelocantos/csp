@@ -1,6 +1,6 @@
-[submodule "third_party/boost-context"]
-	path = third_party/boost-context
+[submodule "vendor/github.com/boostorg/context"]
+	path = vendor/github.com/boostorg/context
 	url = https://github.com/boostorg/context.git
-[submodule "third_party/mbedtls"]
-	path = third_party/mbedtls
+[submodule "vendor/github.com/Mbed-TLS/mbedtls"]
+	path = vendor/github.com/Mbed-TLS/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
