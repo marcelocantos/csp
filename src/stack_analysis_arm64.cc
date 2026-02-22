@@ -8,6 +8,7 @@
 #include <cstring>
 #include <atomic>
 #include <deque>
+#include <mutex>
 #include <vector>
 
 namespace csp {

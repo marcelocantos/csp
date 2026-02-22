@@ -90,6 +90,7 @@ private:
 
 #include <atomic>
 #include <cassert>
+#include <cstddef>
 #include <climits>
 #include <exception>
 #include <stdint.h>
@@ -411,7 +412,8 @@ public:
 
 private:
     internal::ChanOp chanop_ = {{}, nullptr};
-    mutable std::aligned_storage_t<sizeof(T), alignof(T)> buf_;
+    struct alignas(T) aligned_buf { mutable std::byte data[sizeof(T)]; };
+    aligned_buf buf_;
     bool has_buf_ = false;
     mutable bool active_ = true;
 };
@@ -1303,7 +1305,6 @@ public:
 
 /* csp/fcontext.h */
 
-#include <cstddef>
 
 // Types and functions matching vendored Boost.Context assembly
 // (vendor/github.com/boostorg/context/src/asm/).  The assembly uses C linkage,

@@ -25,7 +25,7 @@ TEST_CASE("MN - MultipleThreads") {
                 thread_ids.insert(id);
             }
             // Do enough work to let the scheduler spread across threads.
-            for (volatile int j = 0; j < 1000; ++j) { }
+            for (int j = 0; j < 1000; ++j) { std::atomic_signal_fence(std::memory_order_seq_cst); }
             done.fetch_add(1, std::memory_order_relaxed);
         });
     }

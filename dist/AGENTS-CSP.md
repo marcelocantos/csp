@@ -622,11 +622,11 @@ Copy these files into your project:
 | `csp_globals.cpp` | Thread-local state (**must** be a separate translation unit — see [docs/tls-caching-bug.md](https://github.com/marcelocantos/csp/blob/master/docs/tls-caching-bug.md)) |
 | `AGENTS-CSP.md` | This file — agent reference for CSP |
 
-Compile with C++17 and libc++:
+Compile with C++23 and libc++:
 
 ```bash
-c++ -std=c++17 -O2 -c csp.cpp -o csp.o
-c++ -std=c++17 -O2 -c csp_globals.cpp -o csp_globals.o
+c++ -std=c++23 -O2 -c csp.cpp -o csp.o
+c++ -std=c++23 -O2 -c csp_globals.cpp -o csp_globals.o
 ```
 
 Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to

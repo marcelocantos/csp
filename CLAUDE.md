@@ -15,7 +15,7 @@ make iwyu   # remove unused includes (clang-tidy misc-include-cleaner)
 make clean  # remove build/
 ```
 
-Build artifacts go to `build/`. Compiler: Clang, C++17, libc++, `-O2 -g`.
+Build artifacts go to `build/`. Compiler: Clang, C++23, libc++, `-O2 -g`.
 
 ## Architecture
 
