@@ -114,7 +114,7 @@ TEST_CASE("Thread - CustomScheduler") {
     CHECK(custom_ran);
 
     // Reset to default.
-    csp::set_scheduler([]{ while (csp::internal::run()) { } });
+    csp::reset_scheduler();
 }
 
 TEST_CASE("Thread - SpawnMany") {

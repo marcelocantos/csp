@@ -1,7 +1,5 @@
 #include "testutil.h"
 
-#include <csp/byte_reader.h>
-
 #include <atomic>
 #include <csignal>
 #include <cstring>

@@ -90,10 +90,164 @@ void run_blocking(std::function<void()> fn) {
 
 } // namespace csp::internal
 
+/* cancel.cc */
+
+#include <atomic>
+#include <chrono>
+#include <memory>
+
+namespace csp {
+
+struct cancel_state {
+    writer<> trigger;
+    reader<> signal;
+    std::exception_ptr reason;
+    std::atomic<bool> cancelled{false};
+
+    cancel_state() {
+        chan<> ch;
+        trigger = std::move(ch.w);
+        signal = std::move(ch.r);
+    }
+
+    void cancel(std::exception_ptr ep) {
+        if (!cancelled.exchange(true)) {
+            reason = ep;
+            trigger = {};  // drop writer → fires all vultures on signal
+        }
+    }
+};
+
+// Stored as shared_ptr in the HAMT so that child imps (via inherited
+// dynamic scope) keep the cancel_state alive even after the guard that
+// created it is destroyed.
+static dynamic<std::shared_ptr<cancel_state>> g_cancel{};
+
+// --- cancel_guard ---
+
+struct cancel_guard::impl {
+    std::shared_ptr<cancel_state> state;
+    csp::local binding;
+
+    impl(std::shared_ptr<cancel_state> s)
+        : state(std::move(s))
+        , binding(g_cancel = state)
+    {}
+};
+
+cancel_guard::cancel_guard(std::unique_ptr<impl> p) : impl_(std::move(p)) {}
+cancel_guard::cancel_guard(cancel_guard&&) noexcept = default;
+cancel_guard& cancel_guard::operator=(cancel_guard&&) noexcept = default;
+
+cancel_guard::~cancel_guard() {
+    if (impl_ && !impl_->state->cancelled)
+        impl_->state->cancel(std::make_exception_ptr(canceled{}));
+}
+
+void cancel_guard::operator()() {
+    impl_->state->cancel(std::make_exception_ptr(canceled{}));
+}
+
+void cancel_guard::operator()(std::exception_ptr ep) {
+    impl_->state->cancel(std::move(ep));
+}
+
+// --- Public API ---
+
+cancel_guard cancellation() {
+    auto parent = *g_cancel;  // shared_ptr copy (may be null)
+    auto state = std::make_shared<cancel_state>();
+
+    if (parent) {
+        // Cascade: spawn imp that watches parent and cancels child.
+        // Captures shared_ptrs to keep both states alive.
+        spawn([p = std::move(parent), c = state]() {
+            switch (prialt(~p->signal, ~c->signal)) {
+            case ~0:  // parent cancelled → cascade
+                c->cancel(p->reason);
+                break;
+            case ~1:  // child cancelled directly → exit
+                break;
+            }
+        });
+    }
+
+    return cancel_guard(std::make_unique<cancel_guard::impl>(state));
+}
+
+cancel_guard cancellation(duration d) {
+    return cancellation(csp::now() + d);
+}
+
+cancel_guard cancellation(time_point tp) {
+    auto parent = *g_cancel;
+    auto state = std::make_shared<cancel_state>();
+
+    if (parent) {
+        spawn([p = std::move(parent), c = state]() {
+            switch (prialt(~p->signal, ~c->signal)) {
+            case ~0:  c->cancel(p->reason); break;
+            case ~1:  break;
+            }
+        });
+    }
+
+    // Timer imp: use reactor timer signal directly, no after()+helper.
+    // If scope is cancelled first, timer_signal dtor cancels the kqueue event.
+    spawn([tp, c = state]() {
+        if (!(*csp::clock)->uses_reactor()) {
+            // Fake clock: use after() helper imp (no reactor involvement).
+            auto timer = csp::after(tp - csp::now());
+            switch (prialt(~c->signal, timer >> nullptr)) {
+            case ~0: break;
+            case  1:
+                c->cancel(std::make_exception_ptr(timed_out{}));
+                break;
+            }
+            return;
+        }
+        // Real clock: reactor timer signal, no helper imp.
+        using namespace std::chrono;
+        auto d = tp - steady_clock::now();
+        auto delay_ns = duration_cast<nanoseconds>(d).count();
+        if (delay_ns <= 0) {
+            c->cancel(std::make_exception_ptr(timed_out{}));
+            return;
+        }
+        auto signal = detail::create_timer_signal(delay_ns);
+        switch (prialt(~c->signal, ~signal)) {
+        case ~0: break;  // scope cancelled — timer_signal dtor cancels kqueue event
+        case ~1:         // deadline fired
+            c->cancel(std::make_exception_ptr(timed_out{}));
+            break;
+        }
+    });
+
+    return cancel_guard(std::make_unique<cancel_guard::impl>(state));
+}
+
+chan_op<> cancel_op() {
+    auto state = *g_cancel;  // shared_ptr copy keeps state alive
+    if (!state) return {};
+    return ~state->signal;
+}
+
+bool is_cancel_active() {
+    auto state = *g_cancel;
+    return state != nullptr;
+}
+
+std::exception_ptr cancel_reason() {
+    auto state = *g_cancel;
+    if (!state || !state->cancelled) return {};
+    return state->reason;
+}
+
+} // namespace csp
+
 /* channel.cc */
 
 #include <algorithm>
-#include <atomic>
 #include <climits>
 #include <cstdarg>
 #include <cstdlib>
@@ -260,10 +414,13 @@ namespace {
             // when both endpoints reach refcount 0 concurrently
             // on different OS threads.
             if (alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                // Both endpoint slots are dead. Delete slots and channel.
-                delete write_slot_;
-                delete read_slot_;
+                // Both endpoint slots are dead. Release channel's memory
+                // refs on slots (weak refs may keep slots alive longer).
+                auto* ws = write_slot_;
+                auto* rs = read_slot_;
                 delete this;
+                ws->mem_release();
+                rs->mem_release();
             }
         }
 
@@ -375,6 +532,25 @@ namespace {
             auto unlock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock(); };
 
             lock_all(); // TLA:ChannelLifecycle.WaiterAcquire
+
+            // Verify channels haven't changed (concurrent swap_slots).
+            {
+                bool stale = false;
+                for (int i = 0; i < count && !stale; ++i) {
+                    if (chanops[i].slot) {
+                        auto * slot = static_cast<Slot *>(chanops[i].slot);
+                        auto * now = slot->channel.load(std::memory_order_acquire);
+                        if (now != get_chan(chanops[i])) {
+                            stale = true;
+                        }
+                    }
+                }
+                if (stale) {
+                    unlock_all();
+                    delete[] mi->heap_alloc;
+                    goto retry;
+                }
+            }
 
             // TLA:ChannelLifecycle.WaiterPhase1
             // Phase 1: Scan for ready peer (priority order, rotated by offset).
@@ -499,9 +675,11 @@ namespace {
             for (int i = 0; i < mi->n_sorted; ++i) {
                 Channel * ch = mi->sorted[i];
                 if (ch->alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    delete ch->write_slot_;
-                    delete ch->read_slot_;
+                    auto* ws = ch->write_slot_;
+                    auto* rs = ch->read_slot_;
                     delete ch;
+                    ws->mem_release();
+                    rs->mem_release();
                 }
             }
 
@@ -664,6 +842,50 @@ void reader_release(ReaderRef r) {
     }
 }
 
+void writer_weak_addref(WriterRef w) {
+    if (w) get_slot(w.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void writer_weak_release(WriterRef w) {
+    if (w) get_slot(w.ptr)->mem_release();
+}
+
+void reader_weak_addref(ReaderRef r) {
+    if (r) get_slot(r.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
+}
+
+void reader_weak_release(ReaderRef r) {
+    if (r) get_slot(r.ptr)->mem_release();
+}
+
+bool try_upgrade_weak_writer(WriterRef w) {
+    if (!w) return false;
+    auto* slot = get_slot(w.ptr);
+    size_t old = slot->refcount.load(std::memory_order_acquire);
+    while (old > 0) {
+        if (slot->refcount.compare_exchange_weak(old, old + 1,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            ++counterses()[wr].refs;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool try_upgrade_weak_reader(ReaderRef r) {
+    if (!r) return false;
+    auto* slot = get_slot(r.ptr);
+    size_t old = slot->refcount.load(std::memory_order_acquire);
+    while (old > 0) {
+        if (slot->refcount.compare_exchange_weak(old, old + 1,
+                std::memory_order_acq_rel, std::memory_order_acquire)) {
+            ++counterses()[rd].refs;
+            return true;
+        }
+    }
+    return false;
+}
+
 void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {
     auto * sa = static_cast<Slot *>(slot_a_ptr);
     auto * sb = static_cast<Slot *>(slot_b_ptr);
@@ -745,11 +967,26 @@ void alt_end(AltMatch * m) {
 
 namespace csp {
 
-dynamic<fake_clock*> clock{nullptr};
+namespace {
+
+struct real_clock : clock_source {
+    time_point now() const override {
+        return std::chrono::steady_clock::now();
+    }
+    void sleep_until(time_point tp) override {
+        internal::sleep_until(tp.time_since_epoch().count());
+    }
+};
+
+real_clock real_clock_instance;
+
+} // namespace
+
+dynamic<clock_source*> clock{&real_clock_instance};
 
 fake_clock::fake_clock(time_point start) : current_(start) {}
 
-void fake_clock::sleep_until_impl(time_point tp) {
+void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
     pending_.push({tp, detail::g_imp});
     internal::suspend();
@@ -792,14 +1029,31 @@ void fake_clock::run_until_idle() {
 
 #include <pthread.h>
 
-#include <chrono>
 #include <thread>
 
 #include <stdlib.h>
 
-static std::function<void()> g_scheduler = []{
-    while (csp::internal::run()) { }
-};
+static void default_scheduler_impl() {
+    auto& rt = csp::detail::Runtime::instance();
+    while (true) {
+        if (csp::internal::run()) continue;
+        if (rt.live_gs.load(std::memory_order_acquire) == 0) break;
+        // If no reactor signals are pending, no external events can
+        // wake blocked imps. Exit like the old scheduler (deadlock or done).
+        if (!csp::detail::Reactor::instance().has_pending_signals()) break;
+        // Park until the reactor posts work to the global queue,
+        // or all imps have exited.
+        std::unique_lock<std::mutex> lk(rt.park_mu);
+        rt.park_cv.wait(lk, [&rt] {
+            return rt.live_gs.load(std::memory_order_acquire) == 0
+                || rt.has_global_work_.load(std::memory_order_acquire);
+        });
+    }
+    // Shut down the reactor so its thread doesn't outlive the scheduler.
+    csp::detail::Reactor::instance().shutdown();
+}
+
+static std::function<void()> g_scheduler = default_scheduler_impl;
 
 
 namespace csp {
@@ -905,11 +1159,11 @@ namespace csp {
         void Imp::schedule(bool make_current) {
             auto& rt = Runtime::instance();
 
-            // In M:N mode, push to the global run queue so any worker
-            // can pick it up, preventing stranding on a P whose worker
-            // is about to park.
+            // In M:N mode or when called from a thread without a
+            // Processor (e.g. reactor thread), push to the global
+            // run queue so any worker can pick it up.
             // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
-            if (rt.mn_mode_) {
+            if (rt.mn_mode_ || !has_processor()) {
                 {
                     std::lock_guard<std::mutex> lk(rt.global_mu);
                     if (in_global_) {
@@ -1059,6 +1313,10 @@ namespace csp {
         g_scheduler = std::move(scheduler);
     }
 
+    void reset_scheduler() {
+        g_scheduler = default_scheduler_impl;
+    }
+
     void schedule() {
         g_scheduler();
     }
@@ -1181,18 +1439,6 @@ int spawn(EntryFn start_f, void * data) {
     }
 }
 
-void sleep_until(int64_t deadline_ns) {
-    using namespace std::chrono;
-    auto deadline = steady_clock::time_point(nanoseconds(deadline_ns));
-    {
-        std::lock_guard<std::mutex> lk(current_p().run_mu);
-        current_p().timer_heap.push({deadline, g_imp});
-    }
-    g_imp->suspending_.store(true, std::memory_order_release); // TLA:DrainSuspended.BeginSuspend
-    do_switch(Status::detach);
-    g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
-}
-
 void suspend() {
     g_imp->suspending_.store(true, std::memory_order_release);
     do_switch(Status::detach);
@@ -1201,20 +1447,21 @@ void suspend() {
 
 int run() {
     auto& p = current_p();
-    auto& timer_heap = p.timer_heap;
+    auto& rt = Runtime::instance();
 
-    // Fire expired timers — reschedule their imps.
+    // Drain global run queue (reactor events post here in single-P mode).
     {
-        auto now = std::chrono::steady_clock::now();
-        while (!timer_heap.empty() && timer_heap.top().deadline <= now) {
-            auto imp = timer_heap.top().thread;
-            timer_heap.pop();
+        std::lock_guard<std::mutex> lk(rt.global_mu);
+        while (!rt.global_run_queue.empty()) {
+            auto* imp = rt.global_run_queue.front();
+            rt.global_run_queue.pop_front();
+            imp->in_global_ = false;
             imp->schedule_local();
         }
+        rt.has_global_work_.store(false, std::memory_order_release);
     }
 
     Imp* target = nullptr;
-    bool has_timers = false;
     {
         std::lock_guard<std::mutex> lk(p.run_mu);
         auto& busy = p.busy;
@@ -1224,19 +1471,15 @@ int run() {
         if (busy != g_imp) {
             target = busy;
         }
-        has_timers = !timer_heap.empty();
     }
 
     if (target) {
         target->run();
-    } else if (has_timers) {
-        // All imps blocked, but timers pending — sleep until next deadline.
-        std::this_thread::sleep_until(timer_heap.top().deadline);
     }
 
     {
         std::lock_guard<std::mutex> lk(p.run_mu);
-        return p.busy->next_ != p.busy || !timer_heap.empty();
+        return p.busy->next_ != p.busy;
     }
 }
 
@@ -1399,6 +1642,48 @@ static uintptr_t assoc_rec(uintptr_t node, uint64_t key, std::any value, int shi
 
 uintptr_t hamt_assoc(uintptr_t root, uint64_t key, std::any value) {
     return assoc_rec(root, key, std::move(value), 0);
+}
+
+} // namespace csp::internal
+
+/* io.cc */
+
+namespace csp::internal {
+
+void io_wait_readable(int fd) {
+    auto signal = detail::create_fd_readable(fd);
+
+    if (!csp::is_cancel_active()) {
+        csp::prialt(~signal);
+        return;
+    }
+
+    switch (csp::prialt(csp::cancel_op(), ~signal)) {
+    case ~0: {
+        auto reason = csp::cancel_reason();
+        if (reason) std::rethrow_exception(reason);
+        throw csp::canceled{};
+    }
+    case ~1: return;
+    }
+}
+
+void io_wait_writable(int fd) {
+    auto signal = detail::create_fd_writable(fd);
+
+    if (!csp::is_cancel_active()) {
+        csp::prialt(~signal);
+        return;
+    }
+
+    switch (csp::prialt(csp::cancel_op(), ~signal)) {
+    case ~0: {
+        auto reason = csp::cancel_reason();
+        if (reason) std::rethrow_exception(reason);
+        throw csp::canceled{};
+    }
+    case ~1: return;
+    }
 }
 
 } // namespace csp::internal
@@ -1701,6 +1986,8 @@ namespace csp {
 
 namespace csp::detail {
 
+// --- Reactor singleton ---
+
 Reactor& Reactor::instance() {
     static Reactor r;
     return r;
@@ -1739,6 +2026,16 @@ void Reactor::shutdown() {
 
     close(kq_);
     kq_ = -1;
+
+    // Clear remaining writers (events that never fired).
+    {
+        std::lock_guard<std::mutex> slk(signal_mu_);
+        timer_writers_.clear();
+        read_writers_.clear();
+        write_writers_.clear();
+    }
+    pending_signals_.store(0, std::memory_order_release);
+
     running_.store(false, std::memory_order_release);
 }
 
@@ -1748,26 +2045,89 @@ void Reactor::wake() {
     kevent(kq_, &ev, 1, nullptr, 0, nullptr);
 }
 
-void Reactor::wait_read(int fd, Imp* imp) {
+// --- Signal creation ---
+
+std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
+    chan<> ch;
+    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed);
+
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        timer_writers_.emplace(ident, std::move(ch.w));
+    }
+    pending_signals_.fetch_add(1, std::memory_order_release);
+
     struct kevent ev;
-    EV_SET(&ev, fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, imp);
+    EV_SET(&ev, ident, EVFILT_TIMER, EV_ADD | EV_ONESHOT,
+           NOTE_NSECONDS, delay_ns, nullptr);
     int rc = kevent(kq_, &ev, 1, nullptr, 0, nullptr);
     assert(rc == 0);
+
+    return {std::move(ch.r), ident};
 }
 
-void Reactor::wait_write(int fd, Imp* imp) {
+reader<> Reactor::create_fd_event(int fd, int16_t filter) {
+    chan<> ch;
+
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        if (filter == EVFILT_READ)
+            read_writers_.insert_or_assign(fd, std::move(ch.w));
+        else
+            write_writers_.insert_or_assign(fd, std::move(ch.w));
+    }
+    pending_signals_.fetch_add(1, std::memory_order_release);
+
     struct kevent ev;
-    EV_SET(&ev, fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, imp);
+    EV_SET(&ev, fd, filter, EV_ADD | EV_ONESHOT, 0, 0, nullptr);
     int rc = kevent(kq_, &ev, 1, nullptr, 0, nullptr);
     assert(rc == 0);
+
+    return std::move(ch.r);
 }
 
-void Reactor::cancel(int fd) {
-    struct kevent evs[2];
-    EV_SET(&evs[0], fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
-    EV_SET(&evs[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
-    // Ignore errors — fd may not be registered for both filters.
-    kevent(kq_, evs, 2, nullptr, 0, nullptr);
+// --- Signal cancellation ---
+
+void Reactor::cancel_timer(uintptr_t ident) {
+    // EV_DELETE first (while kq_ is still valid), then erase writer.
+    struct kevent ev;
+    EV_SET(&ev, ident, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
+    kevent(kq_, &ev, 1, nullptr, 0, nullptr);  // ignore error (may have fired)
+
+    std::lock_guard<std::mutex> lk(signal_mu_);
+    if (timer_writers_.erase(ident))
+        pending_signals_.fetch_sub(1, std::memory_order_release);
+}
+
+void Reactor::cancel_fd(int fd, int16_t filter) {
+    struct kevent ev;
+    EV_SET(&ev, fd, filter, EV_DELETE, 0, 0, nullptr);
+    kevent(kq_, &ev, 1, nullptr, 0, nullptr);  // ignore error
+
+    std::lock_guard<std::mutex> lk(signal_mu_);
+    size_t erased = (filter == EVFILT_READ)
+        ? read_writers_.erase(fd)
+        : write_writers_.erase(fd);
+    if (erased)
+        pending_signals_.fetch_sub(1, std::memory_order_release);
+}
+
+// --- Reactor loop ---
+
+void Reactor::fire_signal(uintptr_t ident, int16_t filter) {
+    size_t erased = 0;
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        switch (filter) {
+        case EVFILT_TIMER: erased = timer_writers_.erase(ident); break;
+        case EVFILT_READ:  erased = read_writers_.erase(static_cast<int>(ident)); break;
+        case EVFILT_WRITE: erased = write_writers_.erase(static_cast<int>(ident)); break;
+        }
+        // writer<> destructor runs here → writer_release → resolve_endpoint_death
+        // → wakes any imp in prialt watching ~reader on the same channel.
+    }
+    if (erased)
+        pending_signals_.fetch_sub(1, std::memory_order_release);
 }
 
 void Reactor::loop() {
@@ -1780,43 +2140,86 @@ void Reactor::loop() {
         }
         for (int i = 0; i < n; ++i) {
             if (events[i].filter == EVFILT_USER) continue;
-            auto* imp = static_cast<Imp*>(events[i].udata);
-            imp->schedule();
+            fire_signal(events[i].ident, events[i].filter);
         }
     }
 }
 
+// --- timer_signal ---
+
+timer_signal::timer_signal(reader<> r, uintptr_t ident)
+    : r_(std::move(r)), ident_(ident) {}
+
+timer_signal::timer_signal(timer_signal&& o) noexcept
+    : r_(std::move(o.r_)), ident_(o.ident_) {
+    o.ident_ = 0;
+}
+
+timer_signal& timer_signal::operator=(timer_signal&& o) noexcept {
+    if (this != &o) {
+        if (ident_) Reactor::instance().cancel_timer(ident_);
+        r_ = std::move(o.r_);
+        ident_ = o.ident_;
+        o.ident_ = 0;
+    }
+    return *this;
+}
+
+timer_signal::~timer_signal() {
+    if (ident_) Reactor::instance().cancel_timer(ident_);
+}
+
+// --- fd_signal ---
+
+fd_signal::fd_signal(reader<> r, int fd, int16_t filter)
+    : r_(std::move(r)), fd_(fd), filter_(filter) {}
+
+fd_signal::fd_signal(fd_signal&& o) noexcept
+    : r_(std::move(o.r_)), fd_(o.fd_), filter_(o.filter_) {
+    o.fd_ = -1;
+    o.filter_ = 0;
+}
+
+fd_signal& fd_signal::operator=(fd_signal&& o) noexcept {
+    if (this != &o) {
+        if (fd_ >= 0) Reactor::instance().cancel_fd(fd_, filter_);
+        r_ = std::move(o.r_);
+        fd_ = o.fd_;
+        filter_ = o.filter_;
+        o.fd_ = -1;
+        o.filter_ = 0;
+    }
+    return *this;
+}
+
+fd_signal::~fd_signal() {
+    if (fd_ >= 0) Reactor::instance().cancel_fd(fd_, filter_);
+}
+
+// --- Factory functions ---
+
+timer_signal create_timer_signal(int64_t delay_ns) {
+    auto& reactor = Reactor::instance();
+    reactor.ensure_started();
+    auto [r, ident] = reactor.create_timer(delay_ns);
+    return {std::move(r), ident};
+}
+
+fd_signal create_fd_readable(int fd) {
+    auto& reactor = Reactor::instance();
+    reactor.ensure_started();
+    auto r = reactor.create_fd_event(fd, EVFILT_READ);
+    return {std::move(r), fd, EVFILT_READ};
+}
+
+fd_signal create_fd_writable(int fd) {
+    auto& reactor = Reactor::instance();
+    reactor.ensure_started();
+    auto r = reactor.create_fd_event(fd, EVFILT_WRITE);
+    return {std::move(r), fd, EVFILT_WRITE};
+}
+
 } // namespace csp::detail
-
-// Layer 1 primitives — follow the sleep_until suspension pattern
-// (csp.cc:399-406). Critical: set suspending_=true BEFORE registering
-// with the reactor, because the reactor (another thread) can call
-// schedule() immediately. This mirrors the channel path where
-// suspending_ is set before unlock_all.
-
-namespace csp::internal {
-
-void io_wait_readable(int fd) {
-    auto& reactor = detail::Reactor::instance();
-    reactor.ensure_started();
-
-    detail::g_imp->suspending_.store(true, std::memory_order_release);
-    reactor.wait_read(fd, detail::g_imp);
-    detail::do_switch(detail::Status::detach);
-    detail::g_imp->suspending_.store(false, std::memory_order_release);
-}
-
-void io_wait_writable(int fd) {
-    auto& reactor = detail::Reactor::instance();
-    reactor.ensure_started();
-
-    detail::g_imp->suspending_.store(true, std::memory_order_release);
-    reactor.wait_write(fd, detail::g_imp);
-    detail::do_switch(detail::Status::detach);
-    detail::g_imp->suspending_.store(false, std::memory_order_release);
-}
-
-} // namespace csp::internal
 
 /* runtime.cpp */
 
@@ -1838,6 +2241,7 @@ namespace csp {
             }
 
             stopping.store(false, std::memory_order_release);
+            has_global_work_.store(false, std::memory_order_release);
             live_gs.store(0, std::memory_order_release);
 
             {
@@ -1912,6 +2316,7 @@ namespace csp {
             assert(!imp->in_global_);
             imp->in_global_ = true;
             global_run_queue.push_back(imp);
+            has_global_work_.store(true, std::memory_order_release);
         }
 
         void Runtime::worker_loop() {
@@ -1920,9 +2325,6 @@ namespace csp {
             // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
-
-                // Fire expired timers.
-                fire_timers(p);
 
                 // Try local run queue.
                 Imp* next = local_next(p);
@@ -1946,27 +2348,18 @@ namespace csp {
                     std::unique_lock<std::mutex> lk(park_mu); // TLA:WorkerParking.WorkerAcquirePark
                     p.parked.store(true, std::memory_order_release);
 
-                    auto deadline = next_timer_deadline(p);
-
                     // Surplus Ps wind down after 5s idle.
                     using namespace std::chrono;
                     constexpr auto wind_down = seconds(5);
                     bool is_surplus = p.id >= initial_procs_;
 
-                    if (is_surplus && !deadline) {
-                        deadline = steady_clock::now() + wind_down;
-                    } else if (is_surplus && deadline) {
-                        auto wd = steady_clock::now() + wind_down;
-                        if (wd < *deadline) deadline = wd;
-                    }
-
-                    // TLA:WorkerParking.WorkerEvalPred TLA:WorkerParking.WorkerEnterWait TLA:WorkerParking.WorkerWoken
-                    if (deadline) {
-                        park_cv.wait_until(lk, *deadline, [this, &p] {
+                    if (is_surplus) {
+                        park_cv.wait_until(lk, steady_clock::now() + wind_down, [this, &p] {
                             return stopping.load(std::memory_order_acquire)
                                 || has_work(p);
                         });
                     } else {
+                        // TLA:WorkerParking.WorkerEvalPred TLA:WorkerParking.WorkerEnterWait TLA:WorkerParking.WorkerWoken
                         park_cv.wait(lk, [this, &p] {
                             return stopping.load(std::memory_order_acquire)
                                 || has_work(p);
@@ -2014,9 +2407,8 @@ namespace csp {
                     }
                     uint64_t hb = p.heartbeat.load(std::memory_order_acquire);
                     if (hb == last[i]) {
-                        // P is stalled — rescue its expired timers and
-                        // add a new P so work stealing can drain its queue.
-                        fire_timers(p);
+                        // P is stalled — add a new P so work stealing
+                        // can drain its queue.
                         add_processor();
                     }
                     last[i] = hb;
@@ -2084,30 +2476,6 @@ namespace csp {
             return true;
         }
 
-        void Runtime::fire_timers(Processor& p) {
-            // Collect expired timers under run_mu, then schedule after
-            // releasing. This avoids deadlock: schedule_local acquires
-            // current_p().run_mu, which may be the same lock (when the
-            // owning worker fires its own timers), and std::mutex is
-            // not recursive. It also allows the watchdog (which has no
-            // P) to fire timers from stalled Ps via the global queue.
-            Imp* expired[64];
-            int count = 0;
-            {
-                std::lock_guard<std::mutex> lk(p.run_mu);
-                auto now = std::chrono::steady_clock::now();
-                while (!p.timer_heap.empty()
-                       && p.timer_heap.top().deadline <= now
-                       && count < 64) {
-                    expired[count++] = p.timer_heap.top().thread;
-                    p.timer_heap.pop();
-                }
-            }
-            for (int i = 0; i < count; ++i) {
-                expired[i]->schedule();
-            }
-        }
-
         bool Runtime::steal_work(Processor& thief) {
             int n = num_procs_.load(std::memory_order_acquire);
             for (int i = 0; i < n; ++i) {
@@ -2154,15 +2522,6 @@ namespace csp {
             return false;
         }
 
-        std::optional<std::chrono::steady_clock::time_point>
-        Runtime::next_timer_deadline(Processor& p) {
-            std::lock_guard<std::mutex> lk(p.run_mu);
-            if (p.timer_heap.empty()) {
-                return std::nullopt;
-            }
-            return p.timer_heap.top().deadline;
-        }
-
         bool Runtime::has_work(Processor& p) {
             {
                 std::lock_guard<std::mutex> lk(p.run_mu);
@@ -2175,14 +2534,6 @@ namespace csp {
             {
                 std::lock_guard<std::mutex> lk(global_mu);
                 if (!global_run_queue.empty()) {
-                    return true;
-                }
-            }
-
-            {
-                std::lock_guard<std::mutex> lk(p.run_mu);
-                if (!p.timer_heap.empty() &&
-                    p.timer_heap.top().deadline <= std::chrono::steady_clock::now()) {
                     return true;
                 }
             }
@@ -3486,6 +3837,115 @@ void StackPool::drain() {
 #endif // CSP_USE_MMAP_STACKS
 
 } // namespace csp::detail
+
+/* timer.cc */
+
+
+namespace csp::internal {
+
+void sleep_until(int64_t deadline_ns) {
+    using namespace std::chrono;
+    auto now_ns = steady_clock::now().time_since_epoch().count();
+    auto delay_ns = deadline_ns - now_ns;
+    if (delay_ns <= 0) return;
+
+    auto signal = detail::create_timer_signal(delay_ns);
+    csp::prialt(~signal);
+}
+
+} // namespace csp::internal
+
+namespace csp {
+
+void sleep_until(time_point tp) {
+    if (is_cancel_active()) {
+        // Cancel-aware path.
+        if (!(*csp::clock)->uses_reactor()) {
+            // Fake clock: spawn helper imp that does the raw sleep,
+            // then race its death signal against cancel.
+            chan<> timer;
+            spawn([tp, w = std::move(timer.w)]() mutable {
+                // Call clock virtual directly to avoid cancel recursion.
+                (*csp::clock)->sleep_until(tp);
+                // w drops on exit → timer.r sees death
+            });
+            auto cop = cancel_op();
+            switch (prialt(std::move(cop), ~timer.r)) {
+            case ~0: {
+                auto reason = cancel_reason();
+                if (reason) std::rethrow_exception(reason);
+                throw canceled{};
+            }
+            case ~1: return;
+            }
+            return;
+        }
+        // Real clock: reactor timer signal + cancel.
+        using namespace std::chrono;
+        auto d = tp - steady_clock::now();
+        auto delay_ns = duration_cast<nanoseconds>(d).count();
+        if (delay_ns <= 0) return;  // already past
+
+        auto signal = detail::create_timer_signal(delay_ns);
+        auto cop = cancel_op();
+        switch (prialt(std::move(cop), ~signal)) {
+        case ~0: {
+            auto reason = cancel_reason();
+            if (reason) std::rethrow_exception(reason);
+            throw canceled{};
+        }
+        case ~1: return;
+        }
+        return;
+    }
+
+    // No cancel scope: delegate to clock virtual.
+    (*csp::clock)->sleep_until(tp);
+}
+
+void sleep(duration d) {
+    sleep_until(csp::now() + d);
+}
+
+reader<time_point> after(duration d) {
+    if (!(*csp::clock)->uses_reactor()) {
+        // Fake clock: use the simple sleep+write path.
+        // Use clock virtual directly to avoid cancel interference.
+        return spawn_producer<time_point>([d](writer<time_point> w) {
+            (*csp::clock)->sleep_until(csp::now() + d);
+            w << csp::now();
+        });
+    }
+
+    // Real clock: use reactor timer signal.
+    // When the reader drops, ~w fires in prialt, the producer exits,
+    // and signal's destructor cancels the EVFILT_TIMER. No leak.
+    return spawn_producer<time_point>([d](writer<time_point> w) {
+        using namespace std::chrono;
+        auto delay_ns = duration_cast<nanoseconds>(d).count();
+        if (delay_ns <= 0) delay_ns = 1;  // minimum 1ns
+        auto signal = detail::create_timer_signal(delay_ns);
+        switch (csp::prialt(~w, ~signal)) {
+        case ~0: break;        // reader dropped — signal dtor cancels timer
+        case ~1:
+            w << csp::now();   // timer fired
+            break;
+        }
+    });
+}
+
+reader<time_point> tick(duration interval) {
+    return spawn_producer<time_point>([interval](writer<time_point> w) {
+        auto next = csp::now() + interval;
+        while (true) {
+            csp::sleep_until(next);
+            if (!(w << csp::now())) break;
+            next += interval;
+        }
+    });
+}
+
+} // namespace csp
 
 /* fcontext — context-switching primitives (from Boost.Context) */
 #if defined(__aarch64__) || defined(_M_ARM64)

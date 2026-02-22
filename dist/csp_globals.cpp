@@ -32,6 +32,10 @@ namespace csp {
             return *tl_proc_;
         }
 
+        bool has_processor() {
+            return tl_proc_ != nullptr;
+        }
+
         void bind_processor(Processor * p) {
             tl_proc_ = p;
             g_imp = &p->main;
@@ -63,7 +67,7 @@ namespace csp {
         detail::tl_proc_ = nullptr;
 
         // Restore default single-threaded scheduler.
-        set_scheduler([]{ while (csp::internal::run()) { } });
+        reset_scheduler();
     }
 
 }

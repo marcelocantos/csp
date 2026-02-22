@@ -111,9 +111,17 @@ namespace csp::internal {
 // (for death detection); channel pointer is swappable.
 struct alignas(16) Slot {
     std::atomic<void*> channel{nullptr};   // Channel* (type-erased)
-    std::atomic<size_t> refcount{1};       // live endpoint handles
+    std::atomic<size_t> refcount{1};       // strong refs (death detection)
+    std::atomic<size_t> mem_refcount{1};   // memory refs: 1 from channel + N from weak refs
 
     explicit Slot(void* ch) : channel(ch) {}
+
+    // Release one memory ref. Deletes the slot when the last ref is released.
+    void mem_release() {
+        if (mem_refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            delete this;
+        }
+    }
 };
 
 // Extract Slot* from an endpoint ref (mask off low flag bits).
@@ -189,6 +197,17 @@ void writer_release(WriterRef w);
 ReaderRef reader_addref(ReaderRef r);
 void reader_release(ReaderRef r);
 
+// Weak endpoint references: keep slot memory alive without participating
+// in death detection (refcount). Increment mem_refcount instead.
+// try_upgrade atomically increments refcount (CAS from N>0 to N+1),
+// returning true on success. On failure the endpoint is dead.
+void writer_weak_addref(WriterRef w);
+void writer_weak_release(WriterRef w);
+void reader_weak_addref(ReaderRef r);
+void reader_weak_release(ReaderRef r);
+bool try_upgrade_weak_writer(WriterRef w);
+bool try_upgrade_weak_reader(ReaderRef r);
+
 // Channel swap: atomically exchange which channels two endpoint groups target.
 void swap_slots(void* slot_a, void* slot_b);
 
@@ -227,6 +246,9 @@ int channel_count(int endpt);
 namespace csp
 {
 
+using byte = uint8_t;
+using bytes = std::vector<byte>;
+
 namespace detail {
 
 extern Logger g_descrlog;
@@ -234,6 +256,7 @@ extern Logger g_descrlog;
 }
 
 void set_scheduler(std::function<void()> f);
+void reset_scheduler();
 void schedule();
 
 // Yield control so other imps can run. Does nothing outside an imp.
@@ -270,6 +293,8 @@ extern struct poke_t {
 } poke;
 
 template <typename T> struct chan;
+template <typename T> class weak_writer;
+template <typename T> class weak_reader;
 
 namespace detail {
 
@@ -290,7 +315,7 @@ inline void transfer_at(int idx, void * src, void * dst, Op && op, Ops &&... ops
 
 }
 
-template <typename T>
+template <typename T = poke_t>
 class chan_op {
 public:
     // Empty/inactive operation (placeholder in vectors).
@@ -463,6 +488,7 @@ private:
     void assign(internal::WriterRef w) { w_ = w; }
 
     friend struct chan<T>;
+    friend class weak_writer<T>;
 };
 
 namespace { Logger g_reader_log("reader"); }
@@ -584,6 +610,80 @@ private:
     void assign(internal::ReaderRef r) { r_ = r; }
 
     friend struct chan<T>;
+    friend class weak_reader<T>;
+};
+
+// Weak endpoint reference: keeps slot memory alive without contributing to
+// death detection. Like std::weak_ptr, use try_lock() to attempt upgrade
+// to a strong reference.
+template <typename T = poke_t>
+class weak_writer {
+public:
+    weak_writer() = default;
+    explicit weak_writer(writer<T> const& w) : w_(w.internal_writer()) {
+        if (w_) internal::writer_weak_addref(w_);
+    }
+    weak_writer(weak_writer const&) = delete;
+    weak_writer(weak_writer&& o) : w_(o.w_) { o.w_ = {}; }
+    ~weak_writer() { if (w_) internal::writer_weak_release(w_); }
+
+    weak_writer& operator=(weak_writer const&) = delete;
+    weak_writer& operator=(weak_writer&& o) {
+        if (w_) internal::writer_weak_release(w_);
+        w_ = o.w_;
+        o.w_ = {};
+        return *this;
+    }
+
+    // Upgrade to a strong reference. Returns an empty writer if the
+    // endpoint is dead (refcount already 0).
+    writer<T> try_lock() const {
+        if (w_ && internal::try_upgrade_weak_writer(w_)) {
+            writer<T> result;
+            result.w_ = w_;
+            return result;
+        }
+        return {};
+    }
+
+private:
+    internal::WriterRef w_;
+    friend class writer<T>;
+};
+
+template <typename T = poke_t>
+class weak_reader {
+public:
+    weak_reader() = default;
+    explicit weak_reader(reader<T> const& r) : r_(r.internal_reader()) {
+        if (r_) internal::reader_weak_addref(r_);
+    }
+    weak_reader(weak_reader const&) = delete;
+    weak_reader(weak_reader&& o) : r_(o.r_) { o.r_ = {}; }
+    ~weak_reader() { if (r_) internal::reader_weak_release(r_); }
+
+    weak_reader& operator=(weak_reader const&) = delete;
+    weak_reader& operator=(weak_reader&& o) {
+        if (r_) internal::reader_weak_release(r_);
+        r_ = o.r_;
+        o.r_ = {};
+        return *this;
+    }
+
+    // Upgrade to a strong reference. Returns an empty reader if the
+    // endpoint is dead (refcount already 0).
+    reader<T> try_lock() const {
+        if (r_ && internal::try_upgrade_weak_reader(r_)) {
+            reader<T> result;
+            result.r_ = r_;
+            return result;
+        }
+        return {};
+    }
+
+private:
+    internal::ReaderRef r_;
+    friend class reader<T>;
 };
 
 template <typename T = poke_t>
@@ -691,63 +791,113 @@ void fuse(writer<T>& w, reader<T>& r) {
 }
 
 // Tap: splice a pass-through observer into the channel between w and r.
-// Returns a tap_handle whose `output` reader receives a copy of every value
-// flowing from w to r.  Destroying the handle fuses w and r back together,
-// removing the forwarding imp from the data path.
+// Returns a reader whose values mirror every value flowing from w to r.
+// Both the tap reader and the original reader must be consumed for the
+// pipeline to flow (the forwarder writes to the tap first, then forwards).
 //
-// Note: the fuse-back copies (w_copy_, r_copy_) must live in the handle,
-// not in the forwarding imp.  If the imp held them, the copies would keep
-// the intermediate channels' endpoint groups alive, creating a reference
-// cycle that prevents the forwarder from ever seeing upstream/downstream
-// death — a deadlock under M:N concurrency.
+// When the tap reader dies (~tw fires), the forwarder fuses w and r back
+// together, restoring the direct path. Weak refs to w/r keep the slots
+// alive without masking natural pipeline death.
 template <typename T>
-struct tap_handle {
-    reader<T> output;   // tap stream — reads a copy of each forwarded value
-
-    tap_handle() = default;
-    tap_handle(tap_handle const &) = delete;
-    tap_handle(tap_handle &&) = default;
-    tap_handle & operator=(tap_handle const &) = delete;
-    tap_handle & operator=(tap_handle &&) = default;
-
-    ~tap_handle() {
-        if (!w_copy_) return;       // moved-from or default-constructed
-        output = {};                // kill tap reader
-        fuse(w_copy_, r_copy_);     // redirect w,r back together
-    }
-
-private:
-    writer<T> w_copy_;  // shares slot with caller's w
-    reader<T> r_copy_;  // shares slot with caller's r
-
-    template <typename U>
-    friend tap_handle<U> tap(writer<U>& w, reader<U>& r);
-};
-
-template <typename T>
-tap_handle<T> tap(writer<T>& w, reader<T>& r) {
+reader<T> tap(writer<T>& w, reader<T>& r) {
     chan<T> a, b, tap_ch;
+
+    // Take weak refs to original w/r slots BEFORE the swap redirects them.
+    weak_writer<T> ww(w);
+    weak_reader<T> wr(r);
 
     // Split: w → [B], [A] → r.  Original channel dies.
     swap(w, std::move(a.r), std::move(b.w), r);
 
     // Forwarder: reads from B (what w writes to), writes to A (what r reads
-    // from) and to tap_ch.  When tap_ch's reader dies, stops tapping but
-    // continues forwarding.  When B or A dies (from the handle's fuse-back
-    // or natural endpoint death), exits.
+    // from) and to tap_ch.  Holds weak refs to the original w/r for fuse-back.
+    // When ~tw fires (tap reader died), upgrades weak refs and fuses w/r.
+    // Since the weak refs don't contribute to death detection, ~aw and br
+    // can properly detect natural pipeline death.
     spawn([br = std::move(b.r), aw = std::move(a.w),
-           tw = std::move(tap_ch.w)]() mutable {
-        for (T t; prialt(~aw, br >> t) >= 0;) {
-            if (tw && !(tw << t)) tw = {};  // tap reader gone — stop tapping
-            if (!(aw << t)) break;          // downstream dead — exit
+           tw = std::move(tap_ch.w),
+           ww = std::move(ww), wr = std::move(wr)]() mutable {
+        for (T t;;) {
+            int i = prialt(~tw, br >> t);
+            if (i == ~0) {
+                // Tap reader died. Upgrade weak refs and fuse back.
+                auto wc = ww.try_lock();
+                auto rc = wr.try_lock();
+                if (wc && rc) fuse(wc, rc);
+                return;
+            }
+            if (i < 0) return;  // upstream dead
+
+            if (!(tw << t)) {
+                // Tap reader died during write.
+                auto wc = ww.try_lock();
+                auto rc = wr.try_lock();
+                if (wc && rc) {
+                    fuse(wc, rc);
+                    wc << t;  // deliver in-flight value
+                }
+                return;
+            }
+
+            int j = prialt(~tw, aw << t);
+            if (j == ~0) {
+                // Tap reader died while forwarding.
+                auto wc = ww.try_lock();
+                auto rc = wr.try_lock();
+                if (wc && rc) {
+                    fuse(wc, rc);
+                    wc << t;  // deliver in-flight value
+                }
+                return;
+            }
+            if (j < 0) return;  // downstream dead
         }
     });
 
-    tap_handle<T> h;
-    h.output = std::move(tap_ch.r);
-    h.w_copy_ = w.copy();
-    h.r_copy_ = r.copy();
-    return h;
+    return std::move(tap_ch.r);
+}
+
+// Splice: insert a user-defined filter between w and r.
+// The filter function f(reader<T>, writer<T>) receives internal endpoints
+// created by splitting the original channel and runs its own forwarding
+// loop. When f returns -- for any reason (normal exit, upstream death,
+// downstream death, exception, or filter decision) -- w and r are
+// automatically fused back together, restoring the direct path.
+//
+// Weak refs prevent the forwarder from masking natural pipeline death
+// (same pattern as tap).
+template <typename T, typename F>
+void splice(writer<T>& w, reader<T>& r, F&& f) {
+    chan<T> a, b;
+
+    // Take weak refs BEFORE the swap redirects slots.
+    weak_writer<T> ww(w);
+    weak_reader<T> wr(r);
+
+    // Split: w → [B], [A] → r.
+    swap(w, std::move(a.r), std::move(b.w), r);
+
+    // Forwarder imp: runs f with copies of the internal endpoints,
+    // keeping the originals alive so the intermediate channels survive
+    // until after fuse-back.  Without this, the filter's endpoint
+    // destruction would kill the intermediate channels before the fuse
+    // can redirect w and r, causing the producer to see a dead channel.
+    spawn([br = std::move(b.r), aw = std::move(a.w),
+           f = std::forward<F>(f),
+           ww = std::move(ww), wr = std::move(wr)]() mutable {
+        try {
+            f(br.copy(), aw.copy());
+        } catch (...) {
+            auto wc = ww.try_lock();
+            auto rc = wr.try_lock();
+            if (wc && rc) fuse(wc, rc);
+            throw;
+        }
+        auto wc = ww.try_lock();
+        auto rc = wr.try_lock();
+        if (wc && rc) fuse(wc, rc);
+        // br and aw destroyed here — intermediate channels die after fuse.
+    });
 }
 
 // Backward compatibility.
@@ -1079,6 +1229,71 @@ auto blocking(Fn&& fn) -> std::invoke_result_t<Fn> {
 }
 
 }
+
+/* csp/byte_reader.h */
+
+
+#include <algorithm>
+#include <cstring>
+
+namespace csp {
+
+// File-like byte stream interface over a reader<bytes>. Buffers
+// partial chunks internally so callers can request exact byte counts.
+class byte_reader {
+    reader<bytes> r_;
+    bytes buf_;
+    size_t pos_ = 0;
+
+public:
+    explicit byte_reader(reader<bytes> r) : r_(std::move(r)) {}
+
+    // Fill out with bytes pulled from the underlying reader.
+    // Returns the number of bytes actually read. A return value less
+    // than out.size() means the reader closed before the buffer could
+    // be filled.
+    size_t read(bytes& out) {
+        size_t total = 0;
+        size_t need = out.size();
+
+        // Drain leftover from a previous call.
+        if (pos_ < buf_.size()) {
+            size_t avail = buf_.size() - pos_;
+            size_t n = std::min(avail, need);
+            std::memcpy(out.data(), buf_.data() + pos_, n);
+            pos_ += n;
+            total = n;
+            if (pos_ == buf_.size()) {
+                buf_.clear();
+                pos_ = 0;
+            }
+            if (total == need) return total;
+        }
+
+        // Pull chunks from the underlying reader.
+        bytes chunk;
+        while (total < need && (r_ >> chunk)) {
+            size_t n = std::min(chunk.size(), need - total);
+            std::memcpy(out.data() + total, chunk.data(), n);
+            total += n;
+            if (n < chunk.size()) {
+                buf_ = std::move(chunk);
+                pos_ = n;
+                return total;
+            }
+        }
+
+        return total;
+    }
+};
+
+}
+
+/* csp/cancel.h */
+
+
+/* csp/timer.h */
+
 
 /* csp/dynamic.h */
 
@@ -1571,6 +1786,135 @@ public:
 
 } // namespace csp
 
+#include <chrono>
+#include <queue>
+
+namespace csp::detail { struct Imp; }
+
+namespace csp {
+
+using time_point = std::chrono::steady_clock::time_point;
+using duration = std::chrono::steady_clock::duration;
+
+// Abstract clock source. The dynamic variable csp::clock always holds a
+// valid pointer — real_clock by default, fake_clock when bound via
+// csp::local l{csp::clock = &fc}.
+struct clock_source {
+    virtual time_point now() const = 0;
+    virtual void sleep_until(time_point tp) = 0;
+    // True for the real clock (reactor-backed timers).
+    // False for fake_clock (cooperative timer queue).
+    virtual bool uses_reactor() const { return true; }
+    virtual ~clock_source() = default;
+};
+
+// Fake clock for testing time-dependent code.
+// Bind via csp::local l{csp::clock = &fc}.
+class fake_clock : public clock_source {
+    time_point current_;
+    struct Entry {
+        time_point deadline;
+        detail::Imp* imp;
+        bool operator>(Entry const& o) const { return deadline > o.deadline; }
+    };
+    std::priority_queue<Entry, std::vector<Entry>,
+                        std::greater<Entry>> pending_;
+    void fire_expired();
+
+public:
+    explicit fake_clock(time_point start = time_point{});
+
+    time_point now() const override { return current_; }
+    void sleep_until(time_point tp) override;
+    bool uses_reactor() const override { return false; }
+
+    bool has_pending() const { return !pending_.empty(); }
+
+    // Advance time and fire expired timers.
+    void advance(duration d);
+
+    // Jump to next pending deadline. Returns false if no timers pending.
+    bool advance_to_next();
+
+    // Run scheduler loop with auto-advance until no work remains.
+    void run();
+
+    // Run scheduler until no imps are runnable (don't advance time).
+    void run_until_idle();
+
+    fake_clock(fake_clock const&) = delete;
+    fake_clock& operator=(fake_clock const&) = delete;
+};
+
+extern dynamic<clock_source*> clock;
+
+// Current time.
+inline time_point now() {
+    return (*clock)->now();
+}
+
+// Block the current imp until the given deadline.
+// Cancel-aware: throws canceled/timed_out if a cancel scope fires.
+void sleep_until(time_point tp);
+
+// Block the current imp for the given duration.
+// Cancel-aware: throws canceled/timed_out if a cancel scope fires.
+void sleep(duration d);
+
+// Return a reader that fires once after the given duration,
+// delivering the current time. Uses a reactor timer signal;
+// dropping the reader cancels the timer promptly.
+reader<time_point> after(duration d);
+
+// Return a reader that fires repeatedly at the given interval,
+// delivering the current time. Uses absolute deadlines to prevent drift.
+reader<time_point> tick(duration interval);
+
+}
+
+#include <memory>
+
+namespace csp {
+
+struct canceled : csp::error {
+    canceled() : error("canceled") {}
+protected:
+    canceled(const char* msg) : error(msg) {}
+};
+
+struct timed_out : canceled {
+    timed_out() : canceled("timed out") {}
+};
+
+class cancel_guard {
+public:
+    cancel_guard(cancel_guard&&) noexcept;
+    cancel_guard& operator=(cancel_guard&&) noexcept;
+    ~cancel_guard();
+
+    void operator()();
+    void operator()(std::exception_ptr);
+
+    cancel_guard(cancel_guard const&) = delete;
+    cancel_guard& operator=(cancel_guard const&) = delete;
+
+private:
+    struct impl;
+    std::unique_ptr<impl> impl_;
+    friend cancel_guard cancellation();
+    friend cancel_guard cancellation(time_point);
+    explicit cancel_guard(std::unique_ptr<impl>);
+};
+
+cancel_guard cancellation();
+cancel_guard cancellation(duration d);
+cancel_guard cancellation(time_point tp);
+chan_op<> cancel_op();
+bool is_cancel_active();
+std::exception_ptr cancel_reason();
+
+} // namespace csp
+
 /* csp/internal/blocking_pool.h */
 
 #include <condition_variable>
@@ -1861,7 +2205,6 @@ auto apply(F && f, Tuple && t) {
 /* csp/internal/on_scope_exit.h */
 
 #include <cstdlib>
-#include <memory>
 
 namespace csp {
 
@@ -1921,16 +2264,8 @@ auto mallocedResource(T * p) {
 /* csp/internal/processor.h */
 
 
-#include <chrono>
-#include <queue>
 
 namespace csp::detail {
-
-struct TimerEntry {
-    std::chrono::steady_clock::time_point deadline;
-    Imp * thread;
-    bool operator>(TimerEntry const & o) const { return deadline > o.deadline; }
-};
 
 struct Processor {
     Imp  main;       // Sentinel node for this P's run queue
@@ -1938,10 +2273,7 @@ struct Processor {
     std::atomic<fcontext_t>*  save_ctx;   // Where to store suspended imp's ctx
     Imp*  save_imp;    // The imp being suspended
 
-    std::priority_queue<TimerEntry, std::vector<TimerEntry>,
-                        std::greater<TimerEntry>> timer_heap;
-
-    std::mutex run_mu;                // Protects busy queue DLL + timer_heap
+    std::mutex run_mu;                // Protects busy queue DLL
     Imp* running = nullptr;   // Imp claimed by local_next (steal-safe)
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
 
@@ -1964,9 +2296,14 @@ struct Processor {
 Processor& current_p();
 void bind_processor(Processor* p);
 
+// Returns true if the calling thread has a bound Processor.
+// False on the reactor thread and other external threads.
+bool has_processor();
+
 }
 
 /* csp/internal/reactor.h */
+
 
 
 namespace csp::detail {
@@ -1977,17 +2314,34 @@ class Reactor {
 public:
     static Reactor& instance();
 
-    // Register fd for read/write readiness. The imp will be
-    // rescheduled via imp->schedule() when the event fires. EV_ONESHOT
-    // semantics: each registration fires at most once.
-    void wait_read(int fd, Imp* imp);
-    void wait_write(int fd, Imp* imp);
+    // --- Signal-based API (new) ---
+    // These create kqueue events whose firing drops a writer<>,
+    // producing a death signal observable via prialt(~reader).
 
-    // Remove all registrations for fd.
-    void cancel(int fd);
+    // Create a one-shot timer. Returns (reader, ident).
+    // Caller wraps in timer_signal for RAII cancellation.
+    std::pair<reader<>, uintptr_t> create_timer(int64_t delay_ns);
+
+    // Create a one-shot fd readiness event. Returns (reader, filter).
+    // Caller wraps in fd_signal for RAII cancellation.
+    reader<> create_fd_event(int fd, int16_t filter);
+
+    // Cancel a timer by ident. EV_DELETE + erase writer.
+    // No-op if already fired.
+    void cancel_timer(uintptr_t ident);
+
+    // Cancel an fd event. EV_DELETE + erase writer.
+    // No-op if already fired.
+    void cancel_fd(int fd, int16_t filter);
 
     // Lazy init: creates kqueue fd and spawns reactor thread on first call.
     void ensure_started();
+
+    // True if there are pending reactor signals (timers or fd events)
+    // that haven't fired yet.
+    bool has_pending_signals() const {
+        return pending_signals_.load(std::memory_order_acquire) > 0;
+    }
 
     // Stop reactor thread and close kqueue fd. Idempotent.
     void shutdown();
@@ -1999,12 +2353,31 @@ private:
 
     void loop();
     void wake();
+    void fire_signal(uintptr_t ident, int16_t filter);
 
     int kq_ = -1;
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
     std::mutex start_mu_;
+
+    // Protects writer maps. Lock ordering: signal_mu_ before any
+    // channel lock (channel_mu_) and before global_mu / run_mu.
+    std::mutex signal_mu_;
+
+    // Monotonic ident generator for timer events.
+    std::atomic<uintptr_t> next_ident_{1};
+
+    // Number of pending signals (created but not yet fired/cancelled).
+    std::atomic<int> pending_signals_{0};
+
+    // Writer endpoints keyed by event identity.
+    // When the reactor loop fires an event, it erases the writer;
+    // the writer destructor triggers endpoint death on the channel,
+    // waking any imp in prialt watching ~reader on the same channel.
+    std::unordered_map<uintptr_t, writer<>> timer_writers_;
+    std::unordered_map<int, writer<>>       read_writers_;
+    std::unordered_map<int, writer<>>       write_writers_;
 };
 
 }
@@ -2027,6 +2400,7 @@ struct Runtime {
     std::condition_variable park_cv;
 
     std::atomic<bool> stopping{false};
+    std::atomic<bool> has_global_work_{false};  // Set by push_to_global, cleared by drain
     std::atomic<int> live_gs{0};
 
     // Dynamic processor pool management.
@@ -2054,12 +2428,59 @@ struct Runtime {
     void add_processor();
     Imp* local_next(Processor& p);
     bool take_from_global(Processor& p);
-    void fire_timers(Processor& p);
     bool steal_work(Processor& thief);
     bool has_work(Processor& p);
-    std::optional<std::chrono::steady_clock::time_point>
-        next_timer_deadline(Processor& p);
 };
+
+}
+
+/* csp/internal/signal.h */
+
+
+
+namespace csp::detail {
+
+// RAII wrapper for a reactor timer event (EVFILT_TIMER).
+// Holds a reader whose peer writer is owned by the reactor.
+// When the timer fires, the reactor drops the writer → death signal.
+// When this object is destroyed, the kqueue event is cancelled and
+// the reactor's writer is erased (triggering death if still alive).
+class timer_signal {
+    reader<> r_;
+    uintptr_t ident_ = 0;
+
+public:
+    timer_signal() = default;
+    timer_signal(reader<> r, uintptr_t ident);
+    timer_signal(timer_signal&&) noexcept;
+    timer_signal& operator=(timer_signal&&) noexcept;
+    ~timer_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// RAII wrapper for a reactor fd-readiness event (EVFILT_READ/WRITE).
+// Same death-signal pattern as timer_signal.
+class fd_signal {
+    reader<> r_;
+    int fd_ = -1;
+    int16_t filter_ = 0;
+
+public:
+    fd_signal() = default;
+    fd_signal(reader<> r, int fd, int16_t filter);
+    fd_signal(fd_signal&&) noexcept;
+    fd_signal& operator=(fd_signal&&) noexcept;
+    ~fd_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// Factory functions — create a kqueue event and return the signal object.
+// The reactor must be started before calling these.
+timer_signal create_timer_signal(int64_t delay_ns);
+fd_signal create_fd_readable(int fd);
+fd_signal create_fd_writable(int fd);
 
 }
 
@@ -2075,7 +2496,9 @@ struct Runtime {
 
 namespace csp::internal {
 
-// Layer 1 primitives — defined in src/reactor.cc.
+// Layer 1 primitives — defined in src/io.cc.
+// Cancel-aware: if a cancel guard is active, these compose the
+// fd readiness signal with the cancel signal in a prialt.
 void io_wait_readable(int fd);
 void io_wait_writable(int fd);
 
@@ -2678,6 +3101,9 @@ namespace csp::part {
 // Decouples production rate from consumption rate up to the given capacity.
 template <typename T>
 auto buffer(size_t capacity = size_t(-1)) {
+    if (capacity == 0) {
+        throw std::invalid_argument("buffer capacity must be at least 1");
+    }
     return make_filter<T>([capacity](reader<T> in, writer<T> out) {
         internal::descr("buffer");
 
@@ -3049,100 +3475,6 @@ inline auto const deaf = make_consumer<T>([](reader<T> in) {
 
 /* csp/part/debounce.h */
 
-
-/* csp/timer.h */
-
-
-
-namespace csp::detail { struct Imp; }
-
-namespace csp {
-
-using time_point = std::chrono::steady_clock::time_point;
-using duration = std::chrono::steady_clock::duration;
-
-// Fake clock for testing time-dependent code.
-// Bind via csp::local l{csp::clock = &fc}.
-class fake_clock {
-    time_point current_;
-    struct Entry {
-        time_point deadline;
-        detail::Imp* imp;
-        bool operator>(Entry const& o) const { return deadline > o.deadline; }
-    };
-    std::priority_queue<Entry, std::vector<Entry>,
-                        std::greater<Entry>> pending_;
-    void fire_expired();
-
-public:
-    explicit fake_clock(time_point start = time_point{});
-
-    time_point now() const { return current_; }
-    bool has_pending() const { return !pending_.empty(); }
-
-    // Advance time and fire expired timers.
-    void advance(duration d);
-
-    // Jump to next pending deadline. Returns false if no timers pending.
-    bool advance_to_next();
-
-    // Run scheduler loop with auto-advance until no work remains.
-    void run();
-
-    // Run scheduler until no imps are runnable (don't advance time).
-    void run_until_idle();
-
-    // Called by sleep_until when this clock is active.
-    void sleep_until_impl(time_point tp);
-
-    fake_clock(fake_clock const&) = delete;
-    fake_clock& operator=(fake_clock const&) = delete;
-};
-
-extern dynamic<fake_clock*> clock;
-
-// Current time: fake if clock is bound, real otherwise.
-inline time_point now() {
-    if (auto* fc = *clock)
-        return fc->now();
-    return std::chrono::steady_clock::now();
-}
-
-// Block the current imp until the given deadline.
-inline void sleep_until(time_point tp) {
-    if (auto* fc = *clock)
-        return fc->sleep_until_impl(tp);
-    internal::sleep_until(tp.time_since_epoch().count());
-}
-
-// Block the current imp for the given duration.
-inline void sleep(duration d) {
-    sleep_until(csp::now() + d);
-}
-
-// Return a reader that fires once after the given duration,
-// delivering the current time.
-inline reader<time_point> after(duration d) {
-    return spawn_producer<time_point>([d](writer<time_point> w) {
-        csp::sleep(d);
-        w << csp::now();
-    });
-}
-
-// Return a reader that fires repeatedly at the given interval,
-// delivering the current time. Uses absolute deadlines to prevent drift.
-inline reader<time_point> tick(duration interval) {
-    return spawn_producer<time_point>([interval](writer<time_point> w) {
-        auto next = csp::now() + interval;
-        while (true) {
-            csp::sleep_until(next);
-            if (!(w << csp::now())) break;
-            next += interval;
-        }
-    });
-}
-
-}
 
 namespace csp::part {
 
@@ -4017,12 +4349,12 @@ namespace csp::part::io {
 // as much data as was available from a single read() call. Owns the
 // fd and closes it on exit.
 inline auto byte_reader(int fd, size_t chunk_size = 4096) {
-    return make_producer<std::vector<uint8_t>>(
-        [fd, chunk_size](writer<std::vector<uint8_t>> out) {
+    return make_producer<bytes>(
+        [fd, chunk_size](writer<bytes> out) {
             internal::descr("byte_reader");
             csp::io::set_nonblock(fd);
 
-            std::vector<uint8_t> buf(chunk_size);
+            bytes buf(chunk_size);
             for (;;) {
                 ssize_t n = csp::io::read(fd, buf.data(), buf.size());
                 if (n <= 0) break;
@@ -4037,12 +4369,12 @@ inline auto byte_reader(int fd, size_t chunk_size = 4096) {
 // Consume byte chunks and write them to an fd. Owns the fd and
 // closes it on exit.
 inline auto byte_writer(int fd) {
-    return make_consumer<std::vector<uint8_t>>(
-        [fd](reader<std::vector<uint8_t>> in) {
+    return make_consumer<bytes>(
+        [fd](reader<bytes> in) {
             internal::descr("byte_writer");
             csp::io::set_nonblock(fd);
 
-            for (std::vector<uint8_t> chunk; in >> chunk;) {
+            for (bytes chunk; in >> chunk;) {
                 if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
             }
             ::close(fd);
@@ -4053,12 +4385,12 @@ inline auto byte_writer(int fd) {
 // transform — no I/O knowledge, testable with synthetic data.
 // Flushes any partial trailing line (no trailing newline) on input
 // close.
-inline auto const split_lines = make_filter<std::vector<uint8_t>, std::string>(
-    [](reader<std::vector<uint8_t>> in, writer<std::string> out) {
+inline auto const split_lines = make_filter<bytes, std::string>(
+    [](reader<bytes> in, writer<std::string> out) {
         internal::descr("split_lines");
 
         std::string pending;
-        for (std::vector<uint8_t> chunk;
+        for (bytes chunk;
              csp::alt(in >> chunk, ~out) >= 0;) {
             size_t start = 0;
             for (size_t i = 0; i < chunk.size(); ++i) {
@@ -4085,14 +4417,14 @@ inline auto const split_lines = make_filter<std::vector<uint8_t>, std::string>(
 // Split a byte stream into fixed-size frames. Discards any partial
 // trailing frame on input close.
 inline auto fixed_frames(size_t frame_size) {
-    return make_filter<std::vector<uint8_t>>(
-        [frame_size](reader<std::vector<uint8_t>> in,
-                     writer<std::vector<uint8_t>> out) {
+    return make_filter<bytes>(
+        [frame_size](reader<bytes> in,
+                     writer<bytes> out) {
             internal::descr("fixed_frames");
 
-            std::vector<uint8_t> frame;
+            bytes frame;
             frame.reserve(frame_size);
-            for (std::vector<uint8_t> chunk;
+            for (bytes chunk;
                  csp::alt(in >> chunk, ~out) >= 0;) {
                 size_t i = 0;
                 while (i < chunk.size()) {
@@ -4955,7 +5287,6 @@ writer<double> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = wri
 /* csp/part/random.h */
 
 
-#include <algorithm>
 #include <random>
 
 namespace csp::part::rand {
@@ -5030,12 +5361,12 @@ auto choice(std::initializer_list<T> c,
 template <typename Engine = std::mt19937_64>
 auto random_bytes(size_t chunk_size,
                   Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<std::vector<uint8_t>>(
+    return make_producer<bytes>(
         [chunk_size, eng = std::move(eng)](
-            writer<std::vector<uint8_t>> sink) mutable {
+            writer<bytes> sink) mutable {
             internal::descr("random_bytes");
             std::uniform_int_distribution<unsigned> dist(0, 255);
-            std::vector<uint8_t> buf(chunk_size);
+            bytes buf(chunk_size);
             for (;;) {
                 for (auto& b : buf) b = static_cast<uint8_t>(dist(eng));
                 if (!(sink << buf)) return;
@@ -6094,5 +6425,105 @@ stack_analysis analyze_stack_depth_cached(
     const void* fn,
     const void* data = nullptr,
     stack_analysis_options opts = {});
+
+} // namespace csp
+
+/* csp/supervisor.h */
+
+
+
+namespace csp {
+
+struct restart_policy {
+    int max_restarts = 3;
+    csp::duration window = std::chrono::seconds(5);
+    csp::duration backoff = csp::duration::zero();
+};
+
+struct max_restarts_exceeded : csp::error {
+    std::string worker_name;
+    std::exception_ptr cause;
+
+    max_restarts_exceeded(std::string name, std::exception_ptr ex)
+        : csp::error(
+              "worker_group: max restarts exceeded for worker '" + name + "'")
+        , worker_name(std::move(name))
+        , cause(std::move(ex)) {}
+};
+
+class worker_group {
+public:
+    std::unordered_map<std::string, std::function<void()>> workers;
+    restart_policy policy;
+
+    void operator()() {
+        if (workers.empty()) return;
+
+        // Snapshot into a vector for indexed alt access.
+        struct entry {
+            std::string const* name;
+            std::function<void()> const* factory;
+        };
+        std::vector<entry> specs;
+        specs.reserve(workers.size());
+        for (auto& [name, factory] : workers) {
+            specs.push_back({&name, &factory});
+        }
+
+        size_t n = specs.size();
+        std::vector<reader<std::exception_ptr>> handles(n);
+        std::vector<bool> done(n, false);
+        std::vector<std::deque<time_point>> restart_times(n);
+        size_t active = n;
+
+        for (size_t i = 0; i < n; ++i) {
+            handles[i] = spawn(std::function<void()>(*specs[i].factory));
+        }
+
+        while (active > 0) {
+            std::vector<chan_op<std::exception_ptr>> ops;
+            ops.reserve(n);
+            std::exception_ptr ep;
+            for (size_t i = 0; i < n; ++i) {
+                if (done[i]) {
+                    ops.emplace_back();
+                } else {
+                    ops.push_back(handles[i] >> ep);
+                }
+            }
+
+            int result = alt(ops);
+
+            if (result >= 0) {
+                auto idx = static_cast<size_t>(result);
+                auto tp = now();
+                auto& times = restart_times[idx];
+                while (!times.empty() &&
+                       times.front() + policy.window < tp) {
+                    times.pop_front();
+                }
+
+                if (static_cast<int>(times.size()) >= policy.max_restarts) {
+                    throw max_restarts_exceeded(*specs[idx].name, ep);
+                }
+
+                times.push_back(tp);
+
+                if (policy.backoff > csp::duration::zero()) {
+                    sleep(policy.backoff);
+                }
+
+                handles[idx] =
+                    spawn(std::function<void()>(*specs[idx].factory));
+            } else {
+                auto idx = static_cast<size_t>(~result);
+                done[idx] = true;
+                --active;
+            }
+        }
+    }
+
+    void run() { (*this)(); }
+};
 
 } // namespace csp

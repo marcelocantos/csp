@@ -15,7 +15,9 @@
 
 namespace csp::internal {
 
-// Layer 1 primitives — defined in src/reactor.cc.
+// Layer 1 primitives — defined in src/io.cc.
+// Cancel-aware: if a cancel guard is active, these compose the
+// fd readiness signal with the cancel signal in a prialt.
 void io_wait_readable(int fd);
 void io_wait_writable(int fd);
 

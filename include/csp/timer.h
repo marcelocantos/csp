@@ -20,6 +20,9 @@ using duration = std::chrono::steady_clock::duration;
 struct clock_source {
     virtual time_point now() const = 0;
     virtual void sleep_until(time_point tp) = 0;
+    // True for the real clock (reactor-backed timers).
+    // False for fake_clock (cooperative timer queue).
+    virtual bool uses_reactor() const { return true; }
     virtual ~clock_source() = default;
 };
 
@@ -41,6 +44,7 @@ public:
 
     time_point now() const override { return current_; }
     void sleep_until(time_point tp) override;
+    bool uses_reactor() const override { return false; }
 
     bool has_pending() const { return !pending_.empty(); }
 
@@ -68,35 +72,20 @@ inline time_point now() {
 }
 
 // Block the current imp until the given deadline.
-inline void sleep_until(time_point tp) {
-    (*clock)->sleep_until(tp);
-}
+// Cancel-aware: throws canceled/timed_out if a cancel scope fires.
+void sleep_until(time_point tp);
 
 // Block the current imp for the given duration.
-inline void sleep(duration d) {
-    sleep_until(csp::now() + d);
-}
+// Cancel-aware: throws canceled/timed_out if a cancel scope fires.
+void sleep(duration d);
 
 // Return a reader that fires once after the given duration,
-// delivering the current time.
-inline reader<time_point> after(duration d) {
-    return spawn_producer<time_point>([d](writer<time_point> w) {
-        csp::sleep(d);
-        w << csp::now();
-    });
-}
+// delivering the current time. Uses a reactor timer signal;
+// dropping the reader cancels the timer promptly.
+reader<time_point> after(duration d);
 
 // Return a reader that fires repeatedly at the given interval,
 // delivering the current time. Uses absolute deadlines to prevent drift.
-inline reader<time_point> tick(duration interval) {
-    return spawn_producer<time_point>([interval](writer<time_point> w) {
-        auto next = csp::now() + interval;
-        while (true) {
-            csp::sleep_until(next);
-            if (!(w << csp::now())) break;
-            next += interval;
-        }
-    });
-}
+reader<time_point> tick(duration interval);
 
 }

@@ -20,6 +20,7 @@ namespace csp {
             }
 
             stopping.store(false, std::memory_order_release);
+            has_global_work_.store(false, std::memory_order_release);
             live_gs.store(0, std::memory_order_release);
 
             {
@@ -94,6 +95,7 @@ namespace csp {
             assert(!imp->in_global_);
             imp->in_global_ = true;
             global_run_queue.push_back(imp);
+            has_global_work_.store(true, std::memory_order_release);
         }
 
         void Runtime::worker_loop() {
@@ -102,9 +104,6 @@ namespace csp {
             // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
-
-                // Fire expired timers.
-                fire_timers(p);
 
                 // Try local run queue.
                 Imp* next = local_next(p);
@@ -128,27 +127,18 @@ namespace csp {
                     std::unique_lock<std::mutex> lk(park_mu); // TLA:WorkerParking.WorkerAcquirePark
                     p.parked.store(true, std::memory_order_release);
 
-                    auto deadline = next_timer_deadline(p);
-
                     // Surplus Ps wind down after 5s idle.
                     using namespace std::chrono;
                     constexpr auto wind_down = seconds(5);
                     bool is_surplus = p.id >= initial_procs_;
 
-                    if (is_surplus && !deadline) {
-                        deadline = steady_clock::now() + wind_down;
-                    } else if (is_surplus && deadline) {
-                        auto wd = steady_clock::now() + wind_down;
-                        if (wd < *deadline) deadline = wd;
-                    }
-
-                    // TLA:WorkerParking.WorkerEvalPred TLA:WorkerParking.WorkerEnterWait TLA:WorkerParking.WorkerWoken
-                    if (deadline) {
-                        park_cv.wait_until(lk, *deadline, [this, &p] {
+                    if (is_surplus) {
+                        park_cv.wait_until(lk, steady_clock::now() + wind_down, [this, &p] {
                             return stopping.load(std::memory_order_acquire)
                                 || has_work(p);
                         });
                     } else {
+                        // TLA:WorkerParking.WorkerEvalPred TLA:WorkerParking.WorkerEnterWait TLA:WorkerParking.WorkerWoken
                         park_cv.wait(lk, [this, &p] {
                             return stopping.load(std::memory_order_acquire)
                                 || has_work(p);
@@ -196,9 +186,8 @@ namespace csp {
                     }
                     uint64_t hb = p.heartbeat.load(std::memory_order_acquire);
                     if (hb == last[i]) {
-                        // P is stalled — rescue its expired timers and
-                        // add a new P so work stealing can drain its queue.
-                        fire_timers(p);
+                        // P is stalled — add a new P so work stealing
+                        // can drain its queue.
                         add_processor();
                     }
                     last[i] = hb;
@@ -266,30 +255,6 @@ namespace csp {
             return true;
         }
 
-        void Runtime::fire_timers(Processor& p) {
-            // Collect expired timers under run_mu, then schedule after
-            // releasing. This avoids deadlock: schedule_local acquires
-            // current_p().run_mu, which may be the same lock (when the
-            // owning worker fires its own timers), and std::mutex is
-            // not recursive. It also allows the watchdog (which has no
-            // P) to fire timers from stalled Ps via the global queue.
-            Imp* expired[64];
-            int count = 0;
-            {
-                std::lock_guard<std::mutex> lk(p.run_mu);
-                auto now = std::chrono::steady_clock::now();
-                while (!p.timer_heap.empty()
-                       && p.timer_heap.top().deadline <= now
-                       && count < 64) {
-                    expired[count++] = p.timer_heap.top().thread;
-                    p.timer_heap.pop();
-                }
-            }
-            for (int i = 0; i < count; ++i) {
-                expired[i]->schedule();
-            }
-        }
-
         bool Runtime::steal_work(Processor& thief) {
             int n = num_procs_.load(std::memory_order_acquire);
             for (int i = 0; i < n; ++i) {
@@ -336,15 +301,6 @@ namespace csp {
             return false;
         }
 
-        std::optional<std::chrono::steady_clock::time_point>
-        Runtime::next_timer_deadline(Processor& p) {
-            std::lock_guard<std::mutex> lk(p.run_mu);
-            if (p.timer_heap.empty()) {
-                return std::nullopt;
-            }
-            return p.timer_heap.top().deadline;
-        }
-
         bool Runtime::has_work(Processor& p) {
             {
                 std::lock_guard<std::mutex> lk(p.run_mu);
@@ -357,14 +313,6 @@ namespace csp {
             {
                 std::lock_guard<std::mutex> lk(global_mu);
                 if (!global_run_queue.empty()) {
-                    return true;
-                }
-            }
-
-            {
-                std::lock_guard<std::mutex> lk(p.run_mu);
-                if (!p.timer_heap.empty() &&
-                    p.timer_heap.top().deadline <= std::chrono::steady_clock::now()) {
                     return true;
                 }
             }

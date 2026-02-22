@@ -1,4 +1,5 @@
 #include <csp/internal/runtime.h>
+#include <csp/internal/reactor.h>
 #include <csp/internal/hamt.h>
 
 #include <pthread.h>
@@ -12,9 +13,27 @@
 
 #include <stdlib.h>
 
-static std::function<void()> g_scheduler = []{
-    while (csp::internal::run()) { }
-};
+static void default_scheduler_impl() {
+    auto& rt = csp::detail::Runtime::instance();
+    while (true) {
+        if (csp::internal::run()) continue;
+        if (rt.live_gs.load(std::memory_order_acquire) == 0) break;
+        // If no reactor signals are pending, no external events can
+        // wake blocked imps. Exit like the old scheduler (deadlock or done).
+        if (!csp::detail::Reactor::instance().has_pending_signals()) break;
+        // Park until the reactor posts work to the global queue,
+        // or all imps have exited.
+        std::unique_lock<std::mutex> lk(rt.park_mu);
+        rt.park_cv.wait(lk, [&rt] {
+            return rt.live_gs.load(std::memory_order_acquire) == 0
+                || rt.has_global_work_.load(std::memory_order_acquire);
+        });
+    }
+    // Shut down the reactor so its thread doesn't outlive the scheduler.
+    csp::detail::Reactor::instance().shutdown();
+}
+
+static std::function<void()> g_scheduler = default_scheduler_impl;
 
 
 namespace csp {
@@ -120,11 +139,11 @@ namespace csp {
         void Imp::schedule(bool make_current) {
             auto& rt = Runtime::instance();
 
-            // In M:N mode, push to the global run queue so any worker
-            // can pick it up, preventing stranding on a P whose worker
-            // is about to park.
+            // In M:N mode or when called from a thread without a
+            // Processor (e.g. reactor thread), push to the global
+            // run queue so any worker can pick it up.
             // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
-            if (rt.mn_mode_) {
+            if (rt.mn_mode_ || !has_processor()) {
                 {
                     std::lock_guard<std::mutex> lk(rt.global_mu);
                     if (in_global_) {
@@ -274,6 +293,10 @@ namespace csp {
         g_scheduler = std::move(scheduler);
     }
 
+    void reset_scheduler() {
+        g_scheduler = default_scheduler_impl;
+    }
+
     void schedule() {
         g_scheduler();
     }
@@ -396,18 +419,6 @@ int spawn(EntryFn start_f, void * data) {
     }
 }
 
-void sleep_until(int64_t deadline_ns) {
-    using namespace std::chrono;
-    auto deadline = steady_clock::time_point(nanoseconds(deadline_ns));
-    {
-        std::lock_guard<std::mutex> lk(current_p().run_mu);
-        current_p().timer_heap.push({deadline, g_imp});
-    }
-    g_imp->suspending_.store(true, std::memory_order_release); // TLA:DrainSuspended.BeginSuspend
-    do_switch(Status::detach);
-    g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
-}
-
 void suspend() {
     g_imp->suspending_.store(true, std::memory_order_release);
     do_switch(Status::detach);
@@ -416,20 +427,21 @@ void suspend() {
 
 int run() {
     auto& p = current_p();
-    auto& timer_heap = p.timer_heap;
+    auto& rt = Runtime::instance();
 
-    // Fire expired timers — reschedule their imps.
+    // Drain global run queue (reactor events post here in single-P mode).
     {
-        auto now = std::chrono::steady_clock::now();
-        while (!timer_heap.empty() && timer_heap.top().deadline <= now) {
-            auto imp = timer_heap.top().thread;
-            timer_heap.pop();
+        std::lock_guard<std::mutex> lk(rt.global_mu);
+        while (!rt.global_run_queue.empty()) {
+            auto* imp = rt.global_run_queue.front();
+            rt.global_run_queue.pop_front();
+            imp->in_global_ = false;
             imp->schedule_local();
         }
+        rt.has_global_work_.store(false, std::memory_order_release);
     }
 
     Imp* target = nullptr;
-    bool has_timers = false;
     {
         std::lock_guard<std::mutex> lk(p.run_mu);
         auto& busy = p.busy;
@@ -439,19 +451,15 @@ int run() {
         if (busy != g_imp) {
             target = busy;
         }
-        has_timers = !timer_heap.empty();
     }
 
     if (target) {
         target->run();
-    } else if (has_timers) {
-        // All imps blocked, but timers pending — sleep until next deadline.
-        std::this_thread::sleep_until(timer_heap.top().deadline);
     }
 
     {
         std::lock_guard<std::mutex> lk(p.run_mu);
-        return p.busy->next_ != p.busy || !timer_heap.empty();
+        return p.busy->next_ != p.busy;
     }
 }
 

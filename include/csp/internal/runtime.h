@@ -3,12 +3,10 @@
 #include <csp/internal/processor.h>
 
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <thread>
 #include <vector>
 
@@ -25,6 +23,7 @@ struct Runtime {
     std::condition_variable park_cv;
 
     std::atomic<bool> stopping{false};
+    std::atomic<bool> has_global_work_{false};  // Set by push_to_global, cleared by drain
     std::atomic<int> live_gs{0};
 
     // Dynamic processor pool management.
@@ -52,11 +51,8 @@ struct Runtime {
     void add_processor();
     Imp* local_next(Processor& p);
     bool take_from_global(Processor& p);
-    void fire_timers(Processor& p);
     bool steal_work(Processor& thief);
     bool has_work(Processor& p);
-    std::optional<std::chrono::steady_clock::time_point>
-        next_timer_deadline(Processor& p);
 };
 
 }

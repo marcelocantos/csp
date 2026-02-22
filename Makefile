@@ -86,12 +86,15 @@ LIB_SRCS := dist/csp.cpp \
 else
 LIB_SRCS := src/csp.cc \
             src/csp_globals.cpp \
+            src/cancel.cc \
             src/channel.cc \
             src/clock.cc \
             src/hamt.cc \
+            src/io.cc \
             src/log.cc \
             src/runtime.cpp \
             src/stack_analysis_arm64.cc \
+            src/timer.cc \
             src/reactor.cc \
             src/blocking_pool.cc \
             src/signal.cc \

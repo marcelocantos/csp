@@ -170,6 +170,7 @@ extern Logger g_descrlog;
 }
 
 void set_scheduler(std::function<void()> f);
+void reset_scheduler();
 void schedule();
 
 // Yield control so other imps can run. Does nothing outside an imp.
@@ -228,7 +229,7 @@ inline void transfer_at(int idx, void * src, void * dst, Op && op, Ops &&... ops
 
 }
 
-template <typename T>
+template <typename T = poke_t>
 class chan_op {
 public:
     // Empty/inactive operation (placeholder in vectors).
