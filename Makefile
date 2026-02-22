@@ -53,6 +53,23 @@ DEPFLAGS = -MMD -MP
 INCLUDES := -I$(CSP_INCLUDE) \
             -Ithird_party
 
+# --- TLS support (via mbedTLS) ---
+
+CSP_TLS ?= 1
+
+ifeq ($(CSP_TLS),1)
+CXXFLAGS += -DCSP_TLS
+INCLUDES += -Ithird_party/mbedtls/include
+MBEDTLS_DIR    := third_party/mbedtls/library
+MBEDTLS_SRCS   := $(wildcard $(MBEDTLS_DIR)/*.c)
+MBEDTLS_OBJS   := $(patsubst $(MBEDTLS_DIR)/%.c,$(BUILDDIR)/mbedtls/%.o,$(MBEDTLS_SRCS))
+MBEDTLS_CFLAGS := -O2 -DMBEDTLS_CONFIG_FILE='"mbedtls_config.h"' \
+                  -Ithird_party -Ithird_party/mbedtls/include
+ifneq ($(SANITIZE),)
+MBEDTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+endif
+
 # --- fcontext (vendored from Boost.Context) ---
 
 UNAME_S := $(shell uname -s)
@@ -99,6 +116,9 @@ LIB_SRCS := src/csp.cc \
             src/blocking_pool.cc \
             src/signal.cc \
             src/stack_pool.cc
+ifeq ($(CSP_TLS),1)
+LIB_SRCS += src/tls.cc
+endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
@@ -110,6 +130,9 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
 ifneq ($(CSP_INCLUDE),dist)
 LIB_OBJS   += $(FCONTEXT_OBJS)
+endif
+ifeq ($(CSP_TLS),1)
+LIB_OBJS   += $(MBEDTLS_OBJS)
 endif
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
@@ -161,6 +184,13 @@ $(BUILDDIR)/src/%.o: src/%.cpp
 $(BUILDDIR)/fcontext/%.o: $(FCONTEXT_DIR)/%.S
 	@mkdir -p $(dir $@)
 	$(CXX) -c -o $@ $<
+
+# mbedTLS C sources
+ifeq ($(CSP_TLS),1)
+$(BUILDDIR)/mbedtls/%.o: $(MBEDTLS_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(MBEDTLS_CFLAGS) -o $@ $<
+endif
 
 # Distribution sources (self-contained, no -Iinclude needed)
 $(BUILDDIR)/dist/%.o: dist/%.cpp
@@ -217,7 +247,7 @@ dist:
 	python3 scripts/amalgamate.py
 
 test-dist: dist
-	$(MAKE) CSP_INCLUDE=dist test
+	$(MAKE) CSP_INCLUDE=dist CSP_TLS=0 test
 
 # --- include cleaner (clang-tidy) ---
 

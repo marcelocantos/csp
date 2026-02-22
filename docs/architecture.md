@@ -340,8 +340,8 @@ threads, following the GMP model (similar to Go's runtime).
 
 `init_runtime(num_procs)` creates:
 
-- **P processors** (`Processor` structs), each with its own local run queue,
-  timer heap, and mutex.
+- **P processors** (`Processor` structs), each with its own local run queue
+  and mutex.
 - **P-1 worker threads**, each bound to a processor (P1..Pn). P0 is the
   main thread.
 - **A watchdog thread** that monitors per-processor heartbeats and calls
@@ -357,7 +357,6 @@ Each worker thread runs `worker_loop()`:
 ```
 while not stopping:
     p.heartbeat++                     // watchdog liveness signal
-    fire_timers(p)                    // reschedule expired timers
     if mt = local_next(p):            // try local run queue
         mt->run()
         continue
@@ -390,12 +389,11 @@ park_cv.wait(lock, [&] {
 });
 ```
 
-`has_work` checks the local queue, global queue, and timer heap. Workers
-also support `wait_until` with the next timer deadline.
+`has_work` checks the local queue and global queue.
 
 The `unpark_one()` function wakes parked workers (currently via
-`notify_all`). It is called after pushing to the global queue, after
-successful work stealing, and after timer expiry.
+`notify_all`). It is called after pushing to the global queue and after
+successful work stealing.
 
 ### Shutdown
 
@@ -514,13 +512,20 @@ race where `schedule()` sets `wake_pending_` concurrently with
 The following partial order is maintained to prevent deadlock:
 
 ```
-Channel locks (sorted by id)
-    └── global_mu
-         └── run_mu (via schedule_local from take_from_global)
+signal_mu_  (reactor signal create/cancel/fire)
+    └── Channel locks (sorted by id)
+            └── global_mu
+                 └── run_mu (via schedule_local from take_from_global)
 
 run_mu
     └── global_mu (via try_to_lock in steal_work only)
 ```
+
+`signal_mu_` is the outermost lock. It is acquired by signal
+create/cancel (from imp threads, no other locks held) and by the reactor
+loop's `fire_signal()`. The writer destructor called under `signal_mu_`
+may acquire channel locks, which in turn may acquire `global_mu` via
+`schedule()`.
 
 Channel locks are acquired in `Channel::id_` order. `global_mu` is acquired
 after channel locks (in `schedule()`) and before `run_mu` (in
@@ -531,33 +536,65 @@ uses `try_to_lock` to avoid deadlock.
 
 ## 9. Timer System
 
-Timers are per-processor min-heaps of `(deadline, Imp*)` pairs:
+Timers are implemented via the I/O reactor's kqueue `EVFILT_TIMER` events,
+unified with the channel death-signal mechanism. There is no per-processor
+timer heap.
+
+### Reactor Timer Signals
+
+`create_timer_signal(delay_ns)` creates a `chan<>`, stores the writer
+endpoint in the reactor's `timer_writers_` map (keyed by a monotonic
+`uintptr_t` ident), and registers an `EVFILT_TIMER` event with
+`EV_ADD | EV_ONESHOT | NOTE_NSECONDS`. It returns a `timer_signal` RAII
+object holding the reader endpoint and the ident.
+
+When the kqueue event fires, the reactor loop erases the writer from the
+map. The writer destructor triggers `resolve_endpoint_death`, which wakes
+any imp blocked in `prialt(~signal)` via the standard channel death
+protocol.
+
+When the `timer_signal` is destroyed (e.g. the calling imp exits or the
+signal goes out of scope), its destructor calls `cancel_timer(ident)`:
+`EV_DELETE` removes the kqueue event, and erasing the writer from the map
+drops it (no-op if the event already fired and erased it).
+
+### sleep_until
+
+`internal::sleep_until(deadline_ns)` computes the remaining delay, creates a
+`timer_signal`, and blocks on `prialt(~signal)`. One prialt call, no
+direct suspension protocol, no timer heap interaction:
 
 ```cpp
-struct TimerEntry {
-    steady_clock::time_point deadline;
-    Imp* thread;
-};
-// std::priority_queue with std::greater<> for min-heap
+void sleep_until(int64_t deadline_ns) {
+    auto delay_ns = deadline_ns - now_ns;
+    if (delay_ns <= 0) return;
+    auto signal = create_timer_signal(delay_ns);
+    prialt(~signal);
+}
 ```
 
-**`internal::sleep_until(deadline_ns)`**: Pushes the current imp
-onto the local processor's timer heap, sets `suspending_ = true`, and calls
-`do_switch(Status::detach)`. On wakeup, clears `suspending_`.
+The cancel-aware `csp::sleep_until(tp)` extends this by racing the timer
+signal against `cancel_op()` in a prialt. Under a fake clock, it spawns a
+helper imp that calls the clock virtual directly.
 
-**`fire_timers()`**: Called at the top of the worker loop. Pops all expired
-entries from the timer heap and reschedules them. In single-processor mode,
-this uses `schedule_local()`; in M:N mode, expired timers are collected
-under `run_mu` and rescheduled via `schedule()` (pushing to the global
-queue).
+### after() and tick()
 
-**Parking integration**: When a worker parks, it uses `wait_until` with the
-next timer deadline (if any), ensuring timers fire even when there is no
-other work.
+`after(d)` spawns a producer imp that creates a timer signal and
+runs `prialt(~w, ~signal)`. If the reader drops (`~w` fires), the producer
+exits and the signal destructor cancels the `EVFILT_TIMER`. This eliminates
+the leak that occurred when the old per-P timer heap kept the imp alive
+until the deadline even after the reader was dropped.
 
-**High-level API**: `sleep()`, `after()`, and `tick()` are thin wrappers.
-`after()` and `tick()` are implemented as producer imps that
-sleep and then write to a channel, making timers composable with `alt`.
+`tick(interval)` spawns a producer that calls `sleep_until` in a loop
+with absolute deadlines to prevent drift.
+
+### Fake Clock
+
+The `fake_clock` class (`timer.h`, `clock.cc`) is orthogonal to reactor
+signals. It uses `internal::suspend()` and its own cooperative timer queue.
+When a fake clock is bound via `csp::local l{csp::clock = &fc}`, all
+timer operations (`sleep`, `after`, `tick`) delegate to the fake clock's
+virtual methods instead of creating reactor signals.
 
 ---
 
@@ -681,21 +718,22 @@ without stalling their processor.
 
 The reactor is a singleton (`Reactor::instance()`) running a kqueue event
 loop on a dedicated OS thread. This thread is not a Processor---it does not
-run imps. Its sole purpose is to monitor file descriptors and
-reschedule waiting imps when I/O readiness events fire.
+run imps. Its sole purpose is to monitor file descriptors and timers,
+and fire channel death signals when events occur.
 
 ```
-Imp                    Reactor thread              Global queue
+Imp                    Reactor                       Channel
     │                              │                           │
-    │ wait_read(fd, mt)            │                           │
-    ├─────────────────────────────→│                           │
-    │ do_switch(detach)            │ kevent() blocks           │
+    │ create_fd_readable(fd)       │                           │
+    │  → chan<>, store writer      │                           │
+    │  → EV_ADD EVFILT_READ       │                           │
+    │ prialt(~reader)              │                           │
+    │  ... blocks ...              │ kevent() blocks           │
     │                              │ fd ready                  │
-    │                              │ mt->schedule()            │
-    │                              ├──────────────────────────→│
-    │                              │                      push mt
-    │                              │                    unpark_one()
-    │ ←─── worker picks up mt ─────┼───────────────────────────│
+    │                              │ fire_signal: erase writer │
+    │                              │  → writer dtor            │
+    │                              │  → endpoint death ───────→│ wake prialt
+    │ ←─── prialt returns ─────────┼───────────────────────────│
 ```
 
 ### Lazy Initialisation
@@ -707,36 +745,40 @@ wakeup, and spawns the reactor thread.
 
 ### Event Registration
 
-`wait_read(fd, mt)` and `wait_write(fd, mt)` register a kevent with
-`EV_ADD | EV_ONESHOT`. The imp pointer is stored in the kevent's
-`udata` field. `EV_ONESHOT` semantics mean each registration fires at most
-once---the caller must re-register for subsequent waits. This avoids stale
-event accumulation and simplifies cancellation.
+`create_fd_event(fd, filter)` creates a `chan<>`, stores the writer endpoint
+in the appropriate map (`read_writers_` or `write_writers_`, keyed by fd),
+and registers a kevent with `EV_ADD | EV_ONESHOT`. It returns the reader
+endpoint. `EV_ONESHOT` semantics mean each registration fires at most
+once---the caller must create a new signal for subsequent waits.
 
-`cancel(fd)` removes both read and write registrations for a descriptor.
-Errors are ignored since the fd may not be registered for both filters.
+`cancel_fd(fd, filter)` removes the kqueue event with `EV_DELETE` and erases
+the writer from the map. The writer destructor triggers death notification.
+No-op if the event already fired.
 
-### Suspension Protocol
+### Signal-Based Suspension
 
-The I/O wait primitives (`io_wait_readable`, `io_wait_writable`) follow
-the same suspension protocol as channel operations:
+The I/O wait primitives (`io_wait_readable`, `io_wait_writable`) use the
+channel death-signal mechanism instead of direct imp suspension:
 
+```cpp
+void io_wait_readable(int fd) {
+    auto signal = create_fd_readable(fd);
+    prialt(~signal);  // blocks until fd ready or signal cancelled
+}
 ```
-io_wait_readable(fd):
-    suspending_ = true           // (1) before reactor sees us
-    reactor.wait_read(fd, self)  // (2) register with kqueue
-    do_switch(detach)            // (3) context switch away
-    suspending_ = false          // (4) resumed
-```
 
-Step (1) must happen **before** step (2). Once the kevent is registered,
-the reactor thread can call `mt->schedule()` at any moment. If the
-imp has not yet completed its context switch (step 3), the
-`suspending_` flag tells `schedule()` to set `wake_pending_` instead of
-pushing directly to the global queue. After the context switch completes,
-`drain_suspended()` checks `wake_pending_` and pushes the imp if
-set. This is the same TOCTOU prevention mechanism used by the channel path
-(see [Section 8](#8-concurrency-control)).
+The imp suspends via the standard prialt path (channel operations), not
+via a custom suspension protocol. This eliminates the TOCTOU window that
+existed when the reactor thread called `schedule()` directly on the imp.
+
+Cancel-aware I/O extends this by racing the fd signal against `cancel_op()`:
+
+```cpp
+switch (prialt(cancel_op(), ~signal)) {
+    case ~0: /* cancelled */ throw canceled{};
+    case ~1: /* fd ready  */ return;
+}
+```
 
 ### Event Loop
 
@@ -745,9 +787,11 @@ output buffer and no timeout (blocking indefinitely). For each event:
 
 - `EVFILT_USER` events are skipped---they exist only to break the
   `kevent()` block during shutdown.
-- All other events extract the `Imp*` from `udata` and call
-  `mt->schedule()`, which pushes the imp to the global run queue
-  and calls `unpark_one()` to wake a worker.
+- All other events call `fire_signal(ident, filter)`, which erases the
+  writer endpoint from the appropriate map under `signal_mu_`. The writer
+  destructor triggers `resolve_endpoint_death`, which wakes any imp
+  blocked in prialt watching the corresponding reader via the standard
+  channel scheduling path.
 
 `EINTR` is handled by retrying the `kevent()` call.
 

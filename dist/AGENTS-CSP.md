@@ -9,7 +9,7 @@ CSP is distributed as three files:
 
 | File | Content |
 |---|---|
-| `csp.h` | Single header: core API, timers, I/O, signals, blocking, dynamic scoping, 50+ stream combinators |
+| `csp.h` | Single header: core API, timers, I/O, signals, blocking, cancellation, dynamic scoping, 70+ stream combinators |
 | `csp.cpp` | Implementation source + fcontext inline assembly |
 | `csp_globals.cpp` | Thread-local state (must be a separate TU) |
 
@@ -240,7 +240,7 @@ switch (prialt(r >> v, after(100ms) >> nullptr)) {
 
 ```cpp
 class fake_clock;
-extern dynamic<fake_clock*> clock;   // nullptr = real clock
+extern dynamic<clock_source*> clock;   // real_clock by default
 
 time_point now();   // Returns fake time if overridden, real otherwise.
 
@@ -367,6 +367,84 @@ int v = *counter;   // 42
 // Child imps start with default (0), not parent's value.
 ```
 
+## Cancellation
+
+Cooperative scope-based cancellation via dynamic scoping. Requires
+`init_runtime()`.
+
+```cpp
+#include "csp.h"    // includes cancel.h
+
+// Exceptions.
+struct canceled : csp::error {};    // base cancel exception
+struct timed_out : canceled {};     // deadline cancel exception
+
+// Create a cancel scope. Auto-cancels when guard is destroyed.
+cancel_guard cancellation();
+cancel_guard cancellation(duration d);     // deadline
+cancel_guard cancellation(time_point tp);  // deadline
+
+// Manual cancel: guard() or guard(exception_ptr).
+auto guard = cancellation(5s);
+guard();                               // cancel with canceled{}
+guard(std::make_exception_ptr(my_error{}));  // cancel with custom reason
+
+// Cancel-aware prialt: cancel_op() returns a chan_op<> vulture.
+int v;
+auto cop = cancel_op();
+switch (prialt(std::move(cop), r >> v)) {
+    case ~0: /* cancelled */ break;
+    case 1:  /* got v */     break;
+}
+
+// Query cancel state.
+bool active = is_cancel_active();
+std::exception_ptr reason = cancel_reason();
+```
+
+Sleep, I/O, and `after()` are cancel-aware — they throw `canceled` or
+`timed_out` when a cancel scope fires. Child imps inherit the cancel
+scope automatically via dynamic scoping.
+
+## TLS
+
+Cancel-aware TLS via mbedTLS. Available when `CSP_TLS` is defined (default
+in dev builds). Requires `init_runtime()`.
+
+```cpp
+#include "csp.h"    // includes tls.h (behind #ifdef CSP_TLS)
+
+namespace csp::tls {
+
+struct error : csp::error { int code; };  // wraps mbedTLS error
+
+class context {
+    enum role { client, server };
+    explicit context(role r = client);
+    void load_ca(const void* pem, size_t len);        // PEM, NUL-terminated
+    void load_cert(const void* cert, size_t cert_len,
+                   const void* key, size_t key_len);   // PEM, NUL-terminated
+};
+
+class conn {
+    conn(context& ctx, int fd);  // fd must be non-blocking, connected
+    void set_hostname(const std::string& h);  // SNI + verification
+    void handshake();              // cancel-aware
+    ssize_t read(void* buf, size_t len);   // 0 = clean shutdown
+    ssize_t write(const void* buf, size_t len);  // writes all
+    void shutdown();               // close_notify
+    int fd() const;
+};
+
+}
+```
+
+`conn` does not own the fd. All blocking methods are cancel-aware via
+`wait_readable`/`wait_writable`. No stream parts — `ssl_context` is not
+thread-safe for concurrent read+write.
+
+Dist users: `#define CSP_TLS` before `#include "csp.h"`, link own mbedTLS.
+
 ## Parts System
 
 Three wrapper types for composable stream stages:
@@ -412,9 +490,11 @@ All in `namespace csp::part` (included via `csp.h`).
 | `all_of<T>(pred)` | filter | Short-circuiting universal quantifier; emits single bool |
 | `any_of<T>(pred)` | filter | Short-circuiting existential quantifier; emits single bool |
 | `batch<T>(n)` | filter | Collect n elements into `vector<T>` |
+| `bernoulli(p)` | producer | Random bools with configurable probability |
 | `blackhole<T>()` | consumer | Discard all values |
 | `buffer<T>(n)` | filter | Bounded async FIFO buffer (size n) |
 | `chain<T>(readers...)` | producer | Concatenate readers sequentially |
+| `choice(container)` | producer | Random picks from a container |
 | `chunk_by<T>(f)` | filter | Group consecutive elements where `f(prev,curr)` is true |
 | `collect<T>(iter)` | consumer | Consume stream into output iterator |
 | `concat_all<T>` | filter | Flatten `reader<reader<T>>` sequentially |
@@ -432,6 +512,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `fallback<T>(readers)` | producer | Sequential failover: try each reader, use first that produces |
 | `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
 | `first<T>(n)` | filter | Take first n elements |
+| `first_wins<T>(readers...)` | producer | Read from whichever source responds first, discard the rest |
 | `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
 | `foreach_emit<T,S,U>(init,update,extract)` | filter | Generalized scan: separate state update and extraction |
 | `flatten<T>` | filter | Flatten `vector<T>` → T |
@@ -448,6 +529,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `demux(reader<variant<Ts...>>)` | function | Split variant stream into N typed readers |
 | `metrics<T>()` | function | Passthrough with stats reporting |
 | `mute<T>()` | producer | Never-producing endpoint |
+| `normal(mean,stddev)` | producer | Normally distributed values |
 | `nwise<T>(n)` | filter | Sliding n-element window as tuple |
 | `pace<T>(trigger)` | filter | Rate-limited passthrough: one value per trigger, backpressure on excess |
 | `pairwise<T>` | filter | Consecutive pairs (a,b), (b,c)... |
@@ -461,6 +543,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `sample<T,S>(trigger)` | producer | Emit latest value on trigger |
 | `scan<In,Out>(init,f)` | filter | Running accumulator |
 | `share<T>(n)` | producer | Multicast with latch semantics |
+| `shuffle<T>(n)` | filter | Reservoir shuffle through a bounded buffer |
 | `sink<T>(f)` | consumer | Consume with side-effect function |
 | `skip_first<T>(n)` | filter | Drop first n elements |
 | `skip_last<T>(n)` | filter | Emit all but last n |
@@ -477,6 +560,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `timer(control)` | producer | Sleep per control, emit fire times |
 | `transpose<T>(readers)` | producer | Dynamic-width zip: N readers in lockstep as `vector<T>` |
 | `try_map<A,B>(f,err)` | filter | Map with exception catching; errors to side channel |
+| `uniform_int<T>(lo,hi)` | producer | Uniform random integers in [lo, hi] |
+| `uniform_real<T>(lo,hi)` | producer | Uniform random reals in [lo, hi) |
 | `unique<T>(cap)` | filter | All-time dedup with optional eviction |
 | `unzip<Tuple>()` | function | Split tuple stream into N streams |
 | `where<T>(pred)` | filter | Filter by predicate |

@@ -43,16 +43,21 @@ These are generated from the development sources by `scripts/amalgamate.py`
   `writer`, `reader`, `alt`/`prialt`, `chan_op`, `csp::internal` type-erased API.
 - **include/csp/timer.h** — Timer primitives (`sleep`, `after`, `tick`).
 - **include/csp/io.h** — Non-blocking I/O (kqueue reactor, DNS resolution).
+- **include/csp/cancel.h** — Cooperative cancellation (`cancel_guard`,
+  `cancel_op`, `timed_out`).
+- **include/csp/tls.h** — TLS via mbedTLS (`context`, `conn`), behind
+  `#ifdef CSP_TLS`.
 - **include/csp/signal.h** — Unix signal channels.
 - **include/csp/blocking.h** — Blocking thread pool.
 - **include/csp/dynamic.h** — `dynamic<T>` dynamic-scoped variables (HAMT).
-- **include/csp/part/** — 50+ stream combinators (`filter`, `producer`,
+- **include/csp/part/** — 70+ stream combinators (`filter`, `producer`,
   `consumer` with `operator|` composition).
 - **include/csp/internal/** — Imp struct, runtime, processor,
-  stack pool, HAMT, reactor, blocking pool.
+  stack pool, HAMT, reactor, blocking pool, signal types.
 - **src/** — Implementation files (`csp.cc`, `channel.cc`, `runtime.cpp`,
   `csp_globals.cpp`, `reactor.cc`, `blocking_pool.cc`, `signal.cc`,
-  `stack_pool.cc`, `hamt.cc`, `stack_analysis_arm64.cc`, `log.cc`).
+  `stack_pool.cc`, `hamt.cc`, `stack_analysis_arm64.cc`, `log.cc`,
+  `cancel.cc`, `timer.cc`, `io.cc`, `clock.cc`, `tls.cc`).
 
 ### Stream combinator conventions
 
@@ -127,6 +132,8 @@ with `.test.cc` extension.
 
 - **Boost.Context** (vendored as git submodule in `third_party/boost-context/`;
   only the fcontext assembly files are compiled)
+- **mbedTLS** (vendored as git submodule in `third_party/mbedtls/` v3.6.2;
+  compiled when `CSP_TLS=1`, which is the default)
 - **doctest** (vendored, header-only)
 
 ### Optional tools

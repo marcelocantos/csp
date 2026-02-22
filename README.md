@@ -11,9 +11,11 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
   observable via `alt`/`prialt`
 - **Alt/prialt multiplexing** — select across sends, receives, and endpoint death
 - **Timers** — `sleep`, `after`, `tick`, all composable with `alt`
-- **50+ stream combinators** — `map`, `where`, `scan`, `merge`, `zip`, and more,
+- **70+ stream combinators** — `map`, `where`, `scan`, `merge`, `zip`, and more,
   with `operator|` composition
 - **Non-blocking I/O and Unix signals** via kqueue reactor
+- **TLS** — cancel-aware TLS via mbedTLS (`#ifdef CSP_TLS`)
+- **Cooperative cancellation** — scope-based, with deadlines, composable in `alt`
 - **Dynamic scoping** — inherited variables with scoped bindings and copy-on-write
   isolation
 - **Imp-local storage** — per-imp variables (not inherited)
@@ -85,8 +87,11 @@ imps to completion.
   [M:N Runtime](docs/guide/09-concurrency.md) ·
   [Error Handling](docs/guide/10-error-handling.md) ·
   [Pitfalls](docs/guide/11-pitfalls.md) ·
-  [Dynamic Scoping](docs/guide/12-dynamic-scoping.md)
-- **Reference** — [Parts Catalog](docs/reference/parts.md) (50+ stream combinators) ·
+  [Dynamic Scoping](docs/guide/12-dynamic-scoping.md) ·
+  [Supervision](docs/guide/13-supervision.md) ·
+  [Cancellation](docs/guide/14-cancellation.md) ·
+  [TLS](docs/guide/15-tls.md)
+- **Reference** — [Parts Catalog](docs/reference/parts.md) (70+ stream combinators) ·
   [Transition Rules](docs/reference/transition-rules.md) (notation guide)
 - **Architecture** — [Internal Design](docs/architecture.md)
 - **Papers** — [The Engineering of CSP](docs/papers/) (TLS bugs,

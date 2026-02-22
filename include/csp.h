@@ -97,3 +97,4 @@
 #include "csp/stack_analysis.h"
 #include "csp/supervisor.h"
 #include "csp/timer.h"
+#include "csp/tls.h"

@@ -27,6 +27,12 @@ state.operation(args) ─┤guard├──➤ effects; result
 | [Signals](signals.md) | `csp/signal.h` | `signal::notify` (self-pipe trick, reactor-driven) |
 | [Blocking](blocking.md) | `csp/blocking.h` | `blocking(fn)` (offload to OS thread pool) |
 
+## Security
+
+| Document | Header | Contents |
+|---|---|---|
+| [TLS](tls.md) | `csp/tls.h` | `tls::context`, `tls::conn`, `tls::error` (cancel-aware TLS via mbedTLS, `#ifdef CSP_TLS`) |
+
 ## Supervision
 
 | Document | Header | Contents |
