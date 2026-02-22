@@ -22,8 +22,8 @@ struct slide_config {
 // expired(older, current) returns true when older should leave the window.
 // Per input element: expire from front (send on out), then send new on in.
 // slide_in=true emits during growth; false suppresses until first expiry.
-template <typename T, typename Pred,
-          std::enable_if_t<std::is_invocable_v<Pred&, const T&, const T&>, int> = 0>
+template <typename T, typename Pred>
+    requires std::is_invocable_v<Pred&, const T&, const T&>
 window_pair<T> slide(reader<T> src, Pred expired, slide_config cfg = {}) {
     chan<T> in_ch, out_ch;
     window_pair<T> result{std::move(in_ch.r), std::move(out_ch.r)};

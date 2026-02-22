@@ -36,8 +36,8 @@ auto zip_impl(F&& f, reader<Ts>... rs) {
 
 // Zip N readers through a combining function.
 // Requires explicit type parameters: zip<int, double>(r1, r2, f).
-template <typename... Ts, typename F,
-          std::enable_if_t<std::is_invocable_v<std::decay_t<F>&, Ts...>, int> = 0>
+template <typename... Ts, typename F>
+    requires std::is_invocable_v<std::decay_t<F>&, Ts...>
 auto zip(reader<Ts>... rs, F&& f) {
     return detail::zip_impl(std::forward<F>(f), std::move(rs)...);
 }

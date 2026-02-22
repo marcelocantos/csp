@@ -285,10 +285,11 @@ int connect(int fd, const sockaddr* addr, socklen_t addrlen); // 0=ok
 int set_nonblock(int fd);
 
 // DNS (runs on blocking pool).
+// Returns std::expected<addrinfo_ptr, resolve_error>.
+// resolve_error { int code; const char* message(); }
 resolve_result resolve(const std::string& host,
                        const std::string& service = {},
                        const addrinfo* hints = nullptr);
-// resolve_result { int error; addrinfo_ptr info; const char* error_string(); }
 }
 ```
 

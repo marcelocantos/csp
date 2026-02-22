@@ -1,8 +1,8 @@
 #pragma once
 
 #include <cstdlib>
-#include <functional>
 #include <memory>
+#include <utility>
 
 namespace csp {
 
@@ -10,10 +10,10 @@ template <typename F>
 class OnScopeExit {
 public:
     OnScopeExit(F f) : f_(std::move(f)) { }
-    ~OnScopeExit() { if (f_) f_(); }
+    ~OnScopeExit() { f_(); }
 
 private:
-    std::function<void()> f_;
+    F f_;
 };
 
 // Assign the return value to a local variable.

@@ -1,5 +1,7 @@
 #include <csp/internal/hamt.h>
 
+#include <bit>
+
 
 namespace csp::internal {
 
@@ -61,8 +63,8 @@ static uintptr_t make_two_leaf_inner(
     auto* inner = hamt_alloc_inner(2);
     inner->bitmap = (1u << idx1) | (1u << idx2);
 
-    int pos1 = __builtin_popcount(inner->bitmap & ((1u << idx1) - 1));
-    int pos2 = __builtin_popcount(inner->bitmap & ((1u << idx2) - 1));
+    int pos1 = std::popcount(inner->bitmap & ((1u << idx1) - 1));
+    int pos2 = std::popcount(inner->bitmap & ((1u << idx2) - 1));
     inner->children()[pos1] = hamt_from_leaf(existing);
     inner->children()[pos2] = hamt_from_leaf(new_leaf);
 
@@ -91,7 +93,7 @@ static uintptr_t assoc_rec(uintptr_t node, uint64_t key, std::any value, int shi
     auto* old = hamt_to_inner(node);
     uint32_t idx = (key >> shift) & 0x1f;
     uint32_t bit = 1u << idx;
-    int pos = __builtin_popcount(old->bitmap & (bit - 1));
+    int pos = std::popcount(old->bitmap & (bit - 1));
     int n = old->child_count();
 
     if (old->bitmap & bit) {

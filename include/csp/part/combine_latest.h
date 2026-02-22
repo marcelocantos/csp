@@ -124,8 +124,8 @@ auto combine_latest(reader<Ts>... rs) {
 }
 
 // combine_latest with combining function (requires explicit type params).
-template <typename... Ts, typename F,
-          std::enable_if_t<std::is_invocable_v<std::decay_t<F>&, Ts&...>, int> = 0>
+template <typename... Ts, typename F>
+    requires std::is_invocable_v<std::decay_t<F>&, Ts&...>
 auto combine_latest(reader<Ts>... rs, F&& f) {
     static_assert(sizeof...(Ts) >= 2, "combine_latest requires at least 2 inputs");
     return detail::combine_latest_impl(std::forward<F>(f), std::move(rs)...);

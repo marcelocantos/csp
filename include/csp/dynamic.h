@@ -132,11 +132,9 @@ class local {
     }
 
 public:
-    template <typename... Bs,
-              std::enable_if_t<
-                  sizeof...(Bs) >= 1 &&
-                  (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...),
-                  int> = 0>
+    template <typename... Bs>
+        requires (sizeof...(Bs) >= 1 &&
+                  (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...))
     local(Bs&&... bindings) : saved_(detail::g_imp->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
         (apply(std::forward<Bs>(bindings)), ...);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <bit>
 #include <cassert>
 #include <cstddef>
 #include <new>
@@ -183,15 +184,7 @@ private:
 
     static size_t round_up_pow2(size_t n) {
         assert(n > 0);
-        --n;
-        n |= n >> 1;
-        n |= n >> 2;
-        n |= n >> 4;
-        n |= n >> 8;
-        n |= n >> 16;
-        if constexpr (sizeof(size_t) > 4)
-            n |= n >> 32;
-        return n + 1;
+        return std::bit_ceil(n);
     }
 
     void grow() {

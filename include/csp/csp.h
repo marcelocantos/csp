@@ -251,7 +251,8 @@ public:
     }
 
     // Read operation.
-    template <typename U, typename = std::enable_if_t<std::is_convertible<T, U>::value>>
+    template <typename U>
+        requires std::is_convertible_v<T, U>
     chan_op(internal::ReaderRef r, U & dest)
         : chanop_{internal::wait(r), &dest, internal::get_slot(r.ptr)} {}
 
@@ -343,9 +344,9 @@ private:
 struct none_t {
     static constexpr int value = INT_MIN;
     constexpr operator int() const { return value; }
-    internal::ChanOp chanop() const { return {{}, nullptr}; }
+    static internal::ChanOp chanop() { return {{}, nullptr}; }
     static void transfer(void*, void*) {}
-    void disarm() const {}
+    static void disarm() {}
 };
 inline constexpr none_t none{};
 
@@ -437,8 +438,8 @@ public:
     void descr(const char* d) { internal::set_chan_descr(r_.ptr, d); }
 
     template <typename U>
-    std::enable_if_t<std::is_convertible<T, U>::value, chan_op<T>>
-    operator>>(U & u) const {
+        requires std::is_convertible_v<T, U>
+    chan_op<T> operator>>(U & u) const {
         return {r_, u};
     }
     chan_op<T> operator>>(void * dest) const {
@@ -1001,9 +1002,8 @@ using alt_begin_f = void(internal::AltMatch *, internal::ChanOp const *, int, in
 
 // Typed variadic alt: compile-time dispatch, no function pointers.
 template <alt_begin_f * begin_f, typename... Ops>
-inline
-std::enable_if_t<(is_chan_op<std::decay_t<Ops>>::value && ...), int>
-typed_alt(Ops &&... ops) {
+    requires (is_chan_op<std::decay_t<Ops>>::value && ...)
+inline int typed_alt(Ops &&... ops) {
     constexpr bool has_none = (std::is_same_v<std::decay_t<Ops>, none_t> || ...);
     constexpr size_t N = sizeof...(Ops);
     internal::ChanOp chanops[N] = {ops.chanop()...};
@@ -1063,16 +1063,14 @@ int typed_alt_vec_none(std::vector<chan_op<T>> const & ops) {
 // --- variadic overloads (compile-time type dispatch) ---
 
 template <typename... Ops>
-inline
-std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
-alt(Ops &&... ops) {
+    requires (detail::is_chan_op<std::decay_t<Ops>>::value && ...)
+inline int alt(Ops &&... ops) {
     return detail::typed_alt<&internal::alt_begin>(std::forward<Ops>(ops)...);
 }
 
 template <typename... Ops>
-inline
-std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
-prialt(Ops &&... ops) {
+    requires (detail::is_chan_op<std::decay_t<Ops>>::value && ...)
+inline int prialt(Ops &&... ops) {
     return detail::typed_alt<&internal::prialt_begin>(std::forward<Ops>(ops)...);
 }
 

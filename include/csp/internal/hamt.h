@@ -6,10 +6,11 @@
 // Intrusive refcounting on all nodes (no shared_ptr).
 //
 // BLR-free read path: hamt_get uses only integer arithmetic,
-// __builtin_popcount, and pointer chasing.
+// std::popcount, and pointer chasing.
 
 #include <any>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 
 namespace csp::internal {
@@ -27,7 +28,7 @@ struct hamt_inner {
     const uintptr_t* children() const {
         return reinterpret_cast<const uintptr_t*>(this + 1);
     }
-    int child_count() const { return __builtin_popcount(bitmap); }
+    int child_count() const { return std::popcount(bitmap); }
 };
 
 // Leaf node: key + type-erased value.
@@ -72,7 +73,7 @@ inline const std::any* hamt_get(uintptr_t root, uint64_t key) {
         uint32_t idx = (key >> shift) & 0x1f;
         uint32_t bit = 1u << idx;
         if (!(inner->bitmap & bit)) return nullptr;
-        int pos = __builtin_popcount(inner->bitmap & (bit - 1));
+        int pos = std::popcount(inner->bitmap & (bit - 1));
         node = inner->children()[pos];
         shift += 5;
     }

@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -112,31 +113,31 @@ inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
 // imp suspends cooperatively instead of blocking its processor.
 
 struct addrinfo_deleter {
-    void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }
+    static void operator()(struct addrinfo* p) { if (p) freeaddrinfo(p); }
 };
 using addrinfo_ptr = std::unique_ptr<struct addrinfo, addrinfo_deleter>;
 
-struct resolve_result {
-    int error = 0;                    // 0 on success, EAI_* on failure
-    addrinfo_ptr info;                // linked list of results
-    const char* error_string() const { return gai_strerror(error); }
+struct resolve_error {
+    int code;                         // EAI_* error code
+    const char* message() const { return gai_strerror(code); }
 };
+
+using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
 
 // Resolve host/service. hints may be nullptr for defaults.
 // Runs getaddrinfo on the blocking pool — never stalls the processor.
 inline resolve_result resolve(const std::string& host,
                               const std::string& service = {},
                               const struct addrinfo* hints = nullptr) {
-    resolve_result r;
     struct addrinfo* raw = nullptr;
-    r.error = csp::blocking([&] {
+    int err = csp::blocking([&] {
         return ::getaddrinfo(
             host.c_str(),
             service.empty() ? nullptr : service.c_str(),
             hints, &raw);
     });
-    r.info.reset(raw);
-    return r;
+    if (err != 0) return std::unexpected(resolve_error{err});
+    return addrinfo_ptr(raw);
 }
 
 }

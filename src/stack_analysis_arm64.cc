@@ -3,12 +3,14 @@
 #if defined(__aarch64__)
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <atomic>
 #include <deque>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 namespace csp {
@@ -300,10 +302,7 @@ size_t eval_pure(const expr& root) {
             }
             break;
         default:
-            assert(false);
-            values.push_back(0);
-            traversal.pop_back();
-            break;
+            std::unreachable();
         }
     }
     return values.empty() ? 0 : values.back();

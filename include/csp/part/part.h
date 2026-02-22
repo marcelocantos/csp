@@ -9,34 +9,26 @@ namespace csp::part {
 
 // Wrapper for a reader-consuming combinator body.
 // spawn() creates a channel and imp; bind() returns a deferred
-// callable; operator() runs inline. const& overloads copy the body,
-// && overloads move it.
+// callable; operator() runs inline. Deducing this collapses
+// const& / && overloads into a single method each.
 template <typename T, typename F>
 struct consumer {
     F body_;
 
     void operator()(reader<T> r) { body_(std::move(r)); }
 
-    auto bind(reader<T> r) const & {
-        return [b = body_, r = std::move(r)]() mutable {
-            b(std::move(r));
-        };
-    }
-    auto bind(reader<T> r) && {
-        return [b = std::move(body_), r = std::move(r)]() mutable {
+    auto bind(this auto&& self, reader<T> r) {
+        return [b = std::forward_like<decltype(self)>(self.body_),
+                r = std::move(r)]() mutable {
             b(std::move(r));
         };
     }
 
-    writer<T> spawn() const & {
-        return spawn_consumer<T>([b = body_](reader<T> r) mutable {
-            b(std::move(r));
-        });
-    }
-    writer<T> spawn() && {
-        return spawn_consumer<T>([b = std::move(body_)](reader<T> r) mutable {
-            b(std::move(r));
-        });
+    writer<T> spawn(this auto&& self) {
+        return spawn_consumer<T>(
+            [b = std::forward_like<decltype(self)>(self.body_)](reader<T> r) mutable {
+                b(std::move(r));
+            });
     }
 };
 
@@ -47,26 +39,18 @@ struct producer {
 
     void operator()(writer<T> w) { body_(std::move(w)); }
 
-    auto bind(writer<T> w) const & {
-        return [b = body_, w = std::move(w)]() mutable {
-            b(std::move(w));
-        };
-    }
-    auto bind(writer<T> w) && {
-        return [b = std::move(body_), w = std::move(w)]() mutable {
+    auto bind(this auto&& self, writer<T> w) {
+        return [b = std::forward_like<decltype(self)>(self.body_),
+                w = std::move(w)]() mutable {
             b(std::move(w));
         };
     }
 
-    reader<T> spawn() const & {
-        return spawn_producer<T>([b = body_](writer<T> w) mutable {
-            b(std::move(w));
-        });
-    }
-    reader<T> spawn() && {
-        return spawn_producer<T>([b = std::move(body_)](writer<T> w) mutable {
-            b(std::move(w));
-        });
+    reader<T> spawn(this auto&& self) {
+        return spawn_producer<T>(
+            [b = std::forward_like<decltype(self)>(self.body_)](writer<T> w) mutable {
+                b(std::move(w));
+            });
     }
 };
 
@@ -81,54 +65,34 @@ struct filter {
         body_(std::move(r), std::move(w));
     }
 
-    auto bind(reader<In> r, writer<Out> w) const & {
-        return [b = body_, r = std::move(r), w = std::move(w)]() mutable {
-            b(std::move(r), std::move(w));
-        };
-    }
-    auto bind(reader<In> r, writer<Out> w) && {
-        return [b = std::move(body_), r = std::move(r), w = std::move(w)]() mutable {
+    auto bind(this auto&& self, reader<In> r, writer<Out> w) {
+        return [b = std::forward_like<decltype(self)>(self.body_),
+                r = std::move(r), w = std::move(w)]() mutable {
             b(std::move(r), std::move(w));
         };
     }
 
-    writer<In> spawn(writer<Out> w) const & {
+    writer<In> spawn(this auto&& self, writer<Out> w) {
         return spawn_consumer<In>(
-            [b = body_, w = std::move(w)](reader<In> r) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    writer<In> spawn(writer<Out> w) && {
-        return spawn_consumer<In>(
-            [b = std::move(body_), w = std::move(w)](reader<In> r) mutable {
+            [b = std::forward_like<decltype(self)>(self.body_),
+             w = std::move(w)](reader<In> r) mutable {
                 b(std::move(r), std::move(w));
             });
     }
 
-    reader<Out> spawn(reader<In> r) const & {
+    reader<Out> spawn(this auto&& self, reader<In> r) {
         return spawn_producer<Out>(
-            [b = body_, r = std::move(r)](writer<Out> w) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    reader<Out> spawn(reader<In> r) && {
-        return spawn_producer<Out>(
-            [b = std::move(body_), r = std::move(r)](writer<Out> w) mutable {
+            [b = std::forward_like<decltype(self)>(self.body_),
+             r = std::move(r)](writer<Out> w) mutable {
                 b(std::move(r), std::move(w));
             });
     }
 
-    template <typename T = In, std::enable_if_t<std::is_same_v<T, Out>, int> = 0>
-    chan<T> spawn() const & {
+    template <typename T = In>
+        requires std::is_same_v<T, Out>
+    chan<T> spawn(this auto&& self) {
         return spawn_filter<T>(
-            [b = body_](reader<T> r, writer<T> w) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    template <typename T = In, std::enable_if_t<std::is_same_v<T, Out>, int> = 0>
-    chan<T> spawn() && {
-        return spawn_filter<T>(
-            [b = std::move(body_)](reader<T> r, writer<T> w) mutable {
+            [b = std::forward_like<decltype(self)>(self.body_)](reader<T> r, writer<T> w) mutable {
                 b(std::move(r), std::move(w));
             });
     }

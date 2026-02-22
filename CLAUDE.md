@@ -23,6 +23,8 @@ Build artifacts go to `build/`. Compiler: Clang, C++23, libc++, `-O2 -g`.
   for SFINAE constraints.
 - **`std::move_only_function`** over `std::function` when the callable is only
   moved and invoked, never copied (callbacks, one-shot tasks, RAII cleanup).
+  Not yet available in Apple libc++ — use stored `F` template parameter where
+  possible (e.g. `OnScopeExit`).
 - **Deducing `this`**: Use explicit object parameters (`this auto&& self`)
   instead of duplicating methods for `const &` / `&&` overloads.
 - **`static operator()`** on stateless function objects and deleters.

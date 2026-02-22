@@ -89,28 +89,31 @@ csp::spawn([] {
     hints.ai_socktype = SOCK_STREAM;
 
     auto result = csp::io::resolve("example.com", "443", &hints);
-    if (result.error) {
-        log_error(result.error_string());
+    if (!result) {
+        log_error(result.error().message());
         return;
     }
 
-    // result.info is a std::unique_ptr<addrinfo> -- freed automatically.
-    int fd = socket(result.info->ai_family,
-                    result.info->ai_socktype,
-                    result.info->ai_protocol);
+    // *result is a std::unique_ptr<addrinfo> -- freed automatically.
+    int fd = socket((*result)->ai_family,
+                    (*result)->ai_socktype,
+                    (*result)->ai_protocol);
     csp::io::set_nonblock(fd);
-    csp::io::connect(fd, result.info->ai_addr, result.info->ai_addrlen);
+    csp::io::connect(fd, (*result)->ai_addr, (*result)->ai_addrlen);
     // ...
 });
 ```
 
-`resolve` returns a `resolve_result` containing:
+`resolve` returns a `std::expected<addrinfo_ptr, resolve_error>`:
 
-| Field            | Type                          | Description                        |
+| On success       | Type                          | Description                        |
 |------------------|-------------------------------|------------------------------------|
-| `error`          | `int`                         | 0 on success, `EAI_*` on failure   |
-| `info`           | `unique_ptr<addrinfo>`        | Linked list of results (RAII)      |
-| `error_string()` | `const char*`                 | Human-readable error message       |
+| `*result`        | `addrinfo_ptr`                | Linked list of results (RAII)      |
+
+| On failure            | Type           | Description                        |
+|-----------------------|----------------|------------------------------------|
+| `result.error().code` | `int`          | `EAI_*` error code                 |
+| `result.error().message()` | `const char*` | Human-readable error message  |
 
 ## When to use what
 

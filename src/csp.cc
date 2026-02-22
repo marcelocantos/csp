@@ -10,6 +10,7 @@
 #include <cstring>
 #include <exception>
 #include <thread>
+#include <utility>
 
 #include <stdlib.h>
 
@@ -237,7 +238,7 @@ namespace csp {
                         return;
                     }
                     break;
-                default: ;
+                default: std::unreachable();
                 }
 
                 // Inline schedule without re-acquiring run_mu.

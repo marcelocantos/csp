@@ -342,11 +342,12 @@ Asynchronous DNS resolution.
 ### Signature
 
 ```cpp
-struct resolve_result {
-    int error;                             // 0 on success, EAI_* on failure
-    addrinfo_ptr info;                     // unique_ptr to addrinfo linked list
-    const char* error_string() const;      // gai_strerror(error)
+struct resolve_error {
+    int code;                              // EAI_* error code
+    const char* message() const;           // gai_strerror(code)
 };
+
+using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
 
 resolve_result resolve(const std::string& host,
                        const std::string& service = {},
@@ -362,10 +363,10 @@ of blocking its processor. This is important because `getaddrinfo` is a
 blocking system call that can take an unpredictable amount of time (DNS
 lookups, `/etc/hosts` parsing, mDNS).
 
-On success (`error == 0`), `info` points to a linked list of `addrinfo`
-results, managed by a `unique_ptr` with a custom deleter that calls
-`freeaddrinfo`. On failure, `error` contains an `EAI_*` error code and
-`error_string()` returns a human-readable description.
+On success, the returned `expected` holds an `addrinfo_ptr` (a `unique_ptr`
+with a custom deleter that calls `freeaddrinfo`). On failure, it holds a
+`resolve_error` with the `EAI_*` error code and a `message()` method for a
+human-readable description.
 
 The optional `hints` parameter controls the resolution behavior (address
 family, socket type, protocol, flags) -- same semantics as the `hints`
@@ -378,8 +379,8 @@ resolve(host, svc, hints) ──────────➤ offload getaddrinfo 
                                       suspend calling imp;
                                       return resolve_result
 
-resolve_result.error == 0 ──────────➤ info contains addrinfo linked list
-resolve_result.error != 0 ──────────➤ info is null; error_string() describes failure
+result.has_value()        ──────────➤ *result contains addrinfo linked list
+!result.has_value()       ──────────➤ result.error().message() describes failure
 ```
 
 ### Example
@@ -394,19 +395,19 @@ csp::spawn([] {
     hints.ai_socktype = SOCK_STREAM;
 
     auto result = csp::io::resolve("example.com", "80", &hints);
-    if (result.error != 0) {
-        // result.error_string() for details
+    if (!result) {
+        // result.error().message() for details
         return;
     }
 
     // Connect using the first result
-    int fd = socket(result.info->ai_family,
-                    result.info->ai_socktype,
-                    result.info->ai_protocol);
+    int fd = socket((*result)->ai_family,
+                    (*result)->ai_socktype,
+                    (*result)->ai_protocol);
     csp::io::set_nonblock(fd);
 
-    if (csp::io::connect(fd, result.info->ai_addr,
-                         result.info->ai_addrlen) == 0) {
+    if (csp::io::connect(fd, (*result)->ai_addr,
+                         (*result)->ai_addrlen) == 0) {
         // connected successfully
     }
     close(fd);
