@@ -12,7 +12,7 @@ namespace detail {
 
 template <typename T, size_t N, size_t... Is>
 auto array_to_tuple(std::array<T, N>& arr, std::index_sequence<Is...>) {
-    return std::make_tuple(arr[Is]...);
+    return std::tuple{arr[Is]...};
 }
 
 } // namespace detail

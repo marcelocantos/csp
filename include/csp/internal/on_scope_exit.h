@@ -31,7 +31,7 @@ inline auto onScopeExitFree(void * p) {
 template <typename T, typename F>
 class ScopedResource {
 public:
-    ScopedResource(T t, F f) : t_(std::move(t)), f_(std::make_unique<F>(f)) { }
+    ScopedResource(T t, F f) : t_(std::move(t)), f_(std::make_unique<F>(std::move(f))) { }
     ScopedResource(ScopedResource &&) = default;
     ~ScopedResource() {
         if (f_) {

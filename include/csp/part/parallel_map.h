@@ -31,7 +31,7 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
                     internal::descr("parallel_map/dispatch");
                     size_t seq = 0;
                     for (A a; in >> a;) {
-                        if (!(num_w << std::make_pair(seq++, std::move(a)))) return;
+                        if (!(num_w << std::pair{seq++, std::move(a)})) return;
                     }
                 });
 
@@ -43,7 +43,7 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
                             std::pair<size_t, A> item;
                             while (num_r >> item) {
                                 auto result = f(std::move(item.second));
-                                if (!(res_w << std::make_pair(item.first, std::move(result))))
+                                if (!(res_w << std::pair{item.first, std::move(result)}))
                                     return;
                             }
                         });

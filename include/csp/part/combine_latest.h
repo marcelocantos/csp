@@ -62,7 +62,7 @@ auto combine_latest_impl(F&& f, reader<Ts>... inputs) {
 
     return make_producer<Out>(
         [f = std::forward<F>(f),
-         inputs = std::make_tuple(std::move(inputs)...)](writer<Out> out) mutable {
+         inputs = std::tuple{std::move(inputs)...}](writer<Out> out) mutable {
             internal::descr("combine_latest");
 
             std::tuple<Ts...> bufs;
@@ -119,7 +119,7 @@ template <typename... Ts>
 auto combine_latest(reader<Ts>... rs) {
     static_assert(sizeof...(Ts) >= 2, "combine_latest requires at least 2 inputs");
     return detail::combine_latest_impl(
-        [](Ts&... vs) { return std::make_tuple(vs...); },
+        [](Ts&... vs) { return std::tuple{vs...}; },
         std::move(rs)...);
 }
 

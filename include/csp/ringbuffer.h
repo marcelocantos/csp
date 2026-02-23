@@ -182,7 +182,7 @@ private:
         if (p) ::operator delete(p, std::align_val_t(alignof(T)));
     }
 
-    static size_t round_up_pow2(size_t n) {
+    static constexpr size_t round_up_pow2(size_t n) {
         assert(n > 0);
         return std::bit_ceil(n);
     }

@@ -14,7 +14,7 @@ namespace detail {
 template <typename Ret>
 struct apply_message {
     template <typename F, typename Tuple>
-    auto operator()(F && f, Tuple && t) {
+    static auto operator()(F && f, Tuple && t) {
         return std::apply(std::forward<F>(f), std::forward<Tuple>(t));
     }
 };
@@ -22,7 +22,7 @@ struct apply_message {
 template <>
 struct apply_message<poke_t> {
     template <typename F, typename Tuple>
-    auto operator()(F && f, Tuple && t) {
+    static auto operator()(F && f, Tuple && t) {
         std::apply(std::forward<F>(f), std::forward<Tuple>(t));
         return poke;
     }
@@ -36,7 +36,7 @@ struct apply_message<poke_t> {
 template <typename... Args, typename Rep>
 auto rpc_client(writer<std::tuple<Args...>> req, reader<Rep> rep) {
     return [req = std::move(req), rep = std::move(rep)](Args... args) {
-        if (alt(req << std::make_tuple(std::move(args)...), ~rep) == 0) {
+        if (alt(req << std::tuple{std::move(args)...}, ~rep) == 0) {
             return rep.read();
         }
         throw std::runtime_error("rpc dead");
@@ -62,7 +62,7 @@ template <typename... Args, typename Rep>
 auto rpc_client(writer<std::pair<std::tuple<Args...>, writer<Rep>>> req) {
     return [req = std::move(req)](auto && t) {
         auto [w, r] = chan<Rep>{};
-        if (req << std::make_pair(std::forward<std::decay_t<decltype(t)>>(t), std::move(w))) {
+        if (req << std::pair{std::forward<std::decay_t<decltype(t)>>(t), std::move(w)}) {
             return r.read();
         }
         throw std::runtime_error("rpc dead");

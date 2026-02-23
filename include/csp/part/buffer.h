@@ -3,8 +3,8 @@
 #include <csp/part/part.h>
 #include <csp/ringbuffer.h>
 
-#include <cassert>
 #include <stdexcept>
+#include <utility>
 
 namespace csp::part {
 
@@ -47,7 +47,7 @@ auto buffer(size_t capacity = size_t(-1)) {
                 CSP_LOG(log, "~OUT");
                 return;
             default:
-                assert(!"Uh?");
+                std::unreachable();
             }
         }
     });

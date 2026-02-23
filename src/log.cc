@@ -232,7 +232,7 @@ namespace csp {
                     "std::__1::",
                     "<redacted>",
                 };
-                if (std::any_of(begin(ignore), end(ignore), [&](auto i) { return s.find(i) != s.npos; })) {
+                if (std::ranges::any_of(ignore, [&](auto const& i) { return s.contains(i); })) {
                     continue;
                 }
             }
@@ -250,8 +250,8 @@ namespace csp {
                     }
                 }
             }
-            if (s.find("testing::internal::") == s.npos &&
-                s.find(" testing::Test") == s.npos)
+            if (!s.contains("testing::internal::") &&
+                !s.contains(" testing::Test"))
             {
                 char buf[5];
                 snprintf(buf, sizeof(buf), "%3ld ", bt.size() - i - 1);

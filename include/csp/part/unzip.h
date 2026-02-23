@@ -12,7 +12,7 @@ namespace detail {
 
 template <typename Tuple, size_t... Is>
 auto make_chans(std::index_sequence<Is...>) {
-    return std::make_tuple(csp::chan<std::tuple_element_t<Is, Tuple>>{}...);
+    return std::tuple{csp::chan<std::tuple_element_t<Is, Tuple>>{}...};
 }
 
 template <typename Tuple, typename Chans, size_t... Is>
@@ -23,7 +23,7 @@ void unzip_write(Tuple& vals, Chans& chans, std::index_sequence<Is...>) {
 
 template <typename Chans, size_t... Is>
 auto extract_readers(Chans& chans, std::index_sequence<Is...>) {
-    return std::make_tuple(std::move(std::get<Is>(chans).r)...);
+    return std::tuple{std::move(std::get<Is>(chans).r)...};
 }
 
 } // namespace detail

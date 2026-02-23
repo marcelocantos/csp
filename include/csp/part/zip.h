@@ -21,7 +21,7 @@ template <typename F, typename... Ts>
 auto zip_impl(F&& f, reader<Ts>... rs) {
     using Out = std::invoke_result_t<std::decay_t<F>&, Ts...>;
     return make_producer<Out>(
-        [f = std::forward<F>(f), readers = std::make_tuple(std::move(rs)...)]
+        [f = std::forward<F>(f), readers = std::tuple{std::move(rs)...}]
         (writer<Out> out) mutable {
             internal::descr("zip");
             std::tuple<Ts...> vals;
@@ -46,7 +46,7 @@ auto zip(reader<Ts>... rs, F&& f) {
 template <typename... Ts>
 auto zip(reader<Ts>... rs) {
     return detail::zip_impl(
-        [](Ts... vs) { return std::make_tuple(std::move(vs)...); },
+        [](Ts... vs) { return std::tuple{std::move(vs)...}; },
         std::move(rs)...);
 }
 

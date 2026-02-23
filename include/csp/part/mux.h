@@ -68,7 +68,7 @@ auto mux(reader<Ts>... inputs) {
     using Dispatch = detail::mux_dispatch<V, Ts...>;
 
     return make_producer<V>(
-        [inputs = std::make_tuple(std::move(inputs)...)](writer<V> out) mutable {
+        [inputs = std::tuple{std::move(inputs)...}](writer<V> out) mutable {
             internal::descr("mux");
 
             std::tuple<Ts...> bufs;

@@ -15,7 +15,7 @@ inline auto const pairwise = make_filter<T, std::pair<T, T>>(
         T prev;
         if (csp::alt(in >> prev, ~out) != 0) return;
         for (T t; csp::alt(in >> t, ~out) == 0;) {
-            auto p = std::make_pair(std::move(prev), t);
+            auto p = std::pair{std::move(prev), t};
             prev = std::move(t);
             if (!(out << std::move(p))) return;
         }
