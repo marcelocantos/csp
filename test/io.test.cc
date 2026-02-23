@@ -490,8 +490,8 @@ TEST_CASE("IO - Resolve localhost") {
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
         auto r = csp::io::resolve("localhost", "80", &hints);
-        CHECK(r.has_value());
-        CHECK(r.value() != nullptr);
+        CHECK(r);
+        CHECK(r.info != nullptr);
         resolved.store(true, std::memory_order_relaxed);
     });
 

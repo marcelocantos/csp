@@ -14,7 +14,7 @@ namespace detail {
 template <typename Ret>
 struct apply_message {
     template <typename F, typename Tuple>
-    static auto operator()(F && f, Tuple && t) {
+    auto operator()(F && f, Tuple && t) const {
         return std::apply(std::forward<F>(f), std::forward<Tuple>(t));
     }
 };
@@ -22,7 +22,7 @@ struct apply_message {
 template <>
 struct apply_message<poke_t> {
     template <typename F, typename Tuple>
-    static auto operator()(F && f, Tuple && t) {
+    auto operator()(F && f, Tuple && t) const {
         std::apply(std::forward<F>(f), std::forward<Tuple>(t));
         return poke;
     }

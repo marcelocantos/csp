@@ -2478,7 +2478,6 @@ fd_signal create_fd_writable(int fd);
 
 
 #include <cerrno>
-#include <expected>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -2584,16 +2583,16 @@ inline int set_nonblock(int fd) {
 // imp suspends cooperatively instead of blocking its processor.
 
 struct addrinfo_deleter {
-    static void operator()(struct addrinfo* p) { if (p) freeaddrinfo(p); }
+    void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }
 };
 using addrinfo_ptr = std::unique_ptr<struct addrinfo, addrinfo_deleter>;
 
-struct resolve_error {
-    int code;                         // EAI_* error code
-    const char* message() const { return gai_strerror(code); }
+struct resolve_result {
+    addrinfo_ptr info;
+    int error = 0;
+    explicit operator bool() const { return error == 0; }
+    const char* message() const { return gai_strerror(error); }
 };
-
-using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
 
 // Resolve host/service. hints may be nullptr for defaults.
 // Runs getaddrinfo on the blocking pool — never stalls the processor.
@@ -2607,8 +2606,8 @@ using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
             service.empty() ? nullptr : service.c_str(),
             hints, &raw);
     });
-    if (err != 0) return std::unexpected(resolve_error{err});
-    return addrinfo_ptr(raw);
+    if (err != 0) return resolve_result{.error = err};
+    return resolve_result{.info = addrinfo_ptr(raw)};
 }
 
 }
@@ -2624,24 +2623,33 @@ namespace csp::part {
 
 // Wrapper for a reader-consuming combinator body.
 // spawn() creates a channel and imp; bind() returns a deferred
-// callable; operator() runs inline. Deducing this collapses
-// const& / && overloads into a single method each.
+// callable; operator() runs inline.
 template <typename T, typename F>
 struct consumer {
     F body_;
 
     void operator()(reader<T> r) { body_(std::move(r)); }
 
-    auto bind(this auto&& self, reader<T> r) {
-        return [b = std::forward_like<decltype(self)>(self.body_),
-                r = std::move(r)]() mutable {
+    auto bind(reader<T> r) const & {
+        return [b = body_, r = std::move(r)]() mutable {
+            b(std::move(r));
+        };
+    }
+    auto bind(reader<T> r) && {
+        return [b = std::move(body_), r = std::move(r)]() mutable {
             b(std::move(r));
         };
     }
 
-    writer<T> spawn(this auto&& self) {
+    writer<T> spawn() const & {
         return spawn_consumer<T>(
-            [b = std::forward_like<decltype(self)>(self.body_)](reader<T> r) mutable {
+            [b = body_](reader<T> r) mutable {
+                b(std::move(r));
+            });
+    }
+    writer<T> spawn() && {
+        return spawn_consumer<T>(
+            [b = std::move(body_)](reader<T> r) mutable {
                 b(std::move(r));
             });
     }
@@ -2654,16 +2662,26 @@ struct producer {
 
     void operator()(writer<T> w) { body_(std::move(w)); }
 
-    auto bind(this auto&& self, writer<T> w) {
-        return [b = std::forward_like<decltype(self)>(self.body_),
-                w = std::move(w)]() mutable {
+    auto bind(writer<T> w) const & {
+        return [b = body_, w = std::move(w)]() mutable {
+            b(std::move(w));
+        };
+    }
+    auto bind(writer<T> w) && {
+        return [b = std::move(body_), w = std::move(w)]() mutable {
             b(std::move(w));
         };
     }
 
-    reader<T> spawn(this auto&& self) {
+    reader<T> spawn() const & {
         return spawn_producer<T>(
-            [b = std::forward_like<decltype(self)>(self.body_)](writer<T> w) mutable {
+            [b = body_](writer<T> w) mutable {
+                b(std::move(w));
+            });
+    }
+    reader<T> spawn() && {
+        return spawn_producer<T>(
+            [b = std::move(body_)](writer<T> w) mutable {
                 b(std::move(w));
             });
     }
@@ -2680,24 +2698,44 @@ struct filter {
         body_(std::move(r), std::move(w));
     }
 
-    auto bind(this auto&& self, reader<In> r, writer<Out> w) {
-        return [b = std::forward_like<decltype(self)>(self.body_),
+    auto bind(reader<In> r, writer<Out> w) const & {
+        return [b = body_,
+                r = std::move(r), w = std::move(w)]() mutable {
+            b(std::move(r), std::move(w));
+        };
+    }
+    auto bind(reader<In> r, writer<Out> w) && {
+        return [b = std::move(body_),
                 r = std::move(r), w = std::move(w)]() mutable {
             b(std::move(r), std::move(w));
         };
     }
 
-    writer<In> spawn(this auto&& self, writer<Out> w) {
+    writer<In> spawn(writer<Out> w) const & {
         return spawn_consumer<In>(
-            [b = std::forward_like<decltype(self)>(self.body_),
+            [b = body_,
+             w = std::move(w)](reader<In> r) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+    writer<In> spawn(writer<Out> w) && {
+        return spawn_consumer<In>(
+            [b = std::move(body_),
              w = std::move(w)](reader<In> r) mutable {
                 b(std::move(r), std::move(w));
             });
     }
 
-    reader<Out> spawn(this auto&& self, reader<In> r) {
+    reader<Out> spawn(reader<In> r) const & {
         return spawn_producer<Out>(
-            [b = std::forward_like<decltype(self)>(self.body_),
+            [b = body_,
+             r = std::move(r)](writer<Out> w) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+    reader<Out> spawn(reader<In> r) && {
+        return spawn_producer<Out>(
+            [b = std::move(body_),
              r = std::move(r)](writer<Out> w) mutable {
                 b(std::move(r), std::move(w));
             });
@@ -2705,9 +2743,17 @@ struct filter {
 
     template <typename T = In>
         requires std::is_same_v<T, Out>
-    chan<T> spawn(this auto&& self) {
+    chan<T> spawn() const & {
         return spawn_filter<T>(
-            [b = std::forward_like<decltype(self)>(self.body_)](reader<T> r, writer<T> w) mutable {
+            [b = body_](reader<T> r, writer<T> w) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+    template <typename T = In>
+        requires std::is_same_v<T, Out>
+    chan<T> spawn() && {
+        return spawn_filter<T>(
+            [b = std::move(body_)](reader<T> r, writer<T> w) mutable {
                 b(std::move(r), std::move(w));
             });
     }
@@ -3080,7 +3126,7 @@ auto buffer(size_t capacity = size_t(-1)) {
                 CSP_LOG(log, "~OUT");
                 return;
             default:
-                std::unreachable();
+                __builtin_unreachable();
             }
         }
     });
@@ -4900,7 +4946,7 @@ inline auto const pairwise = make_filter<T, std::pair<T, T>>(
 /* csp/part/parallel_map.h */
 
 
-#include <flat_map>
+#include <map>
 
 namespace csp::part {
 
@@ -4949,7 +4995,7 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
                 res_w = {};
 
                 // Collector: reorder results and emit in sequence.
-                std::flat_map<size_t, B> buf;
+                std::map<size_t, B> buf;
                 size_t next = 0;
                 for (std::pair<size_t, B> r; csp::alt(res_r >> r, ~out) == 0;) {
                     buf.emplace(r.first, std::move(r.second));
@@ -5432,7 +5478,7 @@ namespace detail {
 template <typename Ret>
 struct apply_message {
     template <typename F, typename Tuple>
-    static auto operator()(F && f, Tuple && t) {
+    auto operator()(F && f, Tuple && t) const {
         return std::apply(std::forward<F>(f), std::forward<Tuple>(t));
     }
 };
@@ -5440,7 +5486,7 @@ struct apply_message {
 template <>
 struct apply_message<poke_t> {
     template <typename F, typename Tuple>
-    static auto operator()(F && f, Tuple && t) {
+    auto operator()(F && f, Tuple && t) const {
         std::apply(std::forward<F>(f), std::forward<Tuple>(t));
         return poke;
     }

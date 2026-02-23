@@ -285,8 +285,7 @@ int connect(int fd, const sockaddr* addr, socklen_t addrlen); // 0=ok
 int set_nonblock(int fd);
 
 // DNS (runs on blocking pool).
-// Returns std::expected<addrinfo_ptr, resolve_error>.
-// resolve_error { int code; const char* message(); }
+// resolve_result { addrinfo_ptr info; int error; explicit operator bool(); const char* message(); }
 resolve_result resolve(const std::string& host,
                        const std::string& service = {},
                        const addrinfo* hints = nullptr);
@@ -623,11 +622,11 @@ Copy these files into your project:
 | `csp_globals.cpp` | Thread-local state (**must** be a separate translation unit — see [docs/tls-caching-bug.md](https://github.com/marcelocantos/csp/blob/master/docs/tls-caching-bug.md)) |
 | `AGENTS-CSP.md` | This file — agent reference for CSP |
 
-Compile with C++23 and libc++:
+Compile with C++20 and libc++:
 
 ```bash
-c++ -std=c++23 -O2 -c csp.cpp -o csp.o
-c++ -std=c++23 -O2 -c csp_globals.cpp -o csp_globals.o
+c++ -std=c++20 -O2 -c csp.cpp -o csp.o
+c++ -std=c++20 -O2 -c csp_globals.cpp -o csp_globals.o
 ```
 
 Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to

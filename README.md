@@ -33,9 +33,9 @@ CSP is distributed as three files. Copy them into your project from `dist/`:
 No external dependencies. Compile both `.cpp` files alongside your code:
 
 ```bash
-c++ -std=c++23 -O2 -c csp.cpp -o csp.o
-c++ -std=c++23 -O2 -c csp_globals.cpp -o csp_globals.o
-c++ -std=c++23 -O2 -c my_app.cpp -o my_app.o
+c++ -std=c++20 -O2 -c csp.cpp -o csp.o
+c++ -std=c++20 -O2 -c csp_globals.cpp -o csp_globals.o
+c++ -std=c++20 -O2 -c my_app.cpp -o my_app.o
 c++ my_app.o csp.o csp_globals.o -o my_app
 ```
 

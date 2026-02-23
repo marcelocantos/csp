@@ -9,7 +9,7 @@ memory, no locks.
 
 ## Prerequisites
 
-- **C++23** compiler (Clang with libc++ recommended)
+- **C++20** compiler (Clang with libc++ recommended)
 
 ## Integration
 

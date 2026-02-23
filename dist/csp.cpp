@@ -1258,7 +1258,7 @@ namespace csp {
                         return;
                     }
                     break;
-                default: std::unreachable();
+                default: __builtin_unreachable();
                 }
 
                 // Inline schedule without re-acquiring run_mu.
@@ -1918,7 +1918,7 @@ namespace csp {
                     "std::__1::",
                     "<redacted>",
                 };
-                if (std::ranges::any_of(ignore, [&](auto const& i) { return s.contains(i); })) {
+                if (std::ranges::any_of(ignore, [&](auto const& i) { return s.find(i) != std::string::npos; })) {
                     continue;
                 }
             }
@@ -1936,8 +1936,8 @@ namespace csp {
                     }
                 }
             }
-            if (!s.contains("testing::internal::") &&
-                !s.contains(" testing::Test"))
+            if (s.find("testing::internal::") == std::string::npos &&
+                s.find(" testing::Test") == std::string::npos)
             {
                 char buf[5];
                 snprintf(buf, sizeof(buf), "%3ld ", bt.size() - i - 1);
@@ -2975,7 +2975,7 @@ size_t eval_pure(const expr& root) {
             }
             break;
         default:
-            std::unreachable();
+            __builtin_unreachable();
         }
     }
     return values.empty() ? 0 : values.back();

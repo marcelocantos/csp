@@ -15,26 +15,20 @@ make iwyu   # remove unused includes (clang-tidy misc-include-cleaner)
 make clean  # remove build/
 ```
 
-Build artifacts go to `build/`. Compiler: Clang, C++23, libc++, `-O2 -g`.
+Build artifacts go to `build/`. Compiler: Clang, C++20, libc++, `-O2 -g`.
 
-## C++23 Style
+## C++20 Style
 
 - **`requires` over `std::enable_if_t`**: Use `requires` clauses or concepts
   for SFINAE constraints.
-- **`std::move_only_function`** over `std::function` when the callable is only
-  moved and invoked, never copied (callbacks, one-shot tasks, RAII cleanup).
-  Not yet available in Apple libc++ — use stored `F` template parameter where
-  possible (e.g. `OnScopeExit`).
-- **Deducing `this`**: Use explicit object parameters (`this auto&& self`)
-  instead of duplicating methods for `const &` / `&&` overloads.
-- **`static operator()`** on stateless function objects and deleters.
-- **`std::unreachable()`** in unreachable `default:` cases and after
-  exhaustive switches, instead of `assert(false)` or empty defaults.
+- **Stored `F` template parameter** over `std::function` when the callable is
+  only moved and invoked, never copied (callbacks, one-shot tasks, RAII
+  cleanup — e.g. `OnScopeExit`).
 - **`<bit>` header**: `std::bit_ceil` over hand-rolled `round_up_pow2`,
   `std::popcount` over `__builtin_popcount`.
-- **`std::flat_map` / `std::flat_set`** for small, bounded-size sorted
-  containers.
-- **`std::expected`** for value-or-error returns that don't warrant exceptions.
+- **Spaceship operator (`<=>`)** and defaulted `operator==` for comparison
+  boilerplate.
+- **`[[nodiscard]]`** on functions whose return values must not be ignored.
 
 ## Architecture
 

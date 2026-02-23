@@ -5,7 +5,6 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -113,16 +112,16 @@ inline int set_nonblock(int fd) {
 // imp suspends cooperatively instead of blocking its processor.
 
 struct addrinfo_deleter {
-    static void operator()(struct addrinfo* p) { if (p) freeaddrinfo(p); }
+    void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }
 };
 using addrinfo_ptr = std::unique_ptr<struct addrinfo, addrinfo_deleter>;
 
-struct resolve_error {
-    int code;                         // EAI_* error code
-    const char* message() const { return gai_strerror(code); }
+struct resolve_result {
+    addrinfo_ptr info;
+    int error = 0;
+    explicit operator bool() const { return error == 0; }
+    const char* message() const { return gai_strerror(error); }
 };
-
-using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
 
 // Resolve host/service. hints may be nullptr for defaults.
 // Runs getaddrinfo on the blocking pool — never stalls the processor.
@@ -136,8 +135,8 @@ using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
             service.empty() ? nullptr : service.c_str(),
             hints, &raw);
     });
-    if (err != 0) return std::unexpected(resolve_error{err});
-    return addrinfo_ptr(raw);
+    if (err != 0) return resolve_result{.error = err};
+    return resolve_result{.info = addrinfo_ptr(raw)};
 }
 
 }

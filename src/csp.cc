@@ -238,7 +238,7 @@ namespace csp {
                         return;
                     }
                     break;
-                default: std::unreachable();
+                default: __builtin_unreachable();
                 }
 
                 // Inline schedule without re-acquiring run_mu.

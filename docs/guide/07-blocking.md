@@ -104,16 +104,14 @@ csp::spawn([] {
 });
 ```
 
-`resolve` returns a `std::expected<addrinfo_ptr, resolve_error>`:
+`resolve` returns a `resolve_result` struct:
 
-| On success       | Type                          | Description                        |
-|------------------|-------------------------------|------------------------------------|
-| `*result`        | `addrinfo_ptr`                | Linked list of results (RAII)      |
-
-| On failure            | Type           | Description                        |
-|-----------------------|----------------|------------------------------------|
-| `result.error().code` | `int`          | `EAI_*` error code                 |
-| `result.error().message()` | `const char*` | Human-readable error message  |
+| Field              | Type           | Description                        |
+|--------------------|----------------|------------------------------------|
+| `result.info`      | `addrinfo_ptr` | Linked list of results (RAII)      |
+| `result.error`     | `int`          | `EAI_*` error code (0 on success)  |
+| `result.message()` | `const char*`  | Human-readable error message       |
+| `bool(result)`     |                | `true` on success                  |
 
 ## When to use what
 

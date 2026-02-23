@@ -18,7 +18,7 @@ MAKEFLAGS += -j$(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || ech
 , := ,
 
 BUILDDIR := build
-CXX      := c++ -std=c++23 -stdlib=libc++
+CXX      := c++ -std=c++20 -stdlib=libc++
 CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter
 LDFLAGS  :=
 LDLIBS   :=
@@ -260,7 +260,7 @@ TIDY_SRCS := $(filter-out src/stack_analysis_arm64.cc,$(LIB_SRCS))
 
 iwyu: dist
 	@python3 scripts/clean_includes.py $(TIDY_SRCS) \
-		-- -std=c++23 -stdlib=libc++ $(TIDY_SYSROOT) $(INCLUDES)
+		-- -std=c++20 -stdlib=libc++ $(TIDY_SYSROOT) $(INCLUDES)
 
 clean:
 	rm -rf build build-* dist

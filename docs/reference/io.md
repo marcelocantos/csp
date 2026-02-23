@@ -342,12 +342,12 @@ Asynchronous DNS resolution.
 ### Signature
 
 ```cpp
-struct resolve_error {
-    int code;                              // EAI_* error code
-    const char* message() const;           // gai_strerror(code)
+struct resolve_result {
+    addrinfo_ptr info;
+    int error = 0;
+    explicit operator bool() const;        // true on success
+    const char* message() const;           // gai_strerror(error)
 };
-
-using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
 
 resolve_result resolve(const std::string& host,
                        const std::string& service = {},

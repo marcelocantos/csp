@@ -47,7 +47,7 @@ auto buffer(size_t capacity = size_t(-1)) {
                 CSP_LOG(log, "~OUT");
                 return;
             default:
-                std::unreachable();
+                __builtin_unreachable();
             }
         }
     });

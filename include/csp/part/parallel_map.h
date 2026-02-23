@@ -2,7 +2,7 @@
 
 #include <csp/part/part.h>
 
-#include <flat_map>
+#include <map>
 #include <type_traits>
 #include <utility>
 
@@ -53,7 +53,7 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
                 res_w = {};
 
                 // Collector: reorder results and emit in sequence.
-                std::flat_map<size_t, B> buf;
+                std::map<size_t, B> buf;
                 size_t next = 0;
                 for (std::pair<size_t, B> r; csp::alt(res_r >> r, ~out) == 0;) {
                     buf.emplace(r.first, std::move(r.second));

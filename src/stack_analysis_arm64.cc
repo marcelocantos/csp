@@ -302,7 +302,7 @@ size_t eval_pure(const expr& root) {
             }
             break;
         default:
-            std::unreachable();
+            __builtin_unreachable();
         }
     }
     return values.empty() ? 0 : values.back();
