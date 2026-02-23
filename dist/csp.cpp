@@ -1030,6 +1030,7 @@ void fake_clock::run_until_idle() {
 #include <pthread.h>
 
 #include <thread>
+#include <utility>
 
 #include <stdlib.h>
 
@@ -1257,7 +1258,7 @@ namespace csp {
                         return;
                     }
                     break;
-                default: ;
+                default: std::unreachable();
                 }
 
                 // Inline schedule without re-acquiring run_mu.
@@ -1512,6 +1513,8 @@ char const * get_descr(void * thr) {
 
 /* hamt.cc */
 
+#include <bit>
+
 
 namespace csp::internal {
 
@@ -1573,8 +1576,8 @@ static uintptr_t make_two_leaf_inner(
     auto* inner = hamt_alloc_inner(2);
     inner->bitmap = (1u << idx1) | (1u << idx2);
 
-    int pos1 = __builtin_popcount(inner->bitmap & ((1u << idx1) - 1));
-    int pos2 = __builtin_popcount(inner->bitmap & ((1u << idx2) - 1));
+    int pos1 = std::popcount(inner->bitmap & ((1u << idx1) - 1));
+    int pos2 = std::popcount(inner->bitmap & ((1u << idx2) - 1));
     inner->children()[pos1] = hamt_from_leaf(existing);
     inner->children()[pos2] = hamt_from_leaf(new_leaf);
 
@@ -1603,7 +1606,7 @@ static uintptr_t assoc_rec(uintptr_t node, uint64_t key, std::any value, int shi
     auto* old = hamt_to_inner(node);
     uint32_t idx = (key >> shift) & 0x1f;
     uint32_t bit = 1u << idx;
-    int pos = __builtin_popcount(old->bitmap & (bit - 1));
+    int pos = std::popcount(old->bitmap & (bit - 1));
     int n = old->child_count();
 
     if (old->bitmap & bit) {
@@ -1700,7 +1703,6 @@ void io_wait_writable(int fd) {
 #include <regex>
 #include <set>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 using namespace csp;
@@ -1916,7 +1918,7 @@ namespace csp {
                     "std::__1::",
                     "<redacted>",
                 };
-                if (std::any_of(begin(ignore), end(ignore), [&](auto i) { return s.find(i) != s.npos; })) {
+                if (std::ranges::any_of(ignore, [&](auto const& i) { return s.contains(i); })) {
                     continue;
                 }
             }
@@ -1934,8 +1936,8 @@ namespace csp {
                     }
                 }
             }
-            if (s.find("testing::internal::") == s.npos &&
-                s.find(" testing::Test") == s.npos)
+            if (!s.contains("testing::internal::") &&
+                !s.contains(" testing::Test"))
             {
                 char buf[5];
                 snprintf(buf, sizeof(buf), "%3ld ", bt.size() - i - 1);
@@ -2973,10 +2975,7 @@ size_t eval_pure(const expr& root) {
             }
             break;
         default:
-            assert(false);
-            values.push_back(0);
-            traversal.pop_back();
-            break;
+            std::unreachable();
         }
     }
     return values.empty() ? 0 : values.back();

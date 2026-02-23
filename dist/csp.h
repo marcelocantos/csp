@@ -337,7 +337,8 @@ public:
     }
 
     // Read operation.
-    template <typename U, typename = std::enable_if_t<std::is_convertible<T, U>::value>>
+    template <typename U>
+        requires std::is_convertible_v<T, U>
     chan_op(internal::ReaderRef r, U & dest)
         : chanop_{internal::wait(r), &dest, internal::get_slot(r.ptr)} {}
 
@@ -429,9 +430,9 @@ private:
 struct none_t {
     static constexpr int value = INT_MIN;
     constexpr operator int() const { return value; }
-    internal::ChanOp chanop() const { return {{}, nullptr}; }
+    static internal::ChanOp chanop() { return {{}, nullptr}; }
     static void transfer(void*, void*) {}
-    void disarm() const {}
+    static void disarm() {}
 };
 inline constexpr none_t none{};
 
@@ -523,8 +524,8 @@ public:
     void descr(const char* d) { internal::set_chan_descr(r_.ptr, d); }
 
     template <typename U>
-    std::enable_if_t<std::is_convertible<T, U>::value, chan_op<T>>
-    operator>>(U & u) const {
+        requires std::is_convertible_v<T, U>
+    chan_op<T> operator>>(U & u) const {
         return {r_, u};
     }
     chan_op<T> operator>>(void * dest) const {
@@ -1087,9 +1088,8 @@ using alt_begin_f = void(internal::AltMatch *, internal::ChanOp const *, int, in
 
 // Typed variadic alt: compile-time dispatch, no function pointers.
 template <alt_begin_f * begin_f, typename... Ops>
-inline
-std::enable_if_t<(is_chan_op<std::decay_t<Ops>>::value && ...), int>
-typed_alt(Ops &&... ops) {
+    requires (is_chan_op<std::decay_t<Ops>>::value && ...)
+inline int typed_alt(Ops &&... ops) {
     constexpr bool has_none = (std::is_same_v<std::decay_t<Ops>, none_t> || ...);
     constexpr size_t N = sizeof...(Ops);
     internal::ChanOp chanops[N] = {ops.chanop()...};
@@ -1149,16 +1149,14 @@ int typed_alt_vec_none(std::vector<chan_op<T>> const & ops) {
 // --- variadic overloads (compile-time type dispatch) ---
 
 template <typename... Ops>
-inline
-std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
-alt(Ops &&... ops) {
+    requires (detail::is_chan_op<std::decay_t<Ops>>::value && ...)
+inline int alt(Ops &&... ops) {
     return detail::typed_alt<&internal::alt_begin>(std::forward<Ops>(ops)...);
 }
 
 template <typename... Ops>
-inline
-std::enable_if_t<(detail::is_chan_op<std::decay_t<Ops>>::value && ...), int>
-prialt(Ops &&... ops) {
+    requires (detail::is_chan_op<std::decay_t<Ops>>::value && ...)
+inline int prialt(Ops &&... ops) {
     return detail::typed_alt<&internal::prialt_begin>(std::forward<Ops>(ops)...);
 }
 
@@ -1219,7 +1217,7 @@ namespace csp {
 //   auto addrs = csp::blocking([]{ return getaddrinfo(...); });
 //
 template <typename Fn>
-auto blocking(Fn&& fn) -> std::invoke_result_t<Fn> {
+[[nodiscard]] auto blocking(Fn&& fn) -> std::invoke_result_t<Fn> {
     using R = std::invoke_result_t<Fn>;
     if constexpr (std::is_void_v<R>) {
         internal::run_blocking(std::forward<Fn>(fn));
@@ -1487,8 +1485,9 @@ char const * getstatus(Imp const * imp) {
 // Intrusive refcounting on all nodes (no shared_ptr).
 //
 // BLR-free read path: hamt_get uses only integer arithmetic,
-// __builtin_popcount, and pointer chasing.
+// std::popcount, and pointer chasing.
 
+#include <bit>
 #include <cstdint>
 
 namespace csp::internal {
@@ -1506,7 +1505,7 @@ struct hamt_inner {
     const uintptr_t* children() const {
         return reinterpret_cast<const uintptr_t*>(this + 1);
     }
-    int child_count() const { return __builtin_popcount(bitmap); }
+    int child_count() const { return std::popcount(bitmap); }
 };
 
 // Leaf node: key + type-erased value.
@@ -1551,7 +1550,7 @@ inline const std::any* hamt_get(uintptr_t root, uint64_t key) {
         uint32_t idx = (key >> shift) & 0x1f;
         uint32_t bit = 1u << idx;
         if (!(inner->bitmap & bit)) return nullptr;
-        int pos = __builtin_popcount(inner->bitmap & (bit - 1));
+        int pos = std::popcount(inner->bitmap & (bit - 1));
         node = inner->children()[pos];
         shift += 5;
     }
@@ -1694,11 +1693,9 @@ class local {
     }
 
 public:
-    template <typename... Bs,
-              std::enable_if_t<
-                  sizeof...(Bs) >= 1 &&
-                  (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...),
-                  int> = 0>
+    template <typename... Bs>
+        requires (sizeof...(Bs) >= 1 &&
+                  (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...))
     local(Bs&&... bindings) : saved_(detail::g_imp->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
         (apply(std::forward<Bs>(bindings)), ...);
@@ -2116,17 +2113,9 @@ private:
         mask_ = new_mask;
     }
 
-    static size_t round_up_pow2(size_t n) {
+    static constexpr size_t round_up_pow2(size_t n) {
         assert(n > 0);
-        --n;
-        n |= n >> 1;
-        n |= n >> 2;
-        n |= n >> 4;
-        n |= n >> 8;
-        n |= n >> 16;
-        if constexpr (sizeof(size_t) > 4)
-            n |= n >> 32;
-        return n + 1;
+        return std::bit_ceil(n);
     }
 
     static uint8_t* alloc_ctrl(size_t n) {
@@ -2213,10 +2202,10 @@ template <typename F>
 class OnScopeExit {
 public:
     OnScopeExit(F f) : f_(std::move(f)) { }
-    ~OnScopeExit() { if (f_) f_(); }
+    ~OnScopeExit() { f_(); }
 
 private:
-    std::function<void()> f_;
+    F f_;
 };
 
 // Assign the return value to a local variable.
@@ -2234,7 +2223,7 @@ inline auto onScopeExitFree(void * p) {
 template <typename T, typename F>
 class ScopedResource {
 public:
-    ScopedResource(T t, F f) : t_(std::move(t)), f_(std::make_unique<F>(f)) { }
+    ScopedResource(T t, F f) : t_(std::move(t)), f_(std::make_unique<F>(std::move(f))) { }
     ScopedResource(ScopedResource &&) = default;
     ~ScopedResource() {
         if (f_) {
@@ -2489,6 +2478,7 @@ fd_signal create_fd_writable(int fd);
 
 
 #include <cerrno>
+#include <expected>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -2526,7 +2516,7 @@ inline int set_nonblock(int fd) {
 // is ready, then retrying the syscall. All retry on EINTR.
 
 // Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
-inline ssize_t read(int fd, void* buf, size_t len) {
+[[nodiscard]] inline ssize_t read(int fd, void* buf, size_t len) {
     for (;;) {
         ssize_t n = ::read(fd, buf, len);
         if (n >= 0) return n;
@@ -2541,7 +2531,7 @@ inline ssize_t read(int fd, void* buf, size_t len) {
 
 // Write all of buf. Returns total bytes written, or -1 on error.
 // Partial writes are retried automatically.
-inline ssize_t write(int fd, const void* buf, size_t len) {
+[[nodiscard]] inline ssize_t write(int fd, const void* buf, size_t len) {
     size_t written = 0;
     auto p = static_cast<const uint8_t*>(buf);
     while (written < len) {
@@ -2561,7 +2551,7 @@ inline ssize_t write(int fd, const void* buf, size_t len) {
 }
 
 // Accept a connection. Returns new fd, or -1 on error.
-inline int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
+[[nodiscard]] inline int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
     for (;;) {
         int fd = ::accept(listen_fd, addr, addrlen);
         if (fd >= 0) return fd;
@@ -2576,7 +2566,7 @@ inline int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
 
 // Non-blocking connect. Returns 0 on success, -1 on error.
 // The fd must already be non-blocking.
-inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
+[[nodiscard]] inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
     int ret = ::connect(fd, addr, addrlen);
     if (ret == 0) return 0;
     if (errno != EINPROGRESS) return -1;
@@ -2594,31 +2584,31 @@ inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
 // imp suspends cooperatively instead of blocking its processor.
 
 struct addrinfo_deleter {
-    void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }
+    static void operator()(struct addrinfo* p) { if (p) freeaddrinfo(p); }
 };
 using addrinfo_ptr = std::unique_ptr<struct addrinfo, addrinfo_deleter>;
 
-struct resolve_result {
-    int error = 0;                    // 0 on success, EAI_* on failure
-    addrinfo_ptr info;                // linked list of results
-    const char* error_string() const { return gai_strerror(error); }
+struct resolve_error {
+    int code;                         // EAI_* error code
+    const char* message() const { return gai_strerror(code); }
 };
+
+using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
 
 // Resolve host/service. hints may be nullptr for defaults.
 // Runs getaddrinfo on the blocking pool — never stalls the processor.
-inline resolve_result resolve(const std::string& host,
+[[nodiscard]] inline resolve_result resolve(const std::string& host,
                               const std::string& service = {},
                               const struct addrinfo* hints = nullptr) {
-    resolve_result r;
     struct addrinfo* raw = nullptr;
-    r.error = csp::blocking([&] {
+    int err = csp::blocking([&] {
         return ::getaddrinfo(
             host.c_str(),
             service.empty() ? nullptr : service.c_str(),
             hints, &raw);
     });
-    r.info.reset(raw);
-    return r;
+    if (err != 0) return std::unexpected(resolve_error{err});
+    return addrinfo_ptr(raw);
 }
 
 }
@@ -2634,34 +2624,26 @@ namespace csp::part {
 
 // Wrapper for a reader-consuming combinator body.
 // spawn() creates a channel and imp; bind() returns a deferred
-// callable; operator() runs inline. const& overloads copy the body,
-// && overloads move it.
+// callable; operator() runs inline. Deducing this collapses
+// const& / && overloads into a single method each.
 template <typename T, typename F>
 struct consumer {
     F body_;
 
     void operator()(reader<T> r) { body_(std::move(r)); }
 
-    auto bind(reader<T> r) const & {
-        return [b = body_, r = std::move(r)]() mutable {
-            b(std::move(r));
-        };
-    }
-    auto bind(reader<T> r) && {
-        return [b = std::move(body_), r = std::move(r)]() mutable {
+    auto bind(this auto&& self, reader<T> r) {
+        return [b = std::forward_like<decltype(self)>(self.body_),
+                r = std::move(r)]() mutable {
             b(std::move(r));
         };
     }
 
-    writer<T> spawn() const & {
-        return spawn_consumer<T>([b = body_](reader<T> r) mutable {
-            b(std::move(r));
-        });
-    }
-    writer<T> spawn() && {
-        return spawn_consumer<T>([b = std::move(body_)](reader<T> r) mutable {
-            b(std::move(r));
-        });
+    writer<T> spawn(this auto&& self) {
+        return spawn_consumer<T>(
+            [b = std::forward_like<decltype(self)>(self.body_)](reader<T> r) mutable {
+                b(std::move(r));
+            });
     }
 };
 
@@ -2672,26 +2654,18 @@ struct producer {
 
     void operator()(writer<T> w) { body_(std::move(w)); }
 
-    auto bind(writer<T> w) const & {
-        return [b = body_, w = std::move(w)]() mutable {
-            b(std::move(w));
-        };
-    }
-    auto bind(writer<T> w) && {
-        return [b = std::move(body_), w = std::move(w)]() mutable {
+    auto bind(this auto&& self, writer<T> w) {
+        return [b = std::forward_like<decltype(self)>(self.body_),
+                w = std::move(w)]() mutable {
             b(std::move(w));
         };
     }
 
-    reader<T> spawn() const & {
-        return spawn_producer<T>([b = body_](writer<T> w) mutable {
-            b(std::move(w));
-        });
-    }
-    reader<T> spawn() && {
-        return spawn_producer<T>([b = std::move(body_)](writer<T> w) mutable {
-            b(std::move(w));
-        });
+    reader<T> spawn(this auto&& self) {
+        return spawn_producer<T>(
+            [b = std::forward_like<decltype(self)>(self.body_)](writer<T> w) mutable {
+                b(std::move(w));
+            });
     }
 };
 
@@ -2706,54 +2680,34 @@ struct filter {
         body_(std::move(r), std::move(w));
     }
 
-    auto bind(reader<In> r, writer<Out> w) const & {
-        return [b = body_, r = std::move(r), w = std::move(w)]() mutable {
-            b(std::move(r), std::move(w));
-        };
-    }
-    auto bind(reader<In> r, writer<Out> w) && {
-        return [b = std::move(body_), r = std::move(r), w = std::move(w)]() mutable {
+    auto bind(this auto&& self, reader<In> r, writer<Out> w) {
+        return [b = std::forward_like<decltype(self)>(self.body_),
+                r = std::move(r), w = std::move(w)]() mutable {
             b(std::move(r), std::move(w));
         };
     }
 
-    writer<In> spawn(writer<Out> w) const & {
+    writer<In> spawn(this auto&& self, writer<Out> w) {
         return spawn_consumer<In>(
-            [b = body_, w = std::move(w)](reader<In> r) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    writer<In> spawn(writer<Out> w) && {
-        return spawn_consumer<In>(
-            [b = std::move(body_), w = std::move(w)](reader<In> r) mutable {
+            [b = std::forward_like<decltype(self)>(self.body_),
+             w = std::move(w)](reader<In> r) mutable {
                 b(std::move(r), std::move(w));
             });
     }
 
-    reader<Out> spawn(reader<In> r) const & {
+    reader<Out> spawn(this auto&& self, reader<In> r) {
         return spawn_producer<Out>(
-            [b = body_, r = std::move(r)](writer<Out> w) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    reader<Out> spawn(reader<In> r) && {
-        return spawn_producer<Out>(
-            [b = std::move(body_), r = std::move(r)](writer<Out> w) mutable {
+            [b = std::forward_like<decltype(self)>(self.body_),
+             r = std::move(r)](writer<Out> w) mutable {
                 b(std::move(r), std::move(w));
             });
     }
 
-    template <typename T = In, std::enable_if_t<std::is_same_v<T, Out>, int> = 0>
-    chan<T> spawn() const & {
+    template <typename T = In>
+        requires std::is_same_v<T, Out>
+    chan<T> spawn(this auto&& self) {
         return spawn_filter<T>(
-            [b = body_](reader<T> r, writer<T> w) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    template <typename T = In, std::enable_if_t<std::is_same_v<T, Out>, int> = 0>
-    chan<T> spawn() && {
-        return spawn_filter<T>(
-            [b = std::move(body_)](reader<T> r, writer<T> w) mutable {
+            [b = std::forward_like<decltype(self)>(self.body_)](reader<T> r, writer<T> w) mutable {
                 b(std::move(r), std::move(w));
             });
     }
@@ -2887,6 +2841,7 @@ inline auto const blackhole = make_consumer<T>([](reader<T> in) {
 
 /* csp/ringbuffer.h */
 
+#include <compare>
 
 namespace csp::detail {
 
@@ -3030,12 +2985,8 @@ public:
             return static_cast<difference_type>(idx_) - static_cast<difference_type>(o.idx_);
         }
 
-        bool operator==(iterator const & o) const { return idx_ == o.idx_; }
-        bool operator!=(iterator const & o) const { return idx_ != o.idx_; }
-        bool operator<(iterator const & o) const { return idx_ < o.idx_; }
-        bool operator>(iterator const & o) const { return idx_ > o.idx_; }
-        bool operator<=(iterator const & o) const { return idx_ <= o.idx_; }
-        bool operator>=(iterator const & o) const { return idx_ >= o.idx_; }
+        bool operator==(iterator const & o) const = default;
+        std::strong_ordering operator<=>(iterator const & o) const { return idx_ <=> o.idx_; }
 
     private:
         friend class RingBuffer;
@@ -3064,17 +3015,9 @@ private:
         if (p) ::operator delete(p, std::align_val_t(alignof(T)));
     }
 
-    static size_t round_up_pow2(size_t n) {
+    static constexpr size_t round_up_pow2(size_t n) {
         assert(n > 0);
-        --n;
-        n |= n >> 1;
-        n |= n >> 2;
-        n |= n >> 4;
-        n |= n >> 8;
-        n |= n >> 16;
-        if constexpr (sizeof(size_t) > 4)
-            n |= n >> 32;
-        return n + 1;
+        return std::bit_ceil(n);
     }
 
     void grow() {
@@ -3137,7 +3080,7 @@ auto buffer(size_t capacity = size_t(-1)) {
                 CSP_LOG(log, "~OUT");
                 return;
             default:
-                assert(!"Uh?");
+                std::unreachable();
             }
         }
     });
@@ -3284,7 +3227,7 @@ auto combine_latest_impl(F&& f, reader<Ts>... inputs) {
 
     return make_producer<Out>(
         [f = std::forward<F>(f),
-         inputs = std::make_tuple(std::move(inputs)...)](writer<Out> out) mutable {
+         inputs = std::tuple{std::move(inputs)...}](writer<Out> out) mutable {
             internal::descr("combine_latest");
 
             std::tuple<Ts...> bufs;
@@ -3341,13 +3284,13 @@ template <typename... Ts>
 auto combine_latest(reader<Ts>... rs) {
     static_assert(sizeof...(Ts) >= 2, "combine_latest requires at least 2 inputs");
     return detail::combine_latest_impl(
-        [](Ts&... vs) { return std::make_tuple(vs...); },
+        [](Ts&... vs) { return std::tuple{vs...}; },
         std::move(rs)...);
 }
 
 // combine_latest with combining function (requires explicit type params).
-template <typename... Ts, typename F,
-          std::enable_if_t<std::is_invocable_v<std::decay_t<F>&, Ts&...>, int> = 0>
+template <typename... Ts, typename F>
+    requires std::is_invocable_v<std::decay_t<F>&, Ts&...>
 auto combine_latest(reader<Ts>... rs, F&& f) {
     static_assert(sizeof...(Ts) >= 2, "combine_latest requires at least 2 inputs");
     return detail::combine_latest_impl(std::forward<F>(f), std::move(rs)...);
@@ -3620,7 +3563,7 @@ namespace detail {
 
 template <typename Tuple, size_t... Is>
 auto make_chans(std::index_sequence<Is...>) {
-    return std::make_tuple(csp::chan<std::tuple_element_t<Is, Tuple>>{}...);
+    return std::tuple{csp::chan<std::tuple_element_t<Is, Tuple>>{}...};
 }
 
 template <typename Tuple, typename Chans, size_t... Is>
@@ -3631,7 +3574,7 @@ void unzip_write(Tuple& vals, Chans& chans, std::index_sequence<Is...>) {
 
 template <typename Chans, size_t... Is>
 auto extract_readers(Chans& chans, std::index_sequence<Is...>) {
-    return std::make_tuple(std::move(std::get<Is>(chans).r)...);
+    return std::tuple{std::move(std::get<Is>(chans).r)...};
 }
 
 } // namespace detail
@@ -4810,7 +4753,7 @@ auto mux(reader<Ts>... inputs) {
     using Dispatch = detail::mux_dispatch<V, Ts...>;
 
     return make_producer<V>(
-        [inputs = std::make_tuple(std::move(inputs)...)](writer<V> out) mutable {
+        [inputs = std::tuple{std::move(inputs)...}](writer<V> out) mutable {
             internal::descr("mux");
 
             std::tuple<Ts...> bufs;
@@ -4861,7 +4804,7 @@ namespace detail {
 
 template <typename T, size_t N, size_t... Is>
 auto array_to_tuple(std::array<T, N>& arr, std::index_sequence<Is...>) {
-    return std::make_tuple(arr[Is]...);
+    return std::tuple{arr[Is]...};
 }
 
 } // namespace detail
@@ -4946,7 +4889,7 @@ inline auto const pairwise = make_filter<T, std::pair<T, T>>(
         T prev;
         if (csp::alt(in >> prev, ~out) != 0) return;
         for (T t; csp::alt(in >> t, ~out) == 0;) {
-            auto p = std::make_pair(std::move(prev), t);
+            auto p = std::pair{std::move(prev), t};
             prev = std::move(t);
             if (!(out << std::move(p))) return;
         }
@@ -4957,7 +4900,7 @@ inline auto const pairwise = make_filter<T, std::pair<T, T>>(
 /* csp/part/parallel_map.h */
 
 
-#include <map>
+#include <flat_map>
 
 namespace csp::part {
 
@@ -4984,7 +4927,7 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
                     internal::descr("parallel_map/dispatch");
                     size_t seq = 0;
                     for (A a; in >> a;) {
-                        if (!(num_w << std::make_pair(seq++, std::move(a)))) return;
+                        if (!(num_w << std::pair{seq++, std::move(a)})) return;
                     }
                 });
 
@@ -4996,7 +4939,7 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
                             std::pair<size_t, A> item;
                             while (num_r >> item) {
                                 auto result = f(std::move(item.second));
-                                if (!(res_w << std::make_pair(item.first, std::move(result))))
+                                if (!(res_w << std::pair{item.first, std::move(result)}))
                                     return;
                             }
                         });
@@ -5006,7 +4949,7 @@ auto parallel_map(size_t n, F&& f, parallel_map_config cfg = {}) {
                 res_w = {};
 
                 // Collector: reorder results and emit in sequence.
-                std::map<size_t, B> buf;
+                std::flat_map<size_t, B> buf;
                 size_t next = 0;
                 for (std::pair<size_t, B> r; csp::alt(res_r >> r, ~out) == 0;) {
                     buf.emplace(r.first, std::move(r.second));
@@ -5489,7 +5432,7 @@ namespace detail {
 template <typename Ret>
 struct apply_message {
     template <typename F, typename Tuple>
-    auto operator()(F && f, Tuple && t) {
+    static auto operator()(F && f, Tuple && t) {
         return std::apply(std::forward<F>(f), std::forward<Tuple>(t));
     }
 };
@@ -5497,7 +5440,7 @@ struct apply_message {
 template <>
 struct apply_message<poke_t> {
     template <typename F, typename Tuple>
-    auto operator()(F && f, Tuple && t) {
+    static auto operator()(F && f, Tuple && t) {
         std::apply(std::forward<F>(f), std::forward<Tuple>(t));
         return poke;
     }
@@ -5511,7 +5454,7 @@ struct apply_message<poke_t> {
 template <typename... Args, typename Rep>
 auto rpc_client(writer<std::tuple<Args...>> req, reader<Rep> rep) {
     return [req = std::move(req), rep = std::move(rep)](Args... args) {
-        if (alt(req << std::make_tuple(std::move(args)...), ~rep) == 0) {
+        if (alt(req << std::tuple{std::move(args)...}, ~rep) == 0) {
             return rep.read();
         }
         throw std::runtime_error("rpc dead");
@@ -5537,7 +5480,7 @@ template <typename... Args, typename Rep>
 auto rpc_client(writer<std::pair<std::tuple<Args...>, writer<Rep>>> req) {
     return [req = std::move(req)](auto && t) {
         auto [w, r] = chan<Rep>{};
-        if (req << std::make_pair(std::forward<std::decay_t<decltype(t)>>(t), std::move(w))) {
+        if (req << std::pair{std::forward<std::decay_t<decltype(t)>>(t), std::move(w)}) {
             return r.read();
         }
         throw std::runtime_error("rpc dead");
@@ -5805,8 +5748,8 @@ struct slide_config {
 // expired(older, current) returns true when older should leave the window.
 // Per input element: expire from front (send on out), then send new on in.
 // slide_in=true emits during growth; false suppresses until first expiry.
-template <typename T, typename Pred,
-          std::enable_if_t<std::is_invocable_v<Pred&, const T&, const T&>, int> = 0>
+template <typename T, typename Pred>
+    requires std::is_invocable_v<Pred&, const T&, const T&>
 window_pair<T> slide(reader<T> src, Pred expired, slide_config cfg = {}) {
     chan<T> in_ch, out_ch;
     window_pair<T> result{std::move(in_ch.r), std::move(out_ch.r)};
@@ -6337,7 +6280,7 @@ template <typename F, typename... Ts>
 auto zip_impl(F&& f, reader<Ts>... rs) {
     using Out = std::invoke_result_t<std::decay_t<F>&, Ts...>;
     return make_producer<Out>(
-        [f = std::forward<F>(f), readers = std::make_tuple(std::move(rs)...)]
+        [f = std::forward<F>(f), readers = std::tuple{std::move(rs)...}]
         (writer<Out> out) mutable {
             internal::descr("zip");
             std::tuple<Ts...> vals;
@@ -6352,8 +6295,8 @@ auto zip_impl(F&& f, reader<Ts>... rs) {
 
 // Zip N readers through a combining function.
 // Requires explicit type parameters: zip<int, double>(r1, r2, f).
-template <typename... Ts, typename F,
-          std::enable_if_t<std::is_invocable_v<std::decay_t<F>&, Ts...>, int> = 0>
+template <typename... Ts, typename F>
+    requires std::is_invocable_v<std::decay_t<F>&, Ts...>
 auto zip(reader<Ts>... rs, F&& f) {
     return detail::zip_impl(std::forward<F>(f), std::move(rs)...);
 }
@@ -6362,7 +6305,7 @@ auto zip(reader<Ts>... rs, F&& f) {
 template <typename... Ts>
 auto zip(reader<Ts>... rs) {
     return detail::zip_impl(
-        [](Ts... vs) { return std::make_tuple(std::move(vs)...); },
+        [](Ts... vs) { return std::tuple{std::move(vs)...}; },
         std::move(rs)...);
 }
 
