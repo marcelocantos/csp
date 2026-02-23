@@ -45,7 +45,7 @@ inline int set_nonblock(int fd) {
 // is ready, then retrying the syscall. All retry on EINTR.
 
 // Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
-inline ssize_t read(int fd, void* buf, size_t len) {
+[[nodiscard]] inline ssize_t read(int fd, void* buf, size_t len) {
     for (;;) {
         ssize_t n = ::read(fd, buf, len);
         if (n >= 0) return n;
@@ -60,7 +60,7 @@ inline ssize_t read(int fd, void* buf, size_t len) {
 
 // Write all of buf. Returns total bytes written, or -1 on error.
 // Partial writes are retried automatically.
-inline ssize_t write(int fd, const void* buf, size_t len) {
+[[nodiscard]] inline ssize_t write(int fd, const void* buf, size_t len) {
     size_t written = 0;
     auto p = static_cast<const uint8_t*>(buf);
     while (written < len) {
@@ -80,7 +80,7 @@ inline ssize_t write(int fd, const void* buf, size_t len) {
 }
 
 // Accept a connection. Returns new fd, or -1 on error.
-inline int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
+[[nodiscard]] inline int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
     for (;;) {
         int fd = ::accept(listen_fd, addr, addrlen);
         if (fd >= 0) return fd;
@@ -95,7 +95,7 @@ inline int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
 
 // Non-blocking connect. Returns 0 on success, -1 on error.
 // The fd must already be non-blocking.
-inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
+[[nodiscard]] inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
     int ret = ::connect(fd, addr, addrlen);
     if (ret == 0) return 0;
     if (errno != EINPROGRESS) return -1;
@@ -126,7 +126,7 @@ using resolve_result = std::expected<addrinfo_ptr, resolve_error>;
 
 // Resolve host/service. hints may be nullptr for defaults.
 // Runs getaddrinfo on the blocking pool — never stalls the processor.
-inline resolve_result resolve(const std::string& host,
+[[nodiscard]] inline resolve_result resolve(const std::string& host,
                               const std::string& service = {},
                               const struct addrinfo* hints = nullptr) {
     struct addrinfo* raw = nullptr;

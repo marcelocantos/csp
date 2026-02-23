@@ -2,6 +2,7 @@
 
 #include <bit>
 #include <cassert>
+#include <compare>
 #include <cstddef>
 #include <new>
 #include <utility>
@@ -148,12 +149,8 @@ public:
             return static_cast<difference_type>(idx_) - static_cast<difference_type>(o.idx_);
         }
 
-        bool operator==(iterator const & o) const { return idx_ == o.idx_; }
-        bool operator!=(iterator const & o) const { return idx_ != o.idx_; }
-        bool operator<(iterator const & o) const { return idx_ < o.idx_; }
-        bool operator>(iterator const & o) const { return idx_ > o.idx_; }
-        bool operator<=(iterator const & o) const { return idx_ <= o.idx_; }
-        bool operator>=(iterator const & o) const { return idx_ >= o.idx_; }
+        bool operator==(iterator const & o) const = default;
+        std::strong_ordering operator<=>(iterator const & o) const { return idx_ <=> o.idx_; }
 
     private:
         friend class RingBuffer;

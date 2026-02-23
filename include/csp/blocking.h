@@ -27,7 +27,7 @@ namespace csp {
 //   auto addrs = csp::blocking([]{ return getaddrinfo(...); });
 //
 template <typename Fn>
-auto blocking(Fn&& fn) -> std::invoke_result_t<Fn> {
+[[nodiscard]] auto blocking(Fn&& fn) -> std::invoke_result_t<Fn> {
     using R = std::invoke_result_t<Fn>;
     if constexpr (std::is_void_v<R>) {
         internal::run_blocking(std::forward<Fn>(fn));
