@@ -229,8 +229,9 @@ with entropy-seeded default, so configurable seeding is built in.
       `prialt(r >> n, csp::none)` = Go's `select { case ...: default: }`.
       Vector overloads: `alt(ops, csp::none)`, `prialt(ops, csp::none)`.
 
-- [ ] **waitgroup** — Explicit join point for a dynamic set of imps.
-      `schedule()` is all-or-nothing; waitgroup allows partial joins.
+- [x] ~~**waitgroup**~~ — Subsumed by multi-handle `join()` (range and
+      variadic overloads) and shared-writer-death pattern. Channel
+      refcounting is the waitgroup count; no manual `Add`/`Done`.
 
 - [ ] **errgroup** — Structured concurrency with first-error cancellation
       and error collection. Spawns N imps, cancels all on first
