@@ -3,9 +3,6 @@
 
 #include <doctest/doctest.h>
 
-#include <csp/blocking.h>
-#include <csp/dynamic.h>
-
 #include <atomic>
 #include <mutex>
 #include <set>
