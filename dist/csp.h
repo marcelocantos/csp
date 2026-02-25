@@ -96,12 +96,12 @@ private:
 #include <stdint.h>
 
 #include <functional>
+#include <iterator>
+#include <ranges>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
-
-#include <iterator>
 
 
 namespace csp::internal {
@@ -991,6 +991,29 @@ inline void join(reader<std::exception_ptr> const & r) {
     if (r >> ep) {
         std::rethrow_exception(ep);
     }
+}
+
+template <std::ranges::input_range R>
+    requires std::is_same_v<std::ranges::range_value_t<R>, reader<std::exception_ptr>>
+void join(R&& handles) {
+    std::exception_ptr first;
+    for (auto& h : handles) {
+        std::exception_ptr ep;
+        if (h >> ep && !first) first = ep;
+    }
+    if (first) std::rethrow_exception(first);
+}
+
+template <typename... Rs>
+    requires (sizeof...(Rs) > 1 && (std::is_same_v<std::decay_t<Rs>, reader<std::exception_ptr>> && ...))
+void join(Rs&&... rs) {
+    std::exception_ptr first;
+    auto try_join = [&](auto& h) {
+        std::exception_ptr ep;
+        if (h >> ep && !first) first = ep;
+    };
+    (try_join(rs), ...);
+    if (first) std::rethrow_exception(first);
 }
 
 template <typename T, typename F>
@@ -1907,7 +1930,7 @@ private:
 cancel_guard cancellation();
 cancel_guard cancellation(duration d);
 cancel_guard cancellation(time_point tp);
-chan_op<> cancel_op();
+chan_op<> done();
 bool is_cancel_active();
 std::exception_ptr cancel_reason();
 

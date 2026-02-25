@@ -115,7 +115,7 @@ Thrown on TLS failures (handshake rejection, verification failure, etc.).
 
 All blocking TLS operations (`handshake`, `read`, `write`) are cancel-aware.
 They use `csp::io::wait_readable`/`wait_writable` internally, which compose
-with `cancel_op()` when a cancellation scope is active.
+with `done()` when a cancellation scope is active.
 
 ```cpp
 auto cancel = csp::cancellation(std::chrono::seconds(5));

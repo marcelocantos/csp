@@ -3,7 +3,7 @@
 CSP provides cooperative, scope-based cancellation that cascades from parent
 to child imps automatically. Unlike Go's explicit `context` parameter, CSP
 uses dynamic scoping -- the cancellation state is invisible to user code
-except through two functions: `cancellation()` and `cancel_op()`.
+except through two functions: `cancellation()` and `done()`.
 
 ## Creating a cancellation scope
 
@@ -19,7 +19,7 @@ spawn([]{
     spawn([]{
         // This child inherits the cancel scope.
         int val;
-        switch (prialt(cancel_op(), work.r >> val)) {
+        switch (prialt(done(), work.r >> val)) {
         case ~0:  // scope was cancelled
             return;
         case  1:
@@ -35,12 +35,12 @@ spawn([]{
 
 ## Observing cancellation
 
-`cancel_op()` returns a `chan_op<>` that fires when the scope is cancelled.
+`done()` returns a `chan_op<>` that fires when the scope is cancelled.
 Use it as an arm in `prialt`:
 
 ```cpp
 int val;
-switch (prialt(cancel_op(), input.r >> val)) {
+switch (prialt(done(), input.r >> val)) {
 case ~0:  // cancelled
     cleanup();
     return;
@@ -50,8 +50,8 @@ case  1:  // got a value
 }
 ```
 
-If no cancellation scope is active, `cancel_op()` returns an inactive
-operation that `prialt` skips -- so code using `cancel_op()` works correctly
+If no cancellation scope is active, `done()` returns an inactive
+operation that `prialt` skips -- so code using `done()` works correctly
 both inside and outside a cancellation scope.
 
 ## Explicit vs automatic cancellation
@@ -97,11 +97,11 @@ spawn([]{
 
         spawn([]{
             // Watches the child scope, which is watching the parent.
-            prialt(cancel_op());
+            prialt(done());
             // Fires when either child or parent is cancelled.
         });
 
-        prialt(cancel_op());
+        prialt(done());
     });
 
     parent();  // cascades to child and grandchild
@@ -123,14 +123,14 @@ spawn([]{
     spawn([]{
         while (true) {
             int val;
-            switch (prialt(cancel_op(), work.r >> val)) {
+            switch (prialt(done(), work.r >> val)) {
             case ~0:  return;  // timed out (or explicitly cancelled)
             case  1:  process(val); break;
             }
         }
     });
 
-    prialt(cancel_op());  // wait for deadline or explicit cancel
+    prialt(done());  // wait for deadline or explicit cancel
 });
 ```
 
@@ -162,7 +162,7 @@ spawn([]{
         }
     });
 
-    prialt(cancel_op());
+    prialt(done());
 });
 ```
 
@@ -172,12 +172,12 @@ the cancel check is a single dynamic-variable lookup that returns null.
 ## Channel operations
 
 Channel operations (`<<`, `>>`, `alt`, `prialt`) are **not** automatically
-cancellation-aware. To cancel a channel wait, include `cancel_op()` as an
+cancellation-aware. To cancel a channel wait, include `done()` as an
 explicit arm:
 
 ```cpp
 int val;
-switch (prialt(cancel_op(), ch.r >> val)) {
+switch (prialt(done(), ch.r >> val)) {
 case ~0:  return;   // cancelled
 case  1:  break;    // got value
 }

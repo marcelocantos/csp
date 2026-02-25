@@ -389,9 +389,9 @@ auto guard = cancellation(5s);
 guard();                               // cancel with canceled{}
 guard(std::make_exception_ptr(my_error{}));  // cancel with custom reason
 
-// Cancel-aware prialt: cancel_op() returns a chan_op<> vulture.
+// Cancel-aware prialt: done() returns a chan_op<> vulture.
 int v;
-auto cop = cancel_op();
+auto cop = done();
 switch (prialt(std::move(cop), r >> v)) {
     case ~0: /* cancelled */ break;
     case 1:  /* got v */     break;

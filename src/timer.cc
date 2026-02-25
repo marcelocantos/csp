@@ -33,7 +33,7 @@ void sleep_until(time_point tp) {
                 (*csp::clock)->sleep_until(tp);
                 // w drops on exit → timer.r sees death
             });
-            auto cop = cancel_op();
+            auto cop = done();
             switch (prialt(std::move(cop), ~timer.r)) {
             case ~0: {
                 auto reason = cancel_reason();
@@ -51,7 +51,7 @@ void sleep_until(time_point tp) {
         if (delay_ns <= 0) return;  // already past
 
         auto signal = detail::create_timer_signal(delay_ns);
-        auto cop = cancel_op();
+        auto cop = done();
         switch (prialt(std::move(cop), ~signal)) {
         case ~0: {
             auto reason = cancel_reason();

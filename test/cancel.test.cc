@@ -14,7 +14,7 @@ TEST_CASE("cancel_guard destructor auto-cancels") {
         {
             auto guard = cancellation();
             spawn([&]() {
-                prialt(cancel_op());
+                prialt(done());
                 fired = true;
             });
             csp::yield();
@@ -31,7 +31,7 @@ TEST_CASE("explicit cancel") {
     stats.spawn([&]() {
         auto guard = cancellation();
         spawn([&]() {
-            prialt(cancel_op());
+            prialt(done());
             fired = true;
         });
         csp::yield();
@@ -48,7 +48,7 @@ TEST_CASE("cancel with reason") {
     stats.spawn([&]() {
         auto guard = cancellation();
         spawn([&]() {
-            prialt(cancel_op());
+            prialt(done());
             auto reason = cancel_reason();
             CHECK(reason != nullptr);
             try {
@@ -65,7 +65,7 @@ TEST_CASE("cancel with reason") {
     CHECK(got_reason);
 }
 
-TEST_CASE("cancel_op in prialt with work channel") {
+TEST_CASE("done in prialt with work channel") {
     RunStats stats;
     int result = -1;
     stats.spawn([&]() {
@@ -73,7 +73,7 @@ TEST_CASE("cancel_op in prialt with work channel") {
         chan<int> work;
         spawn([&]() {
             int v;
-            switch (prialt(cancel_op(), work.r >> v)) {
+            switch (prialt(done(), work.r >> v)) {
             case ~0: result = 0; break;
             case  1: result = 1; break;
             }
@@ -86,14 +86,14 @@ TEST_CASE("cancel_op in prialt with work channel") {
     CHECK(result == 0); // cancel fired, not work
 }
 
-TEST_CASE("cancel_op inactive without scope") {
+TEST_CASE("done inactive without scope") {
     RunStats stats;
     int result = -1;
     stats.spawn([&]() {
         chan<int> ch;
         spawn([&]() {
             int v;
-            switch (prialt(cancel_op(), ch.r >> v)) {
+            switch (prialt(done(), ch.r >> v)) {
             case ~0: result = 0; break;
             case  1: result = 1; break;
             }
@@ -101,7 +101,7 @@ TEST_CASE("cancel_op inactive without scope") {
         ch.w << 42;
     });
     while (csp::internal::run()) {}
-    CHECK(result == 1); // work channel fired, cancel_op inactive
+    CHECK(result == 1); // work channel fired, done inactive
 }
 
 TEST_CASE("cascading parent to child") {
@@ -112,12 +112,12 @@ TEST_CASE("cascading parent to child") {
         spawn([&]() {
             auto child = cancellation();
             spawn([&]() {
-                prialt(cancel_op());
+                prialt(done());
                 child_cancelled = true;
             });
             csp::yield();
             // Block until child scope's cancel fires
-            prialt(cancel_op());
+            prialt(done());
         });
         csp::yield();
         csp::yield(); // let child scope set up
@@ -139,15 +139,15 @@ TEST_CASE("multi-level cascade") {
             spawn([&]() {
                 auto g3 = cancellation();
                 spawn([&]() {
-                    prialt(cancel_op());
+                    prialt(done());
                     leaf_cancelled = true;
                 });
                 csp::yield();
-                prialt(cancel_op());
+                prialt(done());
             });
             csp::yield();
             csp::yield();
-            prialt(cancel_op());
+            prialt(done());
         });
         csp::yield();
         csp::yield();
@@ -170,7 +170,7 @@ TEST_CASE("direct child cancel does not affect parent") {
         spawn([&]() {
             auto child = cancellation();
             spawn([&]() {
-                prialt(cancel_op());
+                prialt(done());
                 child_saw_cancel = true;
             });
             csp::yield();
@@ -182,7 +182,7 @@ TEST_CASE("direct child cancel does not affect parent") {
         int dummy;
         spawn([&]() {
             // Parent scope — check if cancel fires
-            switch (prialt(cancel_op(), ch.r >> dummy)) {
+            switch (prialt(done(), ch.r >> dummy)) {
             case ~0: parent_saw_cancel = true; break;
             }
         });
@@ -232,7 +232,7 @@ TEST_CASE("multiple watchers") {
         auto guard = cancellation();
         for (int i = 0; i < 5; ++i) {
             spawn([&]() {
-                prialt(cancel_op());
+                prialt(done());
                 ++count;
             });
         }
@@ -308,7 +308,7 @@ TEST_CASE("channel leak check") {
     stats.spawn([&]() {
         auto guard = cancellation();
         spawn([&]() {
-            prialt(cancel_op());
+            prialt(done());
             fired = true;
         });
         csp::yield();
@@ -336,14 +336,14 @@ TEST_CASE("deadline fires timed_out") {
                 // should be timed_out, not plain canceled
             }
         });
-        prialt(cancel_op());  // wait for deadline to fire
+        prialt(done());  // wait for deadline to fire
     });
     csp::schedule();
     fc.run();
     CHECK(got_timed_out);
 }
 
-TEST_CASE("deadline cancel_op fires") {
+TEST_CASE("deadline done fires") {
     RunStats stats;
     fake_clock fc;
     bool fired = false;
@@ -351,10 +351,10 @@ TEST_CASE("deadline cancel_op fires") {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation(std::chrono::seconds(2));
         spawn([&]() {
-            prialt(cancel_op());
+            prialt(done());
             fired = true;
         });
-        prialt(cancel_op());  // wait for deadline
+        prialt(done());  // wait for deadline
     });
     csp::schedule();
     fc.run();
@@ -369,7 +369,7 @@ TEST_CASE("deadline cancel_reason is timed_out") {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation(std::chrono::seconds(1));
         spawn([&]() {
-            prialt(cancel_op());
+            prialt(done());
             auto reason = cancel_reason();
             try {
                 std::rethrow_exception(reason);
@@ -377,7 +377,7 @@ TEST_CASE("deadline cancel_reason is timed_out") {
                 is_timed_out = true;
             } catch (...) {}
         });
-        prialt(cancel_op());  // wait for deadline to fire
+        prialt(done());  // wait for deadline to fire
     });
     csp::schedule();
     fc.run();
@@ -393,7 +393,7 @@ TEST_CASE("deadline explicit cancel before timeout") {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation(std::chrono::seconds(10));
         spawn([&]() {
-            prialt(cancel_op());
+            prialt(done());
             auto reason = cancel_reason();
             try {
                 std::rethrow_exception(reason);
@@ -421,10 +421,10 @@ TEST_CASE("deadline with time_point overload") {
         auto tp = csp::now() + std::chrono::seconds(3);
         auto guard = cancellation(tp);
         spawn([&]() {
-            prialt(cancel_op());
+            prialt(done());
             fired = true;
         });
-        prialt(cancel_op());  // wait for deadline
+        prialt(done());  // wait for deadline
     });
     csp::schedule();
     fc.run();
@@ -441,13 +441,13 @@ TEST_CASE("deadline cascades to child") {
         spawn([&]() {
             auto child = cancellation();
             spawn([&]() {
-                prialt(cancel_op());
+                prialt(done());
                 child_fired = true;
             });
             csp::yield();
-            prialt(cancel_op());
+            prialt(done());
         });
-        prialt(cancel_op());  // wait for deadline
+        prialt(done());  // wait for deadline
     });
     csp::schedule();
     fc.run();
@@ -465,7 +465,7 @@ TEST_CASE("concurrent cancel detection") {
         auto guard = cancellation();
         for (int i = 0; i < 10; ++i) {
             spawn([&]() {
-                prialt(cancel_op());
+                prialt(done());
                 count++;
             });
         }

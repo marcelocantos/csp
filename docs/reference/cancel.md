@@ -13,7 +13,7 @@ All types live in `namespace csp`. Header: `#include "csp/cancel.h"`.
 2. [timed_out](#timed_out) -- deadline exception type
 3. [cancel_guard](#cancel_guard) -- RAII cancellation scope
 4. [cancellation](#cancellation) -- create a cancellation scope (with optional deadline)
-5. [cancel_op](#cancel_op) -- channel operation for observing cancellation
+5. [done](#done) -- channel operation for observing cancellation
 6. [cancel_reason](#cancel_reason) -- retrieve the cancellation reason
 7. [Cancellation-aware primitives](#cancellation-aware-primitives) -- sleep and I/O
 
@@ -96,7 +96,7 @@ cancel_guard cancellation(time_point tp);
 
 `cancellation()` creates a new cancel state and binds it to the current imp's
 dynamic scope. Child imps spawned within this scope inherit the binding and
-can observe cancellation via `cancel_op()`.
+can observe cancellation via `done()`.
 
 If a parent cancellation scope exists (from an enclosing `cancellation()` call
 in the spawn chain), a cascade imp is automatically spawned. When the parent
@@ -134,7 +134,7 @@ guard(ep)                                ➤ cancel_state.cancelled = true;
 
 ---
 
-## cancel_op
+## done
 
 Return a channel operation suitable for `alt`/`prialt` that fires when the
 current cancellation scope is cancelled.
@@ -142,7 +142,7 @@ current cancellation scope is cancelled.
 ### Signature
 
 ```cpp
-chan_op<> cancel_op();
+chan_op<> done();
 ```
 
 ### Description
@@ -161,7 +161,7 @@ auto guard = csp::cancellation();
 
 csp::spawn([]{
     int val;
-    switch (csp::prialt(csp::cancel_op(), ch.r >> val)) {
+    switch (csp::prialt(csp::done(), ch.r >> val)) {
     case ~0:  // cancelled
         break;
     case  1:  // received val
@@ -208,7 +208,7 @@ When no cancellation scope is active, these primitives behave exactly as before
 with zero overhead.
 
 Channel operations (`<<`, `>>`, `alt`, `prialt`) are **not** automatically
-cancellation-aware. Use `cancel_op()` as an explicit arm in `prialt` to observe
+cancellation-aware. Use `done()` as an explicit arm in `prialt` to observe
 cancellation alongside channel operations.
 
 ### Implementation note

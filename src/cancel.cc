@@ -137,7 +137,7 @@ cancel_guard cancellation(time_point tp) {
     return cancel_guard(std::make_unique<cancel_guard::impl>(state));
 }
 
-chan_op<> cancel_op() {
+chan_op<> done() {
     auto state = *g_cancel;  // shared_ptr copy keeps state alive
     if (!state) return {};
     return ~state->signal;

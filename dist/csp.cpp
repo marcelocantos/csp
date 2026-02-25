@@ -226,7 +226,7 @@ cancel_guard cancellation(time_point tp) {
     return cancel_guard(std::make_unique<cancel_guard::impl>(state));
 }
 
-chan_op<> cancel_op() {
+chan_op<> done() {
     auto state = *g_cancel;  // shared_ptr copy keeps state alive
     if (!state) return {};
     return ~state->signal;
@@ -1661,7 +1661,7 @@ void io_wait_readable(int fd) {
         return;
     }
 
-    switch (csp::prialt(csp::cancel_op(), ~signal)) {
+    switch (csp::prialt(csp::done(), ~signal)) {
     case ~0: {
         auto reason = csp::cancel_reason();
         if (reason) std::rethrow_exception(reason);
@@ -1679,7 +1679,7 @@ void io_wait_writable(int fd) {
         return;
     }
 
-    switch (csp::prialt(csp::cancel_op(), ~signal)) {
+    switch (csp::prialt(csp::done(), ~signal)) {
     case ~0: {
         auto reason = csp::cancel_reason();
         if (reason) std::rethrow_exception(reason);
@@ -3868,7 +3868,7 @@ void sleep_until(time_point tp) {
                 (*csp::clock)->sleep_until(tp);
                 // w drops on exit → timer.r sees death
             });
-            auto cop = cancel_op();
+            auto cop = done();
             switch (prialt(std::move(cop), ~timer.r)) {
             case ~0: {
                 auto reason = cancel_reason();
@@ -3886,7 +3886,7 @@ void sleep_until(time_point tp) {
         if (delay_ns <= 0) return;  // already past
 
         auto signal = detail::create_timer_signal(delay_ns);
-        auto cop = cancel_op();
+        auto cop = done();
         switch (prialt(std::move(cop), ~signal)) {
         case ~0: {
             auto reason = cancel_reason();

@@ -574,7 +574,7 @@ void sleep_until(int64_t deadline_ns) {
 ```
 
 The cancel-aware `csp::sleep_until(tp)` extends this by racing the timer
-signal against `cancel_op()` in a prialt. Under a fake clock, it spawns a
+signal against `done()` in a prialt. Under a fake clock, it spawns a
 helper imp that calls the clock virtual directly.
 
 ### after() and tick()
@@ -771,10 +771,10 @@ The imp suspends via the standard prialt path (channel operations), not
 via a custom suspension protocol. This eliminates the TOCTOU window that
 existed when the reactor thread called `schedule()` directly on the imp.
 
-Cancel-aware I/O extends this by racing the fd signal against `cancel_op()`:
+Cancel-aware I/O extends this by racing the fd signal against `done()`:
 
 ```cpp
-switch (prialt(cancel_op(), ~signal)) {
+switch (prialt(done(), ~signal)) {
     case ~0: /* cancelled */ throw canceled{};
     case ~1: /* fd ready  */ return;
 }

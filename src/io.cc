@@ -12,7 +12,7 @@ void io_wait_readable(int fd) {
         return;
     }
 
-    switch (csp::prialt(csp::cancel_op(), ~signal)) {
+    switch (csp::prialt(csp::done(), ~signal)) {
     case ~0: {
         auto reason = csp::cancel_reason();
         if (reason) std::rethrow_exception(reason);
@@ -30,7 +30,7 @@ void io_wait_writable(int fd) {
         return;
     }
 
-    switch (csp::prialt(csp::cancel_op(), ~signal)) {
+    switch (csp::prialt(csp::done(), ~signal)) {
     case ~0: {
         auto reason = csp::cancel_reason();
         if (reason) std::rethrow_exception(reason);

@@ -112,7 +112,7 @@ public:
 
 All blocking methods (`handshake`, `read`, `write`) use
 `csp::io::wait_readable` / `wait_writable` internally. When a cancellation
-scope is active, these compose the fd readiness signal with `cancel_op()` in
+scope is active, these compose the fd readiness signal with `done()` in
 a `prialt`, so cancellation fires immediately.
 
 ### BIO callbacks

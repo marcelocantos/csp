@@ -41,7 +41,7 @@ private:
 cancel_guard cancellation();
 cancel_guard cancellation(duration d);
 cancel_guard cancellation(time_point tp);
-chan_op<> cancel_op();
+chan_op<> done();
 bool is_cancel_active();
 std::exception_ptr cancel_reason();
 

@@ -5,8 +5,10 @@
 - [x] **Supervision trees (v1: worker\_group)** — `worker_group` class with
       `restart_policy`, one-for-one restart, sliding window, backoff, and
       escalation via `max_restarts_exceeded`. Nests via `operator()`.
-      Remaining: one\_for\_all / rest\_for\_one strategies, graceful shutdown
-      (killswitch), dynamic child add/remove, `retry` combinator.
+      Remaining: one\_for\_all / rest\_for\_one strategies, dynamic child
+      add/remove, `retry` combinator. (Graceful shutdown is handled by
+      the existing cancellation mechanism — `cancel_guard` scope +
+      `done()` in child prialt loops.)
 
   ### Design overview
 
@@ -66,10 +68,6 @@
       // Throws the escalating exception if it exits due to failure.
       void run();
 
-      // Request graceful shutdown: drop all children's killswitch channels,
-      // wait for them to exit (with optional timeout).
-      void shutdown(csp::duration timeout = 5s);
-
       // Dynamic child management (from within supervised imps).
       void add_child(child_spec spec);     // Hot-add.
       void remove_child(std::string id);   // Graceful stop + remove.
@@ -92,9 +90,6 @@
   4. Restart counter uses a sliding window: restarts older than `window`
      are forgotten. If counter exceeds `max_restarts`, supervisor itself
      throws (escalation).
-  5. On shutdown signal: drop all children's killswitch writers (if wired),
-     then `alt` over remaining join handles with a timeout. Force-drop any
-     stragglers.
 
   ### Strategy semantics
 
@@ -107,21 +102,18 @@
     are stopped and restarted. For sequential dependencies (B depends on A,
     C depends on B).
 
-  Stopping a child: drop its killswitch writer (if wired via `child_spec`),
-  wait briefly, then drop its reader (severing the join handle). The child
-  detects endpoint death via alt and exits.
+  Stopping a child: cancel its `cancel_guard` scope (the child detects
+  cancellation via `done()` or gets it thrown from blocking calls),
+  then wait on its join handle.
 
   ### Cancellation integration
 
-  Children receive cancellation via endpoint death, not signals. Two patterns:
-
-  1. **Killswitch** (preferred): Supervisor holds a `writer<>` per child.
-     Child's top-level loop includes `~killswitch_reader` in its alt.
-     Supervisor drops the writer to request shutdown.
-
-  2. **Input channel death**: If the child's work is driven by a reader
-     that the supervisor controls, dropping the writer end cancels it
-     naturally.
+  Children receive cancellation via the existing `csp::cancellation()`
+  mechanism. The supervisor wraps child spawns in a `cancel_guard` scope;
+  destroying the guard cancels all children. Children observe cancellation
+  via `done()` in their prialt loops, or have it thrown automatically
+  from `sleep`/`io` calls. Deadline-based shutdown uses
+  `cancellation(duration)`.
 
   ### Escalation
 
@@ -157,7 +149,6 @@
   - `supervisor` class with child registry and restart bookkeeping
   - Sliding-window restart counter
   - Strategy dispatch (one_for_one / one_for_all / rest_for_one)
-  - Ordered shutdown with timeout
   - Optional: dynamic child add/remove (hot management)
   - Optional: `supervisor_spec` for declarative tree construction
 
@@ -226,11 +217,12 @@ with entropy-seeded default, so configurable seeding is built in.
       Implemented: `dynamic<T>`, `local` (scoped bindings), `imp_local<T>`
       (imp-local), `context`/`context_scope` (transfer over channels).
 
-- [ ] **Cancellation and timeouts in dynamic scope** — Add cancellation and
-      deadline/timeout support to dynamic scope, similar to Go's
-      `context.Context` (`WithCancel`, `WithDeadline`, `WithTimeout`). Parent
-      imps could propagate cancellation to child trees via the existing
-      HAMT-based dynamic scoping mechanism.
+- [x] **Cancellation and timeouts in dynamic scope** — `cancellation()`,
+      `cancellation(duration)`, `cancellation(time_point)` create scoped
+      cancel guards (= Go's `WithCancel`, `WithTimeout`, `WithDeadline`).
+      `done()` in prialt (= `<-ctx.Done()`), `cancel_reason()` (= `ctx.Err()`),
+      `dynamic<T>` (= `ctx.Value()`). Parent→child propagation via dynamic
+      scope inherited on `spawn`.
 
 - [x] **select with default** — `csp::none` guard for alt/prialt. Returns
       `INT_MIN` (`constexpr operator int()`), usable as a switch case label.

@@ -57,7 +57,7 @@ These are generated from the development sources by `scripts/amalgamate.py`
 - **include/csp/timer.h** — Timer primitives (`sleep`, `after`, `tick`).
 - **include/csp/io.h** — Non-blocking I/O (kqueue reactor, DNS resolution).
 - **include/csp/cancel.h** — Cooperative cancellation (`cancel_guard`,
-  `cancel_op`, `timed_out`).
+  `done`, `timed_out`).
 - **include/csp/tls.h** — TLS via mbedTLS (`context`, `conn`), behind
   `#ifdef CSP_TLS`.
 - **include/csp/signal.h** — Unix signal channels.
