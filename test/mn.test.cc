@@ -3,9 +3,13 @@
 
 #include <doctest/doctest.h>
 
+#include <csp/blocking.h>
+#include <csp/dynamic.h>
+
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -694,6 +698,283 @@ TEST_CASE("MN - Watchdog rescues timers from stalled P") {
     csp::schedule();
     CHECK(timer_fired.load());
     CHECK(stall_done.load());
+
+    csp::shutdown_runtime();
+}
+
+// ---------------------------------------------------------------------------
+// Coverage gap tests — concurrency coverage audit
+// ---------------------------------------------------------------------------
+
+TEST_CASE("MN - SingleWorker") {
+    csp::init_runtime(1);
+
+    auto [w, r] = csp::chan<int>{};
+    std::atomic<int> result{0};
+
+    csp::spawn([w = std::move(w)] {
+        for (int i = 0; i < 10; ++i) {
+            w << i;
+        }
+    });
+
+    csp::spawn([&result, r = std::move(r)] {
+        int sum = 0;
+        for (int v; r >> v;) {
+            sum += v;
+        }
+        result.store(sum, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+
+    CHECK_EQ(45, result.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN - ExceptionPropagation") {
+    csp::init_runtime(2);
+
+    std::atomic<bool> caught{false};
+
+    csp::spawn([&caught] {
+        auto handle = csp::spawn([] {
+            throw std::runtime_error("test error from imp");
+        });
+
+        try {
+            csp::join(handle);
+        } catch (std::runtime_error const& e) {
+            CHECK(std::string(e.what()) == "test error from imp");
+            caught.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    csp::schedule();
+
+    CHECK(caught.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN - DynamicScopingInheritance") {
+    csp::init_runtime(2);
+
+    static csp::dynamic<int> depth{0};
+
+    std::atomic<int> parent_val{0};
+    std::atomic<int> child_val{0};
+    std::atomic<int> child_override_val{0};
+    constexpr int N = 20;
+    std::atomic<int> done{0};
+
+    csp::spawn([&] {
+        csp::local l{depth = 42};
+        parent_val.store(*depth, std::memory_order_relaxed);
+
+        // Collect child exception handles so we can join them.
+        std::vector<csp::reader<std::exception_ptr>> handles;
+        for (int i = 0; i < N; ++i) {
+            handles.push_back(csp::spawn([&] {
+                // Child should inherit parent's value.
+                int inherited = *depth;
+                child_val.fetch_add(inherited, std::memory_order_relaxed);
+
+                // Child override should not affect parent.
+                csp::local l2{depth = 99};
+                child_override_val.fetch_add(*depth, std::memory_order_relaxed);
+
+                done.fetch_add(1, std::memory_order_relaxed);
+            }));
+        }
+
+        // Wait for all children to complete while local scope is still alive.
+        csp::join(handles);
+    });
+
+    csp::schedule();
+
+    CHECK_EQ(42, parent_val.load());
+    CHECK_EQ(N * 42, child_val.load());
+    CHECK_EQ(N * 99, child_override_val.load());
+    CHECK_EQ(N, done.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN - ConcurrentSpawnStress") {
+    csp::init_runtime(4);
+
+    constexpr int SPAWNERS = 20 / SCALE_LIGHT;
+    constexpr int CHILDREN_PER = 50 / SCALE_LIGHT;
+    std::atomic<int> total{0};
+
+    for (int s = 0; s < SPAWNERS; ++s) {
+        csp::spawn([&] {
+            for (int c = 0; c < CHILDREN_PER; ++c) {
+                csp::spawn([&] {
+                    total.fetch_add(1, std::memory_order_relaxed);
+                });
+            }
+            total.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    csp::schedule();
+
+    CHECK_EQ(SPAWNERS * (1 + CHILDREN_PER), total.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN - HighContentionChannel") {
+    csp::init_runtime(4);
+
+    constexpr int NUM_WRITERS = 50 / SCALE_LIGHT;
+    constexpr int NUM_READERS = 50 / SCALE_LIGHT;
+    constexpr int MSGS_PER_WRITER = 20 / SCALE_LIGHT;
+
+    csp::chan<int> ch;
+    std::atomic<int64_t> write_sum{0};
+    std::atomic<int64_t> read_sum{0};
+
+    for (int i = 0; i < NUM_WRITERS; ++i) {
+        csp::spawn([w = ch.w.copy(), &write_sum, i] {
+            for (int j = 0; j < MSGS_PER_WRITER; ++j) {
+                int val = i * MSGS_PER_WRITER + j;
+                write_sum.fetch_add(val, std::memory_order_relaxed);
+                w << val;
+            }
+        });
+    }
+
+    for (int i = 0; i < NUM_READERS; ++i) {
+        csp::spawn([r = ch.r.copy(), &read_sum] {
+            for (int v; r >> v;) {
+                read_sum.fetch_add(v, std::memory_order_relaxed);
+            }
+        });
+    }
+    ch.release();
+
+    csp::schedule();
+
+    CHECK_EQ(write_sum.load(), read_sum.load());
+    // Verify the expected total: sum of i*MSGS_PER_WRITER+j for all writers/msgs.
+    int64_t total_msgs = (int64_t)NUM_WRITERS * MSGS_PER_WRITER;
+    int64_t expected = total_msgs * (total_msgs - 1) / 2;
+    CHECK_EQ(expected, read_sum.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN - ConcurrentBlocking") {
+    csp::init_runtime(2);
+
+    constexpr int N = 20 / SCALE_LIGHT;
+    std::atomic<int> total{0};
+
+    for (int i = 0; i < N; ++i) {
+        csp::spawn([&total, i] {
+            int result = csp::blocking([i] {
+                // Simulate a blocking computation.
+                int sum = 0;
+                for (int j = 0; j <= i; ++j) sum += j;
+                return sum;
+            });
+            total.fetch_add(result, std::memory_order_relaxed);
+        });
+    }
+
+    csp::schedule();
+
+    // Each imp i contributes i*(i+1)/2. Total = sum_{i=0}^{N-1} i*(i+1)/2.
+    int64_t expected = 0;
+    for (int i = 0; i < N; ++i) expected += (int64_t)i * (i + 1) / 2;
+    CHECK_EQ(expected, (int64_t)total.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN - HAMTStress") {
+    csp::init_runtime(4);
+
+    static csp::dynamic<int> var1{0};
+    static csp::dynamic<int> var2{0};
+
+    constexpr int N = 100 / SCALE_LIGHT;
+    std::atomic<int> sum1{0};
+    std::atomic<int> sum2{0};
+
+    csp::spawn([&] {
+        csp::local l{var1 = 10, var2 = 20};
+
+        std::vector<csp::reader<std::exception_ptr>> handles;
+        for (int i = 0; i < N; ++i) {
+            handles.push_back(csp::spawn([&, i] {
+                // Each child inherits parent values, then overrides one.
+                int inherited1 = *var1;
+                int inherited2 = *var2;
+                sum1.fetch_add(inherited1, std::memory_order_relaxed);
+                sum2.fetch_add(inherited2, std::memory_order_relaxed);
+
+                // Override var1 with a child-specific value; var2 should remain.
+                csp::local l2{var1 = i};
+                int overridden = *var1;
+                int still_inherited = *var2;
+                CHECK_EQ(i, overridden);
+                CHECK_EQ(20, still_inherited);
+            }));
+        }
+
+        // Wait for all children while local scope is alive.
+        csp::join(handles);
+    });
+
+    csp::schedule();
+
+    CHECK_EQ(N * 10, sum1.load());
+    CHECK_EQ(N * 20, sum2.load());
+
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("MN - StackPoolExhaustion") {
+    csp::init_runtime(4);
+
+    // Spawn more imps than the 256-stack pool cache to exercise mmap fallback.
+    constexpr int N = (CSP_TEST_SANITIZER ? 300 : 500);
+    auto [w, r] = csp::chan<poke_t>{};
+    std::atomic<int> live{0};
+    std::atomic<int> done{0};
+
+    for (int i = 0; i < N; ++i) {
+        csp::spawn([&, r_copy = r.copy()] {
+            live.fetch_add(1, std::memory_order_relaxed);
+            // Block until the coordinator signals, keeping all imps alive.
+            poke_t p;
+            r_copy >> p;
+            done.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    // Coordinator: wait until all imps are live, then unblock them.
+    csp::spawn([&, w = std::move(w)] {
+        // Yield to let spawned imps start and block on the channel.
+        while (live.load(std::memory_order_relaxed) < N) {
+            csp::yield();
+        }
+        // Send N pokes to unblock all imps.
+        for (int i = 0; i < N; ++i) {
+            w << poke;
+        }
+    });
+    r = {};  // Release our copy so channel closes after coordinator.
+
+    csp::schedule();
+
+    CHECK_EQ(N, done.load());
 
     csp::shutdown_runtime();
 }

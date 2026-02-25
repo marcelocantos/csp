@@ -332,4 +332,230 @@ TEST_CASE("TLS - Hostname mismatch") {
     csp::shutdown_runtime();
 }
 
+TEST_CASE("TLS - Concurrent connections") {
+    csp::init_runtime(2);
+
+    auto ca_pem     = read_file("test/certs/ca.crt");
+    auto cert_pem   = read_file("test/certs/server.crt");
+    auto key_pem    = read_file("test/certs/server.key");
+
+    auto listen_pair = listen_localhost();
+    int listen_fd = listen_pair.first;
+    uint16_t port = listen_pair.second;
+
+    constexpr int N = 4;
+    std::atomic<int> server_done{0};
+    std::atomic<int> client_done{0};
+
+    // Server imp: accept N connections, echo back what each sends.
+    csp::spawn([&, listen_fd] {
+        for (int i = 0; i < N; ++i) {
+            csp::spawn([&, listen_fd] {
+                int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+                REQUIRE_GE(client_fd, 0);
+                csp::io::set_nonblock(client_fd);
+
+                csp::tls::context ctx(csp::tls::context::server);
+                ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
+                              key_pem.c_str(), key_pem.size() + 1);
+
+                csp::tls::conn c(ctx, client_fd);
+                c.handshake();
+
+                char buf[64]{};
+                ssize_t n = c.read(buf, sizeof(buf));
+                CHECK_GT(n, 0);
+
+                c.write(buf, n);
+                c.shutdown();
+                ::close(client_fd);
+                server_done.fetch_add(1, std::memory_order_relaxed);
+            });
+        }
+    });
+
+    // Client imps: each connects, sends a unique message, verifies echo.
+    for (int i = 0; i < N; ++i) {
+        csp::spawn([&, port, i] {
+            int fd = connect_localhost(port);
+
+            csp::tls::context ctx(csp::tls::context::client);
+            ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+
+            csp::tls::conn c(ctx, fd);
+            c.set_hostname("localhost");
+            c.handshake();
+
+            std::string msg = "hello-" + std::to_string(i);
+            c.write(msg.data(), msg.size());
+
+            char buf[64]{};
+            ssize_t n = c.read(buf, sizeof(buf));
+            CHECK_EQ(msg, std::string(buf, n));
+
+            c.shutdown();
+            ::close(fd);
+            client_done.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    // Cleanup listener after all connections complete.
+    csp::spawn([&, listen_fd] {
+        while (server_done.load(std::memory_order_relaxed) < N ||
+               client_done.load(std::memory_order_relaxed) < N) {
+            csp::sleep(std::chrono::milliseconds(10));
+        }
+        ::close(listen_fd);
+    });
+
+    csp::schedule();
+    CHECK_EQ(N, server_done.load());
+    CHECK_EQ(N, client_done.load());
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("TLS - Large transfer") {
+    csp::init_runtime(2);
+
+    auto ca_pem     = read_file("test/certs/ca.crt");
+    auto cert_pem   = read_file("test/certs/server.crt");
+    auto key_pem    = read_file("test/certs/server.key");
+
+    auto listen_pair = listen_localhost();
+    int listen_fd = listen_pair.first;
+    uint16_t port = listen_pair.second;
+
+    // 256 KB payload.
+    constexpr size_t PAYLOAD_SIZE = 256 * 1024;
+    std::vector<char> payload(PAYLOAD_SIZE);
+    for (size_t i = 0; i < PAYLOAD_SIZE; ++i) {
+        payload[i] = static_cast<char>(i & 0xFF);
+    }
+
+    std::vector<char> received;
+    std::atomic<bool> done{false};
+
+    // Server: read all data and store it.
+    csp::spawn([&, listen_fd] {
+        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+        REQUIRE_GE(client_fd, 0);
+        csp::io::set_nonblock(client_fd);
+
+        csp::tls::context ctx(csp::tls::context::server);
+        ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
+                      key_pem.c_str(), key_pem.size() + 1);
+
+        csp::tls::conn c(ctx, client_fd);
+        c.handshake();
+
+        char buf[4096];
+        for (;;) {
+            ssize_t n = c.read(buf, sizeof(buf));
+            if (n <= 0) break;
+            received.insert(received.end(), buf, buf + n);
+        }
+
+        c.shutdown();
+        ::close(client_fd);
+        ::close(listen_fd);
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    // Client: send entire payload.
+    csp::spawn([&, port] {
+        int fd = connect_localhost(port);
+
+        csp::tls::context ctx(csp::tls::context::client);
+        ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+
+        csp::tls::conn c(ctx, fd);
+        c.set_hostname("localhost");
+        c.handshake();
+
+        c.write(payload.data(), payload.size());
+        c.shutdown();
+        ::close(fd);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    CHECK_EQ(PAYLOAD_SIZE, received.size());
+    CHECK_EQ(payload, received);
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("TLS - conn move semantics") {
+    csp::init_runtime(2);
+
+    auto ca_pem     = read_file("test/certs/ca.crt");
+    auto cert_pem   = read_file("test/certs/server.crt");
+    auto key_pem    = read_file("test/certs/server.key");
+
+    auto listen_pair = listen_localhost();
+    int listen_fd = listen_pair.first;
+    uint16_t port = listen_pair.second;
+
+    std::atomic<bool> done{false};
+    std::string client_received;
+
+    // Server
+    csp::spawn([&, listen_fd] {
+        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+        REQUIRE_GE(client_fd, 0);
+        csp::io::set_nonblock(client_fd);
+
+        csp::tls::context ctx(csp::tls::context::server);
+        ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
+                      key_pem.c_str(), key_pem.size() + 1);
+
+        // Create conn, then move it.
+        csp::tls::conn c1(ctx, client_fd);
+        c1.handshake();
+
+        csp::tls::conn c2(std::move(c1));
+        // c1 is now moved-from — its destructor must not crash.
+
+        // Use the moved-to conn for I/O.
+        char buf[16]{};
+        ssize_t n = c2.read(buf, sizeof(buf));
+        CHECK_EQ(4, n);
+        CHECK_EQ("ping", std::string(buf, n));
+
+        c2.write("pong", 4);
+        c2.shutdown();
+        ::close(client_fd);
+        ::close(listen_fd);
+    });
+
+    // Client
+    csp::spawn([&, port] {
+        int fd = connect_localhost(port);
+
+        csp::tls::context ctx(csp::tls::context::client);
+        ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+
+        csp::tls::conn c(ctx, fd);
+        c.set_hostname("localhost");
+        c.handshake();
+
+        // Move via move-assignment.
+        csp::tls::conn c2 = std::move(c);
+
+        c2.write("ping", 4);
+
+        char buf[16]{};
+        ssize_t n = c2.read(buf, sizeof(buf));
+        client_received = std::string(buf, n);
+
+        c2.shutdown();
+        ::close(fd);
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    CHECK_EQ("pong", client_received);
+    csp::shutdown_runtime();
+}
+
 #endif // CSP_TLS

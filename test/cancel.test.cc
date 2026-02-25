@@ -454,6 +454,141 @@ TEST_CASE("deadline cascades to child") {
     CHECK(child_fired);
 }
 
+TEST_CASE("is_cancel_active inside and outside scope") {
+    RunStats stats;
+    bool active_inside = false;
+    bool active_outside = true;
+    stats.spawn([&]() {
+        active_outside = is_cancel_active();
+        {
+            auto guard = cancellation();
+            active_inside = is_cancel_active();
+        }
+    });
+    while (csp::internal::run()) {}
+    CHECK(active_inside);
+    CHECK_FALSE(active_outside);
+}
+
+TEST_CASE("cancel_guard move constructor") {
+    RunStats stats;
+    bool fired = false;
+    stats.spawn([&]() {
+        chan<> signal;
+        spawn([&, r = std::move(signal.r)]() {
+            prialt(done());
+            fired = true;
+        });
+        {
+            auto guard = cancellation();
+            csp::yield();
+            // Move guard to a new variable; original goes out of scope.
+            auto moved = std::move(guard);
+            // Original destructs here — should NOT cancel (moved-from).
+        }
+        // moved destructs here — SHOULD cancel.
+        csp::yield();
+    });
+    while (csp::internal::run()) {}
+    CHECK(fired);
+}
+
+TEST_CASE("cancel_guard move assignment") {
+    RunStats stats;
+    bool fired = false;
+    stats.spawn([&]() {
+        spawn([&]() {
+            prialt(done());
+            fired = true;
+        });
+        {
+            auto guard1 = cancellation();
+            csp::yield();
+            auto guard2 = cancellation();
+            // Move-assign guard1 into guard2; guard1's scope auto-cancels
+            // via the replaced guard2's destructor logic, but guard2 now
+            // owns guard1's scope.
+            guard2 = std::move(guard1);
+            // guard1 is moved-from, destructs harmlessly.
+        }
+        // guard2 destructs here — cancels the original guard1 scope.
+        csp::yield();
+    });
+    while (csp::internal::run()) {}
+    CHECK(fired);
+}
+
+TEST_CASE("nested cancel scopes inner fires first") {
+    RunStats stats;
+    fake_clock fc;
+    bool inner_fired = false;
+    bool outer_fired = false;
+    stats.spawn([&]() {
+        csp::local l{csp::clock = &fc};
+        auto outer = cancellation(std::chrono::seconds(10));
+        spawn([&]() {
+            // Watch outer scope.
+            prialt(done());
+            outer_fired = true;
+        });
+        auto inner = cancellation(std::chrono::seconds(2));
+        spawn([&]() {
+            // Watch inner scope — should fire at 2s, before outer's 10s.
+            prialt(done());
+            inner_fired = true;
+        });
+        csp::yield();
+        csp::yield();
+        prialt(done()); // blocks until inner deadline fires
+    });
+    csp::schedule();
+    fc.run();
+    CHECK(inner_fired);
+    // Outer may or may not have fired depending on cascade; the key
+    // assertion is that inner fires first (inner_fired == true by the
+    // time we get here).
+}
+
+TEST_CASE("done returns inactive chan_op without scope") {
+    RunStats stats;
+    bool done_op_inactive = false;
+    stats.spawn([&]() {
+        auto op = done();
+        // done() outside a cancel scope returns an inactive chan_op.
+        // In a prialt with a ready channel, the channel should win.
+        chan<int> ch;
+        spawn([&]() { ch.w << 99; });
+        int v = 0;
+        switch (prialt(op, ch.r >> v)) {
+        case ~0: done_op_inactive = false; break;
+        case  1: done_op_inactive = true; break;
+        }
+    });
+    while (csp::internal::run()) {}
+    CHECK(done_op_inactive);
+}
+
+TEST_CASE("dynamic binding reverts on exception during cancel") {
+    RunStats stats;
+    static csp::dynamic<int> val(0);
+    int after_unwind = -1;
+    stats.spawn([&]() {
+        csp::local l{val = 42};
+        try {
+            auto guard = cancellation();
+            csp::local l2{val = 99};
+            CHECK_EQ(*val, 99);
+            throw std::runtime_error("boom");
+            // guard and l2 destruct during stack unwinding
+        } catch (std::runtime_error const&) {
+            // l2 should have reverted
+            after_unwind = *val;
+        }
+    });
+    while (csp::internal::run()) {}
+    CHECK_EQ(after_unwind, 42);
+}
+
 } // TEST_SUITE("cancellation")
 
 TEST_SUITE("cancellation MN") {

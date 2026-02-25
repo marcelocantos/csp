@@ -480,6 +480,25 @@ TEST_CASE("IO - Blocking offload") {
 
 // --- DNS resolution ---
 
+TEST_CASE("IO - Resolve unresolvable hostname") {
+    csp::init_runtime(2);
+
+    std::atomic<bool> done{false};
+
+    csp::spawn([&] {
+        auto r = csp::io::resolve("this.host.definitely.does.not.exist.invalid");
+        CHECK_FALSE(bool(r));
+        CHECK(r.error != 0);
+        std::string msg = r.message();
+        CHECK_FALSE(msg.empty());
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    csp::shutdown_runtime();
+}
+
 TEST_CASE("IO - Resolve localhost") {
     csp::init_runtime(2);
 
@@ -497,6 +516,64 @@ TEST_CASE("IO - Resolve localhost") {
 
     csp::schedule();
     CHECK(resolved.load());
+    csp::shutdown_runtime();
+}
+
+// --- csp::blocking edge cases ---
+
+TEST_CASE("IO - Blocking void return") {
+    csp::init_runtime(2);
+
+    std::atomic<bool> ran{false};
+
+    csp::spawn([&] {
+        csp::blocking([&] {
+            ran.store(true, std::memory_order_relaxed);
+        });
+    });
+
+    csp::schedule();
+    CHECK(ran.load());
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("IO - Blocking with non-trivial return type") {
+    csp::init_runtime(2);
+
+    std::atomic<bool> done{false};
+
+    csp::spawn([&] {
+        std::string result = csp::blocking([] {
+            return std::string("hello from pool");
+        });
+        CHECK_EQ("hello from pool", result);
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("IO - Multiple concurrent blocking calls") {
+    csp::init_runtime(4);
+
+    constexpr int N = 5;
+    std::atomic<int> completed{0};
+
+    for (int i = 0; i < N; ++i) {
+        csp::spawn([&completed, i] {
+            int result = csp::blocking([i] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                return i * 10;
+            });
+            CHECK_EQ(i * 10, result);
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    csp::schedule();
+    CHECK_EQ(N, completed.load());
     csp::shutdown_runtime();
 }
 

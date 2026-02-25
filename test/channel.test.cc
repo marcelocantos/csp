@@ -944,3 +944,274 @@ TEST_CASE("Channel - AltManyChannels") {
     for (int i = 0; i < N; ++i) rs[i] = {};
     while (csp::internal::run()) { }
 }
+
+// ---------------------------------------------------------------------------
+// Coverage-gap tests
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Channel - csp::error messages") {
+    // reader::read() on exhausted reader throws with the expected message.
+    auto [w, r] = chan<int>{};
+    w = {};  // kill writer
+    try {
+        r.read();
+        FAIL_CHECK("expected csp::error");
+    } catch (csp::error const & e) {
+        CHECK_EQ(std::string("reader exhausted"), e.what());
+    }
+
+    // operator-- on an already-attached writer throws.
+    chan<int> ch;
+    try {
+        --ch.w;
+        FAIL_CHECK("expected csp::error");
+    } catch (csp::error const & e) {
+        CHECK_EQ(std::string("writer already attached channel"), e.what());
+    }
+
+    // operator++ on an already-attached reader throws.
+    try {
+        ++ch.r;
+        FAIL_CHECK("expected csp::error");
+    } catch (csp::error const & e) {
+        CHECK_EQ(std::string("reader already attached to channel"), e.what());
+    }
+}
+
+TEST_CASE("Channel - reader::read() on exhausted reader") {
+    RunStats stats;
+
+    auto [w, r] = chan<int>{};
+
+    stats.spawn([out = std::move(w)]{
+        out << 1;
+        out << 2;
+    });
+
+    csp::schedule();
+
+    // Drain everything the writer sent.
+    CHECK_EQ(1, r.read());
+    CHECK_EQ(2, r.read());
+
+    // Reader is now exhausted (writer is gone, no more data).
+    CHECK_THROWS_AS(r.read(), csp::error);
+}
+
+TEST_CASE("Channel - Use-after-move on writer") {
+    auto [w, r] = chan<int>{};
+
+    auto w2 = std::move(w);
+    // Moved-from writer should be falsy.
+    CHECK_FALSE(bool(w));
+    // The destination should be truthy.
+    CHECK(bool(w2));
+}
+
+TEST_CASE("Channel - Use-after-move on reader") {
+    auto [w, r] = chan<int>{};
+
+    auto r2 = std::move(r);
+    // Moved-from reader should be falsy.
+    CHECK_FALSE(bool(r));
+    // The destination should be truthy.
+    CHECK(bool(r2));
+}
+
+TEST_CASE("Channel - Zero-case prialt") {
+    // prialt with an empty vector should return immediately.
+    std::vector<chan_op<int>> ops;
+    int result = prialt(ops);
+    // With no operations, prialt_begin sees count=0; expect non-positive result.
+    (void)result;  // Just verify it doesn't crash or hang.
+}
+
+TEST_CASE("Channel - Nested prialt") {
+    RunStats stats;
+
+    auto [w1, r1] = chan<int>{};
+    auto [w2, r2] = chan<int>{};
+    auto [w3, r3] = chan<int>{};
+
+    int result = 0;
+
+    // One imp writes to ch1 and ch3.
+    stats.spawn([o1 = std::move(w1), o3 = std::move(w3)]{
+        o1 << 10;
+        o3 << 30;
+    });
+
+    // Another imp writes to ch2.
+    stats.spawn([o2 = std::move(w2)]{
+        o2 << 20;
+    });
+
+    // Consumer uses nested prialts.
+    stats.spawn([i1 = std::move(r1), i2 = std::move(r2), i3 = std::move(r3), &result]{
+        int a = 0, b = 0;
+        // Outer prialt: read from ch1 or ch2.
+        prialt(i1 >> a, i2 >> a);
+        // Inner prialt on different channels.
+        prialt(i2 >> b, i3 >> b);
+        result = a + b;
+    });
+
+    csp::schedule();
+
+    // a is 10 or 20, b is 20 or 30. Total should be one of: 30, 40, 50.
+    CHECK_GE(result, 30);
+    CHECK_LE(result, 50);
+}
+
+TEST_CASE("Channel - Many imps on one channel") {
+    RunStats stats;
+
+    constexpr int N = 128;
+    auto [w, r] = chan<int>{};
+
+    // Spawn N writers, each sending their index.
+    for (int i = 0; i < N; ++i) {
+        stats.spawn([out = w.copy(), i]{ out << i; });
+    }
+    w = {};
+
+    // Single consumer reads all N values.
+    std::vector<int> received;
+    stats.spawn([in = std::move(r), &received]{
+        for (auto n : in) {
+            received.push_back(n);
+        }
+    });
+
+    csp::schedule();
+
+    // All messages arrive; sort to verify completeness.
+    CHECK_EQ(static_cast<size_t>(N), received.size());
+    std::sort(received.begin(), received.end());
+    for (int i = 0; i < N; ++i) {
+        CHECK_EQ(i, received[i]);
+    }
+}
+
+TEST_CASE("Channel - prialt(vector, none)") {
+    // With no ready peers, none should fire.
+    chan<int> ch;
+    auto r = ch.r.copy();
+    int n = -1;
+
+    std::vector<chan_op<int>> ops;
+    ops.push_back(r >> n);
+
+    CHECK_EQ(csp::none, prialt(ops, csp::none));
+    CHECK_EQ(-1, n);
+
+    ops.clear();
+    ch.release();
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("Channel - weak_writer direct tests") {
+    auto [w, r] = chan<int>{};
+
+    // Create weak ref while writer is alive.
+    weak_writer<int> ww(w);
+
+    // try_lock should succeed.
+    {
+        auto locked = ww.try_lock();
+        CHECK(bool(locked));
+    }
+
+    // Kill all strong writer refs.
+    w = {};
+
+    // try_lock should now fail.
+    {
+        auto locked = ww.try_lock();
+        CHECK_FALSE(bool(locked));
+    }
+
+    r = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("Channel - weak_reader direct tests") {
+    auto [w, r] = chan<int>{};
+
+    // Create weak ref while reader is alive.
+    weak_reader<int> wr(r);
+
+    // try_lock should succeed.
+    {
+        auto locked = wr.try_lock();
+        CHECK(bool(locked));
+    }
+
+    // Kill all strong reader refs.
+    r = {};
+
+    // try_lock should now fail.
+    {
+        auto locked = wr.try_lock();
+        CHECK_FALSE(bool(locked));
+    }
+
+    w = {};
+    while (csp::internal::run()) { }
+}
+
+TEST_CASE("Channel - schedule() with no imps") {
+    // Calling schedule with nothing spawned should return immediately.
+    csp::schedule();
+    // If we get here, it didn't hang or crash.
+    CHECK(true);
+}
+
+TEST_CASE("Channel - chan destroyed while imp blocked") {
+    RunStats stats;
+
+    auto [w, r] = chan<int>{};
+    bool saw_writer_death = false;
+
+    // Spawn an imp that blocks on read and observes writer death.
+    stats.spawn([in = std::move(r), &saw_writer_death]{
+        int n;
+        if (!(in >> n)) {
+            saw_writer_death = true;
+        }
+    });
+
+    // Destroy the last writer; the blocked imp should see death.
+    w = {};
+
+    csp::schedule();
+
+    CHECK(saw_writer_death);
+}
+
+TEST_CASE("Channel - buffer(1) single-element") {
+    RunStats stats;
+
+    auto buf = buffer<int>(1).spawn();
+
+    int r1 = 0, r2 = 0;
+
+    stats.spawn([w = buf.w.copy(), r = buf.r.copy(), &r1, &r2]{
+        // Write first value.
+        w << 42;
+        // Read it back.
+        r1 = r.read();
+        // Write second value (should not block since first was consumed).
+        w << 99;
+        // Read it back.
+        r2 = r.read();
+    });
+
+    buf.release();
+
+    csp::schedule();
+
+    CHECK_EQ(42, r1);
+    CHECK_EQ(99, r2);
+}

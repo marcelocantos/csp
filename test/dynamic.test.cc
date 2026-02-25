@@ -2,6 +2,9 @@
 
 #include <doctest/doctest.h>
 
+#include <stdexcept>
+#include <string>
+
 TEST_CASE("dynamic: basic read/write") {
     RunStats stats;
     static csp::dynamic<int> count;
@@ -191,6 +194,44 @@ TEST_CASE("dynamic: multi-bind local") {
         CHECK_EQ(*z, "hello");
     });
     csp::schedule();
+}
+
+TEST_CASE("dynamic: local binding reverts during exception") {
+    RunStats stats;
+    static csp::dynamic<int> val(0);
+    int after_catch = -1;
+    stats.spawn([&]{
+        csp::local l{val = 10};
+        try {
+            csp::local l2{val = 99};
+            CHECK_EQ(*val, 99);
+            throw std::runtime_error("test exception");
+        } catch (std::runtime_error const&) {
+            after_catch = *val;
+        }
+    });
+    csp::schedule();
+    CHECK_EQ(after_catch, 10);
+}
+
+TEST_CASE("dynamic: multiple locals in same scope both revert") {
+    RunStats stats;
+    static csp::dynamic<int> a(0);
+    static csp::dynamic<std::string> b("default");
+    int a_after = -1;
+    std::string b_after;
+    stats.spawn([&]{
+        {
+            csp::local l{a = 42, b = std::string("hello")};
+            CHECK_EQ(*a, 42);
+            CHECK_EQ(*b, "hello");
+        }
+        a_after = *a;
+        b_after = *b;
+    });
+    csp::schedule();
+    CHECK_EQ(a_after, 0);
+    CHECK_EQ(b_after, "default");
 }
 
 // --- imp_local tests ---

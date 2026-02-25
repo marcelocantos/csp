@@ -378,6 +378,72 @@ TEST_CASE("fake clock: throttle rate-limits with tick trigger") {
     fc.run();
 }
 
+TEST_CASE("after with zero duration fires promptly") {
+    RunStats stats;
+
+    fake_clock fc;
+    bool fired = false;
+
+    stats.spawn([&] {
+        csp::local l{csp::clock = &fc};
+        auto r = csp::after(0ns);
+        r >> nullptr;
+        fired = true;
+    });
+    csp::schedule();
+    fc.run();
+
+    CHECK(fired);
+}
+
+TEST_CASE("sleep with zero duration returns immediately") {
+    RunStats stats;
+
+    fake_clock fc;
+    bool completed = false;
+
+    stats.spawn([&] {
+        csp::local l{csp::clock = &fc};
+        csp::sleep(0ns);
+        completed = true;
+    });
+    csp::schedule();
+    // Zero sleep should complete without needing fc.run().
+    // But drain any residual work just in case.
+    while (csp::internal::run()) {}
+
+    CHECK(completed);
+}
+
+TEST_CASE("sleep_until exact now returns immediately") {
+    RunStats stats;
+
+    fake_clock fc;
+    fc.advance(1s);
+    bool completed = false;
+
+    stats.spawn([&] {
+        csp::local l{csp::clock = &fc};
+        csp::sleep_until(csp::now());  // deadline == current time
+        completed = true;
+    });
+    csp::schedule();
+    while (csp::internal::run()) {}
+
+    CHECK(completed);
+    CHECK(!fc.has_pending());
+}
+
+TEST_CASE("fake_clock with non-default start time") {
+    auto epoch = time_point{};
+    auto start = epoch + 42s;
+    fake_clock fc(start);
+    CHECK_EQ(fc.now(), start);
+
+    fc.advance(10s);
+    CHECK_EQ(fc.now(), start + 10s);
+}
+
 TEST_CASE("fake clock: periodic polling with exact timing") {
     // Simulates polling a sensor every 500ms for 2s.
     // With real time: 2s wait. With fake clock: instant.
