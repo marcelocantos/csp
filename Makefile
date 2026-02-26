@@ -115,7 +115,8 @@ LIB_SRCS := src/csp.cc \
             src/reactor.cc \
             src/blocking_pool.cc \
             src/signal.cc \
-            src/stack_pool.cc
+            src/stack_pool.cc \
+            src/imp_exit.cc
 ifeq ($(CSP_TLS),1)
 LIB_SRCS += src/tls.cc
 endif

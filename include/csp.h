@@ -7,6 +7,7 @@
 #include "csp/csp.h"
 #include "csp/dynamic.h"
 #include "csp/fcontext.h"
+#include "csp/imp_exit.h"
 #include "csp/internal/blocking_pool.h"
 #include "csp/internal/csp_internal.h"
 #include "csp/internal/flat_hash_set.h"
