@@ -111,11 +111,6 @@
 
   This is the stream-shaped surface of supervision, useful as a combinator.
 
-- [ ] **circuit_breaker** `(reader<T>, config) → reader<T>` — Trips after
-      threshold failures, half-open probe, auto-reset. Can compose with
-      supervision: supervisor detects circuit-breaker escalation as a child
-      failure.
-
 - [x] ~~**balance** `(reader<T>, n, F(T)→U) → reader<U>`~~ — Subsumed by
       unordered `parallel_map`.
 
@@ -183,11 +178,6 @@ with entropy-seeded default, so configurable seeding is built in.
       when no `imp_exit` binding is present. Structured concurrency with
       error collection is just `cancellation()` + `spawn` + `join`.
 
-- [ ] **singleflight** — Deduplicate concurrent calls to the same key.
-      Only one executes; others wait for the result.
-
-- [ ] **semaphore** — Bounded concurrency: limit N concurrent imps
-      past a point.
 
 ## Channel topology operations
 
