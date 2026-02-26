@@ -33,9 +33,9 @@ TEST_CASE("MN - MultipleThreads") {
 
     csp::schedule();
 
-    CHECK_EQ(N, done.load());
+    CHECK(N == done.load());
     // With 4 processors, we should see more than 1 OS thread used.
-    CHECK_GT(thread_ids.size(), 1);
+    CHECK(thread_ids.size() > 1);
 
     csp::shutdown_runtime();
 }
@@ -60,7 +60,7 @@ TEST_CASE("MN - CrossThreadChannel") {
         for (int v; r >> v;) {
             sum += v;
         }
-        CHECK_EQ(45, sum);
+        CHECK(45 == sum);
     });
 
     csp::schedule();
@@ -81,7 +81,7 @@ TEST_CASE("MN - RapidSpawnExit") {
 
     csp::schedule();
 
-    CHECK_EQ(N, count.load());
+    CHECK(N == count.load());
 
     csp::shutdown_runtime();
 }
@@ -105,11 +105,11 @@ TEST_CASE("MN - TimerSleep") {
 
     csp::schedule();
 
-    CHECK_EQ(N, done.load());
+    CHECK(N == done.load());
     // All N sleeps ran concurrently across workers, so wall time should be
     // much less than N * 20ms.
     auto elapsed = std::chrono::steady_clock::now() - start;
-    CHECK_LT(elapsed, N * 20ms);
+    CHECK(elapsed < N * 20ms);
 
     csp::shutdown_runtime();
 }
@@ -138,7 +138,7 @@ TEST_CASE("MN - TimerAfterInAlt") {
 
     csp::schedule();
 
-    CHECK_EQ(N, timeouts.load());
+    CHECK(N == timeouts.load());
 
     csp::shutdown_runtime();
 }
@@ -161,7 +161,7 @@ TEST_CASE("MN - TimerTick") {
 
     csp::schedule();
 
-    CHECK_EQ(3, ticks_received.load());
+    CHECK(3 == ticks_received.load());
 
     csp::shutdown_runtime();
 }
@@ -192,7 +192,7 @@ TEST_CASE("MN - ConcurrentTimersAndChannels") {
 
     csp::schedule();
 
-    CHECK_EQ(42, result.load());
+    CHECK(42 == result.load());
 
     csp::shutdown_runtime();
 }
@@ -221,7 +221,7 @@ TEST_CASE("MN - StressChannels") {
     csp::schedule();
 
     int expected = NUM_PAIRS * (MSGS_PER_PAIR * (MSGS_PER_PAIR - 1) / 2);
-    CHECK_EQ(expected, total.load());
+    CHECK(expected == total.load());
 
     csp::shutdown_runtime();
 }
@@ -243,7 +243,7 @@ TEST_CASE("MN Volume - SpawnExit 1M") {
     }
 
     csp::schedule();
-    CHECK_EQ(N, count.load());
+    CHECK(N == count.load());
 
     csp::shutdown_runtime();
 }
@@ -266,7 +266,7 @@ TEST_CASE("MN Volume - ChannelPairs 10K") {
     csp::schedule();
 
     int64_t expected = (int64_t)N * (N - 1) / 2;
-    CHECK_EQ(expected, total.load());
+    CHECK(expected == total.load());
 
     csp::shutdown_runtime();
 }
@@ -308,7 +308,7 @@ TEST_CASE("MN Volume - ChannelPipeline") {
     csp::schedule();
 
     // Each of MSGS messages passes through STAGES stages, gaining +1 each.
-    CHECK_EQ((int64_t)MSGS * STAGES, sum.load());
+    CHECK((int64_t)MSGS * STAGES == sum.load());
 
     csp::shutdown_runtime();
 }
@@ -353,7 +353,7 @@ TEST_CASE("MN Volume - FanOutFanIn") {
     // sum(i^2, i=0..N-1) = N*(N-1)*(2N-1)/6
     int64_t N = MSGS;
     int64_t expected = N * (N - 1) * (2 * N - 1) / 6;
-    CHECK_EQ(expected, total.load());
+    CHECK(expected == total.load());
 
     csp::shutdown_runtime();
 }
@@ -378,7 +378,7 @@ TEST_CASE("MN Volume - ManyChannelMessages") {
     });
 
     csp::schedule();
-    CHECK_EQ(N, total.load());
+    CHECK(N == total.load());
 
     csp::shutdown_runtime();
 }
@@ -397,7 +397,7 @@ TEST_CASE("MN Volume - SpawnWithYield") {
     }
 
     csp::schedule();
-    CHECK_EQ(N, count.load());
+    CHECK(N == count.load());
 
     csp::shutdown_runtime();
 }
@@ -436,7 +436,7 @@ TEST_CASE("MN Volume - DaisyChain") {
 
     csp::schedule();
 
-    CHECK_EQ((int64_t)CHAIN_LEN * MSGS, total.load());
+    CHECK((int64_t)CHAIN_LEN * MSGS == total.load());
 
     csp::shutdown_runtime();
 }
@@ -477,7 +477,7 @@ TEST_CASE("MN Volume - AltSelectStress") {
     // Each iteration contributes i + i*10 = i*11.
     int64_t expected = 0;
     for (int i = 0; i < N; ++i) expected += (int64_t)i * 11;
-    CHECK_EQ(expected, (int64_t)total.load());
+    CHECK(expected == (int64_t)total.load());
 
     csp::shutdown_runtime();
 }
@@ -511,7 +511,7 @@ TEST_CASE("MN Volume - ProducerConsumer") {
 
     csp::schedule();
 
-    CHECK_EQ(PRODUCERS * MSGS_PER_PRODUCER, total.load());
+    CHECK(PRODUCERS * MSGS_PER_PRODUCER == total.load());
 
     csp::shutdown_runtime();
 }
@@ -532,7 +532,7 @@ TEST_CASE("MN Stress - Lifecycle") {
         for (int i = 0; i < SPAWNS; ++i)
             csp::spawn([&] { count.fetch_add(1, std::memory_order_relaxed); });
         csp::schedule();
-        CHECK_EQ(SPAWNS, count.load());
+        CHECK(SPAWNS == count.load());
         csp::shutdown_runtime();
     }
 }
@@ -556,7 +556,7 @@ TEST_CASE("MN Stress - ChannelPairs") {
         }
         csp::schedule();
         int64_t expected = (int64_t)PAIRS * (PAIRS - 1) / 2;
-        CHECK_EQ(expected, total.load());
+        CHECK(expected == total.load());
         csp::shutdown_runtime();
     }
 }
@@ -587,7 +587,7 @@ TEST_CASE("MN Stress - ProducerConsumer") {
         }
         ch.release();
         csp::schedule();
-        CHECK_EQ(PRODUCERS * MSGS_PER_PRODUCER, total.load());
+        CHECK(PRODUCERS * MSGS_PER_PRODUCER == total.load());
         csp::shutdown_runtime();
     }
 }
@@ -612,7 +612,7 @@ TEST_CASE("MN Volume - SpawnDuringExecution") {
     csp::schedule();
 
     int expected = (1 << (DEPTH + 1)) - 1;  // 2^(DEPTH+1) - 1
-    CHECK_EQ(expected, count.load());
+    CHECK(expected == count.load());
 
     csp::shutdown_runtime();
 }
@@ -688,7 +688,7 @@ TEST_CASE("MN - Watchdog rescues timers from stalled P") {
         csp::sleep(50ms);
         auto elapsed = std::chrono::steady_clock::now() - start;
         // Should fire reasonably close to 50ms, not delayed by 300ms stall.
-        CHECK_LT(elapsed, 200ms);
+        CHECK(elapsed < 200ms);
         timer_fired.store(true, std::memory_order_relaxed);
     });
 
@@ -725,7 +725,7 @@ TEST_CASE("MN - SingleWorker") {
 
     csp::schedule();
 
-    CHECK_EQ(45, result.load());
+    CHECK(45 == result.load());
 
     csp::shutdown_runtime();
 }
@@ -792,10 +792,10 @@ TEST_CASE("MN - DynamicScopingInheritance") {
 
     csp::schedule();
 
-    CHECK_EQ(42, parent_val.load());
-    CHECK_EQ(N * 42, child_val.load());
-    CHECK_EQ(N * 99, child_override_val.load());
-    CHECK_EQ(N, done.load());
+    CHECK(42 == parent_val.load());
+    CHECK(N * 42 == child_val.load());
+    CHECK(N * 99 == child_override_val.load());
+    CHECK(N == done.load());
 
     csp::shutdown_runtime();
 }
@@ -820,7 +820,7 @@ TEST_CASE("MN - ConcurrentSpawnStress") {
 
     csp::schedule();
 
-    CHECK_EQ(SPAWNERS * (1 + CHILDREN_PER), total.load());
+    CHECK(SPAWNERS * (1 + CHILDREN_PER) == total.load());
 
     csp::shutdown_runtime();
 }
@@ -857,11 +857,11 @@ TEST_CASE("MN - HighContentionChannel") {
 
     csp::schedule();
 
-    CHECK_EQ(write_sum.load(), read_sum.load());
+    CHECK(write_sum.load() == read_sum.load());
     // Verify the expected total: sum of i*MSGS_PER_WRITER+j for all writers/msgs.
     int64_t total_msgs = (int64_t)NUM_WRITERS * MSGS_PER_WRITER;
     int64_t expected = total_msgs * (total_msgs - 1) / 2;
-    CHECK_EQ(expected, read_sum.load());
+    CHECK(expected == read_sum.load());
 
     csp::shutdown_runtime();
 }
@@ -889,7 +889,7 @@ TEST_CASE("MN - ConcurrentBlocking") {
     // Each imp i contributes i*(i+1)/2. Total = sum_{i=0}^{N-1} i*(i+1)/2.
     int64_t expected = 0;
     for (int i = 0; i < N; ++i) expected += (int64_t)i * (i + 1) / 2;
-    CHECK_EQ(expected, (int64_t)total.load());
+    CHECK(expected == (int64_t)total.load());
 
     csp::shutdown_runtime();
 }
@@ -920,8 +920,8 @@ TEST_CASE("MN - HAMTStress") {
                 csp::local l2{var1 = i};
                 int overridden = *var1;
                 int still_inherited = *var2;
-                CHECK_EQ(i, overridden);
-                CHECK_EQ(20, still_inherited);
+                CHECK(i == overridden);
+                CHECK(20 == still_inherited);
             }));
         }
 
@@ -931,8 +931,8 @@ TEST_CASE("MN - HAMTStress") {
 
     csp::schedule();
 
-    CHECK_EQ(N * 10, sum1.load());
-    CHECK_EQ(N * 20, sum2.load());
+    CHECK(N * 10 == sum1.load());
+    CHECK(N * 20 == sum2.load());
 
     csp::shutdown_runtime();
 }
@@ -971,7 +971,7 @@ TEST_CASE("MN - StackPoolExhaustion") {
 
     csp::schedule();
 
-    CHECK_EQ(N, done.load());
+    CHECK(N == done.load());
 
     csp::shutdown_runtime();
 }

@@ -376,8 +376,8 @@ with entropy-seeded default, so configurable seeding is built in.
 
 ## Test cleanup
 
-- [ ] **Replace CHECK\_\* macros with plain CHECK()** — Use `CHECK(x == y)`
-      instead of `CHECK_EQ(x, y)`, etc. ~789 occurrences across 39 test files.
+- [x] **Replace CHECK\_\* macros with plain CHECK()** — 889 occurrences
+      replaced across 41 test files.
 
 ## Example applications
 

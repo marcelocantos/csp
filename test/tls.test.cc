@@ -27,7 +27,7 @@ static std::string read_file(const char* path) {
 // Create a listening socket on localhost, return fd and bound port.
 static std::pair<int, uint16_t> listen_localhost() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    REQUIRE_GE(fd, 0);
+    REQUIRE(fd >= 0);
 
     int on = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
@@ -36,12 +36,12 @@ static std::pair<int, uint16_t> listen_localhost() {
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = 0; // OS-assigned
-    REQUIRE_EQ(0, ::bind(fd, (struct sockaddr*)&addr, sizeof(addr)));
+    REQUIRE(0 == ::bind(fd, (struct sockaddr*)&addr, sizeof(addr)));
 
     socklen_t len = sizeof(addr);
-    REQUIRE_EQ(0, ::getsockname(fd, (struct sockaddr*)&addr, &len));
+    REQUIRE(0 == ::getsockname(fd, (struct sockaddr*)&addr, &len));
 
-    REQUIRE_EQ(0, ::listen(fd, 5));
+    REQUIRE(0 == ::listen(fd, 5));
     csp::io::set_nonblock(fd);
 
     return {fd, ntohs(addr.sin_port)};
@@ -49,7 +49,7 @@ static std::pair<int, uint16_t> listen_localhost() {
 
 static int connect_localhost(uint16_t port) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    REQUIRE_GE(fd, 0);
+    REQUIRE(fd >= 0);
     csp::io::set_nonblock(fd);
 
     struct sockaddr_in addr{};
@@ -79,7 +79,7 @@ TEST_CASE("TLS - Handshake and data roundtrip") {
     // Server imp
     csp::spawn([&, listen_fd] {
         int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        REQUIRE_GE(client_fd, 0);
+        REQUIRE(client_fd >= 0);
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
@@ -92,8 +92,8 @@ TEST_CASE("TLS - Handshake and data roundtrip") {
         // Read "ping"
         char buf[16]{};
         ssize_t n = c.read(buf, sizeof(buf));
-        CHECK_EQ(4, n);
-        CHECK_EQ("ping", std::string(buf, n));
+        CHECK(4 == n);
+        CHECK("ping" == std::string(buf, n));
 
         // Write "pong"
         c.write("pong", 4);
@@ -126,7 +126,7 @@ TEST_CASE("TLS - Handshake and data roundtrip") {
 
     csp::schedule();
     CHECK(done.load());
-    CHECK_EQ("pong", client_received);
+    CHECK("pong" == client_received);
     csp::shutdown_runtime();
 }
 
@@ -186,7 +186,7 @@ TEST_CASE("TLS - Cancel during read") {
     // Server: handshake then go silent.
     csp::spawn([&, listen_fd] {
         int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        REQUIRE_GE(client_fd, 0);
+        REQUIRE(client_fd >= 0);
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
@@ -352,7 +352,7 @@ TEST_CASE("TLS - Concurrent connections") {
         for (int i = 0; i < N; ++i) {
             csp::spawn([&, listen_fd] {
                 int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-                REQUIRE_GE(client_fd, 0);
+                REQUIRE(client_fd >= 0);
                 csp::io::set_nonblock(client_fd);
 
                 csp::tls::context ctx(csp::tls::context::server);
@@ -364,7 +364,7 @@ TEST_CASE("TLS - Concurrent connections") {
 
                 char buf[64]{};
                 ssize_t n = c.read(buf, sizeof(buf));
-                CHECK_GT(n, 0);
+                CHECK(n > 0);
 
                 c.write(buf, n);
                 c.shutdown();
@@ -391,7 +391,7 @@ TEST_CASE("TLS - Concurrent connections") {
 
             char buf[64]{};
             ssize_t n = c.read(buf, sizeof(buf));
-            CHECK_EQ(msg, std::string(buf, n));
+            CHECK(msg == std::string(buf, n));
 
             c.shutdown();
             ::close(fd);
@@ -409,8 +409,8 @@ TEST_CASE("TLS - Concurrent connections") {
     });
 
     csp::schedule();
-    CHECK_EQ(N, server_done.load());
-    CHECK_EQ(N, client_done.load());
+    CHECK(N == server_done.load());
+    CHECK(N == client_done.load());
     csp::shutdown_runtime();
 }
 
@@ -438,7 +438,7 @@ TEST_CASE("TLS - Large transfer") {
     // Server: read all data and store it.
     csp::spawn([&, listen_fd] {
         int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        REQUIRE_GE(client_fd, 0);
+        REQUIRE(client_fd >= 0);
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
@@ -479,8 +479,8 @@ TEST_CASE("TLS - Large transfer") {
 
     csp::schedule();
     CHECK(done.load());
-    CHECK_EQ(PAYLOAD_SIZE, received.size());
-    CHECK_EQ(payload, received);
+    CHECK(PAYLOAD_SIZE == received.size());
+    CHECK(payload == received);
     csp::shutdown_runtime();
 }
 
@@ -501,7 +501,7 @@ TEST_CASE("TLS - conn move semantics") {
     // Server
     csp::spawn([&, listen_fd] {
         int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        REQUIRE_GE(client_fd, 0);
+        REQUIRE(client_fd >= 0);
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
@@ -518,8 +518,8 @@ TEST_CASE("TLS - conn move semantics") {
         // Use the moved-to conn for I/O.
         char buf[16]{};
         ssize_t n = c2.read(buf, sizeof(buf));
-        CHECK_EQ(4, n);
-        CHECK_EQ("ping", std::string(buf, n));
+        CHECK(4 == n);
+        CHECK("ping" == std::string(buf, n));
 
         c2.write("pong", 4);
         c2.shutdown();
@@ -554,7 +554,7 @@ TEST_CASE("TLS - conn move semantics") {
 
     csp::schedule();
     CHECK(done.load());
-    CHECK_EQ("pong", client_received);
+    CHECK("pong" == client_received);
     csp::shutdown_runtime();
 }
 

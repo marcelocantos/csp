@@ -27,10 +27,10 @@ TEST_CASE("Invariant - ChannelCleanup") {
 
     csp::schedule();
 
-    CHECK_EQ(N, completed.load());
+    CHECK(N == completed.load());
     // All channels must be cleaned up: refcounts dropped, no leaks.
-    CHECK_EQ(0, csp::internal::channel_count(0));
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(0 == csp::internal::channel_count(0));
+    CHECK(0 == csp::internal::channel_count(1));
 
     csp::shutdown_runtime();
 }
@@ -63,7 +63,7 @@ TEST_CASE("Invariant - ExactMessageCount") {
 
     // sum(1..MSGS) = MSGS*(MSGS+1)/2, repeated PAIRS times.
     int64_t expected = (int64_t)PAIRS * MSGS * (MSGS + 1) / 2;
-    CHECK_EQ(expected, total.load());
+    CHECK(expected == total.load());
 
     csp::shutdown_runtime();
 }
@@ -91,7 +91,7 @@ TEST_CASE("Invariant - ExactMessageCountSingleP") {
     csp::schedule();
 
     int64_t expected = (int64_t)PAIRS * MSGS * (MSGS + 1) / 2;
-    CHECK_EQ(expected, total.load());
+    CHECK(expected == total.load());
 }
 
 // B3. Suspending window stress
@@ -121,7 +121,7 @@ TEST_CASE("Invariant - SuspendingWindowStress") {
 
     csp::schedule();
 
-    CHECK_EQ(N, completed.load());
+    CHECK(N == completed.load());
 
     csp::shutdown_runtime();
 }
@@ -169,8 +169,8 @@ TEST_CASE("Invariant - AltReadyVsDeadStress") {
     csp::schedule();
 
     // Every iteration must produce exactly one result.
-    CHECK_EQ(N, data_results.load() + dead_results.load());
+    CHECK(N == data_results.load() + dead_results.load());
     // In single-P mode, the writer always blocks before the reader runs
     // alt(), so the ready peer always wins over the dead channel.
-    CHECK_EQ(N, data_results.load());
+    CHECK(N == data_results.load());
 }

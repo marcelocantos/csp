@@ -124,5 +124,5 @@ TEST_CASE("Context - PingPong") {
     });
 
     auto result = csp::jump_fcontext(ping, (void *)10);
-    CHECK_EQ(0L, (intptr_t)result.data);
+    CHECK(0L == (intptr_t)result.data);
 }

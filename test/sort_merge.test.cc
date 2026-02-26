@@ -27,7 +27,7 @@ TEST_CASE("SortMerge - three sorted streams") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9});
+    CHECK(got == std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9});
 }
 
 TEST_CASE("SortMerge - interleaved values") {
@@ -49,7 +49,7 @@ TEST_CASE("SortMerge - interleaved values") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{1, 2, 3, 4, 5, 6});
+    CHECK(got == std::vector<int>{1, 2, 3, 4, 5, 6});
 }
 
 TEST_CASE("SortMerge - one empty stream") {
@@ -71,7 +71,7 @@ TEST_CASE("SortMerge - one empty stream") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{1, 2, 3});
+    CHECK(got == std::vector<int>{1, 2, 3});
 }
 
 TEST_CASE("SortMerge - custom comparator (descending)") {
@@ -93,7 +93,7 @@ TEST_CASE("SortMerge - custom comparator (descending)") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{9, 8, 6, 5, 3, 2});
+    CHECK(got == std::vector<int>{9, 8, 6, 5, 3, 2});
 }
 
 TEST_CASE("SortMerge - single stream") {
@@ -112,5 +112,5 @@ TEST_CASE("SortMerge - single stream") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{10, 20, 30});
+    CHECK(got == std::vector<int>{10, 20, 30});
 }

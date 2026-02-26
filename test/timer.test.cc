@@ -20,7 +20,7 @@ TEST_CASE("Timer - Sleep") {
 
     csp::schedule();
     CHECK(ran);
-    CHECK_GE(std::chrono::steady_clock::now() - start, 10ms);
+    CHECK(std::chrono::steady_clock::now() - start >= 10ms);
 }
 
 TEST_CASE("Timer - After") {
@@ -36,7 +36,7 @@ TEST_CASE("Timer - After") {
     });
 
     csp::schedule();
-    CHECK_GE(elapsed, 10ms);
+    CHECK(elapsed >= 10ms);
 }
 
 TEST_CASE("Timer - AfterInAlt") {
@@ -53,7 +53,7 @@ TEST_CASE("Timer - AfterInAlt") {
 
     csp::schedule();
     idle_writer = {};
-    CHECK_EQ(1, which_result);
+    CHECK(1 == which_result);
 }
 
 TEST_CASE("Timer - Tick") {
@@ -103,7 +103,7 @@ TEST_CASE("Timer - MultipleTimersOrdering") {
     });
 
     csp::schedule();
-    CHECK_EQ(1, which_result);
+    CHECK(1 == which_result);
 }
 
 TEST_CASE("Timer - TimeoutPattern") {
@@ -125,8 +125,8 @@ TEST_CASE("Timer - TimeoutPattern") {
 
     ch.release();
     csp::schedule();
-    CHECK_EQ(0, which_result);
-    CHECK_EQ(42, val);
+    CHECK(0 == which_result);
+    CHECK(42 == val);
 }
 
 TEST_CASE("Timer - Controlled duration") {
@@ -151,10 +151,10 @@ TEST_CASE("Timer - Controlled duration") {
     });
 
     csp::schedule();
-    REQUIRE_EQ(3, intervals.size());
-    CHECK_GE(intervals[0], threshold);
-    CHECK_GE(intervals[1], threshold * 2);
-    CHECK_GE(intervals[2], threshold);
+    REQUIRE(3 == intervals.size());
+    CHECK(intervals[0] >= threshold);
+    CHECK(intervals[1] >= threshold * 2);
+    CHECK(intervals[2] >= threshold);
 }
 
 TEST_CASE("Timer - Controlled time_point") {
@@ -176,7 +176,7 @@ TEST_CASE("Timer - Controlled time_point") {
     });
 
     csp::schedule();
-    CHECK_EQ(2, fires);
+    CHECK(2 == fires);
 }
 
 TEST_CASE("Timer - Controlled cancellation") {

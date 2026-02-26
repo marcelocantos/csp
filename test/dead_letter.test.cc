@@ -22,20 +22,20 @@ TEST_CASE("Throttle - excess goes to dead letter") {
     });
 
     stats.spawn([r = std::move(r)]{
-        CHECK_EQ(1, r.read());
+        CHECK(1 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({2, 3, 4, 5}), dead);
+    CHECK(std::vector<int>({2, 3, 4, 5}) == dead);
 }
 
 TEST_CASE("Throttle - no dead letter, no crash") {
     // Same scenario without dead letter — existing behaviour.
     auto r = throttle<int>(tick(1s)).spawn(count(1, 6).spawn());
 
-    CHECK_EQ(1, r.read());
+    CHECK(1 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -63,16 +63,16 @@ TEST_CASE("Throttle - budget reset with dead letter") {
     // First burst: 1,2 pass, 3 to DL.
     // After tick: 4,5 pass, 6 to DL.
     stats.spawn([r = std::move(th.r)]{
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
-        CHECK_EQ(4, r.read());
-        CHECK_EQ(5, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
+        CHECK(4 == r.read());
+        CHECK(5 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({3, 6}), dead);
+    CHECK(std::vector<int>({3, 6}) == dead);
 }
 
 TEST_CASE("Debounce - superseded values go to dead letter") {
@@ -90,19 +90,19 @@ TEST_CASE("Debounce - superseded values go to dead letter") {
     });
 
     stats.spawn([r = std::move(r)]{
-        CHECK_EQ(5, r.read());
+        CHECK(5 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({1, 2, 3, 4}), dead);
+    CHECK(std::vector<int>({1, 2, 3, 4}) == dead);
 }
 
 TEST_CASE("Debounce - no dead letter, no crash") {
     auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
 
-    CHECK_EQ(5, r.read());
+    CHECK(5 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -127,9 +127,9 @@ TEST_CASE("Debounce - spaced values, no drops") {
     });
 
     stats.spawn([r = std::move(db.r)]{
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
-        CHECK_EQ(3, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
+        CHECK(3 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -160,14 +160,14 @@ TEST_CASE("Sample - overwritten values go to dead letter") {
 
     stats.spawn([r = std::move(r)]{
         // Source 1,2,3 all latched; trigger emits latest (3).
-        CHECK_EQ(3, r.read());
+        CHECK(3 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
 
     csp::schedule();
     // Dead letter should have 1 and 2 (overwritten by 2 and 3).
-    CHECK_EQ(std::vector<int>({1, 2}), dead);
+    CHECK(std::vector<int>({1, 2}) == dead);
 }
 
 TEST_CASE("Sample - no dead letter, no crash") {
@@ -183,7 +183,7 @@ TEST_CASE("Sample - no dead letter, no crash") {
     });
 
     stats.spawn([r = std::move(r)]{
-        CHECK_EQ(3, r.read());
+        CHECK(3 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });

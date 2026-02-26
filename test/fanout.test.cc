@@ -31,7 +31,7 @@ TEST_CASE("Fanout - Simple") {
     in = {};
 
     CSP_LOG(g_log, "out_r.read()");
-    CHECK_EQ(42, out_r.read());
+    CHECK(42 == out_r.read());
 
     CSP_LOG(g_log, "EOT");
 }
@@ -77,10 +77,10 @@ TEST_CASE("Fanout - Complex") {
 
     for (auto & s : receiverses[0]) {
         INFO((&s - &receiverses[0][0]));
-        CHECK_EQ(55, s.result);
+        CHECK(55 == s.result);
     }
     for (auto & s : receiverses[1]) {
-        CHECK_EQ(40, s.result);
+        CHECK(40 == s.result);
     }
 }
 
@@ -140,10 +140,10 @@ TEST_CASE("Fanout - Waves") {
 
     for (auto & s : receiverses[0]) {
         INFO((&s - &receiverses[0][0]));
-        CHECK_EQ(15, s.result);
+        CHECK(15 == s.result);
     }
     for (auto & s : receiverses[1]) {
-        CHECK_EQ(40, s.result);
+        CHECK(40 == s.result);
     }
 }
 
@@ -183,5 +183,5 @@ TEST_CASE("Fanout - Chain") {
     in = {};
 
     csp::schedule();
-    CHECK_EQ(total, m * n);
+    CHECK(total == m * n);
 }

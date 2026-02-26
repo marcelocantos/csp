@@ -18,9 +18,9 @@ TEST_CASE("ChanUtil - BufferBounded") {
     });
 
     while (csp::internal::run()) { }
-    CHECK_EQ(0UL, stats.pending());
+    CHECK(0UL == stats.pending());
 
-    REQUIRE_EQ(15, sent);
+    REQUIRE(15 == sent);
 
     int received = 0;
 
@@ -32,8 +32,8 @@ TEST_CASE("ChanUtil - BufferBounded") {
     });
 
     while (csp::internal::run()) { }
-    CHECK_EQ(55, sent);
-    CHECK_EQ(55, received);
+    CHECK(55 == sent);
+    CHECK(55 == received);
 }
 
 TEST_CASE("ChanUtil - BufferUnbounded") {
@@ -56,7 +56,7 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
 
     stats.spawn([trigger = std::move(recv_r), in = std::move(buf.r), &received]{
         for (int i = 0; trigger >> poke; ++i) {
-            CHECK_EQ(i, in.read());
+            CHECK(i == in.read());
             received += 1;
         }
     });
@@ -76,8 +76,8 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
 
     while (csp::internal::run()) { }
 
-    CHECK_EQ(55, sent);
-    CHECK_EQ(55, received);
+    CHECK(55 == sent);
+    CHECK(55 == received);
 }
 
 TEST_CASE("ChanUtil - BufferEmpty") {
@@ -98,7 +98,7 @@ TEST_CASE("ChanUtil - BufferEmpty") {
 
     ch.release();
     csp::schedule();
-    CHECK_EQ(0, received);
+    CHECK(0 == received);
 }
 
 TEST_CASE("ChanUtil - BufferSingle") {
@@ -114,7 +114,7 @@ TEST_CASE("ChanUtil - BufferSingle") {
 
     stats.spawn([in = std::move(ch.r)]{
         for (int i = 1; i <= 5; ++i) {
-            CHECK_EQ(i, in.read());
+            CHECK(i == in.read());
         }
     });
 
@@ -144,7 +144,7 @@ TEST_CASE("ChanUtil - BufferCapacityExact") {
         while (csp::internal::run()) { }
 
         INFO("capacity=", cap);
-        CHECK_EQ(cap, sent);
+        CHECK(cap == sent);
 
         // Add consumer to drain and let writer finish.
         stats.spawn([in = std::move(ch.r)] {

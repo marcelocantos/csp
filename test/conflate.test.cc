@@ -15,9 +15,9 @@ TEST_CASE("Conflate - passthrough when consumer keeps up") {
         w << 1; w << 2; w << 3;
     });
 
-    CHECK_EQ(1, cr.read());
-    CHECK_EQ(2, cr.read());
-    CHECK_EQ(3, cr.read());
+    CHECK(1 == cr.read());
+    CHECK(2 == cr.read());
+    CHECK(3 == cr.read());
 }
 
 TEST_CASE("Conflate - merges when consumer is slow") {
@@ -42,7 +42,7 @@ TEST_CASE("Conflate - merges when consumer is slow") {
     // The conflate filter reads 1 into pending, then races write-pending
     // vs read-next. Since no consumer is reading the output, the read-next
     // wins and pending becomes 1+2=3, then 3+3=6.
-    CHECK_EQ(6, cr.read());
+    CHECK(6 == cr.read());
 
     cr = {};
     while (csp::internal::run()) { }
@@ -59,7 +59,7 @@ TEST_CASE("Conflate - flushes on input close") {
     });
 
     // The pending value (42) should be flushed on input close.
-    CHECK_EQ(42, cr.read());
+    CHECK(42 == cr.read());
 
     int dummy;
     CHECK_FALSE(bool(cr >> dummy));

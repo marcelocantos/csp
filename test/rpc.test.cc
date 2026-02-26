@@ -15,10 +15,10 @@ TEST_CASE("Rpc - ChanPair") {
 
     auto f = rpc_client(std::move(req_w), std::move(rep_r));
 
-    CHECK_EQ(1, f(0));
-    CHECK_EQ(21, f(10));
-    CHECK_EQ(15, f(7));
-    CHECK_EQ(-1, f(-1));
+    CHECK(1 == f(0));
+    CHECK(21 == f(10));
+    CHECK(15 == f(7));
+    CHECK(-1 == f(-1));
 }
 
 TEST_CASE("Rpc - VoidReq") {
@@ -31,7 +31,7 @@ TEST_CASE("Rpc - VoidReq") {
 
     auto f = rpc_client(req_w.copy(), rep_r.copy());
 
-    CHECK_EQ(42, f());
+    CHECK(42 == f());
 }
 
 TEST_CASE("Rpc - VoidRep") {
@@ -50,7 +50,7 @@ TEST_CASE("Rpc - VoidRep") {
         f(n);
     }
 
-    CHECK_EQ(55, result);
+    CHECK(55 == result);
 }
 
 TEST_CASE("Rpc - VoidVoid") {
@@ -69,7 +69,7 @@ TEST_CASE("Rpc - VoidVoid") {
         f();
     }
 
-    CHECK_EQ(10, result);
+    CHECK(10 == result);
 }
 
 TEST_CASE("Rpc - RepInReq") {
@@ -81,8 +81,8 @@ TEST_CASE("Rpc - RepInReq") {
 
     auto f = rpc_client(req_w.copy());
 
-    CHECK_EQ(1, f(0));
-    CHECK_EQ(21, f(10));
-    CHECK_EQ(15, f(7));
-    CHECK_EQ(-1, f(-1));
+    CHECK(1 == f(0));
+    CHECK(21 == f(10));
+    CHECK(15 == f(7));
+    CHECK(-1 == f(-1));
 }

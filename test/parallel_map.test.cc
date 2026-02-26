@@ -23,7 +23,7 @@ TEST_CASE("Unordered - all values processed") {
     csp::schedule();
     // All values present (order may vary).
     std::sort(got.begin(), got.end());
-    CHECK_EQ(std::vector<int>({10, 20, 30, 40, 50}), got);
+    CHECK(std::vector<int>({10, 20, 30, 40, 50}) == got);
 }
 
 TEST_CASE("Ordered - preserves input order") {
@@ -39,7 +39,7 @@ TEST_CASE("Ordered - preserves input order") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({10, 20, 30, 40, 50}), got);
+    CHECK(std::vector<int>({10, 20, 30, 40, 50}) == got);
 }
 
 TEST_CASE("Ordered - type-changing transform") {
@@ -57,7 +57,7 @@ TEST_CASE("Ordered - type-changing transform") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<std::string>({"1", "2", "3"}), got);
+    CHECK(std::vector<std::string>({"1", "2", "3"}) == got);
 }
 
 TEST_CASE("Ordered - variable-cost work stays in order") {
@@ -80,7 +80,7 @@ TEST_CASE("Ordered - variable-cost work stays in order") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5}), got);
+    CHECK(std::vector<int>({1, 2, 3, 4, 5}) == got);
 }
 
 TEST_CASE("Output death stops workers") {
@@ -90,7 +90,7 @@ TEST_CASE("Output death stops workers") {
            | parallel_map<int>(4, [](int n) { return n; });
 
     stats.spawn([r = std::move(r)]{
-        CHECK_EQ(1, r.read());
+        CHECK(1 == r.read());
         // Drop reader — output dies, workers should stop.
     });
 
@@ -110,7 +110,7 @@ TEST_CASE("Single worker") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({2, 4, 6}), got);
+    CHECK(std::vector<int>({2, 4, 6}) == got);
 }
 
 }

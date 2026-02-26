@@ -20,7 +20,7 @@ TEST_CASE("ChunkBy - consecutive equal groups") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<std::vector<int>>{{1, 1}, {2, 2, 2}, {3}});
+    CHECK(got == std::vector<std::vector<int>>{{1, 1}, {2, 2, 2}, {3}});
 }
 
 TEST_CASE("ChunkBy - monotone runs") {
@@ -38,7 +38,7 @@ TEST_CASE("ChunkBy - monotone runs") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<std::vector<int>>{{1, 3, 5}, {2, 4}, {1}});
+    CHECK(got == std::vector<std::vector<int>>{{1, 3, 5}, {2, 4}, {1}});
 }
 
 TEST_CASE("ChunkBy - single element") {
@@ -56,7 +56,7 @@ TEST_CASE("ChunkBy - single element") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<std::vector<int>>{{42}});
+    CHECK(got == std::vector<std::vector<int>>{{42}});
 }
 
 TEST_CASE("ChunkBy - empty input") {
@@ -92,5 +92,5 @@ TEST_CASE("ChunkBy - all same group") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<std::vector<int>>{{1, 2, 3}});
+    CHECK(got == std::vector<std::vector<int>>{{1, 2, 3}});
 }

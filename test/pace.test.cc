@@ -23,7 +23,7 @@ TEST_CASE("Pace - all values pass through") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("Pace - enforces minimum interval") {
@@ -44,10 +44,10 @@ TEST_CASE("Pace - enforces minimum interval") {
     });
 
     csp::schedule();
-    REQUIRE_EQ(3u, times.size());
+    REQUIRE(3u == times.size());
     // First → second and second → third should each be >= 80ms.
-    CHECK_GE(times[1] - times[0], 75ms);  // small tolerance
-    CHECK_GE(times[2] - times[1], 75ms);
+    CHECK(times[1] - times[0] >= 75ms);  // small tolerance
+    CHECK(times[2] - times[1] >= 75ms);
 }
 
 TEST_CASE("Pace - first value passes immediately") {
@@ -64,12 +64,12 @@ TEST_CASE("Pace - first value passes immediately") {
     stats.spawn([r = std::move(p.r), &received]{
         int v;
         r >> v;
-        CHECK_EQ(42, v);
+        CHECK(42 == v);
         received = std::chrono::steady_clock::now();
     });
 
     csp::schedule();
-    CHECK_LT(received - start, 50ms);  // should be near-instant
+    CHECK(received - start < 50ms);  // should be near-instant
 }
 
 TEST_CASE("Pace - output death stops") {
@@ -83,7 +83,7 @@ TEST_CASE("Pace - output death stops") {
     });
 
     stats.spawn([r = std::move(p.r)]{
-        CHECK_EQ(0, r.read());
+        CHECK(0 == r.read());
         // Drop reader — output dies.
     });
 
@@ -101,7 +101,7 @@ TEST_CASE("Pace - pipe composition") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("Pace - trigger death stops") {
@@ -117,7 +117,7 @@ TEST_CASE("Pace - trigger death stops") {
     });
 
     stats.spawn([r = std::move(p.r)]{
-        CHECK_EQ(1, r.read());
+        CHECK(1 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });

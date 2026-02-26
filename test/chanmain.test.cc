@@ -21,7 +21,7 @@ TEST_CASE("ChanMain - Write") {
     o << 42;
     csp::internal::run();
 
-    CHECK_EQ(42, result);
+    CHECK(42 == result);
 }
 
 TEST_CASE("ChanMain - Read") {
@@ -43,7 +43,7 @@ TEST_CASE("ChanMain - Read") {
     // Let reader exit.
     csp::internal::run();
 
-    CHECK_EQ(42, result);
+    CHECK(42 == result);
 }
 
 auto worker = [](auto && o, auto && i) {
@@ -60,7 +60,7 @@ auto worker = [](auto && o, auto && i) {
             csp::internal::run();
             result += n;
         };
-        CHECK_EQ(15, result);
+        CHECK(15 == result);
     };
 };
 
