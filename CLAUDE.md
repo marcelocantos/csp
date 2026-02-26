@@ -5,6 +5,10 @@
 CSP is a C++ imp-based concurrency library with typed, synchronous channels
 based on Communicating Sequential Processes. Namespace: `csp`.
 
+## Task Tracking
+
+TODO items are tracked in `docs/todo.md`.
+
 ## Build System
 
 ```bash
