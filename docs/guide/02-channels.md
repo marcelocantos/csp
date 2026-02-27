@@ -104,8 +104,15 @@ sender cannot outrun the receiver, because there is nowhere to buffer values.
 The receiver cannot miss values, because the sender waits for delivery.
 
 This is different from Go, where channels are buffered by default (`make(chan
-int, N)`). In CSP, if you want buffering, you add it explicitly using the
-`buffer` combinator (see [Combinators](05-combinators.md)).
+int, N)`). In CSP, if you want buffering, create a buffered channel with
+`chan<T>(n)`:
+
+```cpp
+auto [w, r] = csp::chan<int>(16);  // buffered channel with capacity 16
+```
+
+This spawns an internal buffer imp. See [Combinators](05-combinators.md)
+for more details.
 
 ## Sending and receiving
 

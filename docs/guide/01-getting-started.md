@@ -52,7 +52,7 @@ int main() {
 
 ### What is happening
 
-1. `chan<int>` creates an unbuffered, synchronous channel with two endpoints:
+1. `chan<int>{}` creates an unbuffered, synchronous channel with two endpoints:
    a `writer<int>` (`ch.w`) and a `reader<int>` (`ch.r`).
 2. `spawn` launches a new imp. The writer is *moved* into the lambda
    -- endpoints are move-only, so forgetting `std::move` is a compile error,
@@ -84,7 +84,7 @@ for (int n : r) { /* ... */ }
 - [`04-timers.md`](04-timers.md) -- `sleep`, `after`, `tick`, and timeout
   patterns
 - [`05-combinators.md`](05-combinators.md) -- composable stream transformers
-  (`map`, `where`, `scan`, `buffer`, ...)
+  (`map`, `where`, `scan`, ...)
 - The [`examples/`](../../examples/) directory has complete programs covering
   Fibonacci generation, prime sieves, pipelines, fan-out/fan-in, chat rooms,
   and more.

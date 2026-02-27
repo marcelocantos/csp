@@ -514,7 +514,7 @@ TEST_CASE("Channel - FeedbackLoop") {
 
     RunStats stats;
 
-    auto buf = buffer<int>().spawn();
+    auto buf = chan<int>(1024);
 
     constexpr int cadence = 5;
 
@@ -1193,7 +1193,7 @@ TEST_CASE("Channel - chan destroyed while imp blocked") {
 TEST_CASE("Channel - buffer(1) single-element") {
     RunStats stats;
 
-    auto buf = buffer<int>(1).spawn();
+    auto buf = chan<int>(1);
 
     int r1 = 0, r2 = 0;
 

@@ -7,6 +7,11 @@
 
 /* csp/csp.h */
 
+#define CSP_VERSION "0.2.0"
+#define CSP_VERSION_MAJOR 0
+#define CSP_VERSION_MINOR 2
+#define CSP_VERSION_PATCH 0
+
 
 /* csp/internal/log.h */
 
@@ -88,9 +93,211 @@ private:
 #define BRAC_SCOPE__(logger, file, line, func, fmt, ...) \
     LogScope csp__logScope__##line(logger, CSP__DETAIL__SOURCE_ROOT, file, line, func, fmt, func, ##__VA_ARGS__);
 
-#include <atomic>
+/* csp/ringbuffer.h */
+
+#include <bit>
 #include <cassert>
+#include <compare>
 #include <cstddef>
+#include <new>
+#include <utility>
+
+namespace csp::detail {
+
+template <typename T>
+class RingBuffer {
+public:
+    static constexpr size_t npos = size_t(-1);
+
+    explicit RingBuffer(size_t capacity = npos)
+        : capacity_(capacity)
+        , size_(round_up_pow2(capacity == npos ? 4 : capacity))
+        , mask_(size_ - 1)
+        , data_(alloc(size_))
+    { }
+
+    ~RingBuffer() {
+        clear();
+        dealloc(data_);
+    }
+
+    RingBuffer(RingBuffer const &) = delete;
+    RingBuffer & operator=(RingBuffer const &) = delete;
+
+    RingBuffer(RingBuffer && o) noexcept
+        : capacity_(o.capacity_)
+        , size_(o.size_)
+        , mask_(o.mask_)
+        , front_(o.front_)
+        , back_(o.back_)
+        , count_(o.count_)
+        , data_(std::exchange(o.data_, nullptr))
+    {
+        o.count_ = 0;
+        o.front_ = o.back_ = 0;
+    }
+
+    RingBuffer & operator=(RingBuffer && o) noexcept {
+        if (this != &o) {
+            clear();
+            dealloc(data_);
+            capacity_ = o.capacity_;
+            size_ = o.size_;
+            mask_ = o.mask_;
+            front_ = o.front_;
+            back_ = o.back_;
+            count_ = o.count_;
+            data_ = std::exchange(o.data_, nullptr);
+            o.count_ = 0;
+            o.front_ = o.back_ = 0;
+        }
+        return *this;
+    }
+
+    size_t count() const { return count_; }
+    bool empty() const { return !count_; }
+    bool full() const { return count_ == capacity_; }
+    T & front() const { return data_[front_]; }
+
+    void * next() {
+        if (count_ == size_) {
+            assert(capacity_ == npos);
+            grow();
+        }
+        return &data_[back_];
+    }
+
+    void push() {
+        back_ = (back_ + 1) & mask_;
+        ++count_;
+    }
+
+    void push(T t) {
+        new (next()) T{std::move(t)};
+        push();
+    }
+
+    template <typename... Args>
+    void emplace(Args &&... args) {
+        new (next()) T{std::forward<Args>(args)...};
+        push();
+    }
+
+    void pop() {
+        assert(!empty());
+        data_[front_].~T();
+        front_ = (front_ + 1) & mask_;
+        --count_;
+    }
+
+    bool remove(T t) {
+        for (size_t i = 0; i < count_; ++i) {
+            if (data_[(front_ + i) & mask_] == t) {
+                if (i == 0) {
+                    pop();
+                } else if (i == count_ - 1) {
+                    back_ = (back_ - 1) & mask_;
+                    data_[back_].~T();
+                    --count_;
+                } else {
+                    // Fill hole from back.
+                    back_ = (back_ - 1) & mask_;
+                    data_[(front_ + i) & mask_] = std::move(data_[back_]);
+                    data_[back_].~T();
+                    --count_;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void clear() {
+        while (!empty()) pop();
+    }
+
+    class iterator {
+    public:
+        using value_type = T;
+        using reference = T &;
+        using pointer = T *;
+        using difference_type = std::ptrdiff_t;
+        using iterator_category = std::random_access_iterator_tag;
+
+        iterator() = default;
+
+        reference operator*() const { return buf_->data_[(buf_->front_ + idx_) & buf_->mask_]; }
+        pointer operator->() const { return &**this; }
+        reference operator[](difference_type n) const { return *(*this + n); }
+
+        iterator & operator++() { ++idx_; return *this; }
+        iterator operator++(int) { auto t = *this; ++*this; return t; }
+        iterator & operator--() { --idx_; return *this; }
+        iterator operator--(int) { auto t = *this; --*this; return t; }
+
+        iterator & operator+=(difference_type n) { idx_ += n; return *this; }
+        iterator & operator-=(difference_type n) { idx_ -= n; return *this; }
+        iterator operator+(difference_type n) const { auto t = *this; return t += n; }
+        iterator operator-(difference_type n) const { auto t = *this; return t -= n; }
+        friend iterator operator+(difference_type n, iterator i) { return i += n; }
+        difference_type operator-(iterator const & o) const {
+            return static_cast<difference_type>(idx_) - static_cast<difference_type>(o.idx_);
+        }
+
+        bool operator==(iterator const & o) const = default;
+        std::strong_ordering operator<=>(iterator const & o) const { return idx_ <=> o.idx_; }
+
+    private:
+        friend class RingBuffer;
+        RingBuffer const * buf_ = nullptr;
+        size_t idx_ = 0;
+        iterator(RingBuffer const * buf, size_t idx) : buf_(buf), idx_(idx) { }
+    };
+
+    iterator begin() const { return {this, 0}; }
+    iterator end() const { return {this, count_}; }
+
+private:
+    size_t capacity_;
+    size_t size_;
+    size_t mask_;
+    size_t front_ = 0;
+    size_t back_ = 0;
+    size_t count_ = 0;
+    T * data_;
+
+    static T * alloc(size_t n) {
+        return static_cast<T *>(::operator new(n * sizeof(T), std::align_val_t(alignof(T))));
+    }
+
+    static void dealloc(T * p) {
+        if (p) ::operator delete(p, std::align_val_t(alignof(T)));
+    }
+
+    static constexpr size_t round_up_pow2(size_t n) {
+        assert(n > 0);
+        return std::bit_ceil(n);
+    }
+
+    void grow() {
+        size_t new_size = size_ * 2;
+        T * newdata = alloc(new_size);
+        for (size_t i = 0; i < count_; ++i) {
+            new (&newdata[i]) T{std::move(data_[(front_ + i) & mask_])};
+            data_[(front_ + i) & mask_].~T();
+        }
+        dealloc(data_);
+        data_ = newdata;
+        size_ = new_size;
+        mask_ = new_size - 1;
+        front_ = 0;
+        back_ = count_;
+    }
+};
+
+}
+
+#include <atomic>
 #include <climits>
 #include <exception>
 #include <stdint.h>
@@ -100,7 +307,6 @@ private:
 #include <ranges>
 #include <stdexcept>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 
@@ -704,6 +910,8 @@ struct chan {
         r.assign(cr);
     }
 
+    explicit chan(size_t capacity);
+
     chan(writer<T> w, reader<T> r) : w(std::move(w)), r(std::move(r)) {}
 
     chan(chan const &) = delete;
@@ -1214,6 +1422,58 @@ int prialt(std::vector<chan_op<T>> const & ops, none_t) {
 // Dead channel to assist non-blocking waits.
 extern reader<> const skip;
 
+// --- chan | composition ---
+
+// reader | chan → reader (forward reader into buffer)
+template <typename T>
+reader<T> operator|(reader<T> r, chan<T> ch) {
+    spawn([in = std::move(r), out = std::move(ch.w)] {
+        T v;
+        while (in >> v) {
+            if (!(out << std::move(v))) return;
+        }
+    });
+    return std::move(ch.r);
+}
+
+// chan | writer → writer (forward buffer into writer)
+template <typename T>
+writer<T> operator|(chan<T> ch, writer<T> w) {
+    spawn([in = std::move(ch.r), out = std::move(w)] {
+        T v;
+        while (in >> v) {
+            if (!(out << std::move(v))) return;
+        }
+    });
+    return std::move(ch.w);
+}
+
+// --- buffered channel constructor ---
+
+template <typename T>
+chan<T>::chan(size_t capacity) {
+    if (capacity == 0)
+        throw std::invalid_argument("buffer capacity must be at least 1");
+    auto ch = spawn_filter<T>([capacity](reader<T> in, writer<T> out) {
+        internal::descr("buffer");
+        detail::RingBuffer<T> buf(capacity);
+        for (;;) {
+            switch (alt(buf.full()  ? ~in  : in  >> buf.next(),
+                        buf.empty() ? ~out : out << buf.front())) {
+            case 0:  buf.push(); break;
+            case ~0:
+                while (!buf.empty() && out << std::move(buf.front())) buf.pop();
+                return;
+            case 1:  buf.pop(); break;
+            case ~1: return;
+            default: __builtin_unreachable();
+            }
+        }
+    });
+    w = std::move(ch.w);
+    r = std::move(ch.r);
+}
+
 }
 
 
@@ -1510,7 +1770,6 @@ char const * getstatus(Imp const * imp) {
 // BLR-free read path: hamt_get uses only integer arithmetic,
 // std::popcount, and pointer chasing.
 
-#include <bit>
 #include <cstdint>
 
 namespace csp::internal {
@@ -2062,7 +2321,6 @@ private:
 
 /* csp/internal/flat_hash_set.h */
 
-#include <new>
 
 namespace csp::detail {
 
@@ -2939,6 +3197,76 @@ auto operator|(producer<T, F> p, writer<T> w) {
     return std::move(p).bind(std::move(w));
 }
 
+// --- chan | composition (buffered pipeline stages) ---
+// These are all lazy — returning filter/producer/consumer — matching the
+// convention that only concrete endpoints (reader/writer) trigger eager
+// spawning.
+
+// filter | chan → filter
+template <typename T, typename F>
+auto operator|(filter<T, T, F> f, chan<T> ch) {
+    return make_filter<T>(
+        [f = std::move(f), ch = std::move(ch)]
+        (reader<T> in, writer<T> out) mutable {
+            spawn([f = std::move(f),
+                   in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                f(std::move(in), std::move(w));
+            });
+            for (T v; ch.r >> v;) {
+                if (!(out << std::move(v))) return;
+            }
+        });
+}
+
+// chan | filter → filter
+template <typename T, typename F>
+auto operator|(chan<T> ch, filter<T, T, F> f) {
+    return make_filter<T>(
+        [ch = std::move(ch), f = std::move(f)]
+        (reader<T> in, writer<T> out) mutable {
+            spawn([in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                for (T v; in >> v;) {
+                    if (!(w << std::move(v))) return;
+                }
+            });
+            f(std::move(ch.r), std::move(out));
+        });
+}
+
+// producer | chan → producer
+template <typename T, typename F>
+auto operator|(producer<T, F> p, chan<T> ch) {
+    return make_producer<T>(
+        [p = std::move(p), ch = std::move(ch)]
+        (writer<T> out) mutable {
+            spawn([p = std::move(p),
+                   w = std::move(ch.w)]() mutable {
+                p(std::move(w));
+            });
+            for (T v; ch.r >> v;) {
+                if (!(out << std::move(v))) return;
+            }
+        });
+}
+
+// chan | consumer → consumer
+template <typename T, typename F>
+auto operator|(chan<T> ch, consumer<T, F> c) {
+    return make_consumer<T>(
+        [ch = std::move(ch), c = std::move(c)]
+        (reader<T> in) mutable {
+            spawn([in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                for (T v; in >> v;) {
+                    if (!(w << std::move(v))) return;
+                }
+            });
+            c(std::move(ch.r));
+        });
+}
+
 }
 
 
@@ -2980,258 +3308,6 @@ template <typename T>
 inline auto const blackhole = make_consumer<T>([](reader<T> in) {
     for (T _; in >> _;) { }
 });
-
-}
-
-/* csp/part/buffer.h */
-
-
-/* csp/ringbuffer.h */
-
-#include <compare>
-
-namespace csp::detail {
-
-template <typename T>
-class RingBuffer {
-public:
-    static constexpr size_t npos = size_t(-1);
-
-    explicit RingBuffer(size_t capacity = npos)
-        : capacity_(capacity)
-        , size_(round_up_pow2(capacity == npos ? 4 : capacity))
-        , mask_(size_ - 1)
-        , data_(alloc(size_))
-    { }
-
-    ~RingBuffer() {
-        clear();
-        dealloc(data_);
-    }
-
-    RingBuffer(RingBuffer const &) = delete;
-    RingBuffer & operator=(RingBuffer const &) = delete;
-
-    RingBuffer(RingBuffer && o) noexcept
-        : capacity_(o.capacity_)
-        , size_(o.size_)
-        , mask_(o.mask_)
-        , front_(o.front_)
-        , back_(o.back_)
-        , count_(o.count_)
-        , data_(std::exchange(o.data_, nullptr))
-    {
-        o.count_ = 0;
-        o.front_ = o.back_ = 0;
-    }
-
-    RingBuffer & operator=(RingBuffer && o) noexcept {
-        if (this != &o) {
-            clear();
-            dealloc(data_);
-            capacity_ = o.capacity_;
-            size_ = o.size_;
-            mask_ = o.mask_;
-            front_ = o.front_;
-            back_ = o.back_;
-            count_ = o.count_;
-            data_ = std::exchange(o.data_, nullptr);
-            o.count_ = 0;
-            o.front_ = o.back_ = 0;
-        }
-        return *this;
-    }
-
-    size_t count() const { return count_; }
-    bool empty() const { return !count_; }
-    bool full() const { return count_ == capacity_; }
-    T & front() const { return data_[front_]; }
-
-    void * next() {
-        if (count_ == size_) {
-            assert(capacity_ == npos);
-            grow();
-        }
-        return &data_[back_];
-    }
-
-    void push() {
-        back_ = (back_ + 1) & mask_;
-        ++count_;
-    }
-
-    void push(T t) {
-        new (next()) T{std::move(t)};
-        push();
-    }
-
-    template <typename... Args>
-    void emplace(Args &&... args) {
-        new (next()) T{std::forward<Args>(args)...};
-        push();
-    }
-
-    void pop() {
-        assert(!empty());
-        data_[front_].~T();
-        front_ = (front_ + 1) & mask_;
-        --count_;
-    }
-
-    bool remove(T t) {
-        for (size_t i = 0; i < count_; ++i) {
-            if (data_[(front_ + i) & mask_] == t) {
-                if (i == 0) {
-                    pop();
-                } else if (i == count_ - 1) {
-                    back_ = (back_ - 1) & mask_;
-                    data_[back_].~T();
-                    --count_;
-                } else {
-                    // Fill hole from back.
-                    back_ = (back_ - 1) & mask_;
-                    data_[(front_ + i) & mask_] = std::move(data_[back_]);
-                    data_[back_].~T();
-                    --count_;
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void clear() {
-        while (!empty()) pop();
-    }
-
-    class iterator {
-    public:
-        using value_type = T;
-        using reference = T &;
-        using pointer = T *;
-        using difference_type = std::ptrdiff_t;
-        using iterator_category = std::random_access_iterator_tag;
-
-        iterator() = default;
-
-        reference operator*() const { return buf_->data_[(buf_->front_ + idx_) & buf_->mask_]; }
-        pointer operator->() const { return &**this; }
-        reference operator[](difference_type n) const { return *(*this + n); }
-
-        iterator & operator++() { ++idx_; return *this; }
-        iterator operator++(int) { auto t = *this; ++*this; return t; }
-        iterator & operator--() { --idx_; return *this; }
-        iterator operator--(int) { auto t = *this; --*this; return t; }
-
-        iterator & operator+=(difference_type n) { idx_ += n; return *this; }
-        iterator & operator-=(difference_type n) { idx_ -= n; return *this; }
-        iterator operator+(difference_type n) const { auto t = *this; return t += n; }
-        iterator operator-(difference_type n) const { auto t = *this; return t -= n; }
-        friend iterator operator+(difference_type n, iterator i) { return i += n; }
-        difference_type operator-(iterator const & o) const {
-            return static_cast<difference_type>(idx_) - static_cast<difference_type>(o.idx_);
-        }
-
-        bool operator==(iterator const & o) const = default;
-        std::strong_ordering operator<=>(iterator const & o) const { return idx_ <=> o.idx_; }
-
-    private:
-        friend class RingBuffer;
-        RingBuffer const * buf_ = nullptr;
-        size_t idx_ = 0;
-        iterator(RingBuffer const * buf, size_t idx) : buf_(buf), idx_(idx) { }
-    };
-
-    iterator begin() const { return {this, 0}; }
-    iterator end() const { return {this, count_}; }
-
-private:
-    size_t capacity_;
-    size_t size_;
-    size_t mask_;
-    size_t front_ = 0;
-    size_t back_ = 0;
-    size_t count_ = 0;
-    T * data_;
-
-    static T * alloc(size_t n) {
-        return static_cast<T *>(::operator new(n * sizeof(T), std::align_val_t(alignof(T))));
-    }
-
-    static void dealloc(T * p) {
-        if (p) ::operator delete(p, std::align_val_t(alignof(T)));
-    }
-
-    static constexpr size_t round_up_pow2(size_t n) {
-        assert(n > 0);
-        return std::bit_ceil(n);
-    }
-
-    void grow() {
-        size_t new_size = size_ * 2;
-        T * newdata = alloc(new_size);
-        for (size_t i = 0; i < count_; ++i) {
-            new (&newdata[i]) T{std::move(data_[(front_ + i) & mask_])};
-            data_[(front_ + i) & mask_].~T();
-        }
-        dealloc(data_);
-        data_ = newdata;
-        size_ = new_size;
-        mask_ = new_size - 1;
-        front_ = 0;
-        back_ = count_;
-    }
-};
-
-}
-
-
-namespace csp::part {
-
-// Bounded (or unbounded) FIFO buffer between producer and consumer.
-// Decouples production rate from consumption rate up to the given capacity.
-template <typename T>
-auto buffer(size_t capacity = size_t(-1)) {
-    if (capacity == 0) {
-        throw std::invalid_argument("buffer capacity must be at least 1");
-    }
-    return make_filter<T>([capacity](reader<T> in, writer<T> out) {
-        internal::descr("buffer");
-
-        static Logger log("chan/buffer");
-        static Logger scope("chan/buffer/scope");
-        BRAC_SCOPE(scope, "buffer", "%lu", capacity);
-
-        csp::detail::RingBuffer<T> buf(capacity);
-        for (;;) {
-            CSP_LOG(log, "buffer state: %s", buf.empty() ? "EMPTY" : buf.full() ? "FULL" : "JUST RIGHT");
-            switch (auto slot = alt(buf.full()  ? ~in  : in  >> buf.next(),
-                                    buf.empty() ? ~out : out << buf.front())) {
-            case 0:
-                CSP_LOG(log, "IN");
-                buf.push();
-                CSP_LOG(log, "PUSH%s", buf.full() ? " (full)" : "");
-                break;
-            case ~0:
-                CSP_LOG(log, "DRAIN");
-                while (!buf.empty() && out << std::move(buf.front())) {
-                    buf.pop();
-                }
-                return;
-            case 1:
-                CSP_LOG(log, "OUT");
-                buf.pop();
-                CSP_LOG(log, "POP %s", buf.empty() ? " (empty)": "");
-                break;
-            case ~1:
-                CSP_LOG(log, "~OUT");
-                return;
-            default:
-                __builtin_unreachable();
-            }
-        }
-    });
-}
 
 }
 

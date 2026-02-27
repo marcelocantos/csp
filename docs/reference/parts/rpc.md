@@ -159,5 +159,4 @@ f(std::tuple{10});  // 21
 
 ## See Also
 
-- [buffer](buffer.md) -- decouple producer and consumer with a FIFO buffer
 - [fanout](fanout.md) -- broadcast one writer to many readers

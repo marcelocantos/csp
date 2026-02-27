@@ -309,6 +309,16 @@ with entropy-seeded default, so configurable seeding is built in.
       infrastructure from mmap-based stacks (SP checks at channel ops,
       yield, spawn) is the foundation for software-only guards.
 
+- [ ] **Context-aware stack depth analysis** — Revisit the ARM64 instruction
+      walker to exploit runtime context available at spawn time: deep closure
+      traversal (resolving nested function pointers), ADRP-based vtable and
+      global resolution, parameter-driven path pruning (when branch conditions
+      depend on values captured in the closure), interprocedural data flow
+      (propagating pointer provenance across call boundaries), and
+      profile-guided budget calibration. See
+      [docs/papers/08-context-aware-stack-analysis.md](papers/08-context-aware-stack-analysis.md)
+      for a full discussion of the design space.
+
 - [ ] **Ergonomic I/O wrappers** — Higher-level APIs around the existing
       non-blocking I/O reactor and `csp::blocking` pool. Goals: make common
       I/O patterns (TCP accept loops, line-buffered reads, HTTP requests,

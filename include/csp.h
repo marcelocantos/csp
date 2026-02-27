@@ -23,7 +23,6 @@
 #include "csp/io.h"
 #include "csp/part/batch.h"
 #include "csp/part/blackhole.h"
-#include "csp/part/buffer.h"
 #include "csp/part/chain.h"
 #include "csp/part/chunk_by.h"
 #include "csp/part/collect.h"

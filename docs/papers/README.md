@@ -36,3 +36,8 @@ debugging of the CSP imp-based concurrency library.
    — Fuse and split splice instrumentation, diagnostics, and
    replacement processes into live channel graphs without modifying
    application logic.
+
+8. **[Context-Aware Stack Depth Analysis](08-context-aware-stack-analysis.md)**
+   — Spawn-time analysis occupies a unique point between static analysis
+   and profiling: it can read live runtime state to resolve indirect calls,
+   prune unreachable paths, and calibrate budgets.

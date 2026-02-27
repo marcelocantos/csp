@@ -49,7 +49,7 @@ stateDiagram-v2
   previous value is still pending (unsent), the two are combined via
   `f(pending, new_value)`. This can repeat, folding any number of arrivals
   into a single pending value.
-- **No buffering, no dropping**: Unlike `buffer` (which queues) or `throttle`
+- **No buffering, no dropping**: Unlike buffered channels (which queue) or `throttle`
   (which drops), conflate preserves all information through the combining
   function.
 - **Flush on input close**: When the input channel dies, the last pending
@@ -95,7 +95,6 @@ auto r = pipeline.spawn();
 
 ## See Also
 
-- [buffer](buffer.md) -- queue values when downstream is slow (preserves order and count)
 - [latch](latch.md) -- hold the most recent value, silently overwriting intermediates
 - [throttle](throttle.md) -- rate-limit by dropping excess values
 - [debounce](debounce.md) -- suppress until a quiet period elapses

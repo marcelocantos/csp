@@ -224,4 +224,74 @@ auto operator|(producer<T, F> p, writer<T> w) {
     return std::move(p).bind(std::move(w));
 }
 
+// --- chan | composition (buffered pipeline stages) ---
+// These are all lazy — returning filter/producer/consumer — matching the
+// convention that only concrete endpoints (reader/writer) trigger eager
+// spawning.
+
+// filter | chan → filter
+template <typename T, typename F>
+auto operator|(filter<T, T, F> f, chan<T> ch) {
+    return make_filter<T>(
+        [f = std::move(f), ch = std::move(ch)]
+        (reader<T> in, writer<T> out) mutable {
+            spawn([f = std::move(f),
+                   in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                f(std::move(in), std::move(w));
+            });
+            for (T v; ch.r >> v;) {
+                if (!(out << std::move(v))) return;
+            }
+        });
+}
+
+// chan | filter → filter
+template <typename T, typename F>
+auto operator|(chan<T> ch, filter<T, T, F> f) {
+    return make_filter<T>(
+        [ch = std::move(ch), f = std::move(f)]
+        (reader<T> in, writer<T> out) mutable {
+            spawn([in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                for (T v; in >> v;) {
+                    if (!(w << std::move(v))) return;
+                }
+            });
+            f(std::move(ch.r), std::move(out));
+        });
+}
+
+// producer | chan → producer
+template <typename T, typename F>
+auto operator|(producer<T, F> p, chan<T> ch) {
+    return make_producer<T>(
+        [p = std::move(p), ch = std::move(ch)]
+        (writer<T> out) mutable {
+            spawn([p = std::move(p),
+                   w = std::move(ch.w)]() mutable {
+                p(std::move(w));
+            });
+            for (T v; ch.r >> v;) {
+                if (!(out << std::move(v))) return;
+            }
+        });
+}
+
+// chan | consumer → consumer
+template <typename T, typename F>
+auto operator|(chan<T> ch, consumer<T, F> c) {
+    return make_consumer<T>(
+        [ch = std::move(ch), c = std::move(c)]
+        (reader<T> in) mutable {
+            spawn([in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                for (T v; in >> v;) {
+                    if (!(w << std::move(v))) return;
+                }
+            });
+            c(std::move(ch.r));
+        });
+}
+
 }

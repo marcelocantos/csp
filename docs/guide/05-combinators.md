@@ -137,10 +137,13 @@ When `In == Out`, calling `spawn()` with no arguments creates both channels
 and returns a `chan<T>` with the input writer and output reader:
 
 ```cpp
-auto [w, r] = buffer<int>(16).spawn();
+auto [w, r] = chan<int>(16);
 // w is writer<int> (feed values in)
 // r is reader<int> (read buffered values out)
 ```
+
+Note: `chan<T>(n)` is the preferred way to create buffered channels. It
+spawns an internal buffer imp with the given capacity.
 
 ## Building pipelines
 
@@ -344,7 +347,11 @@ int main() {
             for (int v = n; v > 0; v /= 10) sum += v % 10;
             return sum > 10;
         }).spawn(std::move(squared));
-        auto buffered = buffer<int>(4).spawn(std::move(filtered));
+        auto buf = chan<int>(4);
+        spawn([in = std::move(filtered), out = std::move(buf.w)] {
+            for (int v : in) out << v;
+        });
+        auto buffered = std::move(buf.r);
 
         // Tap the stream
         auto [tap_w, tap_r] = chan<int>{};

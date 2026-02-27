@@ -6,6 +6,7 @@
 #define CSP_VERSION_PATCH 0
 
 #include <csp/internal/log.h>
+#include <csp/ringbuffer.h>
 
 #include <atomic>
 #include <cassert>
@@ -623,6 +624,8 @@ struct chan {
         r.assign(cr);
     }
 
+    explicit chan(size_t capacity);
+
     chan(writer<T> w, reader<T> r) : w(std::move(w)), r(std::move(r)) {}
 
     chan(chan const &) = delete;
@@ -1132,6 +1135,58 @@ int prialt(std::vector<chan_op<T>> const & ops, none_t) {
 
 // Dead channel to assist non-blocking waits.
 extern reader<> const skip;
+
+// --- chan | composition ---
+
+// reader | chan → reader (forward reader into buffer)
+template <typename T>
+reader<T> operator|(reader<T> r, chan<T> ch) {
+    spawn([in = std::move(r), out = std::move(ch.w)] {
+        T v;
+        while (in >> v) {
+            if (!(out << std::move(v))) return;
+        }
+    });
+    return std::move(ch.r);
+}
+
+// chan | writer → writer (forward buffer into writer)
+template <typename T>
+writer<T> operator|(chan<T> ch, writer<T> w) {
+    spawn([in = std::move(ch.r), out = std::move(w)] {
+        T v;
+        while (in >> v) {
+            if (!(out << std::move(v))) return;
+        }
+    });
+    return std::move(ch.w);
+}
+
+// --- buffered channel constructor ---
+
+template <typename T>
+chan<T>::chan(size_t capacity) {
+    if (capacity == 0)
+        throw std::invalid_argument("buffer capacity must be at least 1");
+    auto ch = spawn_filter<T>([capacity](reader<T> in, writer<T> out) {
+        internal::descr("buffer");
+        detail::RingBuffer<T> buf(capacity);
+        for (;;) {
+            switch (alt(buf.full()  ? ~in  : in  >> buf.next(),
+                        buf.empty() ? ~out : out << buf.front())) {
+            case 0:  buf.push(); break;
+            case ~0:
+                while (!buf.empty() && out << std::move(buf.front())) buf.pop();
+                return;
+            case 1:  buf.pop(); break;
+            case ~1: return;
+            default: __builtin_unreachable();
+            }
+        }
+    });
+    w = std::move(ch.w);
+    r = std::move(ch.r);
+}
 
 }
 
