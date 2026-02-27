@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libc++-dev libc++abi-dev
+
+      - name: Build and test (source)
+        run: make
+        env:
+          CXX: ${{ runner.os == 'Linux' && 'clang++' || 'c++' }}
+
+      - name: Generate dist
+        run: make dist
+        env:
+          CXX: ${{ runner.os == 'Linux' && 'clang++' || 'c++' }}
+
+      - name: Check dist is up-to-date
+        run: git diff --exit-code dist/
+
+      - name: Build and test (dist)
+        run: make test-dist
+        env:
+          CXX: ${{ runner.os == 'Linux' && 'clang++' || 'c++' }}
+
+  sanitize:
+    name: ${{ matrix.sanitize }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+        sanitize: ["address,undefined", thread]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libc++-dev libc++abi-dev
+
+      - name: Build and test (dist, ${{ matrix.sanitize }})
+        run: make test-dist SANITIZE=${{ matrix.sanitize }}
+        env:
+          CXX: ${{ runner.os == 'Linux' && 'clang++' || 'c++' }}
