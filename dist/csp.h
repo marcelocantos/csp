@@ -1355,9 +1355,9 @@ fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 // so we fall back to heap allocation (new[]/delete[]).
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
     (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
-#define CSP_USE_MMAP_STACKS 0
+#define CSP_USE_VM_STACKS 0
 #else
-#define CSP_USE_MMAP_STACKS 1
+#define CSP_USE_VM_STACKS 1
 #endif
 
 namespace csp::detail {
@@ -1393,8 +1393,8 @@ private:
     void munmap_region(StackRegion region);
 
     size_t page_size_;
-#if CSP_USE_MMAP_STACKS
-    size_t stack_size_;     // total mmap size (guard + usable)
+#if CSP_USE_VM_STACKS
+    size_t stack_size_;     // total VM region size (guard + usable)
 #endif
 
     std::mutex mu_;
@@ -2318,10 +2318,40 @@ bool has_processor();
 /* csp/internal/reactor.h */
 
 
+#ifndef _WIN32
+#endif
 
 namespace csp::detail {
 
 struct Imp;
+
+#ifdef _WIN32
+
+// Windows stub — Phase 2 will add RegisterWaitForSingleObject-based
+// reactor. For now, has_pending_signals() returns false so the default
+// scheduler exits when there is no more local work. Timer and fd
+// creation methods assert — they should not be called until Phase 2.
+
+class Reactor {
+public:
+    static Reactor& instance();
+
+    std::pair<reader<>, uintptr_t> create_timer(int64_t delay_ns);
+    void cancel_timer(uintptr_t ident);
+
+    void ensure_started();
+
+    bool has_pending_signals() const { return false; }
+
+    void shutdown();
+
+private:
+    Reactor() = default;
+    Reactor(Reactor const&) = delete;
+    Reactor& operator=(Reactor const&) = delete;
+};
+
+#else // !_WIN32
 
 class Reactor {
 public:
@@ -2393,6 +2423,8 @@ private:
     std::unordered_map<int, writer<>>       write_writers_;
 };
 
+#endif // _WIN32
+
 }
 
 /* csp/internal/runtime.h */
@@ -2453,9 +2485,10 @@ struct Runtime {
 
 namespace csp::detail {
 
-// RAII wrapper for a reactor timer event (EVFILT_TIMER).
+// RAII wrapper for a reactor timer event (EVFILT_TIMER on macOS,
+// timerfd on Linux, stub on Windows).
 // Holds a reader whose peer writer is owned by the reactor.
-// When the timer fires, the reactor drops the writer → death signal.
+// When the timer fires, the reactor drops the writer -> death signal.
 // When this object is destroyed, the kqueue event is cancelled and
 // the reactor's writer is erased (triggering death if still alive).
 class timer_signal {
@@ -2471,6 +2504,12 @@ public:
 
     chan_op<> operator~() const { return ~r_; }
 };
+
+// Factory function — create a reactor timer and return the signal object.
+// The reactor must be started before calling this.
+timer_signal create_timer_signal(int64_t delay_ns);
+
+#ifndef _WIN32
 
 // RAII wrapper for a reactor fd-readiness event (EVFILT_READ/WRITE).
 // Same death-signal pattern as timer_signal.
@@ -2489,15 +2528,17 @@ public:
     chan_op<> operator~() const { return ~r_; }
 };
 
-// Factory functions — create a kqueue event and return the signal object.
-// The reactor must be started before calling these.
-timer_signal create_timer_signal(int64_t delay_ns);
+// Factory functions — create a kqueue/epoll event and return the signal object.
 fd_signal create_fd_readable(int fd);
 fd_signal create_fd_writable(int fd);
+
+#endif // !_WIN32
 
 }
 
 /* csp/io.h */
+
+#ifndef _WIN32
 
 
 #include <cerrno>
@@ -2634,6 +2675,8 @@ struct resolve_result {
 }
 
 }
+
+#endif // !_WIN32
 
 /* csp/part/batch.h */
 
@@ -6382,6 +6425,8 @@ auto zip(reader<Ts>... rs) {
 
 /* csp/signal.h */
 
+#ifndef _WIN32
+
 
 #include <initializer_list>
 
@@ -6405,6 +6450,8 @@ namespace csp::signal {
 reader<int> notify(std::initializer_list<int> sigs);
 
 }
+
+#endif // !_WIN32
 
 /* csp/stack_analysis.h */
 

@@ -2,7 +2,9 @@
 #include <csp/internal/reactor.h>
 #include <csp/internal/hamt.h>
 
+#ifndef _WIN32
 #include <pthread.h>
+#endif
 
 #include <cassert>
 #include <chrono>
@@ -364,7 +366,7 @@ int spawn(EntryFn start_f, void * data) {
             g_imp->stk_, __builtin_frame_address(0));
     }
     try {
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
         auto& pool = StackPool::instance();
         auto region = pool.allocate();
         auto page_sz = pool.page_size();
@@ -482,7 +484,9 @@ void descr(char const * fmt, ...) {
     vstatus(g_imp, fmt, args);
     va_end(args);
 
+#ifndef _WIN32
     pthread_setname_np(getstatus(g_imp));
+#endif
 }
 
 char const * get_descr(void * thr) {

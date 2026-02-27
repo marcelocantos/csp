@@ -12,7 +12,13 @@
 
 // --- Threading (required for M:N safety) ---
 #define MBEDTLS_THREADING_C
+#ifdef _WIN32
+// Windows: mbedTLS has a built-in Windows threading alt.
+// Users must supply mbedtls_threading_set_alt() or use the
+// default CriticalSection-based implementation.
+#else
 #define MBEDTLS_THREADING_PTHREAD
+#endif
 
 // --- Entropy + RNG ---
 #define MBEDTLS_ENTROPY_C

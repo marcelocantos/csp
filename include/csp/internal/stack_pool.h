@@ -8,9 +8,9 @@
 // so we fall back to heap allocation (new[]/delete[]).
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
     (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
-#define CSP_USE_MMAP_STACKS 0
+#define CSP_USE_VM_STACKS 0
 #else
-#define CSP_USE_MMAP_STACKS 1
+#define CSP_USE_VM_STACKS 1
 #endif
 
 namespace csp::detail {
@@ -46,8 +46,8 @@ private:
     void munmap_region(StackRegion region);
 
     size_t page_size_;
-#if CSP_USE_MMAP_STACKS
-    size_t stack_size_;     // total mmap size (guard + usable)
+#if CSP_USE_VM_STACKS
+    size_t stack_size_;     // total VM region size (guard + usable)
 #endif
 
     std::mutex mu_;

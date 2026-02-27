@@ -6,9 +6,10 @@
 
 namespace csp::detail {
 
-// RAII wrapper for a reactor timer event (EVFILT_TIMER).
+// RAII wrapper for a reactor timer event (EVFILT_TIMER on macOS,
+// timerfd on Linux, stub on Windows).
 // Holds a reader whose peer writer is owned by the reactor.
-// When the timer fires, the reactor drops the writer → death signal.
+// When the timer fires, the reactor drops the writer -> death signal.
 // When this object is destroyed, the kqueue event is cancelled and
 // the reactor's writer is erased (triggering death if still alive).
 class timer_signal {
@@ -24,6 +25,12 @@ public:
 
     chan_op<> operator~() const { return ~r_; }
 };
+
+// Factory function — create a reactor timer and return the signal object.
+// The reactor must be started before calling this.
+timer_signal create_timer_signal(int64_t delay_ns);
+
+#ifndef _WIN32
 
 // RAII wrapper for a reactor fd-readiness event (EVFILT_READ/WRITE).
 // Same death-signal pattern as timer_signal.
@@ -42,10 +49,10 @@ public:
     chan_op<> operator~() const { return ~r_; }
 };
 
-// Factory functions — create a kqueue event and return the signal object.
-// The reactor must be started before calling these.
-timer_signal create_timer_signal(int64_t delay_ns);
+// Factory functions — create a kqueue/epoll event and return the signal object.
 fd_signal create_fd_readable(int fd);
 fd_signal create_fd_writable(int fd);
+
+#endif // !_WIN32
 
 }

@@ -5,12 +5,42 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#ifndef _WIN32
 #include <thread>
 #include <unordered_map>
+#endif
 
 namespace csp::detail {
 
 struct Imp;
+
+#ifdef _WIN32
+
+// Windows stub — Phase 2 will add RegisterWaitForSingleObject-based
+// reactor. For now, has_pending_signals() returns false so the default
+// scheduler exits when there is no more local work. Timer and fd
+// creation methods assert — they should not be called until Phase 2.
+
+class Reactor {
+public:
+    static Reactor& instance();
+
+    std::pair<reader<>, uintptr_t> create_timer(int64_t delay_ns);
+    void cancel_timer(uintptr_t ident);
+
+    void ensure_started();
+
+    bool has_pending_signals() const { return false; }
+
+    void shutdown();
+
+private:
+    Reactor() = default;
+    Reactor(Reactor const&) = delete;
+    Reactor& operator=(Reactor const&) = delete;
+};
+
+#else // !_WIN32
 
 class Reactor {
 public:
@@ -81,5 +111,7 @@ private:
     std::unordered_map<int, writer<>>       read_writers_;
     std::unordered_map<int, writer<>>       write_writers_;
 };
+
+#endif // _WIN32
 
 }

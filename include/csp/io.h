@@ -1,5 +1,7 @@
 #pragma once
 
+#ifndef _WIN32
+
 #include <csp/blocking.h>
 
 #include <cerrno>
@@ -140,3 +142,5 @@ struct resolve_result {
 }
 
 }
+
+#endif // !_WIN32

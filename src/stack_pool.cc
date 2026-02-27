@@ -1,8 +1,13 @@
 #include <csp/internal/stack_pool.h>
 
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 #endif
 
 #include <cassert>
@@ -17,18 +22,105 @@ StackPool& StackPool::instance() {
 
 StackPool::StackPool()
     : page_size_(
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+#ifdef _WIN32
+        [] {
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            return static_cast<size_t>(si.dwPageSize);
+        }()
+#else
         static_cast<size_t>(getpagesize())
+#endif
 #else
         4096
 #endif
     )
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
     , stack_size_(kDefaultStackSize)
 #endif
 {}
 
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+
+#ifdef _WIN32
+
+// --- Windows: VirtualAlloc-based stack regions ---
+
+StackRegion StackPool::mmap_new() {
+    void* base = VirtualAlloc(nullptr, stack_size_,
+                              MEM_RESERVE | MEM_COMMIT,
+                              PAGE_READWRITE);
+    if (!base) {
+        throw std::bad_alloc();
+    }
+    // Guard page at the bottom (lowest address).
+    DWORD old_protect;
+    if (!VirtualProtect(base, page_size_, PAGE_NOACCESS, &old_protect)) {
+        VirtualFree(base, 0, MEM_RELEASE);
+        throw std::bad_alloc();
+    }
+    return {base, stack_size_};
+}
+
+void StackPool::munmap_region(StackRegion region) {
+    VirtualFree(region.base, 0, MEM_RELEASE);
+}
+
+StackRegion StackPool::allocate() {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!free_list_.empty()) {
+            auto region = free_list_.back();
+            free_list_.pop_back();
+            return region;
+        }
+    }
+    return mmap_new();
+}
+
+void StackPool::release(StackRegion region) {
+    // Decommit the usable area (above guard page) to release physical pages.
+    // The pages are re-committed on next access (demand-paged).
+    char* usable = static_cast<char*>(region.base) + page_size_;
+    size_t usable_len = region.total_size - page_size_;
+    VirtualFree(usable, usable_len, MEM_DECOMMIT);
+    // Re-commit so the region is usable again when recycled from the pool.
+    VirtualAlloc(usable, usable_len, MEM_COMMIT, PAGE_READWRITE);
+
+    std::lock_guard<std::mutex> lk(mu_);
+    if (free_list_.size() < kMaxPooled) {
+        free_list_.push_back(region);
+    } else {
+        munmap_region(region);
+    }
+}
+
+void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
+    char* usable = static_cast<char*>(region.base) + page_size_;
+    // Round SP down to page boundary.
+    auto sp_val = reinterpret_cast<uintptr_t>(current_sp);
+    char* sp_page = reinterpret_cast<char*>(sp_val & ~(page_size_ - 1));
+    // Keep 2 pages of headroom below SP to avoid thrashing.
+    char* shrink_to = sp_page - 2 * page_size_;
+    if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
+        size_t reclaimable = static_cast<size_t>(shrink_to - usable);
+        VirtualFree(usable, reclaimable, MEM_DECOMMIT);
+        VirtualAlloc(usable, reclaimable, MEM_COMMIT, PAGE_READWRITE);
+    }
+}
+
+void StackPool::drain() {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& r : free_list_) {
+        munmap_region(r);
+    }
+    free_list_.clear();
+}
+
+#else // !_WIN32
+
+// --- Unix: mmap-based stack regions ---
 
 StackRegion StackPool::mmap_new() {
     int flags = MAP_ANON | MAP_PRIVATE;
@@ -108,7 +200,9 @@ void StackPool::drain() {
     free_list_.clear();
 }
 
-#else // !CSP_USE_MMAP_STACKS — sanitizer fallback
+#endif // _WIN32
+
+#else // !CSP_USE_VM_STACKS — sanitizer fallback
 
 struct alignas(16) StackSlotAlloc { char c[16]; };
 
@@ -142,6 +236,6 @@ void StackPool::drain() {
     // Nothing pooled under sanitizers.
 }
 
-#endif // CSP_USE_MMAP_STACKS
+#endif // CSP_USE_VM_STACKS
 
 } // namespace csp::detail

@@ -1,6 +1,32 @@
 #include <csp/internal/reactor.h>
 #include <csp/internal/signal.h>
 
+#ifdef _WIN32
+
+// --- Windows stub reactor (Phase 2 will implement) ---
+
+#include <stdexcept>
+
+namespace csp::detail {
+
+Reactor& Reactor::instance() {
+    static Reactor r;
+    return r;
+}
+
+void Reactor::ensure_started() {}
+void Reactor::shutdown() {}
+
+std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t) {
+    throw std::runtime_error("csp: reactor not yet available on Windows");
+}
+
+void Reactor::cancel_timer(uintptr_t) {}
+
+} // namespace csp::detail
+
+#else // !_WIN32
+
 #include <sys/event.h>
 #include <unistd.h>
 
@@ -146,8 +172,8 @@ void Reactor::fire_signal(uintptr_t ident, int16_t filter) {
         case EVFILT_READ:  erased = read_writers_.erase(static_cast<int>(ident)); break;
         case EVFILT_WRITE: erased = write_writers_.erase(static_cast<int>(ident)); break;
         }
-        // writer<> destructor runs here → writer_release → resolve_endpoint_death
-        // → wakes any imp in prialt watching ~reader on the same channel.
+        // writer<> destructor runs here -> writer_release -> resolve_endpoint_death
+        // -> wakes any imp in prialt watching ~reader on the same channel.
     }
     if (erased)
         pending_signals_.fetch_sub(1, std::memory_order_release);
@@ -243,3 +269,5 @@ fd_signal create_fd_writable(int fd) {
 }
 
 } // namespace csp::detail
+
+#endif // _WIN32

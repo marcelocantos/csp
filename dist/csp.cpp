@@ -1027,7 +1027,9 @@ void fake_clock::run_until_idle() {
 
 /* csp.cc */
 
+#ifndef _WIN32
 #include <pthread.h>
+#endif
 
 #include <thread>
 #include <utility>
@@ -1384,7 +1386,7 @@ int spawn(EntryFn start_f, void * data) {
             g_imp->stk_, __builtin_frame_address(0));
     }
     try {
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
         auto& pool = StackPool::instance();
         auto region = pool.allocate();
         auto page_sz = pool.page_size();
@@ -1502,7 +1504,9 @@ void descr(char const * fmt, ...) {
     vstatus(g_imp, fmt, args);
     va_end(args);
 
+#ifndef _WIN32
     pthread_setname_np(getstatus(g_imp));
+#endif
 }
 
 char const * get_descr(void * thr) {
@@ -1650,6 +1654,8 @@ uintptr_t hamt_assoc(uintptr_t root, uint64_t key, std::any value) {
 } // namespace csp::internal
 
 /* io.cc */
+#ifndef _WIN32
+
 
 namespace csp::internal {
 
@@ -1691,11 +1697,15 @@ void io_wait_writable(int fd) {
 
 } // namespace csp::internal
 
+#endif // !_WIN32
+
 /* log.cc */
 
 
 #include <errno.h>
+#ifndef _WIN32
 #include <execinfo.h>
+#endif
 
 #include <cstdio>
 #include <iostream>
@@ -1856,6 +1866,10 @@ namespace csp {
     }
 
     void Logger::dump_stack_(bool truncate) {
+#ifdef _WIN32
+        // Stack trace not yet implemented on Windows.
+        (void)truncate;
+#else
         //constexpr int n_slots = 256;
         //auto bt = std::make_unique<void *[]>(n_slots);
         //int n_frames = backtrace(bt.get(), n_slots);
@@ -1954,6 +1968,7 @@ namespace csp {
             }
             last_bt = std::move(curr_bt);
         }
+#endif // !_WIN32
     }
 
     LogScope::LogScope(Logger & logger, char const * prefix, char const * file, int line, char const * func, char const * fmt, ...)
@@ -1980,6 +1995,32 @@ namespace csp {
 }
 
 /* reactor.cc */
+
+#ifdef _WIN32
+
+// --- Windows stub reactor (Phase 2 will implement) ---
+
+#include <stdexcept>
+
+namespace csp::detail {
+
+Reactor& Reactor::instance() {
+    static Reactor r;
+    return r;
+}
+
+void Reactor::ensure_started() {}
+void Reactor::shutdown() {}
+
+std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t) {
+    throw std::runtime_error("csp: reactor not yet available on Windows");
+}
+
+void Reactor::cancel_timer(uintptr_t) {}
+
+} // namespace csp::detail
+
+#else // !_WIN32
 
 #include <sys/event.h>
 #include <unistd.h>
@@ -2125,8 +2166,8 @@ void Reactor::fire_signal(uintptr_t ident, int16_t filter) {
         case EVFILT_READ:  erased = read_writers_.erase(static_cast<int>(ident)); break;
         case EVFILT_WRITE: erased = write_writers_.erase(static_cast<int>(ident)); break;
         }
-        // writer<> destructor runs here → writer_release → resolve_endpoint_death
-        // → wakes any imp in prialt watching ~reader on the same channel.
+        // writer<> destructor runs here -> writer_release -> resolve_endpoint_death
+        // -> wakes any imp in prialt watching ~reader on the same channel.
     }
     if (erased)
         pending_signals_.fetch_sub(1, std::memory_order_release);
@@ -2222,6 +2263,8 @@ fd_signal create_fd_writable(int fd) {
 }
 
 } // namespace csp::detail
+
+#endif // _WIN32
 
 /* runtime.cpp */
 
@@ -2548,6 +2591,8 @@ namespace csp {
 }
 
 /* signal.cc */
+#ifndef _WIN32
+
 
 #include <signal.h>
 
@@ -2679,6 +2724,8 @@ reader<int> notify(std::initializer_list<int> sigs) {
 }
 
 } // namespace csp::signal
+
+#endif // !_WIN32
 
 /* stack_analysis_arm64.cc */
 
@@ -3693,8 +3740,13 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
 
 /* stack_pool.cc */
 
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 #endif
 
 #include <new>
@@ -3708,18 +3760,105 @@ StackPool& StackPool::instance() {
 
 StackPool::StackPool()
     : page_size_(
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+#ifdef _WIN32
+        [] {
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            return static_cast<size_t>(si.dwPageSize);
+        }()
+#else
         static_cast<size_t>(getpagesize())
+#endif
 #else
         4096
 #endif
     )
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
     , stack_size_(kDefaultStackSize)
 #endif
 {}
 
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+
+#ifdef _WIN32
+
+// --- Windows: VirtualAlloc-based stack regions ---
+
+StackRegion StackPool::mmap_new() {
+    void* base = VirtualAlloc(nullptr, stack_size_,
+                              MEM_RESERVE | MEM_COMMIT,
+                              PAGE_READWRITE);
+    if (!base) {
+        throw std::bad_alloc();
+    }
+    // Guard page at the bottom (lowest address).
+    DWORD old_protect;
+    if (!VirtualProtect(base, page_size_, PAGE_NOACCESS, &old_protect)) {
+        VirtualFree(base, 0, MEM_RELEASE);
+        throw std::bad_alloc();
+    }
+    return {base, stack_size_};
+}
+
+void StackPool::munmap_region(StackRegion region) {
+    VirtualFree(region.base, 0, MEM_RELEASE);
+}
+
+StackRegion StackPool::allocate() {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!free_list_.empty()) {
+            auto region = free_list_.back();
+            free_list_.pop_back();
+            return region;
+        }
+    }
+    return mmap_new();
+}
+
+void StackPool::release(StackRegion region) {
+    // Decommit the usable area (above guard page) to release physical pages.
+    // The pages are re-committed on next access (demand-paged).
+    char* usable = static_cast<char*>(region.base) + page_size_;
+    size_t usable_len = region.total_size - page_size_;
+    VirtualFree(usable, usable_len, MEM_DECOMMIT);
+    // Re-commit so the region is usable again when recycled from the pool.
+    VirtualAlloc(usable, usable_len, MEM_COMMIT, PAGE_READWRITE);
+
+    std::lock_guard<std::mutex> lk(mu_);
+    if (free_list_.size() < kMaxPooled) {
+        free_list_.push_back(region);
+    } else {
+        munmap_region(region);
+    }
+}
+
+void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
+    char* usable = static_cast<char*>(region.base) + page_size_;
+    // Round SP down to page boundary.
+    auto sp_val = reinterpret_cast<uintptr_t>(current_sp);
+    char* sp_page = reinterpret_cast<char*>(sp_val & ~(page_size_ - 1));
+    // Keep 2 pages of headroom below SP to avoid thrashing.
+    char* shrink_to = sp_page - 2 * page_size_;
+    if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
+        size_t reclaimable = static_cast<size_t>(shrink_to - usable);
+        VirtualFree(usable, reclaimable, MEM_DECOMMIT);
+        VirtualAlloc(usable, reclaimable, MEM_COMMIT, PAGE_READWRITE);
+    }
+}
+
+void StackPool::drain() {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& r : free_list_) {
+        munmap_region(r);
+    }
+    free_list_.clear();
+}
+
+#else // !_WIN32
+
+// --- Unix: mmap-based stack regions ---
 
 StackRegion StackPool::mmap_new() {
     int flags = MAP_ANON | MAP_PRIVATE;
@@ -3799,7 +3938,9 @@ void StackPool::drain() {
     free_list_.clear();
 }
 
-#else // !CSP_USE_MMAP_STACKS — sanitizer fallback
+#endif // _WIN32
+
+#else // !CSP_USE_VM_STACKS — sanitizer fallback
 
 struct alignas(16) StackSlotAlloc { char c[16]; };
 
@@ -3833,7 +3974,7 @@ void StackPool::drain() {
     // Nothing pooled under sanitizers.
 }
 
-#endif // CSP_USE_MMAP_STACKS
+#endif // CSP_USE_VM_STACKS
 
 } // namespace csp::detail
 

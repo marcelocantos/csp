@@ -1,3 +1,5 @@
+#ifndef _WIN32
+
 #include <csp/cancel.h>
 #include <csp/internal/signal.h>
 #include <csp/internal/reactor.h>
@@ -41,3 +43,5 @@ void io_wait_writable(int fd) {
 }
 
 } // namespace csp::internal
+
+#endif // !_WIN32

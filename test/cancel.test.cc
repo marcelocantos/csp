@@ -614,6 +614,7 @@ TEST_CASE("concurrent cancel detection") {
     csp::shutdown_runtime();
 }
 
+#ifndef _WIN32
 TEST_CASE("cancel during I/O") {
     init_runtime(4);
     bool threw = false;
@@ -648,5 +649,6 @@ TEST_CASE("cancel during I/O") {
     ::close(fds[0]);
     csp::shutdown_runtime();
 }
+#endif // !_WIN32
 
 } // TEST_SUITE("cancellation MN")
