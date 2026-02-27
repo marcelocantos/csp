@@ -1178,7 +1178,7 @@ TEST_CASE("MN Tap - splice mid-flight") {
     // finishes.  Dropping the tap reader triggers fuse-back.
     csp::spawn([w = ch.w.copy(), r = ch.r.copy(),
                 pj = std::move(pj), &tap_total]() mutable {
-        for (int i = 0; i < MSGS / 4; ++i) csp::yield();
+        for (int i = 0; i < MSGS / 2; ++i) csp::yield();
 
         auto tr = tap(w, r);
         w = {};
@@ -1238,7 +1238,7 @@ TEST_CASE("MN Tap - remove mid-flight") {
 
     // Remove tap mid-flight by dropping the tap reader.
     csp::spawn([r = std::move(tr)] {
-        for (int i = 0; i < MSGS / 4; ++i) csp::yield();
+        for (int i = 0; i < MSGS / 2; ++i) csp::yield();
         // r destroyed on scope exit → forwarder detects ~tw → fuse-back
     });
 
@@ -1511,7 +1511,7 @@ TEST_CASE("MN Splice - splice mid-flight") {
     // The filter forwards everything until upstream dies, then returns
     // triggering auto fuse-back.
     csp::spawn([w = ch.w.copy(), r = ch.r.copy()]() mutable {
-        for (int i = 0; i < MSGS / 4; ++i) csp::yield();
+        for (int i = 0; i < MSGS / 2; ++i) csp::yield();
 
         splice(w, r, [](reader<int> in, writer<int> out) {
             for (int v; in >> v;) out << v;

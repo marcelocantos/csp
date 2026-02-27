@@ -5,7 +5,7 @@ on:
   pull_request:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,22 +28,16 @@ jobs:
           sudo apt-get install -y clang libc++-dev libc++abi-dev
 
       - name: Build and test (source)
-        run: make
-        env:
-          CXX: ${{ runner.os == 'Linux' && 'clang++' || 'c++' }}
+        run: make ${{ runner.os == 'Linux' && 'CXX=clang++' || '' }}
 
       - name: Generate dist
-        run: make dist
-        env:
-          CXX: ${{ runner.os == 'Linux' && 'clang++' || 'c++' }}
+        run: make dist ${{ runner.os == 'Linux' && 'CXX=clang++' || '' }}
 
       - name: Check dist is up-to-date
         run: git diff --exit-code dist/
 
       - name: Build and test (dist)
-        run: make test-dist
-        env:
-          CXX: ${{ runner.os == 'Linux' && 'clang++' || 'c++' }}
+        run: make test-dist ${{ runner.os == 'Linux' && 'CXX=clang++' || '' }}
 
   sanitize:
     name: ${{ matrix.sanitize }} (${{ matrix.os }})
@@ -65,6 +59,4 @@ jobs:
           sudo apt-get install -y clang libc++-dev libc++abi-dev
 
       - name: Build and test (dist, ${{ matrix.sanitize }})
-        run: make test-dist SANITIZE=${{ matrix.sanitize }}
-        env:
-          CXX: ${{ runner.os == 'Linux' && 'clang++' || 'c++' }}
+        run: make test-dist SANITIZE=${{ matrix.sanitize }} ${{ runner.os == 'Linux' && 'CXX=clang++' || '' }}

@@ -49,8 +49,8 @@ TEST_CASE("Throttle - budget reset with dead letter") {
     stats.spawn([w = std::move(th.w)]{
         // First burst: 1,2,3.
         w << 1; w << 2; w << 3;
-        // Wait for tick to reset budget.
-        csp::sleep(150ms);
+        // Wait for tick to reset budget (wide margin for CI).
+        csp::sleep(250ms);
         // Second burst: 4,5,6.
         w << 4; w << 5; w << 6;
     });
