@@ -1,6 +1,7 @@
 #include <csp/signal.h>
 #include <csp/io.h>
 
+#include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
 

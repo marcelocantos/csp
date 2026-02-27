@@ -1516,9 +1516,6 @@ template <typename Fn>
 /* csp/byte_reader.h */
 
 
-#include <algorithm>
-#include <cstring>
-
 namespace csp {
 
 // File-like byte stream interface over a reader<bytes>. Buffers
@@ -1535,39 +1532,7 @@ public:
     // Returns the number of bytes actually read. A return value less
     // than out.size() means the reader closed before the buffer could
     // be filled.
-    size_t read(bytes& out) {
-        size_t total = 0;
-        size_t need = out.size();
-
-        // Drain leftover from a previous call.
-        if (pos_ < buf_.size()) {
-            size_t avail = buf_.size() - pos_;
-            size_t n = std::min(avail, need);
-            std::memcpy(out.data(), buf_.data() + pos_, n);
-            pos_ += n;
-            total = n;
-            if (pos_ == buf_.size()) {
-                buf_.clear();
-                pos_ = 0;
-            }
-            if (total == need) return total;
-        }
-
-        // Pull chunks from the underlying reader.
-        bytes chunk;
-        while (total < need && (r_ >> chunk)) {
-            size_t n = std::min(chunk.size(), need - total);
-            std::memcpy(out.data() + total, chunk.data(), n);
-            total += n;
-            if (n < chunk.size()) {
-                buf_ = std::move(chunk);
-                pos_ = n;
-                return total;
-            }
-        }
-
-        return total;
-    }
+    size_t read(bytes& out);
 };
 
 }
@@ -2654,6 +2619,59 @@ bool has_processor();
 /* csp/internal/reactor.h */
 
 
+/* csp/internal/signal.h */
+
+
+
+namespace csp::detail {
+
+// Platform-neutral fd readiness event type.
+enum class fd_event : int8_t { read, write };
+
+// RAII wrapper for a reactor timer event.
+// Holds a reader whose peer writer is owned by the reactor.
+// When the timer fires, the reactor drops the writer -> death signal.
+// When this object is destroyed, the reactor event is cancelled and
+// the reactor's writer is erased (triggering death if still alive).
+class timer_signal {
+    reader<> r_;
+    uintptr_t ident_ = 0;
+
+public:
+    timer_signal() = default;
+    timer_signal(reader<> r, uintptr_t ident);
+    timer_signal(timer_signal&&) noexcept;
+    timer_signal& operator=(timer_signal&&) noexcept;
+    ~timer_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// RAII wrapper for a reactor fd-readiness event.
+// Same death-signal pattern as timer_signal.
+class fd_signal {
+    reader<> r_;
+    int fd_ = -1;
+    fd_event event_{};
+
+public:
+    fd_signal() = default;
+    fd_signal(reader<> r, int fd, fd_event event);
+    fd_signal(fd_signal&&) noexcept;
+    fd_signal& operator=(fd_signal&&) noexcept;
+    ~fd_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// Factory functions — create a reactor event and return the signal object.
+// The reactor must be started before calling these.
+timer_signal create_timer_signal(int64_t delay_ns);
+fd_signal create_fd_readable(int fd);
+fd_signal create_fd_writable(int fd);
+
+}
+
 
 namespace csp::detail {
 
@@ -2663,27 +2681,25 @@ class Reactor {
 public:
     static Reactor& instance();
 
-    // --- Signal-based API (new) ---
-    // These create kqueue events whose firing drops a writer<>,
+    // --- Signal-based API ---
+    // These create platform events whose firing drops a writer<>,
     // producing a death signal observable via prialt(~reader).
 
     // Create a one-shot timer. Returns (reader, ident).
     // Caller wraps in timer_signal for RAII cancellation.
     std::pair<reader<>, uintptr_t> create_timer(int64_t delay_ns);
 
-    // Create a one-shot fd readiness event. Returns (reader, filter).
+    // Create a one-shot fd readiness event. Returns reader.
     // Caller wraps in fd_signal for RAII cancellation.
-    reader<> create_fd_event(int fd, int16_t filter);
+    reader<> create_fd_event(int fd, fd_event event);
 
-    // Cancel a timer by ident. EV_DELETE + erase writer.
-    // No-op if already fired.
+    // Cancel a timer by ident. No-op if already fired.
     void cancel_timer(uintptr_t ident);
 
-    // Cancel an fd event. EV_DELETE + erase writer.
-    // No-op if already fired.
-    void cancel_fd(int fd, int16_t filter);
+    // Cancel an fd event. No-op if already fired.
+    void cancel_fd(int fd, fd_event event);
 
-    // Lazy init: creates kqueue fd and spawns reactor thread on first call.
+    // Lazy init: creates event fd and spawns reactor thread on first call.
     void ensure_started();
 
     // True if there are pending reactor signals (timers or fd events)
@@ -2692,7 +2708,7 @@ public:
         return pending_signals_.load(std::memory_order_acquire) > 0;
     }
 
-    // Stop reactor thread and close kqueue fd. Idempotent.
+    // Stop reactor thread and close fds. Idempotent.
     void shutdown();
 
 private:
@@ -2702,16 +2718,27 @@ private:
 
     void loop();
     void wake();
-    void fire_signal(uintptr_t ident, int16_t filter);
+    void fire_signal(uintptr_t ident, fd_event event);
 
+#ifdef __APPLE__
     int kq_ = -1;
+#elif defined(__linux__)
+    int epfd_ = -1;
+    int wakefd_ = -1;
+    // Maps timerfd -> timer ident for epoll event dispatch.
+    std::unordered_map<int, uintptr_t> timerfd_to_ident_;
+    // Maps timer ident -> timerfd for cancellation.
+    std::unordered_map<uintptr_t, int> ident_to_timerfd_;
+#endif
+
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
     std::mutex start_mu_;
 
-    // Protects writer maps. Lock ordering: signal_mu_ before any
-    // channel lock (channel_mu_) and before global_mu / run_mu.
+    // Protects writer maps (and timerfd maps on Linux).
+    // Lock ordering: signal_mu_ before any channel lock (channel_mu_)
+    // and before global_mu / run_mu.
     std::mutex signal_mu_;
 
     // Monotonic ident generator for timer events.
@@ -2783,64 +2810,10 @@ struct Runtime {
 
 }
 
-/* csp/internal/signal.h */
-
-
-
-namespace csp::detail {
-
-// RAII wrapper for a reactor timer event (EVFILT_TIMER).
-// Holds a reader whose peer writer is owned by the reactor.
-// When the timer fires, the reactor drops the writer → death signal.
-// When this object is destroyed, the kqueue event is cancelled and
-// the reactor's writer is erased (triggering death if still alive).
-class timer_signal {
-    reader<> r_;
-    uintptr_t ident_ = 0;
-
-public:
-    timer_signal() = default;
-    timer_signal(reader<> r, uintptr_t ident);
-    timer_signal(timer_signal&&) noexcept;
-    timer_signal& operator=(timer_signal&&) noexcept;
-    ~timer_signal();
-
-    chan_op<> operator~() const { return ~r_; }
-};
-
-// RAII wrapper for a reactor fd-readiness event (EVFILT_READ/WRITE).
-// Same death-signal pattern as timer_signal.
-class fd_signal {
-    reader<> r_;
-    int fd_ = -1;
-    int16_t filter_ = 0;
-
-public:
-    fd_signal() = default;
-    fd_signal(reader<> r, int fd, int16_t filter);
-    fd_signal(fd_signal&&) noexcept;
-    fd_signal& operator=(fd_signal&&) noexcept;
-    ~fd_signal();
-
-    chan_op<> operator~() const { return ~r_; }
-};
-
-// Factory functions — create a kqueue event and return the signal object.
-// The reactor must be started before calling these.
-timer_signal create_timer_signal(int64_t delay_ns);
-fd_signal create_fd_readable(int fd);
-fd_signal create_fd_writable(int fd);
-
-}
-
 /* csp/io.h */
 
-
-#include <cerrno>
-#include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
 
 namespace csp::internal {
@@ -2863,79 +2836,25 @@ inline void wait_writable(int fd) { internal::io_wait_writable(fd); }
 // --- Utility ---
 
 // Set fd to non-blocking mode. Returns 0 on success, -1 on error.
-inline int set_nonblock(int fd) {
-    int flags = fcntl(fd, F_GETFL);
-    if (flags < 0) return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
+int set_nonblock(int fd);
 
 // --- Layer 2: Non-blocking wrappers ---
 // These retry on EAGAIN by suspending the imp until the fd
 // is ready, then retrying the syscall. All retry on EINTR.
 
 // Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
-[[nodiscard]] inline ssize_t read(int fd, void* buf, size_t len) {
-    for (;;) {
-        ssize_t n = ::read(fd, buf, len);
-        if (n >= 0) return n;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            wait_readable(fd);
-            continue;
-        }
-        return -1;
-    }
-}
+[[nodiscard]] ssize_t read(int fd, void* buf, size_t len);
 
 // Write all of buf. Returns total bytes written, or -1 on error.
 // Partial writes are retried automatically.
-[[nodiscard]] inline ssize_t write(int fd, const void* buf, size_t len) {
-    size_t written = 0;
-    auto p = static_cast<const uint8_t*>(buf);
-    while (written < len) {
-        ssize_t n = ::write(fd, p + written, len - written);
-        if (n >= 0) {
-            written += static_cast<size_t>(n);
-            continue;
-        }
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            wait_writable(fd);
-            continue;
-        }
-        return -1;
-    }
-    return static_cast<ssize_t>(written);
-}
+[[nodiscard]] ssize_t write(int fd, const void* buf, size_t len);
 
 // Accept a connection. Returns new fd, or -1 on error.
-[[nodiscard]] inline int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
-    for (;;) {
-        int fd = ::accept(listen_fd, addr, addrlen);
-        if (fd >= 0) return fd;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            wait_readable(listen_fd);
-            continue;
-        }
-        return -1;
-    }
-}
+[[nodiscard]] int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen);
 
 // Non-blocking connect. Returns 0 on success, -1 on error.
 // The fd must already be non-blocking.
-[[nodiscard]] inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
-    int ret = ::connect(fd, addr, addrlen);
-    if (ret == 0) return 0;
-    if (errno != EINPROGRESS) return -1;
-
-    wait_writable(fd);
-    int err = 0;
-    socklen_t errlen = sizeof(err);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
-    if (err != 0) { errno = err; return -1; }
-    return 0;
-}
+[[nodiscard]] int connect(int fd, const struct sockaddr* addr, socklen_t addrlen);
 
 // --- DNS resolution ---
 // Offloads getaddrinfo to the blocking thread pool so the calling
@@ -2955,19 +2874,9 @@ struct resolve_result {
 
 // Resolve host/service. hints may be nullptr for defaults.
 // Runs getaddrinfo on the blocking pool — never stalls the processor.
-[[nodiscard]] inline resolve_result resolve(const std::string& host,
+[[nodiscard]] resolve_result resolve(const std::string& host,
                               const std::string& service = {},
-                              const struct addrinfo* hints = nullptr) {
-    struct addrinfo* raw = nullptr;
-    int err = csp::blocking([&] {
-        return ::getaddrinfo(
-            host.c_str(),
-            service.empty() ? nullptr : service.c_str(),
-            hints, &raw);
-    });
-    if (err != 0) return resolve_result{.error = err};
-    return resolve_result{.info = addrinfo_ptr(raw)};
-}
+                              const struct addrinfo* hints = nullptr);
 
 }
 
@@ -4509,6 +4418,7 @@ auto interleave(std::vector<reader<T>> inputs) {
 /* csp/part/io.h */
 
 
+#include <unistd.h>
 
 namespace csp::part::io {
 
@@ -5454,6 +5364,7 @@ writer<double> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = wri
 /* csp/part/random.h */
 
 
+#include <algorithm>
 #include <random>
 
 namespace csp::part::rand {
@@ -6621,74 +6532,7 @@ public:
     std::unordered_map<std::string, std::function<void()>> workers;
     restart_policy policy;
 
-    void operator()() {
-        if (workers.empty()) return;
-
-        // Snapshot into a vector for indexed alt access.
-        struct entry {
-            std::string const* name;
-            std::function<void()> const* factory;
-        };
-        std::vector<entry> specs;
-        specs.reserve(workers.size());
-        for (auto& [name, factory] : workers) {
-            specs.push_back({&name, &factory});
-        }
-
-        size_t n = specs.size();
-        std::vector<reader<std::exception_ptr>> handles(n);
-        std::vector<bool> done(n, false);
-        std::vector<std::deque<time_point>> restart_times(n);
-        size_t active = n;
-
-        for (size_t i = 0; i < n; ++i) {
-            handles[i] = spawn(std::function<void()>(*specs[i].factory));
-        }
-
-        while (active > 0) {
-            std::vector<chan_op<std::exception_ptr>> ops;
-            ops.reserve(n);
-            std::exception_ptr ep;
-            for (size_t i = 0; i < n; ++i) {
-                if (done[i]) {
-                    ops.emplace_back();
-                } else {
-                    ops.push_back(handles[i] >> ep);
-                }
-            }
-
-            int result = alt(ops);
-
-            if (result >= 0) {
-                auto idx = static_cast<size_t>(result);
-                auto tp = now();
-                auto& times = restart_times[idx];
-                while (!times.empty() &&
-                       times.front() + policy.window < tp) {
-                    times.pop_front();
-                }
-
-                if (static_cast<int>(times.size()) >= policy.max_restarts) {
-                    throw worker_max_restarts_exceeded(
-                        *specs[idx].name, ep);
-                }
-
-                times.push_back(tp);
-
-                if (policy.backoff > csp::duration::zero()) {
-                    sleep(policy.backoff);
-                }
-
-                handles[idx] =
-                    spawn(std::function<void()>(*specs[idx].factory));
-            } else {
-                auto idx = static_cast<size_t>(~result);
-                done[idx] = true;
-                --active;
-            }
-        }
-    }
-
+    void operator()();
     void run() { (*this)(); }
 };
 

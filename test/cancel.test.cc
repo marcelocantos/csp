@@ -1,7 +1,9 @@
 #include "testutil.h"
 
 #include <atomic>
+#include <fcntl.h>
 #include <stdexcept>
+#include <unistd.h>
 
 using namespace csp;
 

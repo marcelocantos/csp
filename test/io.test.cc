@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 using namespace csp;

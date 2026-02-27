@@ -11,6 +11,10 @@
 #        make SANITIZE=thread              (TSan)
 #        make examples                    (build examples)
 #        make run-examples                (build + run examples)
+#        make docker-test                 (Linux ARM64+x86 in Docker)
+#        make docker-test-arm64           (Linux ARM64 in Docker)
+#        make docker-test-x86             (Linux x86_64 in Docker)
+#        make docker-test-arm64 SANITIZE=thread (sanitizers in Docker)
 
 MAKEFLAGS += -j$(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 
@@ -103,6 +107,7 @@ LIB_SRCS := dist/csp.cpp \
 else
 LIB_SRCS := src/csp.cc \
             src/csp_globals.cpp \
+            src/byte_reader.cc \
             src/cancel.cc \
             src/channel.cc \
             src/clock.cc \
@@ -111,6 +116,7 @@ LIB_SRCS := src/csp.cc \
             src/log.cc \
             src/runtime.cpp \
             src/stack_analysis_arm64.cc \
+            src/supervisor.cc \
             src/timer.cc \
             src/reactor.cc \
             src/blocking_pool.cc \
@@ -147,7 +153,8 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples dist iwyu clean
+.PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples dist iwyu clean \
+       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean
 
 test: $(TARGET) check-md-links
 	./$(TARGET)
@@ -262,6 +269,36 @@ TIDY_SRCS := $(filter-out src/stack_analysis_arm64.cc,$(LIB_SRCS))
 iwyu: dist
 	@python3 scripts/clean_includes.py $(TIDY_SRCS) \
 		-- -std=c++20 -stdlib=libc++ $(TIDY_SYSROOT) $(INCLUDES)
+
+# --- Docker Linux testing ---
+# Build image once per platform; reuse on subsequent runs.
+
+DOCKER_PLATFORM ?= linux/arm64
+DOCKER_TAG       = csp-test-$(subst /,-,$(DOCKER_PLATFORM))
+DOCKER_CXX      := clang++-18 -std=c++20 -stdlib=libc++
+
+docker-image:
+	printf '%s\n' \
+		'FROM ubuntu:24.04' \
+		'RUN apt-get update && apt-get install -y --no-install-recommends clang-18 libc++-18-dev libc++abi-18-dev make python3 git' \
+	| docker build --platform $(DOCKER_PLATFORM) -t $(DOCKER_TAG) -
+
+docker-run-test:
+	@docker image inspect $(DOCKER_TAG) >/dev/null 2>&1 || $(MAKE) docker-image DOCKER_PLATFORM=$(DOCKER_PLATFORM)
+	docker run --rm --platform $(DOCKER_PLATFORM) \
+		-v "$(CURDIR):/src" -w /src $(DOCKER_TAG) \
+		make CXX="$(DOCKER_CXX)" $(if $(SANITIZE),SANITIZE=$(SANITIZE),)
+
+docker-test: docker-test-arm64 docker-test-x86
+
+docker-test-arm64:
+	$(MAKE) docker-run-test DOCKER_PLATFORM=linux/arm64
+
+docker-test-x86:
+	$(MAKE) docker-run-test DOCKER_PLATFORM=linux/amd64
+
+docker-clean:
+	-docker rmi csp-test-linux-arm64 csp-test-linux-amd64 2>/dev/null
 
 clean:
 	rm -rf build dist
