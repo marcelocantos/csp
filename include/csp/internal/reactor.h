@@ -1,6 +1,7 @@
 #pragma once
 
 #include <csp/csp.h>
+#include <csp/internal/signal.h>
 
 #include <atomic>
 #include <cstdint>
@@ -16,27 +17,25 @@ class Reactor {
 public:
     static Reactor& instance();
 
-    // --- Signal-based API (new) ---
-    // These create kqueue events whose firing drops a writer<>,
+    // --- Signal-based API ---
+    // These create platform events whose firing drops a writer<>,
     // producing a death signal observable via prialt(~reader).
 
     // Create a one-shot timer. Returns (reader, ident).
     // Caller wraps in timer_signal for RAII cancellation.
     std::pair<reader<>, uintptr_t> create_timer(int64_t delay_ns);
 
-    // Create a one-shot fd readiness event. Returns (reader, filter).
+    // Create a one-shot fd readiness event. Returns reader.
     // Caller wraps in fd_signal for RAII cancellation.
-    reader<> create_fd_event(int fd, int16_t filter);
+    reader<> create_fd_event(int fd, fd_event event);
 
-    // Cancel a timer by ident. EV_DELETE + erase writer.
-    // No-op if already fired.
+    // Cancel a timer by ident. No-op if already fired.
     void cancel_timer(uintptr_t ident);
 
-    // Cancel an fd event. EV_DELETE + erase writer.
-    // No-op if already fired.
-    void cancel_fd(int fd, int16_t filter);
+    // Cancel an fd event. No-op if already fired.
+    void cancel_fd(int fd, fd_event event);
 
-    // Lazy init: creates kqueue fd and spawns reactor thread on first call.
+    // Lazy init: creates event fd and spawns reactor thread on first call.
     void ensure_started();
 
     // True if there are pending reactor signals (timers or fd events)
@@ -45,7 +44,7 @@ public:
         return pending_signals_.load(std::memory_order_acquire) > 0;
     }
 
-    // Stop reactor thread and close kqueue fd. Idempotent.
+    // Stop reactor thread and close fds. Idempotent.
     void shutdown();
 
 private:
@@ -55,16 +54,27 @@ private:
 
     void loop();
     void wake();
-    void fire_signal(uintptr_t ident, int16_t filter);
+    void fire_signal(uintptr_t ident, fd_event event);
 
+#ifdef __APPLE__
     int kq_ = -1;
+#elif defined(__linux__)
+    int epfd_ = -1;
+    int wakefd_ = -1;
+    // Maps timerfd -> timer ident for epoll event dispatch.
+    std::unordered_map<int, uintptr_t> timerfd_to_ident_;
+    // Maps timer ident -> timerfd for cancellation.
+    std::unordered_map<uintptr_t, int> ident_to_timerfd_;
+#endif
+
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
     std::mutex start_mu_;
 
-    // Protects writer maps. Lock ordering: signal_mu_ before any
-    // channel lock (channel_mu_) and before global_mu / run_mu.
+    // Protects writer maps (and timerfd maps on Linux).
+    // Lock ordering: signal_mu_ before any channel lock (channel_mu_)
+    // and before global_mu / run_mu.
     std::mutex signal_mu_;
 
     // Monotonic ident generator for timer events.

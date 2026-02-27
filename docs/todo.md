@@ -384,6 +384,47 @@ with entropy-seeded default, so configurable seeding is built in.
         for a callback, mutex, or condition variable, there's a channel
         pattern instead.
 
+## Runtime / API
+
+- [ ] **`closer<EP>` type + `done()` / `spawn()` return it** —
+      Introduce `closer<EP>`: a wrapper around any endpoint that only
+      exposes `operator~` (vulture) and `operator bool` (liveness check).
+      No `>>`, no `<<`, no `read()`/`write()` — the type enforces that
+      the endpoint is for death observation only.
+      ```cpp
+      template <typename EP>
+      struct closer {
+          EP ep;
+          auto operator~() const { return ~ep; }
+          explicit operator bool() const { return bool(ep); }
+      };
+      ```
+      Instantiated as `closer<reader<>>` (done, spawn handles) or
+      `closer<writer<T>>` (observe writer death). Apply to: `done()` →
+      `closer<reader<>>`, `spawn(f)` → `closer<reader<std::exception_ptr>>`.
+      Users must write `~done()` and `~handle` — the `~` at the call
+      site mirrors `case ~0:` in the switch, making the vulture
+      convention self-documenting. Bare `done()` in prialt or
+      `handle >> exc` won't compile. Discovered via demo 15 hang
+      (infinite loop from `case 0:` never matching vulture result `~0`).
+
+- [ ] **Audit main()'s ability to perform CSP operations** — Investigate
+      whether `main()` (outside any spawned imp) should be able to use CSP
+      operations that require an active imp context, such as `csp::local`
+      (dynamic scope bindings), `csp::yield()`, channel reads/writes, etc.
+      Currently `csp::local` in `main()` crashes because there is no active
+      imp (`g_imp` is null). Determine whether this is by-design or whether
+      a lightweight "main imp" context should be established automatically.
+      The `fake_clock` demo (19) exposed this: `csp::local` had to be moved
+      inside a spawned imp rather than set up in `main()`.
+
+## CI / Build
+
+- [ ] **Local Docker testing for Linux scenarios** — Add a Docker-based
+      workflow for testing Linux builds locally, including x86 (amd64)
+      cross-compilation. Avoids relying solely on GitHub Actions for
+      Linux CI feedback.
+
 ## Test cleanup
 
 - [x] **Replace CHECK\_\* macros with plain CHECK()** — 889 occurrences

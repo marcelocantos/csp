@@ -25,11 +25,25 @@ using namespace csp;
 
 namespace csp::detail {
 
+// On ELF platforms (Linux, etc.) the compiler may cache the TPIDR_EL0
+// thread-pointer register in a callee-saved register across function calls.
+// jump_fcontext saves/restores callee-saved registers, so when an imp resumes
+// on a different OS thread the cached thread pointer is stale and TLS writes
+// (e.g. g_imp = self) corrupt the wrong thread's slot.  Force the
+// general-dynamic TLS model so every access goes through __tls_get_addr,
+// which re-reads TPIDR_EL0 each time.
+// macOS Mach-O TLV uses function calls by default, so this isn't needed there.
+#if !defined(__APPLE__)
+#define CSP_TLS_MODEL __attribute__((tls_model("global-dynamic")))
+#else
+#define CSP_TLS_MODEL
+#endif
+
 enum class Status : intptr_t { run, sleep, detach, exit, spawn };
 
 struct Imp;
 
-extern thread_local Imp * g_imp;
+extern thread_local Imp * g_imp CSP_TLS_MODEL;
 
 void do_switch(Status status = Status::sleep);
 

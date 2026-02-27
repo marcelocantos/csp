@@ -482,7 +482,11 @@ void descr(char const * fmt, ...) {
     vstatus(g_imp, fmt, args);
     va_end(args);
 
+#ifdef __APPLE__
     pthread_setname_np(getstatus(g_imp));
+#else
+    pthread_setname_np(pthread_self(), getstatus(g_imp));
+#endif
 }
 
 char const * get_descr(void * thr) {

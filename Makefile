@@ -276,6 +276,7 @@ iwyu: dist
 DOCKER_PLATFORM ?= linux/arm64
 DOCKER_TAG       = csp-test-$(subst /,-,$(DOCKER_PLATFORM))
 DOCKER_CXX      := clang++-18 -std=c++20 -stdlib=libc++
+DOCKER_BUILDDIR  = build/$(subst /,-,$(DOCKER_PLATFORM))
 
 docker-image:
 	printf '%s\n' \
@@ -287,7 +288,7 @@ docker-run-test:
 	@docker image inspect $(DOCKER_TAG) >/dev/null 2>&1 || $(MAKE) docker-image DOCKER_PLATFORM=$(DOCKER_PLATFORM)
 	docker run --rm --platform $(DOCKER_PLATFORM) \
 		-v "$(CURDIR):/src" -w /src $(DOCKER_TAG) \
-		make CXX="$(DOCKER_CXX)" $(if $(SANITIZE),SANITIZE=$(SANITIZE),)
+		make BUILDDIR="$(DOCKER_BUILDDIR)" CC=clang-18 CXX="$(DOCKER_CXX)" $(if $(SANITIZE),SANITIZE=$(SANITIZE),)
 
 docker-test: docker-test-arm64 docker-test-x86
 

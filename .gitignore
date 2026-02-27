@@ -1,4 +1,5 @@
 build/
+demos/build/
 *.d
 .DS_Store
 .claude/
