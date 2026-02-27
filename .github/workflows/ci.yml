@@ -25,19 +25,19 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libc++-dev libc++abi-dev
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
 
       - name: Build and test (source)
-        run: make ${{ runner.os == 'Linux' && 'CXX=clang++' || '' }}
+        run: make ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
 
       - name: Generate dist
-        run: make dist ${{ runner.os == 'Linux' && 'CXX=clang++' || '' }}
+        run: make dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
 
       - name: Check dist is up-to-date
         run: git diff --exit-code dist/
 
       - name: Build and test (dist)
-        run: make test-dist ${{ runner.os == 'Linux' && 'CXX=clang++' || '' }}
+        run: make test-dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
 
   sanitize:
     name: ${{ matrix.sanitize }} (${{ matrix.os }})
@@ -56,7 +56,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libc++-dev libc++abi-dev
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
 
       - name: Build and test (dist, ${{ matrix.sanitize }})
-        run: make test-dist SANITIZE=${{ matrix.sanitize }} ${{ runner.os == 'Linux' && 'CXX=clang++' || '' }}
+        run: make test-dist SANITIZE=${{ matrix.sanitize }} ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}

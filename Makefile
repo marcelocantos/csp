@@ -17,7 +17,7 @@ MAKEFLAGS += -j$(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || ech
 # Comma helper for $(subst) in BUILDDIR.
 , := ,
 
-BUILDDIR := build
+BUILDDIR := build/normal
 CXX      := c++ -std=c++20 -stdlib=libc++
 CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter
 LDFLAGS  :=
@@ -36,7 +36,7 @@ CSP_INCLUDE ?= include
 ifneq ($(SANITIZE),)
 CXXFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 LDFLAGS  += -fsanitize=$(SANITIZE)
-BUILDDIR := build-$(subst $(,),-,$(SANITIZE))
+BUILDDIR := build/$(subst $(,),-,$(SANITIZE))
 endif
 
 ifneq ($(CSP_INCLUDE),include)
@@ -264,7 +264,7 @@ iwyu: dist
 		-- -std=c++20 -stdlib=libc++ $(TIDY_SYSROOT) $(INCLUDES)
 
 clean:
-	rm -rf build build-* dist
+	rm -rf build dist
 
 # Pull in generated dependency files (silently ignored on first build).
 -include $(ALL_DEPS)
