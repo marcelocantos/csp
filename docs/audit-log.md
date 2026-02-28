@@ -1,0 +1,119 @@
+# Audit Log
+
+Chronological record of audits, releases, documentation passes, and other
+maintenance activities. Append-only — newest entries at the bottom.
+
+## 2026-02-11 — initial-extraction (reconstructed)
+
+- **Commit**: `d0dd0b8`
+- **Outcome**: Initial extraction of CSP library from bricabrac monorepo.
+  Brought over core M:1 scheduler, channel primitives (chan<T>, alt, prialt),
+  timer channels, and ring buffer. README and CLAUDE.md established at creation.
+
+## 2026-02-15 — infrastructure-pass (reconstructed)
+
+- **Commit**: `cf5b484`
+- **Outcome**: Added sanitizer support (ASan, UBSan, TSan) with fiber
+  annotations, microbenchmarking infrastructure (nanobench), automatic header
+  dependency tracking, and M:N threading (GMP model) for multi-core scheduling.
+  Several bug fixes: channel memory leak, flaky timer test, alt() fairness via
+  random offset.
+
+## 2026-02-16 — api-refactor (reconstructed)
+
+- **Commit**: `7ca04be`
+- **Outcome**: Channel API overhauled: endpoints made move-only, `channel<T>`
+  replaced with `chan<T>`, C-style extern "C" API layer replaced with
+  `csp::internal` namespace, microthread.* renamed to csp.*, `#pragma once`
+  adopted. Examples directory added with 12 runnable demos.
+
+## 2026-02-17 — combinators-pass (reconstructed)
+
+- **Commit**: `8bcaa83`
+- **Outcome**: Extensive combinator library built out in `csp::part` namespace:
+  merge, batch, scan, zip, flat_map, round_robin, interleave, slide/window,
+  partition, reduce, gate, join, share, metrics, group_by, timer parts, plus
+  kqueue-based CSP-aware I/O, blocking thread pool, and DNS resolution.
+
+## 2026-02-18 — /docs (reconstructed)
+
+- **Commit**: `95b943d`
+- **Outcome**: Major documentation pass: guide chapters, reference catalog, and
+  expanded architecture docs written. Agent guide (token-efficient) added.
+  Documentation inaccuracies fixed across 13 files.
+
+## 2026-02-19 — docs-update (reconstructed)
+
+- **Commit**: `32e47c6`
+- **Outcome**: Comprehensive CSP reference documentation added. Amalgamated
+  distribution renamed from `amalg/` to `dist/`; AGENTS-CSP.md added to
+  distribution. README slimmed down; markdown link checker added to `make test`.
+  Documentation updated to reference amalgamated distribution.
+
+## 2026-02-20 — combinators-tier-b (reconstructed)
+
+- **Commit**: `2b06a67`
+- **Outcome**: Tier B combinators added: take_until, any_of/all_of, chunk_by,
+  foreach_emit, fallback, transpose, sort_merge. `parallel_map` added.
+  "microthread" renamed to "imp" across entire codebase. `todo.md` added to
+  docs.
+
+## 2026-02-21 — channel-topology (reconstructed)
+
+- **Commit**: `b1159d3`
+- **Outcome**: Channel topology surgery primitives added: splice, weak refs, slot
+  memory safety, tap (RAII observer with auto-fuse-back), fuse/split, 4-arg
+  swap. TLA+ specs added for channel ops. SVG diagrams generated from ASCII-art
+  DSL. Documentation written for swap, fuse, and tap.
+
+## 2026-02-22 — cancellation-tls (reconstructed)
+
+- **Commit**: `35733c9`
+- **Outcome**: Cancel-aware TLS support added via mbedTLS vendor submodule.
+  Timer/IO suspension unified via reactor signals with cancellation. Dynamic
+  scoping (`csp::local`) and imp-local storage (`csp::mt_local<T>`) added.
+
+## 2026-02-23 — cpp23-modernisation (reconstructed)
+
+- **Commit**: `0b86c40`
+- **Outcome**: Codebase modernised to C++23 idioms (spaceship operator,
+  `[[nodiscard]]`, variable templates). Standard later downgraded back to C++20
+  for broader compiler compatibility. `third_party/` layout migrated to
+  `vendor/`.
+
+## 2026-02-23 — release-v0.1.0 (reconstructed)
+
+- **Commit**: `53c1ce8`
+- **Outcome**: v0.1.0 tagged on the C++20 downgrade commit after the C++23
+  modernisation pass was stabilised.
+
+## 2026-02-25 — pre-release-hardening (reconstructed)
+
+- **Commit**: `d993f3f`
+- **Outcome**: Coverage-gap tests added across cancel, channel, clock, dynamic,
+  io, mn, tls, and part modules. `cancel_op` renamed to `done`; multi-handle
+  join overloads added. NOTICES file added for third-party licence attribution.
+  STABILITY.md added to track pre-1.0 API surface.
+
+## 2026-02-26 — release-v0.2.0 (reconstructed)
+
+- **Commit**: `8224419`
+- **Outcome**: v0.2.0 tagged on the STABILITY.md addition commit. `CSP_VERSION`
+  macros added to `csp.h`. Imp death interception via dynamic scope (`imp_exit`)
+  implemented. `CHECK_*/REQUIRE_*` macros replaced with plain `CHECK/REQUIRE`.
+  Task tracking added to CLAUDE.md.
+
+## 2026-02-27 — ci-setup (reconstructed)
+
+- **Commit**: `d7e6d64`
+- **Outcome**: GitHub Actions CI workflow added with sanitizer and
+  cross-platform matrix (macOS/Linux, clang/gcc). Build artifacts moved under
+  `build/`. Non-template implementations moved from headers to `.cc` files.
+
+## 2026-02-28 — platform-expansion (reconstructed)
+
+- **Commit**: `8167ab9`
+- **Outcome**: Windows port Phase 1 (CMake, platform guards, VirtualAlloc stack
+  pool) and Phase 2 (CreateThreadpoolTimer-based reactor) completed. Linux epoll
+  reactor backend added. 20 demo programs added. Worker threads labelled
+  `csp-1`, `csp-2`, etc. for clearer diagnostics.
