@@ -60,3 +60,7 @@ jobs:
 
       - name: Build and test (dist, ${{ matrix.sanitize }})
         run: make test-dist SANITIZE=${{ matrix.sanitize }} ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        env:
+          # libc++abi on Linux frees std::logic_error strings with free()
+          # instead of operator delete, triggering false positives under ASan.
+          ASAN_OPTIONS: alloc_dealloc_mismatch=0

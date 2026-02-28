@@ -208,10 +208,10 @@ TEST_CASE("inherited by child imps") {
 
 TEST_CASE("channel preservation on restart") {
     RunStats stats;
+    int sum = 0;
+    int count = 0;
     stats.spawn([&]() {
         chan<int> ch;
-        int sum = 0;
-        int count = 0;
 
         auto guard = on_exit(restart_policy{.max_restarts = 3});
 
@@ -231,9 +231,9 @@ TEST_CASE("channel preservation on restart") {
     });
     while (csp::internal::run()) {}
     // count=1: sends 10, throws, restarted. count=2: sends 20, exits normally.
-    // Reader gets 10 + 20 = 30 (if channel persists across restart).
-    // Actually, channels captured by the closure (via copy()) are the same endpoints.
-    CHECK(true); // Channel survival is verified by not deadlocking.
+    // Reader gets 10 + 20 = 30 (channel persists across restart).
+    CHECK(count == 2);
+    CHECK(sum == 30);
 }
 
 TEST_CASE("regular spawn unaffected") {
