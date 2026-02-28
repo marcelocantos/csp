@@ -26,12 +26,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev gdb
-          # Enable core dumps for GDB post-mortem
-          ulimit -c unlimited
           sudo sysctl -w kernel.core_pattern=core.%p
 
       - name: Build and test (source)
-        run: make ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        run: |
+          ulimit -c unlimited
+          make ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
 
       - name: GDB backtrace on crash (source)
         if: failure() && runner.os == 'Linux'
@@ -41,10 +41,16 @@ jobs:
             echo "=== Backtrace from $core ==="
             gdb -batch -ex "thread apply all bt full" ./build/normal/csp_tests "$core" 2>&1 || true
           done
-          # If no core dump, re-run the test under GDB directly
+          # If no core dump, re-run the crashing test under GDB
           if ! ls core.* 1>/dev/null 2>&1; then
             echo "=== No core dump found, re-running under GDB ==="
-            gdb -batch -ex "set pagination off" -ex "run" -ex "thread apply all bt full" \
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
               --args ./build/normal/csp_tests 2>&1 || true
           fi
 
@@ -55,7 +61,9 @@ jobs:
         run: git diff --exit-code dist/
 
       - name: Build and test (dist)
-        run: make test-dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        run: |
+          ulimit -c unlimited
+          make test-dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
 
       - name: GDB backtrace on crash (dist)
         if: failure() && runner.os == 'Linux'
@@ -65,6 +73,17 @@ jobs:
             echo "=== Backtrace from $core ==="
             gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
           done
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/dist/csp_tests 2>&1 || true
+          fi
 
   sanitize:
     name: ${{ matrix.sanitize }} (${{ matrix.os }})
@@ -83,11 +102,34 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev gdb
+          sudo sysctl -w kernel.core_pattern=core.%p
 
       - name: Build and test (dist, ${{ matrix.sanitize }})
-        run: make test-dist SANITIZE=${{ matrix.sanitize }} ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        run: |
+          ulimit -c unlimited
+          make test-dist SANITIZE=${{ matrix.sanitize }} ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
         env:
           # libc++abi on Linux frees std::logic_error strings with free()
           # instead of operator delete, triggering false positives under ASan.
           ASAN_OPTIONS: alloc_dealloc_mismatch=0
+
+      - name: GDB backtrace on crash
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
+          done
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/dist/csp_tests 2>&1 || true
+          fi
