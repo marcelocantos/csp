@@ -1,5 +1,7 @@
 #include <csp/internal/runtime.h>
 
+#include <pthread.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
@@ -7,6 +9,16 @@
 namespace csp {
 
     namespace detail {
+
+        static void set_thread_name(int id) {
+            char name[16];
+            snprintf(name, sizeof(name), "csp-%d", id);
+#ifdef __APPLE__
+            pthread_setname_np(name);
+#else
+            pthread_setname_np(pthread_self(), name);
+#endif
+        }
 
         static Runtime g_runtime;
 
@@ -50,6 +62,7 @@ namespace csp {
 
             for (int i = 1; i < num_procs; ++i) {
                 workers.emplace_back([this, i] {
+                    set_thread_name(i);
                     bind_processor(procs[i].get());
                     worker_loop();
                 });
@@ -101,6 +114,7 @@ namespace csp {
 
         void Runtime::worker_loop() {
             auto& p = current_p();
+            fprintf(stderr, "[worker_loop] P%d entered\n", p.id);
 
             // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
@@ -109,6 +123,8 @@ namespace csp {
                 // Try local run queue.
                 Imp* next = local_next(p);
                 if (next) {
+                    fprintf(stderr, "[worker_loop] P%d running imp %p (id=%zu)\n",
+                            p.id, (void*)next, next->id_);
                     next->run();
                     continue;
                 }
@@ -205,6 +221,7 @@ namespace csp {
             num_procs_.store(idx + 1, std::memory_order_release);
 
             workers.emplace_back([this, idx] {
+                set_thread_name(idx);
                 bind_processor(procs[idx].get());
                 worker_loop();
             });

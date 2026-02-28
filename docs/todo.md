@@ -408,6 +408,11 @@ with entropy-seeded default, so configurable seeding is built in.
       `handle >> exc` won't compile. Discovered via demo 15 hang
       (infinite loop from `case 0:` never matching vulture result `~0`).
 
+- [x] **Rethink `pthread_setname_np` in `descr()`** — Removed per-imp
+      `pthread_setname_np` from `descr()` (stale in M:N mode). Worker
+      threads are now named `csp-1`, `csp-2`, … at creation time.
+      `csp-0` is reserved.
+
 - [ ] **Audit main()'s ability to perform CSP operations** — Investigate
       whether `main()` (outside any spawned imp) should be able to use CSP
       operations that require an active imp context, such as `csp::local`

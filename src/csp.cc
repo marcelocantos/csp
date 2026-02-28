@@ -2,8 +2,6 @@
 #include <csp/internal/reactor.h>
 #include <csp/internal/hamt.h>
 
-#include <pthread.h>
-
 #include <cassert>
 #include <chrono>
 #include <cstdarg>
@@ -90,12 +88,16 @@ namespace csp {
             // OS thread.  This ensures the saved register data on the
             // target's stack is visible to us before we jump.
             auto ctx = target.ctx_.load(std::memory_order_acquire);
+            fprintf(stderr, "[switch_to] self=%p target=%p ctx=%p data=%ld\n",
+                    (void*)self, (void*)&target, (void*)ctx, (long)data);
             current_p().save_ctx = &self->ctx_;
             current_p().save_imp = self;
 #if CSP_TSAN
             __tsan_switch_to_fiber(target.tsan_fiber_, 0);
 #endif
             auto t = jump_fcontext(ctx, (void *)data);
+            fprintf(stderr, "[switch_to] returned fctx=%p data=%p\n",
+                    (void*)t.fctx, t.data);
             // Release-store our caller's saved SP so that any thread
             // that later acquire-loads ctx_ will also see the register
             // data that jump_fcontext wrote to the caller's stack.
@@ -319,6 +321,7 @@ namespace {
 }
 
 static void start(transfer_t t) {
+    fprintf(stderr, "[start] entered, fctx=%p data=%p\n", (void*)t.fctx, t.data);
     if (current_p().save_ctx) {
         current_p().save_ctx->store(t.fctx, std::memory_order_release);
         drain_suspended(current_p().save_imp);
@@ -333,6 +336,7 @@ static void start(transfer_t t) {
     auto * self = &sd.self;
     auto parent_dyn_ctx = sd.caller.dyn_ctx_;
     g_imp = self;
+    fprintf(stderr, "[start] warmup switch_to caller=%p\n", (void*)&sd.caller);
     auto killyou_val = switch_to(sd.caller, 0);
     // After warmup switch, sd may be invalid. Use local copies only.
     g_imp = self;
@@ -372,7 +376,11 @@ int spawn(EntryFn start_f, void * data) {
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
         assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
+        fprintf(stderr, "[spawn] base=%p top=%p imp=%p usable_base=%p size=%ld sizeof(Imp)=%zu\n",
+                region.base, (void*)top, (void*)imp, (void*)usable_base,
+                (long)((char*)imp - usable_base), sizeof(Imp));
         auto ctx = make_fcontext(imp, (char*)imp - usable_base, start);
+        fprintf(stderr, "[spawn] make_fcontext returned ctx=%p\n", (void*)ctx);
         new (imp) Imp(ctx, region);
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
@@ -481,12 +489,6 @@ void descr(char const * fmt, ...) {
     va_start(args, fmt);
     vstatus(g_imp, fmt, args);
     va_end(args);
-
-#ifdef __APPLE__
-    pthread_setname_np(getstatus(g_imp));
-#else
-    pthread_setname_np(pthread_self(), getstatus(g_imp));
-#endif
 }
 
 char const * get_descr(void * thr) {
