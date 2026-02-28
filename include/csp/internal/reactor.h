@@ -5,9 +5,13 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <unordered_map>
 #ifndef _WIN32
 #include <thread>
-#include <unordered_map>
+#endif
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
 
 namespace csp::detail {
@@ -16,10 +20,9 @@ struct Imp;
 
 #ifdef _WIN32
 
-// Windows stub — Phase 2 will add RegisterWaitForSingleObject-based
-// reactor. For now, has_pending_signals() returns false so the default
-// scheduler exits when there is no more local work. Timer and fd
-// creation methods assert — they should not be called until Phase 2.
+// Windows reactor — uses CreateThreadpoolTimer for one-shot timers.
+// No dedicated reactor thread; the OS thread pool dispatches callbacks.
+// fd events are not supported (Phase 3 / Windows I/O).
 
 class Reactor {
 public:
@@ -30,7 +33,9 @@ public:
 
     void ensure_started();
 
-    bool has_pending_signals() const { return false; }
+    bool has_pending_signals() const {
+        return pending_signals_.load(std::memory_order_acquire) > 0;
+    }
 
     void shutdown();
 
@@ -38,6 +43,28 @@ private:
     Reactor() = default;
     Reactor(Reactor const&) = delete;
     Reactor& operator=(Reactor const&) = delete;
+
+    static VOID CALLBACK timer_callback(
+        PTP_CALLBACK_INSTANCE instance,
+        PVOID context,
+        PTP_TIMER timer);
+
+    struct TimerEntry {
+        writer<> w;
+        PTP_TIMER handle;
+    };
+
+    std::mutex start_mu_;
+    std::atomic<bool> running_{false};
+
+    // Protects timer_entries_. Lock ordering: signal_mu_ before any
+    // channel lock (channel_mu_) and before global_mu / run_mu.
+    std::mutex signal_mu_;
+
+    std::atomic<uintptr_t> next_ident_{1};
+    std::atomic<int> pending_signals_{0};
+
+    std::unordered_map<uintptr_t, TimerEntry> timer_entries_;
 };
 
 #else // !_WIN32
