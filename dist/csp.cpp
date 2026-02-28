@@ -82,10 +82,10 @@ void BlockingPool::worker() {
 namespace csp::internal {
 
 void run_blocking(std::function<void()> fn) {
-    detail::g_imp->suspending_.store(true, std::memory_order_release);
-    detail::BlockingPool::instance().submit(detail::g_imp, std::move(fn));
+    detail::current_imp()->suspending_.store(true, std::memory_order_release);
+    detail::BlockingPool::instance().submit(detail::current_imp(), std::move(fn));
     detail::do_switch(detail::Status::detach);
-    detail::g_imp->suspending_.store(false, std::memory_order_release);
+    detail::current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal
@@ -505,9 +505,9 @@ namespace {
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
-            if (g_imp->stk_) {
+            if (current_imp()->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, __builtin_frame_address(0));
+                    current_imp()->stk_, __builtin_frame_address(0));
             }
 
         retry:
@@ -668,7 +668,7 @@ namespace {
 
             // Phase 2: Register on all channels and sleep.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
-            g_imp->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
+            current_imp()->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
@@ -685,8 +685,8 @@ namespace {
                 mi->sorted[i]->alive_.fetch_add(1, std::memory_order_relaxed);
             }
 
-            g_imp->chanops_ = chanops;
-            g_imp->n_chanops_ = count;
+            current_imp()->chanops_ = chanops;
+            current_imp()->n_chanops_ = count;
             // Mark suspending_ before unlock_all so that schedule()
             // (called by a waker on another thread) will set
             // wake_pending_ instead of pushing to the global queue.
@@ -695,18 +695,18 @@ namespace {
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
-            g_imp->suspending_.store(true, std::memory_order_release);
+            current_imp()->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            current_imp()->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < g_imp->n_chanops_; ++i) {
-                auto const & chop = g_imp->chanops_[i];
+            for (int i = 0; i < current_imp()->n_chanops_; ++i) {
+                auto const & chop = current_imp()->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, g_imp);
+                    ch->endpts_[flags & endpt_flag].remove(&chop, current_imp());
                 }
             }
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
@@ -724,21 +724,21 @@ namespace {
                 }
             }
 
-            g_imp->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+            current_imp()->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
 
             // Check for swap wake-up: if signal_ is INT_MIN, a channel swap
             // occurred. Re-resolve happens at retry: label.
-            if (g_imp->signal_ == INT_MIN) {
-                g_imp->chanops_ = nullptr;
-                g_imp->n_chanops_ = 0;
+            if (current_imp()->signal_ == INT_MIN) {
+                current_imp()->chanops_ = nullptr;
+                current_imp()->n_chanops_ = 0;
                 delete[] mi->heap_alloc;
                 mi->heap_alloc = nullptr;
                 goto retry;
             }
 
-            out->result = g_imp->signal_;
-            g_imp->chanops_ = nullptr;
-            g_imp->n_chanops_ = 0;
+            out->result = current_imp()->signal_;
+            current_imp()->chanops_ = nullptr;
+            current_imp()->n_chanops_ = 0;
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
@@ -776,9 +776,9 @@ namespace {
             void wait(ChanOp const * chop) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
-                    waiters.emplace(chop, g_imp);
+                    waiters.emplace(chop, current_imp());
                 } else {
-                    vultures.emplace(chop, g_imp);
+                    vultures.emplace(chop, current_imp());
                 }
             }
 
@@ -1029,7 +1029,7 @@ fake_clock::fake_clock(time_point start) : current_(start) {}
 
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
-    pending_.push({tp, detail::g_imp});
+    pending_.push({tp, detail::current_imp()});
     internal::suspend();
 }
 
@@ -1067,8 +1067,6 @@ void fake_clock::run_until_idle() {
 }
 
 /* csp.cc */
-
-#include <pthread.h>
 
 #include <thread>
 #include <utility>
@@ -1145,7 +1143,7 @@ namespace csp {
         }
 
         static intptr_t switch_to(Imp & target, intptr_t data) {
-            auto self = g_imp;
+            auto self = current_imp();
             // Acquire-load ctx_ to synchronize with the release-store
             // that saved the target's context on a (possibly different)
             // OS thread.  This ensures the saved register data on the
@@ -1259,8 +1257,8 @@ namespace csp {
         void Imp::run(Status status) {
             auto& p = current_p();
             auto& busy = p.busy;
-            assert(this != g_imp);
-            auto self = g_imp;
+            auto self = current_imp();
+            assert(this != self);
 
             // Manipulate run queue under lock, but release before context switch.
             {
@@ -1270,31 +1268,31 @@ namespace csp {
                 case Status::run:
                     break;
                 case Status::sleep:
-                    if (g_imp == busy) {
+                    if (self == busy) {
                         busy = busy->next_;
                     }
                     break;
                 case Status::detach: // TLA:StealWork.VDeschedule
                 case Status::exit:
                     // Inline deschedule without re-acquiring run_mu.
-                    assert(g_imp->next_);
-                    if (busy == g_imp && (busy = g_imp->next_) == g_imp) {
+                    assert(self->next_);
+                    if (busy == self && (busy = self->next_) == self) {
                         busy = nullptr;
                     }
-                    if (g_imp->next_) g_imp->next_->prev_ = g_imp->prev_;
-                    if (g_imp->prev_) g_imp->prev_->next_ = g_imp->next_;
-                    g_imp->next_ = nullptr;
-                    g_imp->prev_ = nullptr;
+                    if (self->next_) self->next_->prev_ = self->prev_;
+                    if (self->prev_) self->prev_->next_ = self->next_;
+                    self->next_ = nullptr;
+                    self->prev_ = nullptr;
 
                     // TLA:DrainSuspended.CheckWP
                     if (status == Status::detach &&
-                        g_imp->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                        self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                         if (busy) {
-                            g_imp->next_ = busy;
-                            g_imp->prev_ = busy->prev_;
-                            g_imp->next_->prev_ = g_imp->prev_->next_ = g_imp;
+                            self->next_ = busy;
+                            self->prev_ = busy->prev_;
+                            self->next_->prev_ = self->prev_->next_ = self;
                         } else {
-                            busy = g_imp->next_ = g_imp->prev_ = g_imp;
+                            busy = self->next_ = self->prev_ = self;
                         }
                         return;
                     }
@@ -1314,23 +1312,24 @@ namespace csp {
                 }
             }
 
-            auto killme = status == Status::exit ? g_imp : nullptr;
+            auto killme = status == Status::exit ? self : nullptr;
             auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
             if (killyou) {
                 destroy_imp(killyou);
             }
 
             if (!killme) {
-                g_imp = self;
+                set_current_imp(self);
             }
         }
 
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
+            auto* self = current_imp();
             // Reclaim unused stack pages before suspending.
-            if (g_imp->stk_) {
+            if (self->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, __builtin_frame_address(0));
+                    self->stk_, __builtin_frame_address(0));
             }
             Imp* target;
             {
@@ -1339,9 +1338,9 @@ namespace csp {
                 // (local_next sets running for the initial pick; chained
                 // do_switch calls keep it current as execution moves
                 // between imps.)
-                current_p().running = g_imp;
+                current_p().running = self;
                 auto& busy = current_p().busy;
-                if (busy == g_imp) {
+                if (busy == self) {
                     busy = busy->next_;
                 }
                 target = busy;
@@ -1393,10 +1392,10 @@ static void start(transfer_t t) {
     auto data = sd.data;
     auto * self = &sd.self;
     auto parent_dyn_ctx = sd.caller.dyn_ctx_;
-    g_imp = self;
+    set_current_imp(self);
     auto killyou_val = switch_to(sd.caller, 0);
     // After warmup switch, sd may be invalid. Use local copies only.
-    g_imp = self;
+    set_current_imp(self);
     self->dyn_ctx_ = parent_dyn_ctx;
     if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
 
@@ -1418,11 +1417,12 @@ static void start(transfer_t t) {
 namespace csp::internal {
 
 int spawn(EntryFn start_f, void * data) {
-    (void)current_p(); // Ensure g_imp is bound before use.
+    (void)current_p(); // Ensure current_imp() is bound before use.
+    auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
-    if (g_imp->stk_) {
+    if (self->stk_) {
         StackPool::instance().maybe_shrink(
-            g_imp->stk_, __builtin_frame_address(0));
+            self->stk_, __builtin_frame_address(0));
     }
     try {
 #if CSP_USE_MMAP_STACKS
@@ -1449,10 +1449,9 @@ int spawn(EntryFn start_f, void * data) {
         imp->tsan_fiber_ = __tsan_create_fiber(0);
 #endif
 
-        StartData const start_data = {start_f, data, *imp, *g_imp};
-        auto self = g_imp;
+        StartData const start_data = {start_f, data, *imp, *self};
         switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
-        g_imp = self;
+        set_current_imp(self);
 
         auto& rt = Runtime::instance();
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
@@ -1482,9 +1481,9 @@ int spawn(EntryFn start_f, void * data) {
 }
 
 void suspend() {
-    g_imp->suspending_.store(true, std::memory_order_release);
+    current_imp()->suspending_.store(true, std::memory_order_release);
     do_switch(Status::detach);
-    g_imp->suspending_.store(false, std::memory_order_release);
+    current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 int run() {
@@ -1507,10 +1506,11 @@ int run() {
     {
         std::lock_guard<std::mutex> lk(p.run_mu);
         auto& busy = p.busy;
-        if (busy == g_imp) {
+        auto* ci = current_imp();
+        if (busy == ci) {
             busy = busy->next_;
         }
-        if (busy != g_imp) {
+        if (busy != ci) {
             target = busy;
         }
     }
@@ -1540,18 +1540,12 @@ void yield() {
 void descr(char const * fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    vstatus(g_imp, fmt, args);
+    vstatus(current_imp(), fmt, args);
     va_end(args);
-
-#ifdef __APPLE__
-    pthread_setname_np(getstatus(g_imp));
-#else
-    pthread_setname_np(pthread_self(), getstatus(g_imp));
-#endif
 }
 
 char const * get_descr(void * thr) {
-    return getfullstatus(thr ? static_cast<Imp const *>(thr) : g_imp);
+    return getfullstatus(thr ? static_cast<Imp const *>(thr) : current_imp());
 }
 
 } // namespace csp::internal
@@ -2714,10 +2708,22 @@ fd_signal create_fd_writable(int fd) {
 
 /* runtime.cpp */
 
+#include <pthread.h>
+
 
 namespace csp {
 
     namespace detail {
+
+        static void set_thread_name(int id) {
+            char name[16];
+            snprintf(name, sizeof(name), "csp-%d", id);
+#ifdef __APPLE__
+            pthread_setname_np(name);
+#else
+            pthread_setname_np(pthread_self(), name);
+#endif
+        }
 
         static Runtime g_runtime;
 
@@ -2761,6 +2767,7 @@ namespace csp {
 
             for (int i = 1; i < num_procs; ++i) {
                 workers.emplace_back([this, i] {
+                    set_thread_name(i);
                     bind_processor(procs[i].get());
                     worker_loop();
                 });
@@ -2812,7 +2819,6 @@ namespace csp {
 
         void Runtime::worker_loop() {
             auto& p = current_p();
-
             // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
@@ -2916,6 +2922,7 @@ namespace csp {
             num_procs_.store(idx + 1, std::memory_order_release);
 
             workers.emplace_back([this, idx] {
+                set_thread_name(idx);
                 bind_processor(procs[idx].get());
                 worker_loop();
             });
@@ -2933,12 +2940,13 @@ namespace csp {
                 return nullptr;
             }
 
-            // Skip past g_imp (the sentinel/main) to find real work.
+            // Skip past the main imp (sentinel) to find real work.
+            auto* ci = current_imp();
             auto* candidate = busy;
-            if (candidate == g_imp) {
+            if (candidate == ci) {
                 candidate = candidate->next_;
             }
-            if (candidate == g_imp || candidate == &p.main) {
+            if (candidate == ci || candidate == &p.main) {
                 p.running = nullptr;
                 return nullptr;
             }

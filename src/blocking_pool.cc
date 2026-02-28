@@ -79,10 +79,10 @@ void BlockingPool::worker() {
 namespace csp::internal {
 
 void run_blocking(std::function<void()> fn) {
-    detail::g_imp->suspending_.store(true, std::memory_order_release);
-    detail::BlockingPool::instance().submit(detail::g_imp, std::move(fn));
+    detail::current_imp()->suspending_.store(true, std::memory_order_release);
+    detail::BlockingPool::instance().submit(detail::current_imp(), std::move(fn));
     detail::do_switch(detail::Status::detach);
-    detail::g_imp->suspending_.store(false, std::memory_order_release);
+    detail::current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal

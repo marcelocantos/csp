@@ -114,8 +114,6 @@ namespace csp {
 
         void Runtime::worker_loop() {
             auto& p = current_p();
-            fprintf(stderr, "[worker_loop] P%d entered\n", p.id);
-
             // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
@@ -123,8 +121,6 @@ namespace csp {
                 // Try local run queue.
                 Imp* next = local_next(p);
                 if (next) {
-                    fprintf(stderr, "[worker_loop] P%d running imp %p (id=%zu)\n",
-                            p.id, (void*)next, next->id_);
                     next->run();
                     continue;
                 }
@@ -239,12 +235,13 @@ namespace csp {
                 return nullptr;
             }
 
-            // Skip past g_imp (the sentinel/main) to find real work.
+            // Skip past the main imp (sentinel) to find real work.
+            auto* ci = current_imp();
             auto* candidate = busy;
-            if (candidate == g_imp) {
+            if (candidate == ci) {
                 candidate = candidate->next_;
             }
-            if (candidate == g_imp || candidate == &p.main) {
+            if (candidate == ci || candidate == &p.main) {
                 p.running = nullptr;
                 return nullptr;
             }

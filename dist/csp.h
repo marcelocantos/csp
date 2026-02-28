@@ -1650,25 +1650,17 @@ using namespace csp;
 
 namespace csp::detail {
 
-// On ELF platforms (Linux, etc.) the compiler may cache the TPIDR_EL0
-// thread-pointer register in a callee-saved register across function calls.
-// jump_fcontext saves/restores callee-saved registers, so when an imp resumes
-// on a different OS thread the cached thread pointer is stale and TLS writes
-// (e.g. g_imp = self) corrupt the wrong thread's slot.  Force the
-// general-dynamic TLS model so every access goes through __tls_get_addr,
-// which re-reads TPIDR_EL0 each time.
-// macOS Mach-O TLV uses function calls by default, so this isn't needed there.
-#if !defined(__APPLE__)
-#define CSP_TLS_MODEL __attribute__((tls_model("global-dynamic")))
-#else
-#define CSP_TLS_MODEL
-#endif
-
 enum class Status : intptr_t { run, sleep, detach, exit, spawn };
 
 struct Imp;
 
-extern thread_local Imp * g_imp CSP_TLS_MODEL;
+// Non-inline accessors for the per-thread current-imp pointer.
+// Defined in csp_globals.cpp.  The cross-TU function call prevents
+// the compiler from caching the thread-pointer register (TPIDR_EL0
+// on ARM64, FS/GS on x86) across jump_fcontext, which would cause
+// stale TLS access when an imp resumes on a different OS thread.
+Imp* current_imp();
+void set_current_imp(Imp* p);
 
 void do_switch(Status status = Status::sleep);
 
@@ -1874,7 +1866,7 @@ public:
     // Snapshot the current imp's context.
     static context current() {
         context c;
-        c.root_ = detail::g_imp->dyn_ctx_;
+        c.root_ = detail::current_imp()->dyn_ctx_;
         if (c.root_) internal::hamt_retain(c.root_);
         return c;
     }
@@ -1888,17 +1880,17 @@ class context_scope {
     uintptr_t saved_;
 public:
     // Save current context and install a foreign one.
-    explicit context_scope(const context& ctx) : saved_(detail::g_imp->dyn_ctx_) {
+    explicit context_scope(const context& ctx) : saved_(detail::current_imp()->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
-        auto old = detail::g_imp->dyn_ctx_;
-        detail::g_imp->dyn_ctx_ = ctx.root();
+        auto old = detail::current_imp()->dyn_ctx_;
+        detail::current_imp()->dyn_ctx_ = ctx.root();
         if (ctx.root()) internal::hamt_retain(ctx.root());
         if (old) internal::hamt_release(old);
     }
 
     ~context_scope() {
-        auto current = detail::g_imp->dyn_ctx_;
-        detail::g_imp->dyn_ctx_ = saved_;
+        auto current = detail::current_imp()->dyn_ctx_;
+        detail::current_imp()->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -1947,8 +1939,8 @@ class local {
 
     void apply(dynamic_binding&& b) {
         b.consumed_ = true;
-        auto old = detail::g_imp->dyn_ctx_;
-        detail::g_imp->dyn_ctx_ = internal::hamt_assoc(
+        auto old = detail::current_imp()->dyn_ctx_;
+        detail::current_imp()->dyn_ctx_ = internal::hamt_assoc(
             old, b.key_id_, std::move(b.value_));
         if (old) internal::hamt_release(old);
     }
@@ -1957,14 +1949,14 @@ public:
     template <typename... Bs>
         requires (sizeof...(Bs) >= 1 &&
                   (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...))
-    local(Bs&&... bindings) : saved_(detail::g_imp->dyn_ctx_) {
+    local(Bs&&... bindings) : saved_(detail::current_imp()->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
         (apply(std::forward<Bs>(bindings)), ...);
     }
 
     ~local() {
-        auto current = detail::g_imp->dyn_ctx_;
-        detail::g_imp->dyn_ctx_ = saved_;
+        auto current = detail::current_imp()->dyn_ctx_;
+        detail::current_imp()->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -1992,7 +1984,7 @@ public:
 
     // Read: HAMT lookup + any_cast. Returns by value (safe, no dangling).
     T operator*() const {
-        if (auto* a = internal::hamt_get(detail::g_imp->dyn_ctx_, key_.id()))
+        if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
             return *std::any_cast<T>(a);
         assert(default_.has_value());
         return *default_;
@@ -2024,7 +2016,7 @@ public:
 
     // Read: map lookup + any_cast. Returns by value.
     T operator*() const {
-        auto* m = detail::g_imp->local_ctx_;
+        auto* m = detail::current_imp()->local_ctx_;
         if (m) {
             auto it = m->find(key_.id());
             if (it != m->end())
@@ -2036,7 +2028,7 @@ public:
 
     // Write: direct mutation of per-imp map.
     imp_local& operator=(T val) {
-        auto*& m = detail::g_imp->local_ctx_;
+        auto*& m = detail::current_imp()->local_ctx_;
         if (!m) m = new std::unordered_map<uint64_t, std::any>();
         (*m)[key_.id()] = std::any(std::move(val));
         return *this;

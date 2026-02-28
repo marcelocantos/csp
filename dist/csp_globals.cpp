@@ -14,7 +14,10 @@ namespace csp {
 
     namespace detail {
 
-        thread_local Imp * g_imp CSP_TLS_MODEL = nullptr;
+        static thread_local Imp * g_imp = nullptr;
+
+        Imp* current_imp() { return g_imp; }
+        void set_current_imp(Imp* p) { g_imp = p; }
 
         static thread_local Processor * tl_proc_ = nullptr;
         static bool runtime_initialized_ = false;

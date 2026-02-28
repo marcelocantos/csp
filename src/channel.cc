@@ -221,9 +221,9 @@ namespace {
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
-            if (g_imp->stk_) {
+            if (current_imp()->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, __builtin_frame_address(0));
+                    current_imp()->stk_, __builtin_frame_address(0));
             }
 
         retry:
@@ -384,7 +384,7 @@ namespace {
 
             // Phase 2: Register on all channels and sleep.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
-            g_imp->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
+            current_imp()->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
@@ -401,8 +401,8 @@ namespace {
                 mi->sorted[i]->alive_.fetch_add(1, std::memory_order_relaxed);
             }
 
-            g_imp->chanops_ = chanops;
-            g_imp->n_chanops_ = count;
+            current_imp()->chanops_ = chanops;
+            current_imp()->n_chanops_ = count;
             // Mark suspending_ before unlock_all so that schedule()
             // (called by a waker on another thread) will set
             // wake_pending_ instead of pushing to the global queue.
@@ -411,18 +411,18 @@ namespace {
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
-            g_imp->suspending_.store(true, std::memory_order_release);
+            current_imp()->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            current_imp()->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < g_imp->n_chanops_; ++i) {
-                auto const & chop = g_imp->chanops_[i];
+            for (int i = 0; i < current_imp()->n_chanops_; ++i) {
+                auto const & chop = current_imp()->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, g_imp);
+                    ch->endpts_[flags & endpt_flag].remove(&chop, current_imp());
                 }
             }
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
@@ -440,21 +440,21 @@ namespace {
                 }
             }
 
-            g_imp->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+            current_imp()->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
 
             // Check for swap wake-up: if signal_ is INT_MIN, a channel swap
             // occurred. Re-resolve happens at retry: label.
-            if (g_imp->signal_ == INT_MIN) {
-                g_imp->chanops_ = nullptr;
-                g_imp->n_chanops_ = 0;
+            if (current_imp()->signal_ == INT_MIN) {
+                current_imp()->chanops_ = nullptr;
+                current_imp()->n_chanops_ = 0;
                 delete[] mi->heap_alloc;
                 mi->heap_alloc = nullptr;
                 goto retry;
             }
 
-            out->result = g_imp->signal_;
-            g_imp->chanops_ = nullptr;
-            g_imp->n_chanops_ = 0;
+            out->result = current_imp()->signal_;
+            current_imp()->chanops_ = nullptr;
+            current_imp()->n_chanops_ = 0;
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
@@ -492,9 +492,9 @@ namespace {
             void wait(ChanOp const * chop) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
-                    waiters.emplace(chop, g_imp);
+                    waiters.emplace(chop, current_imp());
                 } else {
-                    vultures.emplace(chop, g_imp);
+                    vultures.emplace(chop, current_imp());
                 }
             }
 
