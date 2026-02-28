@@ -32,6 +32,12 @@ jobs:
         run: |
           ulimit -c unlimited
           make ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        env:
+          # Catch heap corruption closer to its source on Linux.
+          # MALLOC_CHECK_=3: abort on any detected corruption
+          # MALLOC_PERTURB_=42: fill freed memory with 0x2a pattern
+          MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
+          MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
 
       - name: GDB backtrace on crash (source)
         if: failure() && runner.os == 'Linux'
@@ -64,6 +70,9 @@ jobs:
         run: |
           ulimit -c unlimited
           make test-dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        env:
+          MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
+          MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
 
       - name: GDB backtrace on crash (dist)
         if: failure() && runner.os == 'Linux'
