@@ -25,10 +25,28 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev gdb
+          # Enable core dumps for GDB post-mortem
+          ulimit -c unlimited
+          sudo sysctl -w kernel.core_pattern=core.%p
 
       - name: Build and test (source)
         run: make ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+
+      - name: GDB backtrace on crash (source)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/normal/csp_tests "$core" 2>&1 || true
+          done
+          # If no core dump, re-run the test under GDB directly
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch -ex "set pagination off" -ex "run" -ex "thread apply all bt full" \
+              --args ./build/normal/csp_tests 2>&1 || true
+          fi
 
       - name: Generate dist
         run: make dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
@@ -38,6 +56,15 @@ jobs:
 
       - name: Build and test (dist)
         run: make test-dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+
+      - name: GDB backtrace on crash (dist)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
+          done
 
   sanitize:
     name: ${{ matrix.sanitize }} (${{ matrix.os }})
