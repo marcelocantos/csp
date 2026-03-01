@@ -1654,10 +1654,48 @@ uintptr_t hamt_assoc(uintptr_t root, uint64_t key, std::any value) {
 } // namespace csp::internal
 
 /* io.cc */
-#ifndef _WIN32
-
 
 namespace csp::internal {
+
+#ifdef _WIN32
+
+void io_wait_readable(SOCKET sock) {
+    auto signal = detail::create_fd_readable(sock);
+
+    if (!csp::is_cancel_active()) {
+        csp::prialt(~signal);
+        return;
+    }
+
+    switch (csp::prialt(csp::done(), ~signal)) {
+    case ~0: {
+        auto reason = csp::cancel_reason();
+        if (reason) std::rethrow_exception(reason);
+        throw csp::canceled{};
+    }
+    case ~1: return;
+    }
+}
+
+void io_wait_writable(SOCKET sock) {
+    auto signal = detail::create_fd_writable(sock);
+
+    if (!csp::is_cancel_active()) {
+        csp::prialt(~signal);
+        return;
+    }
+
+    switch (csp::prialt(csp::done(), ~signal)) {
+    case ~0: {
+        auto reason = csp::cancel_reason();
+        if (reason) std::rethrow_exception(reason);
+        throw csp::canceled{};
+    }
+    case ~1: return;
+    }
+}
+
+#else // !_WIN32
 
 void io_wait_readable(int fd) {
     auto signal = detail::create_fd_readable(fd);
@@ -1695,9 +1733,9 @@ void io_wait_writable(int fd) {
     }
 }
 
-} // namespace csp::internal
+#endif // _WIN32
 
-#endif // !_WIN32
+} // namespace csp::internal
 
 /* log.cc */
 
@@ -1999,7 +2037,9 @@ namespace csp {
 
 #ifdef _WIN32
 
-// --- Windows reactor: CreateThreadpoolTimer-based ---
+// --- Windows reactor: CreateThreadpoolTimer + WSAEventSelect ---
+
+#include <winsock2.h>
 
 namespace csp::detail {
 
@@ -2012,6 +2052,11 @@ void Reactor::ensure_started() {
     if (running_.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> lk(start_mu_);
     if (running_.load(std::memory_order_relaxed)) return;
+
+    // Initialize Winsock (ref-counted, multiple calls are safe).
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
     running_.store(true, std::memory_order_release);
 }
 
@@ -2020,24 +2065,39 @@ void Reactor::shutdown() {
     std::lock_guard<std::mutex> lk(start_mu_);
     if (!running_.load(std::memory_order_relaxed)) return;
 
-    // Collect handles under lock, clear map (writer dtors fire death signals).
-    std::vector<PTP_TIMER> handles;
+    // Collect timer handles under lock, clear map (writer dtors fire death signals).
+    std::vector<PTP_TIMER> timer_handles;
+    struct FdHandles { HANDLE event; HANDLE wait; SOCKET sock; };
+    std::vector<FdHandles> fd_handles;
     {
         std::lock_guard<std::mutex> slk(signal_mu_);
-        handles.reserve(timer_entries_.size());
+        timer_handles.reserve(timer_entries_.size());
         for (auto& [ident, entry] : timer_entries_)
-            handles.push_back(entry.handle);
+            timer_handles.push_back(entry.handle);
         timer_entries_.clear();
+
+        fd_handles.reserve(fd_entries_.size());
+        for (auto& [ident, entry] : fd_entries_)
+            fd_handles.push_back({entry.event, entry.wait_handle, entry.sock});
+        fd_entries_.clear();
     }
     pending_signals_.store(0, std::memory_order_release);
 
-    // Outside lock: disarm and close each handle.
-    for (auto h : handles) {
+    // Outside lock: disarm and close timer handles.
+    for (auto h : timer_handles) {
         SetThreadpoolTimer(h, NULL, 0, 0);
         WaitForThreadpoolTimerCallbacks(h, TRUE);
         CloseThreadpoolTimer(h);
     }
 
+    // Outside lock: clean up fd event handles.
+    for (auto& fh : fd_handles) {
+        WSAEventSelect(fh.sock, NULL, 0);
+        UnregisterWaitEx(fh.wait, INVALID_HANDLE_VALUE);
+        WSACloseEvent(fh.event);
+    }
+
+    WSACleanup();
     running_.store(false, std::memory_order_release);
 }
 
@@ -2110,6 +2170,86 @@ VOID CALLBACK Reactor::timer_callback(
         CloseThreadpoolTimer(timer);
     }
     // If !erased, cancel_timer already handled everything.
+}
+
+// --- fd events (WSAEventSelect + RegisterWaitForSingleObject) ---
+
+std::pair<reader<>, uintptr_t> Reactor::create_fd_event(SOCKET sock, int kind) {
+    chan<> ch;
+    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed);
+
+    HANDLE evt = WSACreateEvent();
+    assert(evt != WSA_INVALID_EVENT);
+
+    long net_events = (kind == 0) ? (FD_READ | FD_CLOSE) : (FD_WRITE | FD_CLOSE);
+    WSAEventSelect(sock, evt, net_events);
+
+    HANDLE wait = nullptr;
+    BOOL ok = RegisterWaitForSingleObject(
+        &wait, evt,
+        fd_callback,
+        reinterpret_cast<PVOID>(ident),
+        INFINITE,
+        WT_EXECUTEONLYONCE);
+    assert(ok);
+
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        fd_entries_.emplace(ident,
+                            FdEntry{std::move(ch.w), evt, wait, sock});
+    }
+    pending_signals_.fetch_add(1, std::memory_order_release);
+
+    return {std::move(ch.r), ident};
+}
+
+VOID CALLBACK Reactor::fd_callback(PVOID context, BOOLEAN /*timed_out*/) {
+    auto ident = reinterpret_cast<uintptr_t>(context);
+    auto& reactor = Reactor::instance();
+
+    HANDLE evt = nullptr;
+    HANDLE wait = nullptr;
+    SOCKET sock = INVALID_SOCKET;
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> lk(reactor.signal_mu_);
+        auto it = reactor.fd_entries_.find(ident);
+        if (it != reactor.fd_entries_.end()) {
+            evt = it->second.event;
+            wait = it->second.wait_handle;
+            sock = it->second.sock;
+            reactor.fd_entries_.erase(it);  // writer dtor fires death signal
+            erased = true;
+        }
+    }
+    if (erased) {
+        reactor.pending_signals_.fetch_sub(1, std::memory_order_release);
+        WSAEventSelect(sock, NULL, 0);
+        // Non-blocking unregister — we are inside the callback.
+        UnregisterWaitEx(wait, NULL);
+        WSACloseEvent(evt);
+    }
+    // If !erased, cancel_fd already handled everything.
+}
+
+void Reactor::cancel_fd(uintptr_t ident) {
+    HANDLE evt = nullptr;
+    HANDLE wait = nullptr;
+    SOCKET sock = INVALID_SOCKET;
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        auto it = fd_entries_.find(ident);
+        if (it == fd_entries_.end()) return;  // already fired
+        evt = it->second.event;
+        wait = it->second.wait_handle;
+        sock = it->second.sock;
+        fd_entries_.erase(it);  // writer dtor fires death signal
+    }
+    pending_signals_.fetch_sub(1, std::memory_order_release);
+    WSAEventSelect(sock, NULL, 0);
+    // Blocking wait for callback completion (safe — called from outside callback).
+    UnregisterWaitEx(wait, INVALID_HANDLE_VALUE);
+    WSACloseEvent(evt);
 }
 
 } // namespace csp::detail
@@ -2323,9 +2463,51 @@ timer_signal create_timer_signal(int64_t delay_ns) {
 
 } // namespace csp::detail
 
-// --- fd_signal (Unix only) ---
+// --- fd_signal ---
 
-#ifndef _WIN32
+#ifdef _WIN32
+
+namespace csp::detail {
+
+fd_signal::fd_signal(reader<> r, uintptr_t ident)
+    : r_(std::move(r)), ident_(ident) {}
+
+fd_signal::fd_signal(fd_signal&& o) noexcept
+    : r_(std::move(o.r_)), ident_(o.ident_) {
+    o.ident_ = 0;
+}
+
+fd_signal& fd_signal::operator=(fd_signal&& o) noexcept {
+    if (this != &o) {
+        if (ident_) Reactor::instance().cancel_fd(ident_);
+        r_ = std::move(o.r_);
+        ident_ = o.ident_;
+        o.ident_ = 0;
+    }
+    return *this;
+}
+
+fd_signal::~fd_signal() {
+    if (ident_) Reactor::instance().cancel_fd(ident_);
+}
+
+fd_signal create_fd_readable(SOCKET sock) {
+    auto& reactor = Reactor::instance();
+    reactor.ensure_started();
+    auto [r, ident] = reactor.create_fd_event(sock, 0);
+    return {std::move(r), ident};
+}
+
+fd_signal create_fd_writable(SOCKET sock) {
+    auto& reactor = Reactor::instance();
+    reactor.ensure_started();
+    auto [r, ident] = reactor.create_fd_event(sock, 1);
+    return {std::move(r), ident};
+}
+
+} // namespace csp::detail
+
+#else // !_WIN32
 
 
 namespace csp::detail {

@@ -11,6 +11,7 @@
 #endif
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
 #include <windows.h>
 #endif
 
@@ -20,9 +21,9 @@ struct Imp;
 
 #ifdef _WIN32
 
-// Windows reactor — uses CreateThreadpoolTimer for one-shot timers.
+// Windows reactor — uses CreateThreadpoolTimer for one-shot timers
+// and WSAEventSelect + RegisterWaitForSingleObject for fd events.
 // No dedicated reactor thread; the OS thread pool dispatches callbacks.
-// fd events are not supported (Phase 3 / Windows I/O).
 
 class Reactor {
 public:
@@ -30,6 +31,13 @@ public:
 
     std::pair<reader<>, uintptr_t> create_timer(int64_t delay_ns);
     void cancel_timer(uintptr_t ident);
+
+    // Create a one-shot fd readiness event. kind: 0=read, 1=write.
+    // Returns (reader, ident) — caller wraps in fd_signal for RAII.
+    std::pair<reader<>, uintptr_t> create_fd_event(SOCKET sock, int kind);
+
+    // Cancel an fd event by ident. No-op if already fired.
+    void cancel_fd(uintptr_t ident);
 
     void ensure_started();
 
@@ -49,22 +57,34 @@ private:
         PVOID context,
         PTP_TIMER timer);
 
+    static VOID CALLBACK fd_callback(
+        PVOID context,
+        BOOLEAN timed_out);
+
     struct TimerEntry {
         writer<> w;
         PTP_TIMER handle;
     };
 
+    struct FdEntry {
+        writer<> w;
+        HANDLE event;       // WSACreateEvent
+        HANDLE wait_handle; // RegisterWaitForSingleObject
+        SOCKET sock;        // for WSAEventSelect cleanup
+    };
+
     std::mutex start_mu_;
     std::atomic<bool> running_{false};
 
-    // Protects timer_entries_. Lock ordering: signal_mu_ before any
-    // channel lock (channel_mu_) and before global_mu / run_mu.
+    // Protects timer_entries_ and fd_entries_. Lock ordering:
+    // signal_mu_ before any channel lock and before global_mu / run_mu.
     std::mutex signal_mu_;
 
     std::atomic<uintptr_t> next_ident_{1};
     std::atomic<int> pending_signals_{0};
 
     std::unordered_map<uintptr_t, TimerEntry> timer_entries_;
+    std::unordered_map<uintptr_t, FdEntry> fd_entries_;
 };
 
 #else // !_WIN32

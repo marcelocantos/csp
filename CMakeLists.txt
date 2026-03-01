@@ -74,6 +74,7 @@ set(LIB_SRCS
     src/channel.cc
     src/clock.cc
     src/hamt.cc
+    src/io.cc
     src/log.cc
     src/runtime.cpp
     src/timer.cc
@@ -84,7 +85,6 @@ set(LIB_SRCS
 
 if(NOT WIN32)
     list(APPEND LIB_SRCS
-        src/io.cc
         src/signal.cc
         src/stack_analysis_arm64.cc
     )
@@ -118,7 +118,7 @@ endif()
 
 # --- Platform link libraries ---
 if(WIN32)
-    target_link_libraries(csp PRIVATE synchronization)
+    target_link_libraries(csp PRIVATE synchronization ws2_32)
 else()
     find_package(Threads REQUIRED)
     target_link_libraries(csp PRIVATE Threads::Threads)
@@ -128,9 +128,8 @@ endif()
 if(CSP_BUILD_TESTS)
     file(GLOB TEST_SRCS test/*.test.cc)
 
-    # On Windows, exclude tests that depend on POSIX I/O, signals, or TLS
+    # On Windows, exclude tests that depend on TLS (mbedTLS not built by default)
     if(WIN32)
-        list(FILTER TEST_SRCS EXCLUDE REGEX "io\\.test\\.cc$")
         list(FILTER TEST_SRCS EXCLUDE REGEX "tls\\.test\\.cc$")
     endif()
 

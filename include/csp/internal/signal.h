@@ -3,6 +3,9 @@
 #include <csp/csp.h>
 
 #include <cstdint>
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
 
 namespace csp::detail {
 
@@ -30,7 +33,29 @@ public:
 // The reactor must be started before calling this.
 timer_signal create_timer_signal(int64_t delay_ns);
 
-#ifndef _WIN32
+#ifdef _WIN32
+
+// RAII wrapper for a reactor fd-readiness event (Windows).
+// Uses ident-based cancellation (same pattern as timer_signal).
+class fd_signal {
+    reader<> r_;
+    uintptr_t ident_ = 0;
+
+public:
+    fd_signal() = default;
+    fd_signal(reader<> r, uintptr_t ident);
+    fd_signal(fd_signal&&) noexcept;
+    fd_signal& operator=(fd_signal&&) noexcept;
+    ~fd_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// Factory functions — create a WSAEventSelect event and return the signal.
+fd_signal create_fd_readable(SOCKET sock);
+fd_signal create_fd_writable(SOCKET sock);
+
+#else // !_WIN32
 
 // RAII wrapper for a reactor fd-readiness event (EVFILT_READ/WRITE).
 // Same death-signal pattern as timer_signal.
@@ -53,6 +78,6 @@ public:
 fd_signal create_fd_readable(int fd);
 fd_signal create_fd_writable(int fd);
 
-#endif // !_WIN32
+#endif // _WIN32
 
 }

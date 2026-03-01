@@ -2322,6 +2322,7 @@ bool has_processor();
 #endif
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
 #include <windows.h>
 #endif
 
@@ -2331,9 +2332,9 @@ struct Imp;
 
 #ifdef _WIN32
 
-// Windows reactor — uses CreateThreadpoolTimer for one-shot timers.
+// Windows reactor — uses CreateThreadpoolTimer for one-shot timers
+// and WSAEventSelect + RegisterWaitForSingleObject for fd events.
 // No dedicated reactor thread; the OS thread pool dispatches callbacks.
-// fd events are not supported (Phase 3 / Windows I/O).
 
 class Reactor {
 public:
@@ -2341,6 +2342,13 @@ public:
 
     std::pair<reader<>, uintptr_t> create_timer(int64_t delay_ns);
     void cancel_timer(uintptr_t ident);
+
+    // Create a one-shot fd readiness event. kind: 0=read, 1=write.
+    // Returns (reader, ident) — caller wraps in fd_signal for RAII.
+    std::pair<reader<>, uintptr_t> create_fd_event(SOCKET sock, int kind);
+
+    // Cancel an fd event by ident. No-op if already fired.
+    void cancel_fd(uintptr_t ident);
 
     void ensure_started();
 
@@ -2360,22 +2368,34 @@ private:
         PVOID context,
         PTP_TIMER timer);
 
+    static VOID CALLBACK fd_callback(
+        PVOID context,
+        BOOLEAN timed_out);
+
     struct TimerEntry {
         writer<> w;
         PTP_TIMER handle;
     };
 
+    struct FdEntry {
+        writer<> w;
+        HANDLE event;       // WSACreateEvent
+        HANDLE wait_handle; // RegisterWaitForSingleObject
+        SOCKET sock;        // for WSAEventSelect cleanup
+    };
+
     std::mutex start_mu_;
     std::atomic<bool> running_{false};
 
-    // Protects timer_entries_. Lock ordering: signal_mu_ before any
-    // channel lock (channel_mu_) and before global_mu / run_mu.
+    // Protects timer_entries_ and fd_entries_. Lock ordering:
+    // signal_mu_ before any channel lock and before global_mu / run_mu.
     std::mutex signal_mu_;
 
     std::atomic<uintptr_t> next_ident_{1};
     std::atomic<int> pending_signals_{0};
 
     std::unordered_map<uintptr_t, TimerEntry> timer_entries_;
+    std::unordered_map<uintptr_t, FdEntry> fd_entries_;
 };
 
 #else // !_WIN32
@@ -2509,6 +2529,8 @@ struct Runtime {
 /* csp/internal/signal.h */
 
 
+#ifdef _WIN32
+#endif
 
 namespace csp::detail {
 
@@ -2536,7 +2558,29 @@ public:
 // The reactor must be started before calling this.
 timer_signal create_timer_signal(int64_t delay_ns);
 
-#ifndef _WIN32
+#ifdef _WIN32
+
+// RAII wrapper for a reactor fd-readiness event (Windows).
+// Uses ident-based cancellation (same pattern as timer_signal).
+class fd_signal {
+    reader<> r_;
+    uintptr_t ident_ = 0;
+
+public:
+    fd_signal() = default;
+    fd_signal(reader<> r, uintptr_t ident);
+    fd_signal(fd_signal&&) noexcept;
+    fd_signal& operator=(fd_signal&&) noexcept;
+    ~fd_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// Factory functions — create a WSAEventSelect event and return the signal.
+fd_signal create_fd_readable(SOCKET sock);
+fd_signal create_fd_writable(SOCKET sock);
+
+#else // !_WIN32
 
 // RAII wrapper for a reactor fd-readiness event (EVFILT_READ/WRITE).
 // Same death-signal pattern as timer_signal.
@@ -2559,54 +2603,178 @@ public:
 fd_signal create_fd_readable(int fd);
 fd_signal create_fd_writable(int fd);
 
-#endif // !_WIN32
+#endif // _WIN32
 
 }
 
 /* csp/io.h */
 
-#ifndef _WIN32
 
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <ws2tcpip.h>
+#ifdef _MSC_VER
+using ssize_t = ptrdiff_t;
+#endif
+#else
 #include <cerrno>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
+#endif
 
 namespace csp::internal {
 
+#ifdef _WIN32
+void io_wait_readable(SOCKET sock);
+void io_wait_writable(SOCKET sock);
+#else
 // Layer 1 primitives — defined in src/io.cc.
 // Cancel-aware: if a cancel guard is active, these compose the
 // fd readiness signal with the cancel signal in a prialt.
 void io_wait_readable(int fd);
 void io_wait_writable(int fd);
+#endif
 
 }
 
 namespace csp::io {
 
+// --- Platform socket type ---
+
+#ifdef _WIN32
+using socket_t = SOCKET;
+constexpr socket_t invalid_socket = INVALID_SOCKET;
+#else
+using socket_t = int;
+constexpr socket_t invalid_socket = -1;
+#endif
+
 // --- Layer 1: Suspend until fd is ready ---
 
-inline void wait_readable(int fd) { internal::io_wait_readable(fd); }
-inline void wait_writable(int fd) { internal::io_wait_writable(fd); }
+inline void wait_readable(socket_t fd) { internal::io_wait_readable(fd); }
+inline void wait_writable(socket_t fd) { internal::io_wait_writable(fd); }
 
 // --- Utility ---
 
+#ifdef _WIN32
+
+// Set socket to non-blocking mode. Returns 0 on success, -1 on error.
+inline int set_nonblock(socket_t fd) {
+    u_long mode = 1;
+    return ioctlsocket(fd, FIONBIO, &mode) == 0 ? 0 : -1;
+}
+
+// Close a socket.
+inline void close(socket_t fd) {
+    closesocket(fd);
+}
+
+#else
+
 // Set fd to non-blocking mode. Returns 0 on success, -1 on error.
-inline int set_nonblock(int fd) {
+inline int set_nonblock(socket_t fd) {
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0) return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+// Close a file descriptor.
+inline void close(socket_t fd) {
+    ::close(fd);
+}
+
+#endif
+
 // --- Layer 2: Non-blocking wrappers ---
-// These retry on EAGAIN by suspending the imp until the fd
-// is ready, then retrying the syscall. All retry on EINTR.
+// These retry on would-block by suspending the imp until the fd
+// is ready, then retrying the syscall. All retry on interrupt.
+
+#ifdef _WIN32
 
 // Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
-[[nodiscard]] inline ssize_t read(int fd, void* buf, size_t len) {
+[[nodiscard]] inline ssize_t read(socket_t fd, void* buf, size_t len) {
+    for (;;) {
+        int n = ::recv(fd, static_cast<char*>(buf), static_cast<int>(len), 0);
+        if (n >= 0) return n;
+        int err = WSAGetLastError();
+        if (err == WSAEINTR) continue;
+        if (err == WSAEWOULDBLOCK) {
+            wait_readable(fd);
+            continue;
+        }
+        return -1;
+    }
+}
+
+// Write all of buf. Returns total bytes written, or -1 on error.
+// Partial writes are retried automatically.
+[[nodiscard]] inline ssize_t write(socket_t fd, const void* buf, size_t len) {
+    size_t written = 0;
+    auto p = static_cast<const char*>(buf);
+    while (written < len) {
+        int n = ::send(fd, p + written, static_cast<int>(len - written), 0);
+        if (n >= 0) {
+            written += static_cast<size_t>(n);
+            continue;
+        }
+        int err = WSAGetLastError();
+        if (err == WSAEINTR) continue;
+        if (err == WSAEWOULDBLOCK) {
+            wait_writable(fd);
+            continue;
+        }
+        return -1;
+    }
+    return static_cast<ssize_t>(written);
+}
+
+// Accept a connection. Returns new socket, or INVALID_SOCKET on error.
+[[nodiscard]] inline socket_t accept(socket_t listen_fd,
+                                     struct sockaddr* addr,
+                                     socklen_t* addrlen) {
+    for (;;) {
+        SOCKET fd = ::accept(listen_fd, addr, addrlen);
+        if (fd != INVALID_SOCKET) return fd;
+        int err = WSAGetLastError();
+        if (err == WSAEINTR) continue;
+        if (err == WSAEWOULDBLOCK) {
+            wait_readable(listen_fd);
+            continue;
+        }
+        return INVALID_SOCKET;
+    }
+}
+
+// Non-blocking connect. Returns 0 on success, -1 on error.
+// The socket must already be non-blocking.
+[[nodiscard]] inline int connect(socket_t fd,
+                                 const struct sockaddr* addr,
+                                 socklen_t addrlen) {
+    int ret = ::connect(fd, addr, addrlen);
+    if (ret == 0) return 0;
+    int err = WSAGetLastError();
+    if (err != WSAEWOULDBLOCK) return -1;
+
+    wait_writable(fd);
+    int optval = 0;
+    int optlen = sizeof(optval);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR,
+                   reinterpret_cast<char*>(&optval), &optlen) < 0)
+        return -1;
+    if (optval != 0) {
+        WSASetLastError(optval);
+        return -1;
+    }
+    return 0;
+}
+
+#else // !_WIN32
+
+// Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
+[[nodiscard]] inline ssize_t read(socket_t fd, void* buf, size_t len) {
     for (;;) {
         ssize_t n = ::read(fd, buf, len);
         if (n >= 0) return n;
@@ -2621,7 +2789,7 @@ inline int set_nonblock(int fd) {
 
 // Write all of buf. Returns total bytes written, or -1 on error.
 // Partial writes are retried automatically.
-[[nodiscard]] inline ssize_t write(int fd, const void* buf, size_t len) {
+[[nodiscard]] inline ssize_t write(socket_t fd, const void* buf, size_t len) {
     size_t written = 0;
     auto p = static_cast<const uint8_t*>(buf);
     while (written < len) {
@@ -2641,7 +2809,9 @@ inline int set_nonblock(int fd) {
 }
 
 // Accept a connection. Returns new fd, or -1 on error.
-[[nodiscard]] inline int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
+[[nodiscard]] inline socket_t accept(socket_t listen_fd,
+                                     struct sockaddr* addr,
+                                     socklen_t* addrlen) {
     for (;;) {
         int fd = ::accept(listen_fd, addr, addrlen);
         if (fd >= 0) return fd;
@@ -2656,7 +2826,9 @@ inline int set_nonblock(int fd) {
 
 // Non-blocking connect. Returns 0 on success, -1 on error.
 // The fd must already be non-blocking.
-[[nodiscard]] inline int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
+[[nodiscard]] inline int connect(socket_t fd,
+                                 const struct sockaddr* addr,
+                                 socklen_t addrlen) {
     int ret = ::connect(fd, addr, addrlen);
     if (ret == 0) return 0;
     if (errno != EINPROGRESS) return -1;
@@ -2668,6 +2840,8 @@ inline int set_nonblock(int fd) {
     if (err != 0) { errno = err; return -1; }
     return 0;
 }
+
+#endif // _WIN32
 
 // --- DNS resolution ---
 // Offloads getaddrinfo to the blocking thread pool so the calling
@@ -2682,7 +2856,16 @@ struct resolve_result {
     addrinfo_ptr info;
     int error = 0;
     explicit operator bool() const { return error == 0; }
-    const char* message() const { return gai_strerror(error); }
+
+    const char* message() const {
+#ifdef _WIN32
+        // gai_strerror is not thread-safe on Windows.
+        // Use gai_strerrorA which is the narrow-char version.
+        return gai_strerrorA(error);
+#else
+        return gai_strerror(error);
+#endif
+    }
 };
 
 // Resolve host/service. hints may be nullptr for defaults.
@@ -2702,8 +2885,6 @@ struct resolve_result {
 }
 
 }
-
-#endif // !_WIN32
 
 /* csp/part/batch.h */
 
@@ -4428,10 +4609,10 @@ auto interleave(std::vector<reader<T>> inputs) {
 
 namespace csp::part::io {
 
-// Produce byte chunks from a non-blocking fd. Each message contains
-// as much data as was available from a single read() call. Owns the
-// fd and closes it on exit.
-inline auto byte_reader(int fd, size_t chunk_size = 4096) {
+// Produce byte chunks from a non-blocking fd/socket. Each message
+// contains as much data as was available from a single read() call.
+// Owns the fd and closes it on exit.
+inline auto byte_reader(csp::io::socket_t fd, size_t chunk_size = 4096) {
     return make_producer<bytes>(
         [fd, chunk_size](writer<bytes> out) {
             internal::descr("byte_reader");
@@ -4445,13 +4626,13 @@ inline auto byte_reader(int fd, size_t chunk_size = 4096) {
                 if (!(out << std::move(buf))) break;
                 buf.resize(chunk_size);
             }
-            ::close(fd);
+            csp::io::close(fd);
         });
 }
 
-// Consume byte chunks and write them to an fd. Owns the fd and
-// closes it on exit.
-inline auto byte_writer(int fd) {
+// Consume byte chunks and write them to an fd/socket. Owns the fd
+// and closes it on exit.
+inline auto byte_writer(csp::io::socket_t fd) {
     return make_consumer<bytes>(
         [fd](reader<bytes> in) {
             internal::descr("byte_writer");
@@ -4460,7 +4641,7 @@ inline auto byte_writer(int fd) {
             for (bytes chunk; in >> chunk;) {
                 if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
             }
-            ::close(fd);
+            csp::io::close(fd);
         });
 }
 
