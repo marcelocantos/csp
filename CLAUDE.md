@@ -140,6 +140,21 @@ When making code changes, keep the following documentation in sync:
 `make` runs `scripts/check_md_links.py` which verifies all markdown
 cross-references resolve. Broken links fail the build.
 
+## Formal Verification (`formal/`)
+
+TLA+ specs verify concurrent protocols. Run with `./formal/tlc SpecName`.
+
+- **After fixing a concurrency bug**: write `Foo.tla` (fixed) + `Foo_Bug.tla`
+  (buggy, expected to violate invariant) pair. Both get `.cfg` files.
+- **When writing concurrent decision points** (loop exits, irreversible state
+  transitions based on shared variables): write the safety invariant first
+  ("this exit is only safe when X"), model what can invalidate X, run TLC
+  before writing the C++.
+- **When modifying concurrent code**: check if a `formal/` spec covers that
+  protocol and update it to match.
+- **Keep specs in sync**: if the C++ changes the variables or ordering in a
+  modeled protocol, update the corresponding `.tla` file.
+
 ## Tests
 
 doctest (vendored in `vendor/include/doctest/`). Test files in `test/`
