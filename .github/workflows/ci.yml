@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # --- macOS + Linux: Makefile-based build + test ---
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macOS arm64
+          - os: ubuntu-24.04
+            name: Linux x86_64
+            cxx: "clang++-18 -std=c++20 -stdlib=libc++"
+            packages: clang-18 libc++-18-dev libc++abi-18-dev
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Install dependencies
+        if: matrix.packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Build and test
+        run: make
+        env:
+          CXX: ${{ matrix.cxx || '' }}
+
+      - name: Distribution build and test
+        run: make dist && make test-dist
+        env:
+          CXX: ${{ matrix.cxx || '' }}
+
+  # --- Sanitizers (macOS + Linux) ---
+  sanitizers:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macOS ASan+UBSan
+            sanitize: address,undefined
+          - os: macos-14
+            name: macOS TSan
+            sanitize: thread
+          - os: ubuntu-24.04
+            name: Linux ASan+UBSan
+            sanitize: address,undefined
+            cxx: "clang++-18 -std=c++20 -stdlib=libc++"
+            packages: clang-18 libc++-18-dev libc++abi-18-dev
+          - os: ubuntu-24.04
+            name: Linux TSan
+            sanitize: thread
+            cxx: "clang++-18 -std=c++20 -stdlib=libc++"
+            packages: clang-18 libc++-18-dev libc++abi-18-dev
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Install dependencies
+        if: matrix.packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Build and test with ${{ matrix.sanitize }}
+        run: make SANITIZE=${{ matrix.sanitize }}
+        env:
+          CXX: ${{ matrix.cxx || '' }}
+
+  # --- Windows: CMake-based build + test ---
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Configure
+        run: cmake -B build -DCSP_TLS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: build\Release\csp_tests.exe
+
+  # --- TLA+ model checking (macOS only) ---
+  tla:
+    name: TLA+ specs
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Run TLC
+        run: make check
