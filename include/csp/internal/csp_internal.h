@@ -9,6 +9,16 @@
 #include <cstddef>
 #include <unordered_map>
 
+// MSVC-compatible replacements for GCC/Clang builtins.
+#ifdef _MSC_VER
+#include <intrin.h>
+#define CSP_UNREACHABLE() __assume(0)
+#define CSP_FRAME_ADDRESS() _AddressOfReturnAddress()
+#else
+#define CSP_UNREACHABLE() __builtin_unreachable()
+#define CSP_FRAME_ADDRESS() __builtin_frame_address(0)
+#endif
+
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across imp switches.
 #if defined(__SANITIZE_THREAD__)

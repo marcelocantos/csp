@@ -47,7 +47,11 @@ auto buffer(size_t capacity = size_t(-1)) {
                 CSP_LOG(log, "~OUT");
                 return;
             default:
+#ifdef _MSC_VER
+                __assume(0);
+#else
                 __builtin_unreachable();
+#endif
             }
         }
     });

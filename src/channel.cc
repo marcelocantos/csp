@@ -223,7 +223,7 @@ namespace {
             // Reclaim unused stack pages at this API boundary.
             if (g_imp->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, __builtin_frame_address(0));
+                    g_imp->stk_, CSP_FRAME_ADDRESS());
             }
 
         retry:

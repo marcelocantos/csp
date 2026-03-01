@@ -1417,6 +1417,16 @@ private:
 #include <any>
 #include <unordered_map>
 
+// MSVC-compatible replacements for GCC/Clang builtins.
+#ifdef _MSC_VER
+#include <intrin.h>
+#define CSP_UNREACHABLE() __assume(0)
+#define CSP_FRAME_ADDRESS() _AddressOfReturnAddress()
+#else
+#define CSP_UNREACHABLE() __builtin_unreachable()
+#define CSP_FRAME_ADDRESS() __builtin_frame_address(0)
+#endif
+
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across imp switches.
 #if defined(__SANITIZE_THREAD__)
@@ -2336,13 +2346,96 @@ bool has_processor();
 /* csp/internal/reactor.h */
 
 
+/* csp/internal/signal.h */
+
+
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
+
+namespace csp::detail {
+
+// Platform-neutral fd readiness event type.
+enum class fd_event : int8_t { read, write };
+
+// RAII wrapper for a reactor timer event.
+// Holds a reader whose peer writer is owned by the reactor.
+// When the timer fires, the reactor drops the writer -> death signal.
+// When this object is destroyed, the reactor event is cancelled and
+// the reactor's writer is erased (triggering death if still alive).
+class timer_signal {
+    reader<> r_;
+    uintptr_t ident_ = 0;
+
+public:
+    timer_signal() = default;
+    timer_signal(reader<> r, uintptr_t ident);
+    timer_signal(timer_signal&&) noexcept;
+    timer_signal& operator=(timer_signal&&) noexcept;
+    ~timer_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// Factory function — create a reactor timer and return the signal object.
+// The reactor must be started before calling this.
+timer_signal create_timer_signal(int64_t delay_ns);
+
+#ifdef _WIN32
+
+// RAII wrapper for a reactor fd-readiness event (Windows).
+// Uses ident-based cancellation (same pattern as timer_signal).
+class fd_signal {
+    reader<> r_;
+    uintptr_t ident_ = 0;
+
+public:
+    fd_signal() = default;
+    fd_signal(reader<> r, uintptr_t ident);
+    fd_signal(fd_signal&&) noexcept;
+    fd_signal& operator=(fd_signal&&) noexcept;
+    ~fd_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// Factory functions — create a WSAEventSelect event and return the signal.
+fd_signal create_fd_readable(SOCKET sock);
+fd_signal create_fd_writable(SOCKET sock);
+
+#else // !_WIN32
+
+// RAII wrapper for a reactor fd-readiness event.
+// Same death-signal pattern as timer_signal.
+class fd_signal {
+    reader<> r_;
+    int fd_ = -1;
+    fd_event event_{};
+
+public:
+    fd_signal() = default;
+    fd_signal(reader<> r, int fd, fd_event event);
+    fd_signal(fd_signal&&) noexcept;
+    fd_signal& operator=(fd_signal&&) noexcept;
+    ~fd_signal();
+
+    chan_op<> operator~() const { return ~r_; }
+};
+
+// Factory functions — create a kqueue/epoll event and return the signal object.
+fd_signal create_fd_readable(int fd);
+fd_signal create_fd_writable(int fd);
+
+#endif // _WIN32
+
+}
+
 #ifndef _WIN32
 #endif
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <winsock2.h>
 #include <windows.h>
 #endif
 
@@ -2424,27 +2517,25 @@ class Reactor {
 public:
     static Reactor& instance();
 
-    // --- Signal-based API (new) ---
-    // These create kqueue events whose firing drops a writer<>,
+    // --- Signal-based API ---
+    // These create platform events whose firing drops a writer<>,
     // producing a death signal observable via prialt(~reader).
 
     // Create a one-shot timer. Returns (reader, ident).
     // Caller wraps in timer_signal for RAII cancellation.
     std::pair<reader<>, uintptr_t> create_timer(int64_t delay_ns);
 
-    // Create a one-shot fd readiness event. Returns (reader, filter).
+    // Create a one-shot fd readiness event. Returns reader.
     // Caller wraps in fd_signal for RAII cancellation.
-    reader<> create_fd_event(int fd, int16_t filter);
+    reader<> create_fd_event(int fd, fd_event event);
 
-    // Cancel a timer by ident. EV_DELETE + erase writer.
-    // No-op if already fired.
+    // Cancel a timer by ident. No-op if already fired.
     void cancel_timer(uintptr_t ident);
 
-    // Cancel an fd event. EV_DELETE + erase writer.
-    // No-op if already fired.
-    void cancel_fd(int fd, int16_t filter);
+    // Cancel an fd event. No-op if already fired.
+    void cancel_fd(int fd, fd_event event);
 
-    // Lazy init: creates kqueue fd and spawns reactor thread on first call.
+    // Lazy init: creates event fd and spawns reactor thread on first call.
     void ensure_started();
 
     // True if there are pending reactor signals (timers or fd events)
@@ -2453,7 +2544,7 @@ public:
         return pending_signals_.load(std::memory_order_acquire) > 0;
     }
 
-    // Stop reactor thread and close kqueue fd. Idempotent.
+    // Stop reactor thread and close fds. Idempotent.
     void shutdown();
 
 private:
@@ -2463,16 +2554,25 @@ private:
 
     void loop();
     void wake();
-    void fire_signal(uintptr_t ident, int16_t filter);
+    void fire_signal(uintptr_t ident, fd_event event);
 
+#ifdef __APPLE__
     int kq_ = -1;
+#elif defined(__linux__)
+    int epfd_ = -1;
+    int wakefd_ = -1;
+    std::unordered_map<int, uintptr_t> timerfd_to_ident_;
+    std::unordered_map<uintptr_t, int> ident_to_timerfd_;
+#endif
+
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stopping_{false};
     std::mutex start_mu_;
 
-    // Protects writer maps. Lock ordering: signal_mu_ before any
-    // channel lock (channel_mu_) and before global_mu / run_mu.
+    // Protects writer maps (and timerfd maps on Linux).
+    // Lock ordering: signal_mu_ before any channel lock (channel_mu_)
+    // and before global_mu / run_mu.
     std::mutex signal_mu_;
 
     // Monotonic ident generator for timer events.
@@ -2543,87 +2643,6 @@ struct Runtime {
     bool steal_work(Processor& thief);
     bool has_work(Processor& p);
 };
-
-}
-
-/* csp/internal/signal.h */
-
-
-#ifdef _WIN32
-#endif
-
-namespace csp::detail {
-
-// RAII wrapper for a reactor timer event (EVFILT_TIMER on macOS,
-// timerfd on Linux, stub on Windows).
-// Holds a reader whose peer writer is owned by the reactor.
-// When the timer fires, the reactor drops the writer -> death signal.
-// When this object is destroyed, the kqueue event is cancelled and
-// the reactor's writer is erased (triggering death if still alive).
-class timer_signal {
-    reader<> r_;
-    uintptr_t ident_ = 0;
-
-public:
-    timer_signal() = default;
-    timer_signal(reader<> r, uintptr_t ident);
-    timer_signal(timer_signal&&) noexcept;
-    timer_signal& operator=(timer_signal&&) noexcept;
-    ~timer_signal();
-
-    chan_op<> operator~() const { return ~r_; }
-};
-
-// Factory function — create a reactor timer and return the signal object.
-// The reactor must be started before calling this.
-timer_signal create_timer_signal(int64_t delay_ns);
-
-#ifdef _WIN32
-
-// RAII wrapper for a reactor fd-readiness event (Windows).
-// Uses ident-based cancellation (same pattern as timer_signal).
-class fd_signal {
-    reader<> r_;
-    uintptr_t ident_ = 0;
-
-public:
-    fd_signal() = default;
-    fd_signal(reader<> r, uintptr_t ident);
-    fd_signal(fd_signal&&) noexcept;
-    fd_signal& operator=(fd_signal&&) noexcept;
-    ~fd_signal();
-
-    chan_op<> operator~() const { return ~r_; }
-};
-
-// Factory functions — create a WSAEventSelect event and return the signal.
-fd_signal create_fd_readable(SOCKET sock);
-fd_signal create_fd_writable(SOCKET sock);
-
-#else // !_WIN32
-
-// RAII wrapper for a reactor fd-readiness event (EVFILT_READ/WRITE).
-// Same death-signal pattern as timer_signal.
-class fd_signal {
-    reader<> r_;
-    int fd_ = -1;
-    int16_t filter_ = 0;
-
-public:
-    fd_signal() = default;
-    fd_signal(reader<> r, int fd, int16_t filter);
-    fd_signal(fd_signal&&) noexcept;
-    fd_signal& operator=(fd_signal&&) noexcept;
-    ~fd_signal();
-
-    chan_op<> operator~() const { return ~r_; }
-};
-
-// Factory functions — create a kqueue/epoll event and return the signal object.
-fd_signal create_fd_readable(int fd);
-fd_signal create_fd_writable(int fd);
-
-#endif // _WIN32
 
 }
 
@@ -3422,7 +3441,11 @@ auto buffer(size_t capacity = size_t(-1)) {
                 CSP_LOG(log, "~OUT");
                 return;
             default:
+#ifdef _MSC_VER
+                __assume(0);
+#else
                 __builtin_unreachable();
+#endif
             }
         }
     });

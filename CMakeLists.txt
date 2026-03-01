@@ -29,20 +29,41 @@ include_directories(vendor/include)
 set(FCONTEXT_DIR vendor/github.com/boostorg/context/src/asm)
 
 if(WIN32)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-        if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
-            set(FCONTEXT_SRCS
-                ${FCONTEXT_DIR}/jump_arm64_aapcs_pe_armclang.S
-                ${FCONTEXT_DIR}/make_arm64_aapcs_pe_armclang.S)
+    if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        # Native MSVC: use MASM assembly
+        enable_language(ASM_MASM)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+                set(FCONTEXT_SRCS
+                    ${FCONTEXT_DIR}/jump_arm64_aapcs_pe_armasm.asm
+                    ${FCONTEXT_DIR}/make_arm64_aapcs_pe_armasm.asm)
+            else()
+                set(FCONTEXT_SRCS
+                    ${FCONTEXT_DIR}/jump_x86_64_ms_pe_masm.asm
+                    ${FCONTEXT_DIR}/make_x86_64_ms_pe_masm.asm)
+            endif()
         else()
             set(FCONTEXT_SRCS
-                ${FCONTEXT_DIR}/jump_x86_64_ms_pe_clang_gas.S
-                ${FCONTEXT_DIR}/make_x86_64_ms_pe_clang_gas.S)
+                ${FCONTEXT_DIR}/jump_i386_ms_pe_masm.asm
+                ${FCONTEXT_DIR}/make_i386_ms_pe_masm.asm)
         endif()
     else()
-        set(FCONTEXT_SRCS
-            ${FCONTEXT_DIR}/jump_i386_ms_pe_clang_gas.S
-            ${FCONTEXT_DIR}/make_i386_ms_pe_clang_gas.S)
+        # clang-cl or MinGW: use GAS assembly
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+                set(FCONTEXT_SRCS
+                    ${FCONTEXT_DIR}/jump_arm64_aapcs_pe_armclang.S
+                    ${FCONTEXT_DIR}/make_arm64_aapcs_pe_armclang.S)
+            else()
+                set(FCONTEXT_SRCS
+                    ${FCONTEXT_DIR}/jump_x86_64_ms_pe_clang_gas.S
+                    ${FCONTEXT_DIR}/make_x86_64_ms_pe_clang_gas.S)
+            endif()
+        else()
+            set(FCONTEXT_SRCS
+                ${FCONTEXT_DIR}/jump_i386_ms_pe_clang_gas.S
+                ${FCONTEXT_DIR}/make_i386_ms_pe_clang_gas.S)
+        endif()
     endif()
 elseif(APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")

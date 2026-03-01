@@ -240,7 +240,7 @@ namespace csp {
                         return;
                     }
                     break;
-                default: __builtin_unreachable();
+                default: CSP_UNREACHABLE();
                 }
 
                 // Inline schedule without re-acquiring run_mu.
@@ -271,7 +271,7 @@ namespace csp {
             // Reclaim unused stack pages before suspending.
             if (g_imp->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, __builtin_frame_address(0));
+                    g_imp->stk_, CSP_FRAME_ADDRESS());
             }
             Imp* target;
             {
@@ -363,7 +363,7 @@ int spawn(EntryFn start_f, void * data) {
     // Reclaim unused stack pages at this API boundary.
     if (g_imp->stk_) {
         StackPool::instance().maybe_shrink(
-            g_imp->stk_, __builtin_frame_address(0));
+            g_imp->stk_, CSP_FRAME_ADDRESS());
     }
     try {
 #if CSP_USE_VM_STACKS
