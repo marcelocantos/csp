@@ -642,6 +642,84 @@ TEST_CASE("IO - Multiple concurrent blocking calls") {
     csp::shutdown_runtime();
 }
 
+// --- Console signal channels (Windows only) ---
+
+#ifdef _WIN32
+
+TEST_CASE("IO - Console signal delivery") {
+    csp::init_runtime(2);
+
+    auto sig = csp::win::signal::notify({CTRL_C_EVENT});
+    std::atomic<bool> got_signal{false};
+
+    csp::spawn([&got_signal, sig = std::move(sig)] {
+        DWORD ev;
+        sig >> ev;
+        CHECK_EQ(CTRL_C_EVENT, ev);
+        got_signal.store(true, std::memory_order_relaxed);
+    });
+
+    csp::spawn([] {
+        csp::sleep(std::chrono::milliseconds(10));
+        GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+    });
+
+    csp::schedule();
+    CHECK(got_signal.load());
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("IO - Console signal multiple events") {
+    csp::init_runtime(2);
+
+    auto sig =
+        csp::win::signal::notify({CTRL_C_EVENT, CTRL_BREAK_EVENT});
+    std::vector<DWORD> received;
+    std::atomic<bool> done{false};
+
+    csp::spawn([&received, &done, sig = std::move(sig)] {
+        DWORD ev;
+        sig >> ev;
+        received.push_back(ev);
+        sig >> ev;
+        received.push_back(ev);
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::spawn([] {
+        csp::sleep(std::chrono::milliseconds(10));
+        GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+        csp::sleep(std::chrono::milliseconds(10));
+        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    REQUIRE_EQ(2, received.size());
+    CHECK_EQ(CTRL_C_EVENT, received[0]);
+    CHECK_EQ(CTRL_BREAK_EVENT, received[1]);
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("IO - Console signal reader drop cleanup") {
+    csp::init_runtime(2);
+
+    {
+        auto sig = csp::win::signal::notify({CTRL_C_EVENT});
+        // Drop immediately — sentinel closes the socket, imps exit.
+    }
+
+    // Wait for producer + sentinel imps to finish.
+    csp::schedule();
+
+    // Event after cleanup — handler skips (mask cleared).
+    GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+
+    csp::shutdown_runtime();
+}
+
+#endif // _WIN32
+
 // --- Signal channels (Unix only) ---
 
 #ifndef _WIN32

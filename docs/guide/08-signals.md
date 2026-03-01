@@ -168,6 +168,29 @@ Linux, `SIGPIPE` for pipes is typically handled at the process level (e.g.,
   the I/O reactor internally for non-blocking pipe reads.
 - Signal numbers must be in the range 1--63.
 
+## Windows: console control events
+
+On Windows, POSIX signals are not available. CSP provides
+`csp::win::signal::notify` as the equivalent, converting Windows console
+control events into channel reads.
+
+```cpp
+#include "csp.h"
+
+auto sig = csp::win::signal::notify({CTRL_C_EVENT, CTRL_CLOSE_EVENT});
+
+DWORD ev;
+sig >> ev;  // blocks until Ctrl-C or console close
+```
+
+The API shape mirrors `csp::signal::notify`: it returns a reader, works in
+`alt`/`prialt`, and cleans up automatically when the reader is dropped.
+
+Supported events: `CTRL_C_EVENT`, `CTRL_BREAK_EVENT`, `CTRL_CLOSE_EVENT`,
+`CTRL_LOGOFF_EVENT`, `CTRL_SHUTDOWN_EVENT`.
+
+See the [Signals reference](../reference/signals.md) for full details.
+
 ## Next steps
 
 - [`09-concurrency.md`](09-concurrency.md) -- M:N threading, `init_runtime`,

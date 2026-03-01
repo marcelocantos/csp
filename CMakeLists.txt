@@ -83,7 +83,11 @@ set(LIB_SRCS
     src/stack_pool.cc
 )
 
-if(NOT WIN32)
+if(WIN32)
+    list(APPEND LIB_SRCS
+        src/win_signal.cc
+    )
+else()
     list(APPEND LIB_SRCS
         src/signal.cc
         src/stack_analysis_arm64.cc
