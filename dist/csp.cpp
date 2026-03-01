@@ -1504,7 +1504,7 @@ void descr(char const * fmt, ...) {
     vstatus(g_imp, fmt, args);
     va_end(args);
 
-#ifndef _WIN32
+#ifdef __APPLE__
     pthread_setname_np(getstatus(g_imp));
 #endif
 }

@@ -61,8 +61,8 @@ TEST_CASE("Timer - Tick") {
 
     bool ok = true;
 
-    auto interval = CSP_TEST_SANITIZER ? 100ms : 50ms;
-    auto threshold = CSP_TEST_SANITIZER ? 60ms : 30ms;
+    auto interval = CSP_TEST_SANITIZER ? 200ms : 100ms;
+    auto threshold = interval - 25ms;
 
     stats.spawn([&]{
         auto ticker = csp::tick(interval);

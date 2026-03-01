@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <climits>
 #include <exception>
+#include <memory>
 #include <stdint.h>
 
 #include <functional>

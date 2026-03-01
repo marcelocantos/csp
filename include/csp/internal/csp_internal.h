@@ -42,9 +42,14 @@ void do_switch(Status status = Status::sleep);
 struct alignas(16) Imp {
     struct alignas(16) StackSlot { char c[16]; };
 
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
     static constexpr size_t stack_size = 128 << 10;  // sanitizers need ~4x headroom
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+    static constexpr size_t stack_size = 128 << 10;
+#else
+    static constexpr size_t stack_size = 32 << 10;
+#endif
 #else
     static constexpr size_t stack_size = 32 << 10;
 #endif
