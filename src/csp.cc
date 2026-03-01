@@ -17,10 +17,16 @@ static void default_scheduler_impl() {
     while (true) {
         if (csp::internal::run()) continue;
         if (rt.live_gs.load(std::memory_order_acquire) == 0) break;
-        // In single-P mode, no reactor signals means no external events can
-        // wake blocked imps — exit (deadlock or done).
-        // In M:N mode, workers may still be running imps, so keep waiting.
-        if (!rt.mn_mode_ && !csp::detail::Reactor::instance().has_pending_signals()) break;
+        // In single-P mode, if no reactor signals are pending and no
+        // global work is queued, no external event can wake blocked
+        // imps — exit (deadlock or done).  Both conditions must hold:
+        // the reactor decrements pending_signals *after* scheduling
+        // the woken imp (which sets has_global_work_), so checking
+        // both avoids a race where pending_signals is already zero
+        // but the woken imp hasn't been run yet.
+        if (!rt.mn_mode_
+            && !csp::detail::Reactor::instance().has_pending_signals()
+            && !rt.has_global_work_.load(std::memory_order_acquire)) break;
         // Park until work arrives or all imps have exited.
         std::unique_lock<std::mutex> lk(rt.park_mu);
         rt.park_cv.wait(lk, [&rt] {
