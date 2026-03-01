@@ -962,7 +962,8 @@ struct spawn_data {
 
 template <typename F>
 inline void spawn_entry(void * data) {
-    std::unique_ptr<spawn_data<F>> sd{static_cast<spawn_data<F> *>(data)};
+    using SD = spawn_data<F>;
+    std::unique_ptr<SD> sd{static_cast<SD *>(data)};
     try {
         auto f = std::move(sd->f);
         f();
@@ -1353,10 +1354,16 @@ fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 
 // Sanitizer detection: under ASan/TSan, shadow memory scales with mapped VA,
 // so we fall back to heap allocation (new[]/delete[]).
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+// Two-level #if avoids MSVC's traditional preprocessor evaluating
+// __has_feature() even when defined(__has_feature) is false.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 #define CSP_USE_VM_STACKS 0
-#else
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define CSP_USE_VM_STACKS 0
+#endif
+#endif
+#ifndef CSP_USE_VM_STACKS
 #define CSP_USE_VM_STACKS 1
 #endif
 
@@ -1411,8 +1418,14 @@ private:
 
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across imp switches.
-#if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
+#if defined(__SANITIZE_THREAD__)
 #define CSP_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define CSP_TSAN 1
+#endif
+#endif
+#ifdef CSP_TSAN
 extern "C" {
     void *__tsan_get_current_fiber(void);
     void *__tsan_create_fiber(unsigned flags);
@@ -2321,7 +2334,9 @@ bool has_processor();
 #ifndef _WIN32
 #endif
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <winsock2.h>
 #include <windows.h>
 #endif
@@ -2612,7 +2627,9 @@ fd_signal create_fd_writable(int fd);
 
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <ws2tcpip.h>
 #ifdef _MSC_VER
 using ssize_t = ptrdiff_t;

@@ -16,7 +16,7 @@ jobs:
             name: macOS arm64
           - os: ubuntu-24.04
             name: Linux x86_64
-            cxx: "clang++-18 -std=c++20 -stdlib=libc++"
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev
 
     name: ${{ matrix.name }}
@@ -35,14 +35,10 @@ jobs:
           sudo apt-get install -y ${{ matrix.packages }}
 
       - name: Build and test
-        run: make
-        env:
-          CXX: ${{ matrix.cxx || '' }}
+        run: make ${{ matrix.make_cxx || '' }}
 
       - name: Distribution build and test
-        run: make dist && make test-dist
-        env:
-          CXX: ${{ matrix.cxx || '' }}
+        run: make dist && make test-dist ${{ matrix.make_cxx || '' }}
 
   # --- Sanitizers (macOS + Linux) ---
   sanitizers:
@@ -59,12 +55,12 @@ jobs:
           - os: ubuntu-24.04
             name: Linux ASan+UBSan
             sanitize: address,undefined
-            cxx: "clang++-18 -std=c++20 -stdlib=libc++"
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev
           - os: ubuntu-24.04
             name: Linux TSan
             sanitize: thread
-            cxx: "clang++-18 -std=c++20 -stdlib=libc++"
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev
 
     name: ${{ matrix.name }}
@@ -83,9 +79,7 @@ jobs:
           sudo apt-get install -y ${{ matrix.packages }}
 
       - name: Build and test with ${{ matrix.sanitize }}
-        run: make SANITIZE=${{ matrix.sanitize }}
-        env:
-          CXX: ${{ matrix.cxx || '' }}
+        run: make SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }}
 
   # --- Windows: CMake-based build + test ---
   windows:
@@ -116,6 +110,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download TLA+ tools
+        run: curl -fsSL -o formal/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
 
       - name: Run TLC
         run: make check

@@ -6,10 +6,16 @@
 
 // Sanitizer detection: under ASan/TSan, shadow memory scales with mapped VA,
 // so we fall back to heap allocation (new[]/delete[]).
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+// Two-level #if avoids MSVC's traditional preprocessor evaluating
+// __has_feature() even when defined(__has_feature) is false.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 #define CSP_USE_VM_STACKS 0
-#else
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define CSP_USE_VM_STACKS 0
+#endif
+#endif
+#ifndef CSP_USE_VM_STACKS
 #define CSP_USE_VM_STACKS 1
 #endif
 

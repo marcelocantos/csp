@@ -1,4 +1,5 @@
 #include "testutil.h"
+#include "testscale.h"
 
 #include <vector>
 
@@ -29,7 +30,9 @@ TEST_CASE("Pace - all values pass through") {
 TEST_CASE("Pace - enforces minimum interval") {
     RunStats stats;
 
-    auto p = pace<int>(tick(80ms)).spawn();
+    auto interval = CSP_TEST_SANITIZER ? 200ms : 100ms;
+    auto threshold = interval - 25ms;
+    auto p = pace<int>(tick(interval)).spawn();
 
     stats.spawn([w = std::move(p.w)]{
         w << 1; w << 2; w << 3;
@@ -45,9 +48,8 @@ TEST_CASE("Pace - enforces minimum interval") {
 
     csp::schedule();
     REQUIRE_EQ(3u, times.size());
-    // First → second and second → third should each be >= 80ms.
-    CHECK_GE(times[1] - times[0], 75ms);  // small tolerance
-    CHECK_GE(times[2] - times[1], 75ms);
+    CHECK_GE(times[1] - times[0], threshold);
+    CHECK_GE(times[2] - times[1], threshold);
 }
 
 TEST_CASE("Pace - first value passes immediately") {

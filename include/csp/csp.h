@@ -876,7 +876,8 @@ struct spawn_data {
 
 template <typename F>
 inline void spawn_entry(void * data) {
-    std::unique_ptr<spawn_data<F>> sd{static_cast<spawn_data<F> *>(data)};
+    using SD = spawn_data<F>;
+    std::unique_ptr<SD> sd{static_cast<SD *>(data)};
     try {
         auto f = std::move(sd->f);
         f();

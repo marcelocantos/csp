@@ -11,8 +11,14 @@
 
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across imp switches.
-#if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
+#if defined(__SANITIZE_THREAD__)
 #define CSP_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define CSP_TSAN 1
+#endif
+#endif
+#ifdef CSP_TSAN
 extern "C" {
     void *__tsan_get_current_fiber(void);
     void *__tsan_create_fiber(unsigned flags);
