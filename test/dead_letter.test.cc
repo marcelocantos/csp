@@ -50,7 +50,7 @@ TEST_CASE("Throttle - budget reset with dead letter") {
         // First burst: 1,2,3.
         w << 1; w << 2; w << 3;
         // Wait for tick to reset budget (wide margin for CI).
-        csp::sleep(250ms);
+        csp::sleep(500ms);
         // Second burst: 4,5,6.
         w << 4; w << 5; w << 6;
     });

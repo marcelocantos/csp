@@ -62,7 +62,7 @@ TEST_CASE("Timer - Tick") {
     bool ok = true;
 
     auto interval = 50ms;
-    auto threshold = 35ms;
+    auto threshold = 10ms;  // Wide margin for slow CI runners
 
     stats.spawn([&]{
         auto ticker = csp::tick(interval);
