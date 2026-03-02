@@ -156,15 +156,9 @@ TEST_CASE("Interleave - MultiWakerAltClaim") {
             });
         }
 
-        // Drain readers for the channels that didn't win the alt.
-        for (int c = 0; c < CHANS; ++c) {
-            csp::spawn([r = chans[c].r.copy()] {
-                int v;
-                r >> v; // Drain if there's a remaining writer.
-            });
-        }
-
-        // Release our copies.
+        // Release our copies.  The alt reader holds the only reader
+        // references.  After the alt fires and the alt reader exits,
+        // the remaining writers see dead read endpoints and unblock.
         for (auto& ch : chans) ch.release();
 
         csp::schedule();

@@ -1398,12 +1398,16 @@ static void start(transfer_t t) {
     auto data = sd.data;
     auto * self = &sd.self;
     auto parent_dyn_ctx = sd.caller.dyn_ctx_;
+    // Retain and assign parent's dynamic context BEFORE the warmup
+    // switch.  After the switch the parent continues running and may
+    // release its dyn_ctx (e.g. by exiting a context_scope or dying),
+    // which could free the HAMT node before this imp resumes.
+    if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
+    self->dyn_ctx_ = parent_dyn_ctx;
     set_current_imp(self);
     auto killyou_val = switch_to(sd.caller, 0);
     // After warmup switch, sd may be invalid. Use local copies only.
     set_current_imp(self);
-    self->dyn_ctx_ = parent_dyn_ctx;
-    if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
 
     // In M:N mode, the resuming switch may carry a killyou pointer — a
     // dying imp that exited and chained into us via run(exit).
