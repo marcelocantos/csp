@@ -423,6 +423,17 @@ with entropy-seeded default, so configurable seeding is built in.
       The `fake_clock` demo (19) exposed this: `csp::local` had to be moved
       inside a spawned imp rather than set up in `main()`.
 
+## Formal Verification
+
+- [ ] **Audit unmodeled concurrent decision points** — Survey the codebase for
+      concurrent exit/return decisions (loop exits, irreversible state transitions
+      based on shared variables) that don't yet have TLA+ specs in `formal/`.
+      Existing specs cover: SchedulerTermination, ReactorShutdown, MainLoopExit,
+      TimerCreateFire, WorkerParking, StealWork, DrainSuspended, and several
+      channel/alt/swap protocols. Look for gaps in: blocking pool shutdown,
+      stack pool reclamation, M:N worker join, and any new concurrent code
+      added since the last audit.
+
 ## CI / Build
 
 - [ ] **Local Docker testing for Linux scenarios** — Add a Docker-based
@@ -470,3 +481,7 @@ with entropy-seeded default, so configurable seeding is built in.
         severity, aggregate counts in time windows, flush periodically,
         alert on threshold. Demonstrates: merge, where, group_by, batch,
         timer tick, scan, tee.
+
+## Audit
+
+- [ ] **Signal handling audit** — Audit signal handling function for correctness under tight time and API-use constraints.
