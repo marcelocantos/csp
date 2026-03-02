@@ -1,5 +1,4 @@
 #include "testutil.h"
-#include "testscale.h"
 
 using namespace csp;
 using namespace csp::part;
@@ -9,133 +8,152 @@ static Logger g_log("Timer.Test");
 
 TEST_CASE("Timer - Sleep") {
     RunStats stats;
-
-    auto start = std::chrono::steady_clock::now();
+    fake_clock fc;
     bool ran = false;
 
     stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
         csp::sleep(10ms);
         ran = true;
     });
 
     csp::schedule();
+    fc.run();
     CHECK(ran);
-    CHECK(std::chrono::steady_clock::now() - start >= 10ms);
 }
 
 TEST_CASE("Timer - After") {
     RunStats stats;
-
-    auto start = std::chrono::steady_clock::now();
+    fake_clock fc;
     duration elapsed{};
 
     stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+        auto start = csp::now();
         auto timer = csp::after(10ms);
         timer.read();
-        elapsed = std::chrono::steady_clock::now() - start;
+        elapsed = csp::now() - start;
     });
 
     csp::schedule();
-    CHECK(elapsed >= 10ms);
+    fc.run();
+    CHECK(elapsed == 10ms);
 }
 
 TEST_CASE("Timer - AfterInAlt") {
     RunStats stats;
+    fake_clock fc;
 
     writer<int> idle_writer;
     int which_result = 0;
 
     stats.spawn([&, r = --idle_writer]{
+        csp::local l{csp::clock = &fc};
         auto timeout = csp::after(5ms);
         int n = 0;
         which_result = alt(r >> n, timeout >> nullptr);
     });
 
     csp::schedule();
+    fc.run();
     idle_writer = {};
     CHECK(1 == which_result);
 }
 
 TEST_CASE("Timer - Tick") {
     RunStats stats;
+    fake_clock fc;
+    auto epoch = time_point{};
 
-    bool ok = true;
-
-    auto interval = 50ms;
-    auto threshold = 10ms;  // Wide margin for slow CI runners
+    std::vector<time_point> times;
 
     stats.spawn([&]{
-        auto ticker = csp::tick(interval);
-        time_point prev = std::chrono::steady_clock::now();
+        csp::local l{csp::clock = &fc};
+        auto ticker = csp::tick(50ms);
         for (int i = 0; i < 3; ++i) {
-            auto tp = ticker.read();
-            if (tp - prev < threshold) ok = false;
-            prev = tp;
+            times.push_back(ticker.read());
         }
     });
 
     csp::schedule();
-    CHECK(ok);
+    fc.run();
+    REQUIRE(3u == times.size());
+    CHECK(times[0] == epoch + 50ms);
+    CHECK(times[1] == epoch + 100ms);
+    CHECK(times[2] == epoch + 150ms);
 }
 
 TEST_CASE("Timer - TickCancellation") {
     RunStats stats;
+    fake_clock fc;
 
-    stats.spawn([]{
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
         auto ticker = csp::tick(5ms);
         ticker.read();
         ticker = {};
     });
 
     csp::schedule();
+    fc.run();
     // If the tick imp didn't exit, schedule() would hang.
 }
 
 TEST_CASE("Timer - MultipleTimersOrdering") {
     RunStats stats;
+    fake_clock fc;
 
     int which_result = 0;
 
     stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
         auto slow = csp::after(20ms);
         auto fast = csp::after(5ms);
         which_result = alt(slow >> nullptr, fast >> nullptr);
     });
 
     csp::schedule();
+    fc.run();
     CHECK(1 == which_result);
 }
 
 TEST_CASE("Timer - TimeoutPattern") {
     RunStats stats;
+    fake_clock fc;
 
-    chan<int> ch;
     int which_result = 0;
     int val = 0;
 
-    stats.spawn([w = ch.w.copy()]{
-        csp::sleep(5ms);
-        w << 42;
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+        chan<int> ch;
+
+        csp::spawn([w = ch.w.copy()]{
+            csp::sleep(5ms);
+            w << 42;
+        });
+
+        csp::spawn([&, r = ch.r.copy()]{
+            auto timeout = csp::after(50ms);
+            which_result = alt(r >> val, timeout >> nullptr);
+        });
+
+        ch.release();
     });
 
-    stats.spawn([&, r = ch.r.copy()]{
-        auto timeout = csp::after(50ms);
-        which_result = alt(r >> val, timeout >> nullptr);
-    });
-
-    ch.release();
     csp::schedule();
+    fc.run();
     CHECK(0 == which_result);
     CHECK(42 == val);
 }
 
 TEST_CASE("Timer - Controlled duration") {
     RunStats stats;
-
-    auto threshold = CSP_TEST_SANITIZER ? 8ms : 4ms;
+    fake_clock fc;
     std::vector<duration> intervals;
 
     stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
         chan<duration> ctl;
         auto t = timer(std::move(ctl.r));
 
@@ -143,7 +161,7 @@ TEST_CASE("Timer - Controlled duration") {
             w << 10ms; w << 20ms; w << 10ms;
         });
 
-        time_point prev = std::chrono::steady_clock::now();
+        time_point prev = csp::now();
         for (time_point tp; t >> tp;) {
             intervals.push_back(tp - prev);
             prev = tp;
@@ -151,22 +169,24 @@ TEST_CASE("Timer - Controlled duration") {
     });
 
     csp::schedule();
+    fc.run();
     REQUIRE(3 == intervals.size());
-    CHECK(intervals[0] >= threshold);
-    CHECK(intervals[1] >= threshold * 2);
-    CHECK(intervals[2] >= threshold);
+    CHECK(intervals[0] == 10ms);
+    CHECK(intervals[1] == 20ms);
+    CHECK(intervals[2] == 10ms);
 }
 
 TEST_CASE("Timer - Controlled time_point") {
     RunStats stats;
-
+    fake_clock fc;
     int fires = 0;
 
     stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
         chan<time_point> ctl;
         auto t = timer(std::move(ctl.r));
 
-        auto now = std::chrono::steady_clock::now();
+        auto now = csp::now();
         csp::spawn([w = std::move(ctl.w), now]() mutable {
             w << now + 10ms;
             w << now + 30ms;
@@ -176,13 +196,16 @@ TEST_CASE("Timer - Controlled time_point") {
     });
 
     csp::schedule();
+    fc.run();
     CHECK(2 == fires);
 }
 
 TEST_CASE("Timer - Controlled cancellation") {
     RunStats stats;
+    fake_clock fc;
 
-    stats.spawn([]{
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
         chan<duration> ctl;
         auto t = timer(std::move(ctl.r));
 
@@ -195,4 +218,5 @@ TEST_CASE("Timer - Controlled cancellation") {
     });
 
     csp::schedule();
+    fc.run();
 }

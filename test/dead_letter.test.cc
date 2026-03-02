@@ -10,131 +10,173 @@ TEST_SUITE("DeadLetter") {
 
 TEST_CASE("Throttle - excess goes to dead letter") {
     RunStats stats;
-
-    auto [dl_w, dl_r] = chan<int>{};
-
-    // Budget=1, interval=1s. Only first value passes; rest go to dead letter.
-    auto r = throttle<int>(tick(1s), {.dead_letter = std::move(dl_w)}).spawn(count(1, 6).spawn());
+    fake_clock fc;
 
     std::vector<int> dead;
-    stats.spawn([dl_r = std::move(dl_r), &dead]{
-        for (int v; dl_r >> v;) dead.push_back(v);
-    });
 
-    stats.spawn([r = std::move(r)]{
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+
+        auto [dl_w, dl_r] = chan<int>{};
+
+        // Budget=1, interval=1s. Only first value passes; rest go to dead letter.
+        auto r = throttle<int>(tick(1s), {.dead_letter = std::move(dl_w)}).spawn(count(1, 6).spawn());
+
+        csp::spawn([dl_r = std::move(dl_r), &dead]{
+            for (int v; dl_r >> v;) dead.push_back(v);
+        });
+
         CHECK(1 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
 
     csp::schedule();
+    fc.run();
     CHECK(std::vector<int>({2, 3, 4, 5}) == dead);
 }
 
 TEST_CASE("Throttle - no dead letter, no crash") {
-    // Same scenario without dead letter — existing behaviour.
-    auto r = throttle<int>(tick(1s)).spawn(count(1, 6).spawn());
-
-    CHECK(1 == r.read());
-    int _;
-    CHECK_FALSE(bool(r >> _));
-}
-
-TEST_CASE("Throttle - budget reset with dead letter") {
     RunStats stats;
+    fake_clock fc;
 
-    auto [dl_w, dl_r] = chan<int>{};
-    auto th = throttle<int>(tick(100ms), {.n = 2, .dead_letter = std::move(dl_w)}).spawn();
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
 
-    stats.spawn([w = std::move(th.w)]{
-        // First burst: 1,2,3.
-        w << 1; w << 2; w << 3;
-        // Wait for tick to reset budget (wide margin for CI).
-        csp::sleep(500ms);
-        // Second burst: 4,5,6.
-        w << 4; w << 5; w << 6;
-    });
+        // Same scenario without dead letter — existing behaviour.
+        auto r = throttle<int>(tick(1s)).spawn(count(1, 6).spawn());
 
-    std::vector<int> dead;
-    stats.spawn([dl_r = std::move(dl_r), &dead]{
-        for (int v; dl_r >> v;) dead.push_back(v);
-    });
-
-    // First burst: 1,2 pass, 3 to DL.
-    // After tick: 4,5 pass, 6 to DL.
-    stats.spawn([r = std::move(th.r)]{
         CHECK(1 == r.read());
-        CHECK(2 == r.read());
-        CHECK(4 == r.read());
-        CHECK(5 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
 
     csp::schedule();
+    fc.run();
+}
+
+TEST_CASE("Throttle - budget reset with dead letter") {
+    RunStats stats;
+    fake_clock fc;
+
+    std::vector<int> dead;
+
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+
+        auto [dl_w, dl_r] = chan<int>{};
+        auto th = throttle<int>(tick(100ms), {.n = 2, .dead_letter = std::move(dl_w)}).spawn();
+
+        csp::spawn([w = std::move(th.w)]{
+            // First burst: 1,2,3.
+            w << 1; w << 2; w << 3;
+            // Wait for tick to reset budget. Use a non-multiple of the tick
+            // interval so the sleep and tick don't expire at the same fake
+            // time (which would allow a mid-burst budget reset).
+            csp::sleep(150ms);
+            // Second burst: 4,5,6.
+            w << 4; w << 5; w << 6;
+        });
+
+        csp::spawn([dl_r = std::move(dl_r), &dead]{
+            for (int v; dl_r >> v;) dead.push_back(v);
+        });
+
+        // First burst: 1,2 pass, 3 to DL.
+        // After tick: 4,5 pass, 6 to DL.
+        CHECK(1 == th.r.read());
+        CHECK(2 == th.r.read());
+        CHECK(4 == th.r.read());
+        CHECK(5 == th.r.read());
+        int _;
+        CHECK_FALSE(bool(th.r >> _));
+    });
+
+    csp::schedule();
+    fc.run();
     CHECK(std::vector<int>({3, 6}) == dead);
 }
 
 TEST_CASE("Debounce - superseded values go to dead letter") {
     RunStats stats;
-
-    auto [dl_w, dl_r] = chan<int>{};
-
-    // count sends 1–5 instantly. Each supersedes the previous pending value.
-    // Input closes → pending (5) emitted. 1–4 go to dead letter.
-    auto r = debounce<int>(50ms, {.dead_letter = std::move(dl_w)}).spawn(count(1, 6).spawn());
+    fake_clock fc;
 
     std::vector<int> dead;
-    stats.spawn([dl_r = std::move(dl_r), &dead]{
-        for (int v; dl_r >> v;) dead.push_back(v);
-    });
 
-    stats.spawn([r = std::move(r)]{
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+
+        auto [dl_w, dl_r] = chan<int>{};
+
+        // count sends 1–5 instantly. Each supersedes the previous pending value.
+        // Input closes → pending (5) emitted. 1–4 go to dead letter.
+        auto r = debounce<int>(50ms, {.dead_letter = std::move(dl_w)}).spawn(count(1, 6).spawn());
+
+        csp::spawn([dl_r = std::move(dl_r), &dead]{
+            for (int v; dl_r >> v;) dead.push_back(v);
+        });
+
         CHECK(5 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
 
     csp::schedule();
+    fc.run();
     CHECK(std::vector<int>({1, 2, 3, 4}) == dead);
 }
 
 TEST_CASE("Debounce - no dead letter, no crash") {
-    auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
-
-    CHECK(5 == r.read());
-    int _;
-    CHECK_FALSE(bool(r >> _));
-}
-
-TEST_CASE("Debounce - spaced values, no drops") {
     RunStats stats;
+    fake_clock fc;
 
-    auto [dl_w, dl_r] = chan<int>{};
-    auto db = debounce<int>(50ms, {.dead_letter = std::move(dl_w)}).spawn();
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
 
-    stats.spawn([w = std::move(db.w)]{
-        w << 1;
-        csp::sleep(100ms);
-        w << 2;
-        csp::sleep(100ms);
-        w << 3;
-    });
+        auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
 
-    std::vector<int> dead;
-    stats.spawn([dl_r = std::move(dl_r), &dead]{
-        for (int v; dl_r >> v;) dead.push_back(v);
-    });
-
-    stats.spawn([r = std::move(db.r)]{
-        CHECK(1 == r.read());
-        CHECK(2 == r.read());
-        CHECK(3 == r.read());
+        CHECK(5 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
 
     csp::schedule();
+    fc.run();
+}
+
+TEST_CASE("Debounce - spaced values, no drops") {
+    RunStats stats;
+    fake_clock fc;
+
+    std::vector<int> dead;
+
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+
+        auto [dl_w, dl_r] = chan<int>{};
+        auto db = debounce<int>(50ms, {.dead_letter = std::move(dl_w)}).spawn();
+
+        csp::spawn([w = std::move(db.w)]{
+            w << 1;
+            csp::sleep(100ms);
+            w << 2;
+            csp::sleep(100ms);
+            w << 3;
+        });
+
+        csp::spawn([dl_r = std::move(dl_r), &dead]{
+            for (int v; dl_r >> v;) dead.push_back(v);
+        });
+
+        CHECK(1 == db.r.read());
+        CHECK(2 == db.r.read());
+        CHECK(3 == db.r.read());
+        int _;
+        CHECK_FALSE(bool(db.r >> _));
+    });
+
+    csp::schedule();
+    fc.run();
     // No drops — dead letter should be empty.
     CHECK(dead.empty());
 }
