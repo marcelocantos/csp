@@ -79,6 +79,9 @@ jobs:
           sudo apt-get install -y ${{ matrix.packages }}
 
       - name: Build and test with ${{ matrix.sanitize }}
+        env:
+          # mbedTLS triggers false-positive ODR violations under ASan on Linux.
+          ASAN_OPTIONS: detect_odr_violation=0
         run: make SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }}
 
   # --- Windows: CMake-based build + test ---

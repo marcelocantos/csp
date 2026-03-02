@@ -32,6 +32,9 @@ if(WIN32)
     if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         # Native MSVC: use MASM assembly
         enable_language(ASM_MASM)
+        # Boost.Context MASM files reference BOOST_CONTEXT_EXPORT; define as
+        # empty for static-library builds (matches Boost's own CMakeLists.txt).
+        set(CMAKE_ASM_MASM_FLAGS "${CMAKE_ASM_MASM_FLAGS} /DBOOST_CONTEXT_EXPORT=")
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
             if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
                 set(FCONTEXT_SRCS

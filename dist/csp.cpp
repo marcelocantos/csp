@@ -1041,9 +1041,12 @@ static void default_scheduler_impl() {
     while (true) {
         if (csp::internal::run()) continue;
         if (rt.live_gs.load(std::memory_order_acquire) == 0) break;
-        // If no reactor signals are pending, no external events can
-        // wake blocked imps. Exit like the old scheduler (deadlock or done).
-        if (!csp::detail::Reactor::instance().has_pending_signals()) break;
+        // If no reactor signals are pending AND no global work is queued,
+        // no external events can wake blocked imps. Both conditions must
+        // hold to avoid a race where fire_signal has pushed to the global
+        // queue but hasn't yet decremented pending_signals_.
+        if (!csp::detail::Reactor::instance().has_pending_signals()
+            && !rt.has_global_work_.load(std::memory_order_acquire)) break;
         // Park until the reactor posts work to the global queue,
         // or all imps have exited.
         std::unique_lock<std::mutex> lk(rt.park_mu);
