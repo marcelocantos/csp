@@ -140,6 +140,29 @@ When making code changes, keep the following documentation in sync:
 `make` runs `scripts/check_md_links.py` which verifies all markdown
 cross-references resolve. Broken links fail the build.
 
+## Debugging hard concurrency bugs
+
+When a concurrency bug resists direct investigation (no clear repro,
+flaky, timing-dependent), write a paper stub in `docs/papers/` before
+reaching for systematic tools (ASan, TLA+, etc.):
+
+1. **Enumerate the actors** as a numbered sequence of steps. Force
+   yourself to name every transition ("catches → writes to channel"
+   not "handles the exception"). Gaps between sub-steps are where
+   bugs hide.
+2. **State an explicit hypothesis**, even if you suspect it's wrong.
+   A wrong hypothesis that names the right code is a compass bearing.
+3. **Name the invariant** you believe is being violated ("stack not
+   freed while X references it").
+4. **Sleep on it.** The paper stub is most valuable when re-read with
+   fresh eyes — the structured trace often makes the bug visible to
+   a reader in a way it wasn't to the writer mid-investigation.
+
+This process complements TLA+: the paper scopes the state space and
+actors that a spec would model. Sometimes the scoping itself reveals
+the bug, making the spec post-hoc documentation rather than a
+diagnostic tool.
+
 ## Formal Verification (`formal/`)
 
 TLA+ specs verify concurrent protocols. Run with `./formal/tlc SpecName`.

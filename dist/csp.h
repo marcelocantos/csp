@@ -1171,11 +1171,21 @@ struct spawn_data {
 template <typename F>
 inline void spawn_entry(void * data) {
     std::unique_ptr<spawn_data<F>> sd{static_cast<spawn_data<F> *>(data)};
+    std::exception_ptr ex;
     try {
         auto f = std::move(sd->f);
         f();
     } catch (...) {
-        auto ex = std::current_exception();
+        ex = std::current_exception();
+    }
+    // Channel send must be OUTSIDE the catch block.  In M:N mode,
+    // prialt_begin can suspend the imp (context-switch).  If it
+    // resumes on a different OS thread, __cxa_end_catch would run
+    // on that thread while __cxa_begin_catch registered the
+    // exception on the original thread's __cxa_eh_globals —
+    // corrupting the C++ exception runtime state (SIGSEGV in
+    // __cxa_end_catch at address 0x0).
+    if (ex) {
         if (!(sd->w << ex) && !(global_exception_handler << ex)) {
             std::terminate();
         }
@@ -6292,10 +6302,14 @@ auto try_map(F&& f, writer<std::exception_ptr> err) {
             internal::descr("try_map");
 
             for (A a; alt(in >> a, ~out) == 0;) {
+                std::exception_ptr ex;
                 try {
                     if (!(out << f(a))) break;
                 } catch (...) {
-                    if (!(err << std::current_exception())) break;
+                    ex = std::current_exception();
+                }
+                if (ex) {
+                    if (!(err << ex)) break;
                 }
             }
         });
