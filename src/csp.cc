@@ -96,10 +96,19 @@ namespace csp {
             auto ctx = target.ctx_.load(std::memory_order_acquire);
             current_p().save_ctx = &self->ctx_;
             current_p().save_imp = self;
+#if CSP_ASAN
+            __sanitizer_start_switch_fiber(
+                &self->asan_fake_stack_,
+                target.stk_.base, target.stk_.total_size);
+#endif
 #if CSP_TSAN
             __tsan_switch_to_fiber(target.tsan_fiber_, 0);
 #endif
             auto t = jump_fcontext(ctx, (void *)data);
+#if CSP_ASAN
+            __sanitizer_finish_switch_fiber(
+                self->asan_fake_stack_, nullptr, nullptr);
+#endif
             // Release-store our caller's saved SP so that any thread
             // that later acquire-loads ctx_ will also see the register
             // data that jump_fcontext wrote to the caller's stack.
@@ -324,6 +333,10 @@ namespace {
 }
 
 static void start(transfer_t t) {
+#if CSP_ASAN
+    // First entry into this fiber — no previous fake-stack to restore.
+    __sanitizer_finish_switch_fiber(nullptr, nullptr, nullptr);
+#endif
     if (current_p().save_ctx) {
         current_p().save_ctx->store(t.fctx, std::memory_order_release);
         drain_suspended(current_p().save_imp);
