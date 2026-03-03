@@ -18,7 +18,7 @@ TEST_CASE("Volume - Megaloop") {
         total += ch.r.copy().read();
     }
     ch.release();
-    CHECK_EQ(n_loops, total);
+    CHECK(n_loops == total);
 }
 
 TEST_CASE("Volume - DaisyChain") {
@@ -39,7 +39,7 @@ TEST_CASE("Volume - DaisyChain") {
         total += tail.read();
     }
     ch = {};
-    CHECK_EQ(n_threads * n_loops, total);
+    CHECK(n_threads * n_loops == total);
 }
 
 TEST_CASE("Volume - RapidChannelLifecycle") {
@@ -52,8 +52,8 @@ TEST_CASE("Volume - RapidChannelLifecycle") {
         chan<int> ch;
     }
 
-    CHECK_EQ(before_w, csp::internal::channel_count(0));
-    CHECK_EQ(before_r, csp::internal::channel_count(1));
+    CHECK(before_w == csp::internal::channel_count(0));
+    CHECK(before_r == csp::internal::channel_count(1));
 }
 
 TEST_CASE("Volume - ManyImps") {
@@ -66,9 +66,9 @@ TEST_CASE("Volume - ManyImps") {
 
     while (csp::internal::run()) { }
 
-    CHECK_EQ(N, completed);
-    CHECK_EQ(0, csp::internal::channel_count(0));
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(N == completed);
+    CHECK(0 == csp::internal::channel_count(0));
+    CHECK(0 == csp::internal::channel_count(1));
 }
 
 TEST_CASE("Volume - ManyChannelPairs") {
@@ -84,7 +84,7 @@ TEST_CASE("Volume - ManyChannelPairs") {
 
     while (csp::internal::run()) { }
 
-    CHECK_EQ(N * (N - 1) / 2, total);
-    CHECK_EQ(0, csp::internal::channel_count(0));
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(N * (N - 1) / 2 == total);
+    CHECK(0 == csp::internal::channel_count(0));
+    CHECK(0 == csp::internal::channel_count(1));
 }

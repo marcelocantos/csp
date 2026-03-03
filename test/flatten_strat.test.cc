@@ -24,7 +24,7 @@ TEST_CASE("merge_all - concurrent merge") {
     std::vector<int> got;
     for (int n; out >> n;) got.push_back(n);
     std::sort(got.begin(), got.end());
-    CHECK_EQ(std::vector<int>({10, 11, 12, 20, 21, 22}), got);
+    CHECK(std::vector<int>({10, 11, 12, 20, 21, 22}) == got);
 }
 
 TEST_CASE("merge_all - empty input") {
@@ -60,7 +60,7 @@ TEST_CASE("map | merge_all - same as flat_map") {
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
     std::sort(got.begin(), got.end());
-    CHECK_EQ(std::vector<int>({10, 11, 12, 20, 21, 22, 30, 31, 32}), got);
+    CHECK(std::vector<int>({10, 11, 12, 20, 21, 22, 30, 31, 32}) == got);
 }
 
 // ========================================================================
@@ -79,7 +79,7 @@ TEST_CASE("concat_all - sequential drain") {
     std::vector<int> got;
     for (int n; out >> n;) got.push_back(n);
     // Sequential: sub1 fully drained, then sub2.
-    CHECK_EQ(std::vector<int>({10, 11, 12, 20, 21, 22}), got);
+    CHECK(std::vector<int>({10, 11, 12, 20, 21, 22}) == got);
 }
 
 TEST_CASE("concat_all - empty input") {
@@ -106,7 +106,7 @@ TEST_CASE("concat_all - empty sub-stream") {
 
     std::vector<int> got;
     for (int n; out >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("map | concat_all - sequential order") {
@@ -117,7 +117,7 @@ TEST_CASE("map | concat_all - sequential order") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({10, 11, 12, 20, 21, 22, 30, 31, 32}), got);
+    CHECK(std::vector<int>({10, 11, 12, 20, 21, 22, 30, 31, 32}) == got);
 }
 
 TEST_CASE("map | concat_all - output death") {
@@ -153,7 +153,7 @@ TEST_CASE("switch_all - latest wins") {
 
     std::vector<int> got;
     for (int n; out >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 10, 11, 12}), got);
+    CHECK(std::vector<int>({1, 10, 11, 12}) == got);
 }
 
 TEST_CASE("switch_all - sub dies naturally") {
@@ -174,7 +174,7 @@ TEST_CASE("switch_all - sub dies naturally") {
 
     std::vector<int> got;
     for (int n; out >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3, 10, 11, 12}), got);
+    CHECK(std::vector<int>({1, 2, 3, 10, 11, 12}) == got);
 }
 
 TEST_CASE("switch_all - empty input") {
@@ -245,7 +245,7 @@ TEST_CASE("exhaust_all - discard while draining") {
     std::string dbg = "exhaust_all discard got:";
     for (int v : got) dbg += " " + std::to_string(v);
     MESSAGE(dbg);
-    CHECK_EQ(std::vector<int>({1, 2, 3, 70, 71, 72}), got);
+    CHECK(std::vector<int>({1, 2, 3, 70, 71, 72}) == got);
 }
 
 TEST_CASE("exhaust_all - no overlap") {
@@ -264,7 +264,7 @@ TEST_CASE("exhaust_all - no overlap") {
 
     std::vector<int> got;
     for (int n; out >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3, 10, 11, 12}), got);
+    CHECK(std::vector<int>({1, 2, 3, 10, 11, 12}) == got);
 }
 
 TEST_CASE("exhaust_all - empty input") {
@@ -296,9 +296,9 @@ TEST_CASE("map | exhaust_all - ignore while busy") {
 
     // At minimum, sub1 values must be present and in order.
     CHECK(got.size() >= 3);
-    CHECK_EQ(10, got[0]);
-    CHECK_EQ(11, got[1]);
-    CHECK_EQ(12, got[2]);
+    CHECK(10 == got[0]);
+    CHECK(11 == got[1]);
+    CHECK(12 == got[2]);
 }
 
 }

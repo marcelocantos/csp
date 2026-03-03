@@ -5,9 +5,15 @@ on:
     branches: [master]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # --- macOS + Linux: Makefile-based build + test ---
-  build-test:
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -17,10 +23,11 @@ jobs:
           - os: ubuntu-24.04
             name: Linux x86_64
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
-            packages: clang-18 libc++-18-dev libc++abi-18-dev
-
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+          - os: ubuntu-24.04-arm
+            name: Linux arm64
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
 
     steps:
       - uses: actions/checkout@v4
@@ -33,15 +40,74 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.packages }}
+          sudo sysctl -w kernel.core_pattern=core.%p
 
-      - name: Build and test
-        run: make ${{ matrix.make_cxx || '' }}
+      - name: Build and test (source)
+        run: |
+          ulimit -c unlimited
+          make ${{ matrix.make_cxx || '' }}
+        env:
+          MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
+          MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
 
-      - name: Distribution build and test
-        run: make dist && make test-dist ${{ matrix.make_cxx || '' }}
+      - name: GDB backtrace on crash (source)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/normal/csp_tests "$core" 2>&1 || true
+          done
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/normal/csp_tests 2>&1 || true
+          fi
 
-  # --- Sanitizers (macOS + Linux) ---
-  sanitizers:
+      - name: Generate dist
+        run: make dist ${{ matrix.make_cxx || '' }}
+
+      - name: Check dist is up-to-date
+        run: git diff --exit-code dist/
+
+      - name: Build and test (dist)
+        run: |
+          ulimit -c unlimited
+          make test-dist ${{ matrix.make_cxx || '' }}
+        env:
+          MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
+          MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
+
+      - name: GDB backtrace on crash (dist)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
+          done
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/dist/csp_tests 2>&1 || true
+          fi
+
+  # --- Sanitizers (macOS + Linux, on dist) ---
+  sanitize:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -53,18 +119,25 @@ jobs:
             name: macOS TSan
             sanitize: thread
           - os: ubuntu-24.04
-            name: Linux ASan+UBSan
+            name: Linux x86_64 ASan+UBSan
             sanitize: address,undefined
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
-            packages: clang-18 libc++-18-dev libc++abi-18-dev
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
           - os: ubuntu-24.04
-            name: Linux TSan
+            name: Linux x86_64 TSan
             sanitize: thread
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
-            packages: clang-18 libc++-18-dev libc++abi-18-dev
-
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+          - os: ubuntu-24.04-arm
+            name: Linux arm64 ASan+UBSan
+            sanitize: address,undefined
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+          - os: ubuntu-24.04-arm
+            name: Linux arm64 TSan
+            sanitize: thread
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
 
     steps:
       - uses: actions/checkout@v4
@@ -77,12 +150,37 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.packages }}
+          sudo sysctl -w kernel.core_pattern=core.%p
 
-      - name: Build and test with ${{ matrix.sanitize }}
+      - name: Build and test (dist, ${{ matrix.sanitize }})
+        run: |
+          ulimit -c unlimited
+          make test-dist SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }}
         env:
           # mbedTLS triggers false-positive ODR violations under ASan on Linux.
-          ASAN_OPTIONS: detect_odr_violation=0
-        run: make SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }}
+          # libc++abi on Linux frees std::logic_error strings with free()
+          # instead of operator delete, triggering false positives under ASan.
+          ASAN_OPTIONS: detect_odr_violation=0:alloc_dealloc_mismatch=0
+
+      - name: GDB backtrace on crash
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
+          done
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/dist/csp_tests 2>&1 || true
+          fi
 
   # --- Windows: CMake-based build + test ---
   windows:

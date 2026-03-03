@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 #ifndef _WIN32
@@ -95,8 +96,8 @@ TEST_CASE("IO - WaitReadable") {
         csp::io::wait_readable(rfd);
         char buf[16];
         ssize_t n = test_raw_read(rfd, buf, sizeof(buf));
-        CHECK_GT(n, 0);
-        CHECK_EQ('X', buf[0]);
+        CHECK(n > 0);
+        CHECK('X' == buf[0]);
         got_data.store(true, std::memory_order_relaxed);
         test_close(rfd);
     });
@@ -126,7 +127,7 @@ TEST_CASE("IO - WaitWritable") {
         char c = 'Y';
         csp::io::wait_writable(wfd);
         ssize_t n = test_raw_write(wfd, &c, 1);
-        CHECK_EQ(1, n);
+        CHECK(1 == n);
         write_completed.store(true, std::memory_order_relaxed);
         test_close(wfd);
     });
@@ -159,7 +160,7 @@ TEST_CASE("IO - ReadWrite roundtrip") {
 
     csp::spawn([wfd, msg, msglen] {
         ssize_t n = csp::io::write(wfd, msg, msglen);
-        CHECK_EQ(static_cast<ssize_t>(msglen), n);
+        CHECK(static_cast<ssize_t>(msglen) == n);
         test_close(wfd);
     });
 
@@ -170,14 +171,14 @@ TEST_CASE("IO - ReadWrite roundtrip") {
             if (n <= 0) break;
             total += static_cast<size_t>(n);
         }
-        CHECK_EQ(msglen, total);
+        CHECK(msglen == total);
         done.store(true, std::memory_order_relaxed);
         test_close(rfd);
     });
 
     csp::schedule();
     CHECK(done.load());
-    CHECK_EQ(std::string(msg), std::string(result.data(), result.size()));
+    CHECK(std::string(msg) == std::string(result.data(), result.size()));
     csp::shutdown_runtime();
 }
 
@@ -210,7 +211,7 @@ TEST_CASE("IO - ByteReader") {
     csp::schedule();
     CHECK(done.load());
     std::string result(all.begin(), all.end());
-    CHECK_EQ("Hello, CSP!", result);
+    CHECK("Hello, CSP!" == result);
     csp::shutdown_runtime();
 }
 
@@ -248,7 +249,7 @@ TEST_CASE("IO - ByteWriter") {
 
     csp::schedule();
     CHECK(done.load());
-    CHECK_EQ("CSP writes!", std::string(result.data(), result.size()));
+    CHECK("CSP writes!" == std::string(result.data(), result.size()));
     csp::shutdown_runtime();
 }
 
@@ -263,8 +264,8 @@ TEST_CASE("IO - byte_reader exact chunk") {
     });
 
     bytes buf(4);
-    CHECK_EQ(4, br.read(buf));
-    CHECK_EQ(bytes({'A', 'B', 'C', 'D'}), buf);
+    CHECK(4 == br.read(buf));
+    CHECK(bytes({'A', 'B', 'C', 'D'}) == buf);
 }
 
 TEST_CASE("IO - byte_reader spans chunks") {
@@ -278,13 +279,13 @@ TEST_CASE("IO - byte_reader spans chunks") {
     });
 
     bytes buf(5);
-    CHECK_EQ(5, br.read(buf));
-    CHECK_EQ(bytes({'A', 'B', 'C', 'D', 'E'}), buf);
+    CHECK(5 == br.read(buf));
+    CHECK(bytes({'A', 'B', 'C', 'D', 'E'}) == buf);
 
     // Leftover 'F' from previous read.
     bytes buf2(1);
-    CHECK_EQ(1, br.read(buf2));
-    CHECK_EQ(bytes({'F'}), buf2);
+    CHECK(1 == br.read(buf2));
+    CHECK(bytes({'F'}) == buf2);
 }
 
 TEST_CASE("IO - byte_reader partial on close") {
@@ -296,9 +297,9 @@ TEST_CASE("IO - byte_reader partial on close") {
     });
 
     bytes buf(10);
-    CHECK_EQ(2, br.read(buf));
-    CHECK_EQ('X', buf[0]);
-    CHECK_EQ('Y', buf[1]);
+    CHECK(2 == br.read(buf));
+    CHECK('X' == buf[0]);
+    CHECK('Y' == buf[1]);
 }
 
 TEST_CASE("IO - byte_reader empty buffer") {
@@ -306,7 +307,7 @@ TEST_CASE("IO - byte_reader empty buffer") {
     byte_reader br(std::move(r));
 
     bytes buf;
-    CHECK_EQ(0, br.read(buf));
+    CHECK(0 == br.read(buf));
 }
 
 TEST_CASE("IO - byte_reader multiple reads with leftover") {
@@ -320,18 +321,18 @@ TEST_CASE("IO - byte_reader multiple reads with leftover") {
 
     bytes buf(3);
 
-    CHECK_EQ(3, br.read(buf));
-    CHECK_EQ(bytes({'0', '1', '2'}), buf);
+    CHECK(3 == br.read(buf));
+    CHECK(bytes({'0', '1', '2'}) == buf);
 
-    CHECK_EQ(3, br.read(buf));
-    CHECK_EQ(bytes({'3', '4', '5'}), buf);
+    CHECK(3 == br.read(buf));
+    CHECK(bytes({'3', '4', '5'}) == buf);
 
-    CHECK_EQ(3, br.read(buf));
-    CHECK_EQ(bytes({'6', '7', '8'}), buf);
+    CHECK(3 == br.read(buf));
+    CHECK(bytes({'6', '7', '8'}) == buf);
 
     // Only 1 byte left.
-    CHECK_EQ(1, br.read(buf));
-    CHECK_EQ('9', buf[0]);
+    CHECK(1 == br.read(buf));
+    CHECK('9' == buf[0]);
 }
 
 TEST_CASE("IO - byte_reader closed reader returns zero") {
@@ -342,7 +343,7 @@ TEST_CASE("IO - byte_reader closed reader returns zero") {
     { auto _ = std::move(w); }
 
     bytes buf(4);
-    CHECK_EQ(0, br.read(buf));
+    CHECK(0 == br.read(buf));
 }
 
 // --- Layer 3: split_lines — pure channel test, no I/O ---
@@ -357,9 +358,9 @@ TEST_CASE("IO - Lines framing") {
         w << std::move(v);
     });
 
-    CHECK_EQ("hello", lr.read());
-    CHECK_EQ("world", lr.read());
-    CHECK_EQ("foo", lr.read());
+    CHECK("hello" == lr.read());
+    CHECK("world" == lr.read());
+    CHECK("foo" == lr.read());
 }
 
 TEST_CASE("IO - Lines partial flush") {
@@ -372,8 +373,8 @@ TEST_CASE("IO - Lines partial flush") {
         w << std::move(v);
     });
 
-    CHECK_EQ("hello", lr.read());
-    CHECK_EQ("world", lr.read());  // partial line flushed on input close
+    CHECK("hello" == lr.read());
+    CHECK("world" == lr.read());  // partial line flushed on input close
     std::string _;
     CHECK_FALSE(bool(lr >> _));
 }
@@ -390,8 +391,8 @@ TEST_CASE("IO - Lines multi-chunk") {
         w << bytes(c2.begin(), c2.end());
     });
 
-    CHECK_EQ("hello", lr.read());
-    CHECK_EQ("world", lr.read());
+    CHECK("hello" == lr.read());
+    CHECK("world" == lr.read());
     std::string _;
     CHECK_FALSE(bool(lr >> _));
 }
@@ -409,14 +410,14 @@ TEST_CASE("IO - Fixed framing") {
     });
 
     auto f1 = fr.read();
-    CHECK_EQ(4, f1.size());
-    CHECK_EQ('A', f1[0]); CHECK_EQ('A', f1[1]);
-    CHECK_EQ('B', f1[2]); CHECK_EQ('B', f1[3]);
+    CHECK(4 == f1.size());
+    CHECK('A' == f1[0]); CHECK('A' == f1[1]);
+    CHECK('B' == f1[2]); CHECK('B' == f1[3]);
 
     auto f2 = fr.read();
-    CHECK_EQ(4, f2.size());
-    CHECK_EQ('C', f2[0]); CHECK_EQ('C', f2[1]);
-    CHECK_EQ('D', f2[2]); CHECK_EQ('D', f2[3]);
+    CHECK(4 == f2.size());
+    CHECK('C' == f2[0]); CHECK('C' == f2[1]);
+    CHECK('D' == f2[2]); CHECK('D' == f2[3]);
 
     // Partial "EE" is discarded.
     bytes _;
@@ -434,9 +435,9 @@ TEST_CASE("IO - Fixed multi-chunk") {
     });
 
     auto f1 = fr.read();
-    CHECK_EQ(4, f1.size());
-    CHECK_EQ('A', f1[0]); CHECK_EQ('B', f1[1]);
-    CHECK_EQ('C', f1[2]); CHECK_EQ('D', f1[3]);
+    CHECK(4 == f1.size());
+    CHECK('A' == f1[0]); CHECK('B' == f1[1]);
+    CHECK('C' == f1[2]); CHECK('D' == f1[3]);
 
     // Partial "EF" is discarded.
     bytes _;
@@ -470,10 +471,10 @@ TEST_CASE("IO - Composed lines from pipe") {
 
     csp::schedule();
     CHECK(done.load());
-    REQUIRE_EQ(3, result.size());
-    CHECK_EQ("alpha", result[0]);
-    CHECK_EQ("beta", result[1]);
-    CHECK_EQ("gamma", result[2]);
+    REQUIRE(3 == result.size());
+    CHECK("alpha" == result[0]);
+    CHECK("beta" == result[1]);
+    CHECK("gamma" == result[2]);
     csp::shutdown_runtime();
 }
 
@@ -514,7 +515,7 @@ TEST_CASE("IO - Multiple concurrent waiters") {
     });
 
     csp::schedule();
-    CHECK_EQ(N, count.load());
+    CHECK(N == count.load());
     csp::shutdown_runtime();
 }
 
@@ -533,9 +534,9 @@ TEST_CASE("IO - Blocking offload") {
             ran.store(true, std::memory_order_relaxed);
             return 42;
         });
-        CHECK_EQ(42, result);
+        CHECK(42 == result);
         // The blocking lambda ran on a different thread.
-        CHECK_NE(main_tid, pool_tid.load());
+        CHECK(main_tid != pool_tid.load());
     });
 
     csp::schedule();
@@ -611,7 +612,7 @@ TEST_CASE("IO - Blocking with non-trivial return type") {
         std::string result = csp::blocking([] {
             return std::string("hello from pool");
         });
-        CHECK_EQ("hello from pool", result);
+        CHECK("hello from pool" == result);
         done.store(true, std::memory_order_relaxed);
     });
 
@@ -632,13 +633,13 @@ TEST_CASE("IO - Multiple concurrent blocking calls") {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 return i * 10;
             });
-            CHECK_EQ(i * 10, result);
+            CHECK(i * 10 == result);
             completed.fetch_add(1, std::memory_order_relaxed);
         });
     }
 
     csp::schedule();
-    CHECK_EQ(N, completed.load());
+    CHECK(N == completed.load());
     csp::shutdown_runtime();
 }
 
@@ -733,7 +734,7 @@ TEST_CASE("IO - Signal delivery") {
     csp::spawn([&got_signal, sig = std::move(sig)] {
         int s;
         sig >> s;
-        CHECK_EQ(SIGUSR1, s);
+        CHECK(SIGUSR1 == s);
         got_signal.store(true, std::memory_order_relaxed);
     });
 
@@ -773,9 +774,9 @@ TEST_CASE("IO - Signal multiple signals") {
 
     csp::schedule();
     CHECK(done.load());
-    REQUIRE_EQ(2, received.size());
-    CHECK_EQ(SIGUSR1, received[0]);
-    CHECK_EQ(SIGUSR2, received[1]);
+    REQUIRE(2 == received.size());
+    CHECK(SIGUSR1 == received[0]);
+    CHECK(SIGUSR2 == received[1]);
     csp::shutdown_runtime();
 }
 

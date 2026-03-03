@@ -140,7 +140,9 @@ private:
 #elif defined(__linux__)
     int epfd_ = -1;
     int wakefd_ = -1;
+    // Maps timerfd -> timer ident for epoll event dispatch.
     std::unordered_map<int, uintptr_t> timerfd_to_ident_;
+    // Maps timer ident -> timerfd for cancellation.
     std::unordered_map<uintptr_t, int> ident_to_timerfd_;
 #endif
 

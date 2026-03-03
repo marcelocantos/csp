@@ -80,7 +80,8 @@ wg.run();                               // blocks until all done or escalation
 
 ```cpp
 // Create a channel.
-auto [w, r] = chan<int>{};
+auto [w, r] = chan<int>{};       // synchronous (rendezvous)
+auto [bw, br] = chan<int>(16);   // buffered (capacity 16, spawns buffer imp)
 
 // Shorthand: create channel from endpoint reference.
 reader<int> r = --w;   // w must be unattached
@@ -500,7 +501,6 @@ All in `namespace csp::part` (included via `csp.h`).
 | `batch<T>(n)` | filter | Collect n elements into `vector<T>` |
 | `bernoulli(p)` | producer | Random bools with configurable probability |
 | `blackhole<T>()` | consumer | Discard all values |
-| `buffer<T>(n)` | filter | Bounded async FIFO buffer (size n) |
 | `chain<T>(readers...)` | producer | Concatenate readers sequentially |
 | `choice(container)` | producer | Random picks from a container |
 | `chunk_by<T>(f)` | filter | Group consecutive elements where `f(prev,curr)` is true |

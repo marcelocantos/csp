@@ -27,7 +27,7 @@ TEST_CASE("Transpose - 3x3 matrix") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<std::vector<int>>{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
+    CHECK(got == std::vector<std::vector<int>>{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
 }
 
 TEST_CASE("Transpose - unequal lengths stops at shortest") {
@@ -49,7 +49,7 @@ TEST_CASE("Transpose - unequal lengths stops at shortest") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<std::vector<int>>{{1, 2}, {3, 4}});
+    CHECK(got == std::vector<std::vector<int>>{{1, 2}, {3, 4}});
 }
 
 TEST_CASE("Transpose - single input") {
@@ -68,7 +68,7 @@ TEST_CASE("Transpose - single input") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<std::vector<int>>{{10}, {20}});
+    CHECK(got == std::vector<std::vector<int>>{{10}, {20}});
 }
 
 TEST_CASE("Transpose - empty inputs") {

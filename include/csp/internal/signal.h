@@ -76,7 +76,7 @@ public:
     chan_op<> operator~() const { return ~r_; }
 };
 
-// Factory functions — create a kqueue/epoll event and return the signal object.
+// Factory functions — create a reactor event and return the signal object.
 fd_signal create_fd_readable(int fd);
 fd_signal create_fd_writable(int fd);
 

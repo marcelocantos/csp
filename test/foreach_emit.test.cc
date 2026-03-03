@@ -24,7 +24,7 @@ TEST_CASE("ForeachEmit - running sum extracted as string") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<std::string>{"1", "3", "6"});
+    CHECK(got == std::vector<std::string>{"1", "3", "6"});
 }
 
 TEST_CASE("ForeachEmit - extract subset of state") {
@@ -47,10 +47,10 @@ TEST_CASE("ForeachEmit - extract subset of state") {
     });
     csp::schedule();
 
-    REQUIRE_EQ(got.size(), 3);
-    CHECK_EQ(got[0], doctest::Approx(10.0));
-    CHECK_EQ(got[1], doctest::Approx(15.0));
-    CHECK_EQ(got[2], doctest::Approx(20.0));
+    REQUIRE(got.size() == 3);
+    CHECK(got[0] == doctest::Approx(10.0));
+    CHECK(got[1] == doctest::Approx(15.0));
+    CHECK(got[2] == doctest::Approx(20.0));
 }
 
 TEST_CASE("ForeachEmit - empty input") {

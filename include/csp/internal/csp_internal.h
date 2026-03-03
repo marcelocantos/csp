@@ -19,6 +19,22 @@
 #define CSP_FRAME_ADDRESS() __builtin_frame_address(0)
 #endif
 
+// ASan fiber annotations: tell ASan about user-mode context switches
+// so its fake-stack (detect_stack_use_after_return) bookkeeping stays
+// consistent across jump_fcontext.  Without these, ASan can free a
+// suspended fiber's fake-stack frames, causing SEGV when another
+// thread reads stack-resident data (e.g. a waiter's ChanOp).
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#define CSP_ASAN 1
+extern "C" {
+    void __sanitizer_start_switch_fiber(void **fake_stack_save,
+                                        const void *bottom, size_t size);
+    void __sanitizer_finish_switch_fiber(void *fake_stack_save,
+                                         const void **bottom_old,
+                                         size_t *size_old);
+}
+#endif
+
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across imp switches.
 #if defined(__SANITIZE_THREAD__)
@@ -45,7 +61,13 @@ enum class Status : intptr_t { run, sleep, detach, exit, spawn };
 
 struct Imp;
 
-extern thread_local Imp * g_imp;
+// Non-inline accessors for the per-thread current-imp pointer.
+// Defined in csp_globals.cpp.  The cross-TU function call prevents
+// the compiler from caching the thread-pointer register (TPIDR_EL0
+// on ARM64, FS/GS on x86) across jump_fcontext, which would cause
+// stale TLS access when an imp resumes on a different OS thread.
+Imp* current_imp();
+void set_current_imp(Imp* p);
 
 void do_switch(Status status = Status::sleep);
 
@@ -104,6 +126,9 @@ struct alignas(16) Imp {
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 
+#if CSP_ASAN
+    void* asan_fake_stack_ = nullptr;  // ASan fake-stack state for this fiber
+#endif
 #if CSP_TSAN
     void* tsan_fiber_ = nullptr;  // TSan fiber handle for this imp
 #endif

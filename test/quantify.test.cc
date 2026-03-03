@@ -13,7 +13,7 @@ TEST_CASE("AnyOf - match found") {
 
     stats.spawn([w = std::move(src.w)]{ w << 1; w << 2; w << 4; w << 5; });
     stats.spawn([r = std::move(out)] {
-        CHECK_EQ(r.read(), true);
+        CHECK(r.read() == true);
     });
     csp::schedule();
 }
@@ -26,7 +26,7 @@ TEST_CASE("AnyOf - no match") {
 
     stats.spawn([w = std::move(src.w)]{ w << 1; w << 2; w << 3; });
     stats.spawn([r = std::move(out)] {
-        CHECK_EQ(r.read(), false);
+        CHECK(r.read() == false);
     });
     csp::schedule();
 }
@@ -39,7 +39,7 @@ TEST_CASE("AnyOf - empty input") {
 
     stats.spawn([w = std::move(src.w)]{ });
     stats.spawn([r = std::move(out)] {
-        CHECK_EQ(r.read(), false);
+        CHECK(r.read() == false);
     });
     csp::schedule();
 }
@@ -52,7 +52,7 @@ TEST_CASE("AllOf - all match") {
 
     stats.spawn([w = std::move(src.w)]{ w << 1; w << 2; w << 3; });
     stats.spawn([r = std::move(out)] {
-        CHECK_EQ(r.read(), true);
+        CHECK(r.read() == true);
     });
     csp::schedule();
 }
@@ -65,7 +65,7 @@ TEST_CASE("AllOf - early mismatch") {
 
     stats.spawn([w = std::move(src.w)]{ w << 1; w << -1; w << 2; w << 3; });
     stats.spawn([r = std::move(out)] {
-        CHECK_EQ(r.read(), false);
+        CHECK(r.read() == false);
     });
     csp::schedule();
 }
@@ -78,7 +78,7 @@ TEST_CASE("AllOf - empty input") {
 
     stats.spawn([w = std::move(src.w)]{ });
     stats.spawn([r = std::move(out)] {
-        CHECK_EQ(r.read(), true);
+        CHECK(r.read() == true);
     });
     csp::schedule();
 }

@@ -82,13 +82,56 @@ void BlockingPool::worker() {
 namespace csp::internal {
 
 void run_blocking(std::function<void()> fn) {
-    detail::g_imp->suspending_.store(true, std::memory_order_release);
-    detail::BlockingPool::instance().submit(detail::g_imp, std::move(fn));
+    detail::current_imp()->suspending_.store(true, std::memory_order_release);
+    detail::BlockingPool::instance().submit(detail::current_imp(), std::move(fn));
     detail::do_switch(detail::Status::detach);
-    detail::g_imp->suspending_.store(false, std::memory_order_release);
+    detail::current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal
+
+/* byte_reader.cc */
+
+#include <algorithm>
+#include <cstring>
+
+namespace csp {
+
+size_t byte_reader::read(bytes& out) {
+    size_t total = 0;
+    size_t need = out.size();
+
+    // Drain leftover from a previous call.
+    if (pos_ < buf_.size()) {
+        size_t avail = buf_.size() - pos_;
+        size_t n = std::min(avail, need);
+        std::memcpy(out.data(), buf_.data() + pos_, n);
+        pos_ += n;
+        total = n;
+        if (pos_ == buf_.size()) {
+            buf_.clear();
+            pos_ = 0;
+        }
+        if (total == need) return total;
+    }
+
+    // Pull chunks from the underlying reader.
+    bytes chunk;
+    while (total < need && (r_ >> chunk)) {
+        size_t n = std::min(chunk.size(), need - total);
+        std::memcpy(out.data() + total, chunk.data(), n);
+        total += n;
+        if (n < chunk.size()) {
+            buf_ = std::move(chunk);
+            pos_ = n;
+            return total;
+        }
+    }
+
+    return total;
+}
+
+} // namespace csp
 
 /* cancel.cc */
 
@@ -247,11 +290,9 @@ std::exception_ptr cancel_reason() {
 
 /* channel.cc */
 
-#include <algorithm>
 #include <climits>
 #include <cstdarg>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <mutex>
 #include <random>
@@ -459,74 +500,115 @@ namespace {
             Imp* peer;
             bool needs_unlock;
             bool use_run;           // single-P writer: unlock then run
+            bool has_pins;          // re-resolution alive_ pins active
         };
         static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
 
+        static void unpin_channel(Channel * ch) {
+            if (ch->alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                auto* ws = ch->write_slot_;
+                auto* rs = ch->read_slot_;
+                delete ch;
+                ws->mem_release();
+                rs->mem_release();
+            }
+        }
+
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
-            if (g_imp->stk_) {
+            if (current_imp()->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, CSP_FRAME_ADDRESS());
-            }
-
-        retry:
-            // Re-resolve each chanop's Channel* through its Slot to ensure
-            // the pointer is fresh.  A swap or endpoint death on another
-            // thread may have changed (or deleted) the channel since the
-            // Waiter was originally constructed.
-            for (int i = 0; i < count; ++i) {
-                if (chanops[i].slot) {
-                    auto * slot = static_cast<Slot *>(chanops[i].slot);
-                    auto * new_ch = slot->channel.load(std::memory_order_acquire);
-                    auto flags = (uintptr_t)chanops[i].waiter.ptr & 15UL;
-                    const_cast<ChanOp &>(chanops[i]).waiter.ptr =
-                        (void *)((uintptr_t)new_ch | flags);
-                }
+                    current_imp()->stk_, CSP_FRAME_ADDRESS());
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
             mi->heap_alloc = nullptr;
+            mi->has_pins = false;
+
+        retry:
+            // Unpin channels from a previous iteration if active.
+            if (mi->has_pins) {
+                for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
+                mi->has_pins = false;
+            }
+            delete[] mi->heap_alloc;
+            mi->heap_alloc = nullptr;
+
             mi->peer = nullptr;
             mi->needs_unlock = false;
             mi->use_run = false;
             out->src = nullptr;
             out->dst = nullptr;
-
             out->result = 0;
 
-            // Collect unique channels, sorted by id for lock ordering.
+            // Re-resolve each chanop's Channel* through its Slot under the
+            // slot spinlock, and build the unique channel set with alive_
+            // pins.  Pinning under the spinlock prevents the channel from
+            // being freed between the load and the pin (see
+            // docs/papers/11-channel-reresolution-uaf.md).
             Channel* fixed_chans[8];
             std::vector<Channel*> variable_chans;
-            Channel** sorted = fixed_chans;
-            int n_sorted = 0;
+            Channel** chans = fixed_chans;
+            int n_chans = 0;
+
             for (int i = 0; i < count; ++i) {
-                if (Channel * ch = get_chan(chanops[i])) {
-                    if (n_sorted < 8) {
-                        fixed_chans[n_sorted++] = ch;
-                    } else {
-                        if (n_sorted == 8) {
-                            variable_chans.assign(fixed_chans, fixed_chans + 8);
+                Channel* new_ch;
+                auto * slot = chanops[i].slot
+                    ? static_cast<Slot *>(chanops[i].slot) : nullptr;
+
+                if (slot) slot->lock();
+
+                if (slot) {
+                    new_ch = static_cast<Channel*>(
+                        slot->channel.load(std::memory_order_acquire));
+                    auto flags = (uintptr_t)chanops[i].waiter.ptr & 15UL;
+                    const_cast<ChanOp &>(chanops[i]).waiter.ptr =
+                        (void *)((uintptr_t)new_ch | flags);
+                } else {
+                    new_ch = get_chan(chanops[i]);
+                }
+
+                if (new_ch) {
+                    // Dedup: check if already in unique set.
+                    bool found = false;
+                    for (int j = 0; j < n_chans; ++j) {
+                        if (chans[j] == new_ch) { found = true; break; }
+                    }
+                    if (!found) {
+                        // Pin to prevent deletion between slot unlock
+                        // and lock_all (see paper §Fix).
+                        new_ch->alive_.fetch_add(1, std::memory_order_relaxed);
+                        if (n_chans < 8) {
+                            fixed_chans[n_chans++] = new_ch;
+                        } else {
+                            if (n_chans == 8) {
+                                variable_chans.assign(fixed_chans, fixed_chans + 8);
+                            }
+                            variable_chans.push_back(new_ch);
+                            chans = variable_chans.data();
+                            n_chans++;
                         }
-                        variable_chans.push_back(ch);
-                        sorted = variable_chans.data();
-                        n_sorted++;
                     }
                 }
-            }
-            std::sort(sorted, sorted + n_sorted,
-                      [](Channel * a, Channel * b) { return a->id_ < b->id_; });
-            n_sorted = int(std::unique(sorted, sorted + n_sorted) - sorted);
 
-            // Copy sorted channels into persistent storage.
-            if (n_sorted <= 8) {
-                memcpy(mi->fixed_sorted, sorted, n_sorted * sizeof(Channel*));
+                if (slot) slot->unlock();
+            }
+
+            // Sort unique channels by id for lock ordering.
+            std::sort(chans, chans + n_chans,
+                      [](Channel * a, Channel * b) { return a->id_ < b->id_; });
+
+            // Copy into persistent storage in AltMatch opaque.
+            if (n_chans <= 8) {
+                memcpy(mi->fixed_sorted, chans, n_chans * sizeof(Channel*));
                 mi->sorted = mi->fixed_sorted;
             } else {
-                mi->heap_alloc = new Channel*[n_sorted];
-                memcpy(mi->heap_alloc, sorted, n_sorted * sizeof(Channel*));
+                mi->heap_alloc = new Channel*[n_chans];
+                memcpy(mi->heap_alloc, chans, n_chans * sizeof(Channel*));
                 mi->sorted = mi->heap_alloc;
             }
-            mi->n_sorted = n_sorted;
+            mi->n_sorted = n_chans;
+            mi->has_pins = true;
 
             auto lock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.lock(); };
             auto unlock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock(); };
@@ -547,7 +629,6 @@ namespace {
                 }
                 if (stale) {
                     unlock_all();
-                    delete[] mi->heap_alloc;
                     goto retry;
                 }
             }
@@ -575,6 +656,8 @@ namespace {
                         } else {
                             // Vulture: dead is the expected signal.
                             unlock_all();
+                            for (int j = 0; j < mi->n_sorted; ++j) unpin_channel(mi->sorted[j]);
+                            mi->has_pins = false;
                             out->result = ~i;
                             return;
                         }
@@ -601,11 +684,10 @@ namespace {
                                     out->dst = const_cast<void *>(chop.message);
                                 }
 
-
                                 out->result = i;
                                 mi->peer = cw.thread;
                                 mi->needs_unlock = true;
-                                return;  // locks held
+                                return;  // locks + pins held → alt_end_impl unpins
                             }
                         }
                     }
@@ -615,19 +697,25 @@ namespace {
 
             if (dead_data_result) {
                 unlock_all();
+                for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
+                mi->has_pins = false;
                 out->result = dead_data_result;
                 return;
             }
 
             if (all_null || nowait) {
                 unlock_all();
+                for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
+                mi->has_pins = false;
                 if (nowait) out->result = INT_MIN;
                 return;
             }
 
             // Phase 2: Register on all channels and sleep.
+            // Re-resolution pins (alive_++) serve double duty: they keep
+            // channels alive while we sleep.  No separate pin loop needed.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
-            g_imp->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
+            current_imp()->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
@@ -636,16 +724,8 @@ namespace {
                 }
             }
 
-            // Pin all unique channels so they cannot be deleted while
-            // we sleep.  After wakeup, Phase 3 can safely lock and
-            // deregister; the unpin after Phase 3 may trigger deferred
-            // deletion if the channel's endpoints died in the interim.
-            for (int i = 0; i < mi->n_sorted; ++i) {
-                mi->sorted[i]->alive_.fetch_add(1, std::memory_order_relaxed);
-            }
-
-            g_imp->chanops_ = chanops;
-            g_imp->n_chanops_ = count;
+            current_imp()->chanops_ = chanops;
+            current_imp()->n_chanops_ = count;
             // Mark suspending_ before unlock_all so that schedule()
             // (called by a waker on another thread) will set
             // wake_pending_ instead of pushing to the global queue.
@@ -654,50 +734,40 @@ namespace {
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
-            g_imp->suspending_.store(true, std::memory_order_release);
+            current_imp()->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            current_imp()->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < g_imp->n_chanops_; ++i) {
-                auto const & chop = g_imp->chanops_[i];
+            for (int i = 0; i < current_imp()->n_chanops_; ++i) {
+                auto const & chop = current_imp()->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, g_imp);
+                    ch->endpts_[flags & endpt_flag].remove(&chop, current_imp());
                 }
             }
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
 
             // Unpin channels.  If an endpoint died while we slept,
             // alive_ may reach 0 here, triggering deferred deletion.
-            for (int i = 0; i < mi->n_sorted; ++i) {
-                Channel * ch = mi->sorted[i];
-                if (ch->alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    auto* ws = ch->write_slot_;
-                    auto* rs = ch->read_slot_;
-                    delete ch;
-                    ws->mem_release();
-                    rs->mem_release();
-                }
-            }
+            for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
+            mi->has_pins = false;
 
-            g_imp->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+            current_imp()->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
 
             // Check for swap wake-up: if signal_ is INT_MIN, a channel swap
             // occurred. Re-resolve happens at retry: label.
-            if (g_imp->signal_ == INT_MIN) {
-                g_imp->chanops_ = nullptr;
-                g_imp->n_chanops_ = 0;
-                delete[] mi->heap_alloc;
-                mi->heap_alloc = nullptr;
+            if (current_imp()->signal_ == INT_MIN) {
+                current_imp()->chanops_ = nullptr;
+                current_imp()->n_chanops_ = 0;
                 goto retry;
             }
 
-            out->result = g_imp->signal_;
-            g_imp->chanops_ = nullptr;
-            g_imp->n_chanops_ = 0;
+            out->result = current_imp()->signal_;
+            current_imp()->chanops_ = nullptr;
+            current_imp()->n_chanops_ = 0;
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
@@ -713,6 +783,9 @@ namespace {
                     if (mi->peer) mi->peer->schedule();
                     for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
                 }
+            }
+            if (mi->has_pins) {
+                for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
             }
             delete[] mi->heap_alloc;
         }
@@ -735,9 +808,9 @@ namespace {
             void wait(ChanOp const * chop) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
-                    waiters.emplace(chop, g_imp);
+                    waiters.emplace(chop, current_imp());
                 } else {
-                    vultures.emplace(chop, g_imp);
+                    vultures.emplace(chop, current_imp());
                 }
             }
 
@@ -921,8 +994,15 @@ void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {
     assert(a_is_write == b_is_write && "cannot swap write slot with read slot");
 
     // Exchange channel pointers in slots.
+    // Hold slot spinlock to serialize with re-resolution pinning
+    // in prialt_begin_impl (see docs/papers/11-*.md).
+    sa->lock();
     sa->channel.store(cb, std::memory_order_release);
+    sa->unlock();
+
+    sb->lock();
     sb->channel.store(ca, std::memory_order_release);
+    sb->unlock();
 
     // Exchange back-pointers on channels.
     if (a_is_write) {
@@ -988,7 +1068,7 @@ fake_clock::fake_clock(time_point start) : current_(start) {}
 
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
-    pending_.push({tp, detail::g_imp});
+    pending_.push({tp, detail::current_imp()});
     internal::suspend();
 }
 
@@ -1041,14 +1121,17 @@ static void default_scheduler_impl() {
     while (true) {
         if (csp::internal::run()) continue;
         if (rt.live_gs.load(std::memory_order_acquire) == 0) break;
-        // If no reactor signals are pending AND no global work is queued,
-        // no external events can wake blocked imps. Both conditions must
-        // hold to avoid a race where fire_signal has pushed to the global
-        // queue but hasn't yet decremented pending_signals_.
-        if (!csp::detail::Reactor::instance().has_pending_signals()
+        // In single-P mode, if no reactor signals are pending and no
+        // global work is queued, no external event can wake blocked
+        // imps — exit (deadlock or done).  Both conditions must hold:
+        // the reactor decrements pending_signals *after* scheduling
+        // the woken imp (which sets has_global_work_), so checking
+        // both avoids a race where pending_signals is already zero
+        // but the woken imp hasn't been run yet.
+        if (!rt.mn_mode_
+            && !csp::detail::Reactor::instance().has_pending_signals()
             && !rt.has_global_work_.load(std::memory_order_acquire)) break;
-        // Park until the reactor posts work to the global queue,
-        // or all imps have exited.
+        // Park until work arrives or all imps have exited.
         std::unique_lock<std::mutex> lk(rt.park_mu);
         rt.park_cv.wait(lk, [&rt] {
             return rt.live_gs.load(std::memory_order_acquire) == 0
@@ -1109,7 +1192,7 @@ namespace csp {
         }
 
         static intptr_t switch_to(Imp & target, intptr_t data) {
-            auto self = g_imp;
+            auto self = current_imp();
             // Acquire-load ctx_ to synchronize with the release-store
             // that saved the target's context on a (possibly different)
             // OS thread.  This ensures the saved register data on the
@@ -1117,10 +1200,19 @@ namespace csp {
             auto ctx = target.ctx_.load(std::memory_order_acquire);
             current_p().save_ctx = &self->ctx_;
             current_p().save_imp = self;
+#if CSP_ASAN
+            __sanitizer_start_switch_fiber(
+                &self->asan_fake_stack_,
+                target.stk_.base, target.stk_.total_size);
+#endif
 #if CSP_TSAN
             __tsan_switch_to_fiber(target.tsan_fiber_, 0);
 #endif
             auto t = jump_fcontext(ctx, (void *)data);
+#if CSP_ASAN
+            __sanitizer_finish_switch_fiber(
+                self->asan_fake_stack_, nullptr, nullptr);
+#endif
             // Release-store our caller's saved SP so that any thread
             // that later acquire-loads ctx_ will also see the register
             // data that jump_fcontext wrote to the caller's stack.
@@ -1223,8 +1315,8 @@ namespace csp {
         void Imp::run(Status status) {
             auto& p = current_p();
             auto& busy = p.busy;
-            assert(this != g_imp);
-            auto self = g_imp;
+            auto self = current_imp();
+            assert(this != self);
 
             // Manipulate run queue under lock, but release before context switch.
             {
@@ -1234,31 +1326,31 @@ namespace csp {
                 case Status::run:
                     break;
                 case Status::sleep:
-                    if (g_imp == busy) {
+                    if (self == busy) {
                         busy = busy->next_;
                     }
                     break;
                 case Status::detach: // TLA:StealWork.VDeschedule
                 case Status::exit:
                     // Inline deschedule without re-acquiring run_mu.
-                    assert(g_imp->next_);
-                    if (busy == g_imp && (busy = g_imp->next_) == g_imp) {
+                    assert(self->next_);
+                    if (busy == self && (busy = self->next_) == self) {
                         busy = nullptr;
                     }
-                    if (g_imp->next_) g_imp->next_->prev_ = g_imp->prev_;
-                    if (g_imp->prev_) g_imp->prev_->next_ = g_imp->next_;
-                    g_imp->next_ = nullptr;
-                    g_imp->prev_ = nullptr;
+                    if (self->next_) self->next_->prev_ = self->prev_;
+                    if (self->prev_) self->prev_->next_ = self->next_;
+                    self->next_ = nullptr;
+                    self->prev_ = nullptr;
 
                     // TLA:DrainSuspended.CheckWP
                     if (status == Status::detach &&
-                        g_imp->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                        self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                         if (busy) {
-                            g_imp->next_ = busy;
-                            g_imp->prev_ = busy->prev_;
-                            g_imp->next_->prev_ = g_imp->prev_->next_ = g_imp;
+                            self->next_ = busy;
+                            self->prev_ = busy->prev_;
+                            self->next_->prev_ = self->prev_->next_ = self;
                         } else {
-                            busy = g_imp->next_ = g_imp->prev_ = g_imp;
+                            busy = self->next_ = self->prev_ = self;
                         }
                         return;
                     }
@@ -1278,23 +1370,24 @@ namespace csp {
                 }
             }
 
-            auto killme = status == Status::exit ? g_imp : nullptr;
+            auto killme = status == Status::exit ? self : nullptr;
             auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
             if (killyou) {
                 destroy_imp(killyou);
             }
 
             if (!killme) {
-                g_imp = self;
+                set_current_imp(self);
             }
         }
 
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
+            auto* self = current_imp();
             // Reclaim unused stack pages before suspending.
-            if (g_imp->stk_) {
+            if (self->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, CSP_FRAME_ADDRESS());
+                    self->stk_, CSP_FRAME_ADDRESS());
             }
             Imp* target;
             {
@@ -1303,9 +1396,9 @@ namespace csp {
                 // (local_next sets running for the initial pick; chained
                 // do_switch calls keep it current as execution moves
                 // between imps.)
-                current_p().running = g_imp;
+                current_p().running = self;
                 auto& busy = current_p().busy;
-                if (busy == g_imp) {
+                if (busy == self) {
                     busy = busy->next_;
                 }
                 target = busy;
@@ -1344,6 +1437,10 @@ namespace {
 }
 
 static void start(transfer_t t) {
+#if CSP_ASAN
+    // First entry into this fiber — no previous fake-stack to restore.
+    __sanitizer_finish_switch_fiber(nullptr, nullptr, nullptr);
+#endif
     if (current_p().save_ctx) {
         current_p().save_ctx->store(t.fctx, std::memory_order_release);
         drain_suspended(current_p().save_imp);
@@ -1357,12 +1454,16 @@ static void start(transfer_t t) {
     auto data = sd.data;
     auto * self = &sd.self;
     auto parent_dyn_ctx = sd.caller.dyn_ctx_;
-    g_imp = self;
+    // Retain and assign parent's dynamic context BEFORE the warmup
+    // switch.  After the switch the parent continues running and may
+    // release its dyn_ctx (e.g. by exiting a context_scope or dying),
+    // which could free the HAMT node before this imp resumes.
+    if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
+    self->dyn_ctx_ = parent_dyn_ctx;
+    set_current_imp(self);
     auto killyou_val = switch_to(sd.caller, 0);
     // After warmup switch, sd may be invalid. Use local copies only.
-    g_imp = self;
-    self->dyn_ctx_ = parent_dyn_ctx;
-    if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
+    set_current_imp(self);
 
     // In M:N mode, the resuming switch may carry a killyou pointer — a
     // dying imp that exited and chained into us via run(exit).
@@ -1382,11 +1483,12 @@ static void start(transfer_t t) {
 namespace csp::internal {
 
 int spawn(EntryFn start_f, void * data) {
-    (void)current_p(); // Ensure g_imp is bound before use.
+    (void)current_p(); // Ensure current_imp() is bound before use.
+    auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
-    if (g_imp->stk_) {
+    if (self->stk_) {
         StackPool::instance().maybe_shrink(
-            g_imp->stk_, CSP_FRAME_ADDRESS());
+            self->stk_, CSP_FRAME_ADDRESS());
     }
     try {
 #if CSP_USE_VM_STACKS
@@ -1413,10 +1515,9 @@ int spawn(EntryFn start_f, void * data) {
         imp->tsan_fiber_ = __tsan_create_fiber(0);
 #endif
 
-        StartData const start_data = {start_f, data, *imp, *g_imp};
-        auto self = g_imp;
+        StartData const start_data = {start_f, data, *imp, *self};
         switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
-        g_imp = self;
+        set_current_imp(self);
 
         auto& rt = Runtime::instance();
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
@@ -1446,9 +1547,9 @@ int spawn(EntryFn start_f, void * data) {
 }
 
 void suspend() {
-    g_imp->suspending_.store(true, std::memory_order_release);
+    current_imp()->suspending_.store(true, std::memory_order_release);
     do_switch(Status::detach);
-    g_imp->suspending_.store(false, std::memory_order_release);
+    current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 int run() {
@@ -1471,10 +1572,11 @@ int run() {
     {
         std::lock_guard<std::mutex> lk(p.run_mu);
         auto& busy = p.busy;
-        if (busy == g_imp) {
+        auto* ci = current_imp();
+        if (busy == ci) {
             busy = busy->next_;
         }
-        if (busy != g_imp) {
+        if (busy != ci) {
             target = busy;
         }
     }
@@ -1504,16 +1606,16 @@ void yield() {
 void descr(char const * fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    vstatus(g_imp, fmt, args);
+    vstatus(current_imp(), fmt, args);
     va_end(args);
 
 #ifdef __APPLE__
-    pthread_setname_np(getstatus(g_imp));
+    pthread_setname_np(getstatus(current_imp()));
 #endif
 }
 
 char const * get_descr(void * thr) {
-    return getfullstatus(thr ? static_cast<Imp const *>(thr) : g_imp);
+    return getfullstatus(thr ? static_cast<Imp const *>(thr) : current_imp());
 }
 
 } // namespace csp::internal
@@ -1656,7 +1758,145 @@ uintptr_t hamt_assoc(uintptr_t root, uint64_t key, std::any value) {
 
 } // namespace csp::internal
 
+/* imp_exit.cc */
+
+#include <deque>
+
+namespace csp {
+
+struct imp_exit_state {
+    writer<imp_event> sink;
+};
+
+static dynamic<std::shared_ptr<imp_exit_state>> g_imp_exit{};
+
+// --- imp_event ---
+
+imp_event::imp_event(std::exception_ptr ex, writer<duration> w)
+    : error(std::move(ex)), response_(std::move(w)) {}
+
+imp_event::imp_event(imp_event&&) noexcept = default;
+imp_event& imp_event::operator=(imp_event&&) noexcept = default;
+imp_event::~imp_event() = default;
+
+void imp_event::restart(duration d) {
+    response_ << d;
+    response_ = {};  // release writer after successful send
+}
+
+// --- supervised_fn ---
+
+supervised_fn::supervised_fn(std::function<void()> f) : f_(std::move(f)) {}
+
+void supervised_fn::operator()() {
+    for (;;) {
+        std::exception_ptr ex;
+        try {
+            f_();
+        } catch (...) {
+            ex = std::current_exception();
+        }
+
+        auto state = *g_imp_exit;
+        if (!state) {
+            if (ex) std::rethrow_exception(ex);
+            return;
+        }
+
+        // Send event and wait for decision.
+        // Copy ex (not move) — we need it if the send fails.
+        chan<duration> response;
+        imp_event event(ex, std::move(response.w));
+
+        if (!(state->sink << std::move(event))) {
+            // Policy channel dead — fall back to fail-fast.
+            if (ex) std::rethrow_exception(ex);
+            return;
+        }
+
+        duration d;
+        if (!(response.r >> d)) {
+            // Handler dropped event without restart() — die normally.
+            // The handler already saw the exception and decided not to restart.
+            return;
+        }
+
+        if (d > duration::zero()) csp::sleep(d);
+    }
+}
+
+// --- exit_guard ---
+
+struct exit_guard::impl {
+    std::shared_ptr<imp_exit_state> state;
+    csp::local binding;
+
+    impl(std::shared_ptr<imp_exit_state> s)
+        : state(std::move(s))
+        , binding(g_imp_exit = state) {}
+};
+
+exit_guard::exit_guard(std::unique_ptr<impl> p) : impl_(std::move(p)) {}
+exit_guard::exit_guard(exit_guard&&) noexcept = default;
+exit_guard& exit_guard::operator=(exit_guard&&) noexcept = default;
+exit_guard::~exit_guard() = default;
+
+// --- on_exit ---
+
+exit_guard on_exit(std::function<void(imp_event)> handler) {
+    auto state = std::make_shared<imp_exit_state>();
+    chan<imp_event> ch;
+    state->sink = std::move(ch.w);
+
+    spawn([handler = std::move(handler), r = std::move(ch.r)]() {
+        for (;;) {
+            imp_event ev;
+            if (!(r >> ev)) break;
+            handler(std::move(ev));
+        }
+    });
+
+    return exit_guard(std::make_unique<exit_guard::impl>(state));
+}
+
+exit_guard on_exit(restart_policy policy) {
+    auto state = std::make_shared<imp_exit_state>();
+    chan<imp_event> ch;
+    state->sink = std::move(ch.w);
+
+    spawn([policy, r = std::move(ch.r)]() {
+        std::deque<time_point> times;
+        std::exception_ptr last_error;
+        for (;;) {
+            imp_event ev;
+            if (!(r >> ev)) break;
+
+            if (!ev.error) continue;  // ev destroyed at block end → imp dies
+
+            auto tp = csp::now();
+            while (!times.empty() && times.front() + policy.window < tp)
+                times.pop_front();
+
+            if (static_cast<int>(times.size()) >= policy.max_restarts) {
+                break;  // ev destroyed at block end → imp dies with original exception
+            }
+
+            times.push_back(tp);
+            ev.restart(policy.backoff);
+        }
+    });
+
+    return exit_guard(std::make_unique<exit_guard::impl>(state));
+}
+
+} // namespace csp
+
 /* io.cc */
+
+#include <cerrno>
+#include <cstdint>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace csp::internal {
 
@@ -1739,6 +1979,88 @@ void io_wait_writable(int fd) {
 #endif // _WIN32
 
 } // namespace csp::internal
+
+namespace csp::io {
+
+int set_nonblock(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0) return -1;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+ssize_t read(int fd, void* buf, size_t len) {
+    for (;;) {
+        ssize_t n = ::read(fd, buf, len);
+        if (n >= 0) return n;
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            wait_readable(fd);
+            continue;
+        }
+        return -1;
+    }
+}
+
+ssize_t write(int fd, const void* buf, size_t len) {
+    size_t written = 0;
+    auto p = static_cast<const uint8_t*>(buf);
+    while (written < len) {
+        ssize_t n = ::write(fd, p + written, len - written);
+        if (n >= 0) {
+            written += static_cast<size_t>(n);
+            continue;
+        }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            wait_writable(fd);
+            continue;
+        }
+        return -1;
+    }
+    return static_cast<ssize_t>(written);
+}
+
+int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
+    for (;;) {
+        int fd = ::accept(listen_fd, addr, addrlen);
+        if (fd >= 0) return fd;
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            wait_readable(listen_fd);
+            continue;
+        }
+        return -1;
+    }
+}
+
+int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
+    int ret = ::connect(fd, addr, addrlen);
+    if (ret == 0) return 0;
+    if (errno != EINPROGRESS) return -1;
+
+    wait_writable(fd);
+    int err = 0;
+    socklen_t errlen = sizeof(err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
+    if (err != 0) { errno = err; return -1; }
+    return 0;
+}
+
+resolve_result resolve(const std::string& host,
+                       const std::string& service,
+                       const struct addrinfo* hints) {
+    struct addrinfo* raw = nullptr;
+    int err = csp::blocking([&] {
+        return ::getaddrinfo(
+            host.c_str(),
+            service.empty() ? nullptr : service.c_str(),
+            hints, &raw);
+    });
+    if (err != 0) return resolve_result{.error = err};
+    return resolve_result{.info = addrinfo_ptr(raw)};
+}
+
+} // namespace csp::io
 
 /* log.cc */
 
@@ -2257,14 +2579,18 @@ void Reactor::cancel_fd(uintptr_t ident) {
 
 } // namespace csp::detail
 
-#elif defined(__APPLE__)
+#else // !_WIN32
 
-// --- macOS reactor: kqueue-based ---
+// --- Unix reactor: macOS (kqueue) / Linux (epoll) ---
 
+#ifdef __APPLE__
 #include <sys/event.h>
-#include <unistd.h>
+#elif defined(__linux__)
+#include <sys/epoll.h>
+#include <sys/timerfd.h>
+#include <sys/eventfd.h>
+#endif
 
-#include <cerrno>
 
 namespace csp::detail {
 
@@ -2272,6 +2598,12 @@ Reactor& Reactor::instance() {
     static Reactor r;
     return r;
 }
+
+// ============================================================
+// Platform: macOS (kqueue)
+// ============================================================
+
+#ifdef __APPLE__
 
 void Reactor::ensure_started() {
     if (running_.load(std::memory_order_acquire)) return;
@@ -2394,6 +2726,8 @@ void Reactor::fire_signal(uintptr_t ident, fd_event event) {
     size_t erased = 0;
     {
         std::lock_guard<std::mutex> lk(signal_mu_);
+        // On macOS, timer fire_signal is called with fd_event::read
+        // as a sentinel — we dispatch on ident presence in timer_writers_.
         erased = timer_writers_.erase(ident);
         if (!erased) {
             int fd = static_cast<int>(ident);
@@ -2424,23 +2758,11 @@ void Reactor::loop() {
     }
 }
 
-} // namespace csp::detail
+// ============================================================
+// Platform: Linux (epoll + timerfd + eventfd)
+// ============================================================
 
 #elif defined(__linux__)
-
-// --- Linux reactor: epoll + timerfd + eventfd ---
-
-#include <sys/epoll.h>
-#include <sys/timerfd.h>
-#include <sys/eventfd.h>
-
-
-namespace csp::detail {
-
-Reactor& Reactor::instance() {
-    static Reactor r;
-    return r;
-}
 
 void Reactor::ensure_started() {
     if (running_.load(std::memory_order_acquire)) return;
@@ -2453,6 +2775,7 @@ void Reactor::ensure_started() {
     epfd_ = epoll_create1(0);
     assert(epfd_ >= 0);
 
+    // Create eventfd for shutdown/wakeup.
     wakefd_ = eventfd(0, EFD_NONBLOCK);
     assert(wakefd_ >= 0);
 
@@ -2476,6 +2799,7 @@ void Reactor::shutdown() {
     wake();
     thread_.join();
 
+    // Close all timerfd descriptors.
     {
         std::lock_guard<std::mutex> slk(signal_mu_);
         for (auto& [tfd, ident] : timerfd_to_ident_)
@@ -2511,6 +2835,7 @@ std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
     struct itimerspec ts{};
     ts.it_value.tv_sec  = delay_ns / 1'000'000'000;
     ts.it_value.tv_nsec = delay_ns % 1'000'000'000;
+    // Zero delay: arm with 1 ns to ensure the timer fires.
     if (ts.it_value.tv_sec == 0 && ts.it_value.tv_nsec == 0)
         ts.it_value.tv_nsec = 1;
     int rc = timerfd_settime(tfd, 0, &ts, nullptr);
@@ -2608,12 +2933,14 @@ void Reactor::loop() {
         for (int i = 0; i < n; ++i) {
             int fd = events[i].data.fd;
 
+            // Wakeup event — drain and continue.
             if (fd == wakefd_) {
                 uint64_t val;
                 [[maybe_unused]] auto nr = ::read(wakefd_, &val, sizeof(val));
                 continue;
             }
 
+            // Check if this is a timerfd.
             uintptr_t ident;
             fd_event ev;
             {
@@ -2621,8 +2948,10 @@ void Reactor::loop() {
                 auto it = timerfd_to_ident_.find(fd);
                 if (it != timerfd_to_ident_.end()) {
                     ident = it->second;
+                    // Drain the timerfd.
                     uint64_t val;
                     [[maybe_unused]] auto nr = ::read(fd, &val, sizeof(val));
+                    // Clean up timerfd.
                     close(fd);
                     timerfd_to_ident_.erase(it);
                     ident_to_timerfd_.erase(ident);
@@ -2638,9 +2967,11 @@ void Reactor::loop() {
     }
 }
 
+#endif // __APPLE__ / __linux__
+
 } // namespace csp::detail
 
-#endif // platform selection
+#endif // _WIN32
 
 // ============================================================
 // Shared: timer_signal / fd_signal RAII + factory functions
@@ -2765,9 +3096,20 @@ fd_signal create_fd_writable(int fd) {
 /* runtime.cpp */
 
 
+
 namespace csp {
 
     namespace detail {
+
+        static void set_thread_name(int id) {
+            char name[16];
+            snprintf(name, sizeof(name), "csp-%d", id);
+#ifdef __APPLE__
+            pthread_setname_np(name);
+#else
+            pthread_setname_np(pthread_self(), name);
+#endif
+        }
 
         static Runtime g_runtime;
 
@@ -2811,6 +3153,7 @@ namespace csp {
 
             for (int i = 1; i < num_procs; ++i) {
                 workers.emplace_back([this, i] {
+                    set_thread_name(i);
                     bind_processor(procs[i].get());
                     worker_loop();
                 });
@@ -2862,7 +3205,6 @@ namespace csp {
 
         void Runtime::worker_loop() {
             auto& p = current_p();
-
             // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
@@ -2966,6 +3308,7 @@ namespace csp {
             num_procs_.store(idx + 1, std::memory_order_release);
 
             workers.emplace_back([this, idx] {
+                set_thread_name(idx);
                 bind_processor(procs[idx].get());
                 worker_loop();
             });
@@ -2983,12 +3326,13 @@ namespace csp {
                 return nullptr;
             }
 
-            // Skip past g_imp (the sentinel/main) to find real work.
+            // Skip past the main imp (sentinel) to find real work.
+            auto* ci = current_imp();
             auto* candidate = busy;
-            if (candidate == g_imp) {
+            if (candidate == ci) {
                 candidate = candidate->next_;
             }
-            if (candidate == g_imp || candidate == &p.main) {
+            if (candidate == ci || candidate == &p.main) {
                 p.running = nullptr;
                 return nullptr;
             }
@@ -3092,7 +3436,6 @@ namespace csp {
 
 #include <signal.h>
 
-#include <cstdint>
 
 // Self-pipe trick for async-signal-safe delivery.
 //
@@ -3227,7 +3570,6 @@ reader<int> notify(std::initializer_list<int> sigs) {
 
 #if defined(__aarch64__)
 
-#include <deque>
 
 namespace csp {
 
@@ -4475,6 +4817,81 @@ void StackPool::drain() {
 #endif // CSP_USE_VM_STACKS
 
 } // namespace csp::detail
+
+/* supervisor.cc */
+
+
+namespace csp {
+
+void worker_group::operator()() {
+    if (workers.empty()) return;
+
+    // Snapshot into a vector for indexed alt access.
+    struct entry {
+        std::string const* name;
+        std::function<void()> const* factory;
+    };
+    std::vector<entry> specs;
+    specs.reserve(workers.size());
+    for (auto& [name, factory] : workers) {
+        specs.push_back({&name, &factory});
+    }
+
+    size_t n = specs.size();
+    std::vector<reader<std::exception_ptr>> handles(n);
+    std::vector<bool> done(n, false);
+    std::vector<std::deque<time_point>> restart_times(n);
+    size_t active = n;
+
+    for (size_t i = 0; i < n; ++i) {
+        handles[i] = spawn(std::function<void()>(*specs[i].factory));
+    }
+
+    while (active > 0) {
+        std::vector<chan_op<std::exception_ptr>> ops;
+        ops.reserve(n);
+        std::exception_ptr ep;
+        for (size_t i = 0; i < n; ++i) {
+            if (done[i]) {
+                ops.emplace_back();
+            } else {
+                ops.push_back(handles[i] >> ep);
+            }
+        }
+
+        int result = alt(ops);
+
+        if (result >= 0) {
+            auto idx = static_cast<size_t>(result);
+            auto tp = now();
+            auto& times = restart_times[idx];
+            while (!times.empty() &&
+                   times.front() + policy.window < tp) {
+                times.pop_front();
+            }
+
+            if (static_cast<int>(times.size()) >= policy.max_restarts) {
+                throw worker_max_restarts_exceeded(
+                    *specs[idx].name, ep);
+            }
+
+            times.push_back(tp);
+
+            if (policy.backoff > csp::duration::zero()) {
+                sleep(policy.backoff);
+            }
+
+            handles[idx] =
+                spawn(std::function<void()>(*specs[idx].factory));
+        } else {
+            auto idx = static_cast<size_t>(~result);
+            done[idx] = true;
+            --active;
+        }
+    }
+}
+
+} // namespace csp
 
 /* timer.cc */
 

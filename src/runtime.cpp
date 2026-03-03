@@ -1,11 +1,24 @@
 #include <csp/internal/runtime.h>
 
+#include <pthread.h>
+
 #include <algorithm>
 #include <cassert>
+#include <cstdio>
 
 namespace csp {
 
     namespace detail {
+
+        static void set_thread_name(int id) {
+            char name[16];
+            snprintf(name, sizeof(name), "csp-%d", id);
+#ifdef __APPLE__
+            pthread_setname_np(name);
+#else
+            pthread_setname_np(pthread_self(), name);
+#endif
+        }
 
         static Runtime g_runtime;
 
@@ -49,6 +62,7 @@ namespace csp {
 
             for (int i = 1; i < num_procs; ++i) {
                 workers.emplace_back([this, i] {
+                    set_thread_name(i);
                     bind_processor(procs[i].get());
                     worker_loop();
                 });
@@ -100,7 +114,6 @@ namespace csp {
 
         void Runtime::worker_loop() {
             auto& p = current_p();
-
             // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
@@ -204,6 +217,7 @@ namespace csp {
             num_procs_.store(idx + 1, std::memory_order_release);
 
             workers.emplace_back([this, idx] {
+                set_thread_name(idx);
                 bind_processor(procs[idx].get());
                 worker_loop();
             });
@@ -221,12 +235,13 @@ namespace csp {
                 return nullptr;
             }
 
-            // Skip past g_imp (the sentinel/main) to find real work.
+            // Skip past the main imp (sentinel) to find real work.
+            auto* ci = current_imp();
             auto* candidate = busy;
-            if (candidate == g_imp) {
+            if (candidate == ci) {
                 candidate = candidate->next_;
             }
-            if (candidate == g_imp || candidate == &p.main) {
+            if (candidate == ci || candidate == &p.main) {
                 p.running = nullptr;
                 return nullptr;
             }

@@ -19,7 +19,7 @@ TEST_CASE("TakeUntil - includes terminating element") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{1, 2, 3});
+    CHECK(got == std::vector<int>{1, 2, 3});
 }
 
 TEST_CASE("TakeUntil - predicate never true") {
@@ -36,7 +36,7 @@ TEST_CASE("TakeUntil - predicate never true") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{1, 2, 3});
+    CHECK(got == std::vector<int>{1, 2, 3});
 }
 
 TEST_CASE("TakeUntil - first element matches") {
@@ -53,7 +53,7 @@ TEST_CASE("TakeUntil - first element matches") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{5});
+    CHECK(got == std::vector<int>{5});
 }
 
 TEST_CASE("TakeUntil - empty input") {

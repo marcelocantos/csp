@@ -17,10 +17,14 @@ auto try_map(F&& f, writer<std::exception_ptr> err) {
             internal::descr("try_map");
 
             for (A a; alt(in >> a, ~out) == 0;) {
+                std::exception_ptr ex;
                 try {
                     if (!(out << f(a))) break;
                 } catch (...) {
-                    if (!(err << std::current_exception())) break;
+                    ex = std::current_exception();
+                }
+                if (ex) {
+                    if (!(err << ex)) break;
                 }
             }
         });

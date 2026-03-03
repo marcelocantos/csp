@@ -177,19 +177,21 @@ A token-bucket rate limiter in three lines of CSP plumbing:
 
 // 10 tokens/sec, burst capacity of 3
 auto tokens = csp::tick(100ms);
-auto bucket = csp::part::buffer<csp::time_point>(3)
-                  .spawn(std::move(tokens));
+auto bucket = csp::chan<csp::time_point>(3);
+csp::spawn([in = std::move(tokens), out = std::move(bucket.w)] {
+    for (auto tp : in) out << tp;
+});
 
 csp::time_point token;
 for (int req; requests >> req;) {
-    bucket >> token;     // wait for a token
+    bucket.r >> token;   // wait for a token
     handle(req);
 }
 ```
 
-`tick` generates tokens at a fixed rate. `buffer(3)` accumulates up to three
-tokens, absorbing bursts. Each request consumes one token by reading from the
-bucket.
+`tick` generates tokens at a fixed rate. The buffered channel accumulates up to
+three tokens, absorbing bursts. Each request consumes one token by reading from
+the bucket.
 
 <!-- csp-flow
 {tick(100ms)} -"token"-> {buffer(3)} -"token"-> gate read

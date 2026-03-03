@@ -222,11 +222,17 @@ void Reactor::cancel_fd(uintptr_t ident) {
 
 } // namespace csp::detail
 
-#elif defined(__APPLE__)
+#else // !_WIN32
 
-// --- macOS reactor: kqueue-based ---
+// --- Unix reactor: macOS (kqueue) / Linux (epoll) ---
 
+#ifdef __APPLE__
 #include <sys/event.h>
+#elif defined(__linux__)
+#include <sys/epoll.h>
+#include <sys/timerfd.h>
+#include <sys/eventfd.h>
+#endif
 #include <unistd.h>
 
 #include <cerrno>
@@ -237,6 +243,12 @@ Reactor& Reactor::instance() {
     static Reactor r;
     return r;
 }
+
+// ============================================================
+// Platform: macOS (kqueue)
+// ============================================================
+
+#ifdef __APPLE__
 
 void Reactor::ensure_started() {
     if (running_.load(std::memory_order_acquire)) return;
@@ -359,6 +371,8 @@ void Reactor::fire_signal(uintptr_t ident, fd_event event) {
     size_t erased = 0;
     {
         std::lock_guard<std::mutex> lk(signal_mu_);
+        // On macOS, timer fire_signal is called with fd_event::read
+        // as a sentinel — we dispatch on ident presence in timer_writers_.
         erased = timer_writers_.erase(ident);
         if (!erased) {
             int fd = static_cast<int>(ident);
@@ -389,25 +403,11 @@ void Reactor::loop() {
     }
 }
 
-} // namespace csp::detail
+// ============================================================
+// Platform: Linux (epoll + timerfd + eventfd)
+// ============================================================
 
 #elif defined(__linux__)
-
-// --- Linux reactor: epoll + timerfd + eventfd ---
-
-#include <sys/epoll.h>
-#include <sys/timerfd.h>
-#include <sys/eventfd.h>
-#include <unistd.h>
-
-#include <cerrno>
-
-namespace csp::detail {
-
-Reactor& Reactor::instance() {
-    static Reactor r;
-    return r;
-}
 
 void Reactor::ensure_started() {
     if (running_.load(std::memory_order_acquire)) return;
@@ -420,6 +420,7 @@ void Reactor::ensure_started() {
     epfd_ = epoll_create1(0);
     assert(epfd_ >= 0);
 
+    // Create eventfd for shutdown/wakeup.
     wakefd_ = eventfd(0, EFD_NONBLOCK);
     assert(wakefd_ >= 0);
 
@@ -443,6 +444,7 @@ void Reactor::shutdown() {
     wake();
     thread_.join();
 
+    // Close all timerfd descriptors.
     {
         std::lock_guard<std::mutex> slk(signal_mu_);
         for (auto& [tfd, ident] : timerfd_to_ident_)
@@ -478,6 +480,7 @@ std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
     struct itimerspec ts{};
     ts.it_value.tv_sec  = delay_ns / 1'000'000'000;
     ts.it_value.tv_nsec = delay_ns % 1'000'000'000;
+    // Zero delay: arm with 1 ns to ensure the timer fires.
     if (ts.it_value.tv_sec == 0 && ts.it_value.tv_nsec == 0)
         ts.it_value.tv_nsec = 1;
     int rc = timerfd_settime(tfd, 0, &ts, nullptr);
@@ -575,12 +578,14 @@ void Reactor::loop() {
         for (int i = 0; i < n; ++i) {
             int fd = events[i].data.fd;
 
+            // Wakeup event — drain and continue.
             if (fd == wakefd_) {
                 uint64_t val;
                 [[maybe_unused]] auto nr = ::read(wakefd_, &val, sizeof(val));
                 continue;
             }
 
+            // Check if this is a timerfd.
             uintptr_t ident;
             fd_event ev;
             {
@@ -588,8 +593,10 @@ void Reactor::loop() {
                 auto it = timerfd_to_ident_.find(fd);
                 if (it != timerfd_to_ident_.end()) {
                     ident = it->second;
+                    // Drain the timerfd.
                     uint64_t val;
                     [[maybe_unused]] auto nr = ::read(fd, &val, sizeof(val));
+                    // Clean up timerfd.
                     close(fd);
                     timerfd_to_ident_.erase(it);
                     ident_to_timerfd_.erase(ident);
@@ -605,9 +612,11 @@ void Reactor::loop() {
     }
 }
 
+#endif // __APPLE__ / __linux__
+
 } // namespace csp::detail
 
-#endif // platform selection
+#endif // _WIN32
 
 // ============================================================
 // Shared: timer_signal / fd_signal RAII + factory functions

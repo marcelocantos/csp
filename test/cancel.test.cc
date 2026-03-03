@@ -1,7 +1,9 @@
 #include "testutil.h"
 
 #include <atomic>
+#include <fcntl.h>
 #include <stdexcept>
+#include <unistd.h>
 
 using namespace csp;
 
@@ -577,7 +579,7 @@ TEST_CASE("dynamic binding reverts on exception during cancel") {
         try {
             auto guard = cancellation();
             csp::local l2{val = 99};
-            CHECK_EQ(*val, 99);
+            CHECK(*val == 99);
             throw std::runtime_error("boom");
             // guard and l2 destruct during stack unwinding
         } catch (std::runtime_error const&) {
@@ -586,7 +588,7 @@ TEST_CASE("dynamic binding reverts on exception during cancel") {
         }
     });
     while (csp::internal::run()) {}
-    CHECK_EQ(after_unwind, 42);
+    CHECK(after_unwind == 42);
 }
 
 } // TEST_SUITE("cancellation")

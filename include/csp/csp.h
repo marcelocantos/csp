@@ -1,6 +1,12 @@
 #pragma once
 
+#define CSP_VERSION "0.2.0"
+#define CSP_VERSION_MAJOR 0
+#define CSP_VERSION_MINOR 2
+#define CSP_VERSION_PATCH 0
+
 #include <csp/internal/log.h>
+#include <csp/ringbuffer.h>
 
 #include <atomic>
 #include <cassert>
@@ -29,8 +35,12 @@ struct alignas(16) Slot {
     std::atomic<void*> channel{nullptr};   // Channel* (type-erased)
     std::atomic<size_t> refcount{1};       // strong refs (death detection)
     std::atomic<size_t> mem_refcount{1};   // memory refs: 1 from channel + N from weak refs
+    std::atomic_flag spin_ = ATOMIC_FLAG_INIT;  // serializes re-resolution with swap_slots
 
     explicit Slot(void* ch) : channel(ch) {}
+
+    void lock() { while (spin_.test_and_set(std::memory_order_acquire)) {} }
+    void unlock() { spin_.clear(std::memory_order_release); }
 
     // Release one memory ref. Deletes the slot when the last ref is released.
     void mem_release() {
@@ -619,6 +629,8 @@ struct chan {
         r.assign(cr);
     }
 
+    explicit chan(size_t capacity);
+
     chan(writer<T> w, reader<T> r) : w(std::move(w)), r(std::move(r)) {}
 
     chan(chan const &) = delete;
@@ -879,11 +891,21 @@ template <typename F>
 inline void spawn_entry(void * data) {
     using SD = spawn_data<F>;
     std::unique_ptr<SD> sd{static_cast<SD *>(data)};
+    std::exception_ptr ex;
     try {
         auto f = std::move(sd->f);
         f();
     } catch (...) {
-        auto ex = std::current_exception();
+        ex = std::current_exception();
+    }
+    // Channel send must be OUTSIDE the catch block.  In M:N mode,
+    // prialt_begin can suspend the imp (context-switch).  If it
+    // resumes on a different OS thread, __cxa_end_catch would run
+    // on that thread while __cxa_begin_catch registered the
+    // exception on the original thread's __cxa_eh_globals —
+    // corrupting the C++ exception runtime state (SIGSEGV in
+    // __cxa_end_catch at address 0x0).
+    if (ex) {
         if (!(sd->w << ex) && !(global_exception_handler << ex)) {
             std::terminate();
         }
@@ -1129,6 +1151,62 @@ int prialt(std::vector<chan_op<T>> const & ops, none_t) {
 
 // Dead channel to assist non-blocking waits.
 extern reader<> const skip;
+
+// --- chan | composition ---
+
+// reader | chan → reader (forward reader into buffer)
+template <typename T>
+reader<T> operator|(reader<T> r, chan<T> ch) {
+    spawn([in = std::move(r), out = std::move(ch.w)] {
+        T v;
+        while (in >> v) {
+            if (!(out << std::move(v))) return;
+        }
+    });
+    return std::move(ch.r);
+}
+
+// chan | writer → writer (forward buffer into writer)
+template <typename T>
+writer<T> operator|(chan<T> ch, writer<T> w) {
+    spawn([in = std::move(ch.r), out = std::move(w)] {
+        T v;
+        while (in >> v) {
+            if (!(out << std::move(v))) return;
+        }
+    });
+    return std::move(ch.w);
+}
+
+// --- buffered channel constructor ---
+
+template <typename T>
+chan<T>::chan(size_t capacity) {
+    if (capacity == 0)
+        throw std::invalid_argument("buffer capacity must be at least 1");
+    auto ch = spawn_filter<T>([capacity](reader<T> in, writer<T> out) {
+        internal::descr("buffer");
+        detail::RingBuffer<T> buf(capacity);
+        for (;;) {
+            switch (alt(buf.full()  ? ~in  : in  >> buf.next(),
+                        buf.empty() ? ~out : out << buf.front())) {
+            case 0:  buf.push(); break;
+            case ~0:
+                while (!buf.empty() && out << std::move(buf.front())) buf.pop();
+                return;
+            case 1:  buf.pop(); break;
+            case ~1: return;
+#ifdef _MSC_VER
+            default: __assume(0);
+#else
+            default: __builtin_unreachable();
+#endif
+            }
+        }
+    });
+    w = std::move(ch.w);
+    r = std::move(ch.r);
+}
 
 }
 

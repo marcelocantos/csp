@@ -7,6 +7,11 @@
 
 /* csp/csp.h */
 
+#define CSP_VERSION "0.2.0"
+#define CSP_VERSION_MAJOR 0
+#define CSP_VERSION_MINOR 2
+#define CSP_VERSION_PATCH 0
+
 
 /* csp/internal/log.h */
 
@@ -88,9 +93,211 @@ private:
 #define BRAC_SCOPE__(logger, file, line, func, fmt, ...) \
     LogScope csp__logScope__##line(logger, CSP__DETAIL__SOURCE_ROOT, file, line, func, fmt, func, ##__VA_ARGS__);
 
-#include <atomic>
+/* csp/ringbuffer.h */
+
+#include <bit>
 #include <cassert>
+#include <compare>
 #include <cstddef>
+#include <new>
+#include <utility>
+
+namespace csp::detail {
+
+template <typename T>
+class RingBuffer {
+public:
+    static constexpr size_t npos = size_t(-1);
+
+    explicit RingBuffer(size_t capacity = npos)
+        : capacity_(capacity)
+        , size_(round_up_pow2(capacity == npos ? 4 : capacity))
+        , mask_(size_ - 1)
+        , data_(alloc(size_))
+    { }
+
+    ~RingBuffer() {
+        clear();
+        dealloc(data_);
+    }
+
+    RingBuffer(RingBuffer const &) = delete;
+    RingBuffer & operator=(RingBuffer const &) = delete;
+
+    RingBuffer(RingBuffer && o) noexcept
+        : capacity_(o.capacity_)
+        , size_(o.size_)
+        , mask_(o.mask_)
+        , front_(o.front_)
+        , back_(o.back_)
+        , count_(o.count_)
+        , data_(std::exchange(o.data_, nullptr))
+    {
+        o.count_ = 0;
+        o.front_ = o.back_ = 0;
+    }
+
+    RingBuffer & operator=(RingBuffer && o) noexcept {
+        if (this != &o) {
+            clear();
+            dealloc(data_);
+            capacity_ = o.capacity_;
+            size_ = o.size_;
+            mask_ = o.mask_;
+            front_ = o.front_;
+            back_ = o.back_;
+            count_ = o.count_;
+            data_ = std::exchange(o.data_, nullptr);
+            o.count_ = 0;
+            o.front_ = o.back_ = 0;
+        }
+        return *this;
+    }
+
+    size_t count() const { return count_; }
+    bool empty() const { return !count_; }
+    bool full() const { return count_ == capacity_; }
+    T & front() const { return data_[front_]; }
+
+    void * next() {
+        if (count_ == size_) {
+            assert(capacity_ == npos);
+            grow();
+        }
+        return &data_[back_];
+    }
+
+    void push() {
+        back_ = (back_ + 1) & mask_;
+        ++count_;
+    }
+
+    void push(T t) {
+        new (next()) T{std::move(t)};
+        push();
+    }
+
+    template <typename... Args>
+    void emplace(Args &&... args) {
+        new (next()) T{std::forward<Args>(args)...};
+        push();
+    }
+
+    void pop() {
+        assert(!empty());
+        data_[front_].~T();
+        front_ = (front_ + 1) & mask_;
+        --count_;
+    }
+
+    bool remove(T t) {
+        for (size_t i = 0; i < count_; ++i) {
+            if (data_[(front_ + i) & mask_] == t) {
+                if (i == 0) {
+                    pop();
+                } else if (i == count_ - 1) {
+                    back_ = (back_ - 1) & mask_;
+                    data_[back_].~T();
+                    --count_;
+                } else {
+                    // Fill hole from back.
+                    back_ = (back_ - 1) & mask_;
+                    data_[(front_ + i) & mask_] = std::move(data_[back_]);
+                    data_[back_].~T();
+                    --count_;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void clear() {
+        while (!empty()) pop();
+    }
+
+    class iterator {
+    public:
+        using value_type = T;
+        using reference = T &;
+        using pointer = T *;
+        using difference_type = std::ptrdiff_t;
+        using iterator_category = std::random_access_iterator_tag;
+
+        iterator() = default;
+
+        reference operator*() const { return buf_->data_[(buf_->front_ + idx_) & buf_->mask_]; }
+        pointer operator->() const { return &**this; }
+        reference operator[](difference_type n) const { return *(*this + n); }
+
+        iterator & operator++() { ++idx_; return *this; }
+        iterator operator++(int) { auto t = *this; ++*this; return t; }
+        iterator & operator--() { --idx_; return *this; }
+        iterator operator--(int) { auto t = *this; --*this; return t; }
+
+        iterator & operator+=(difference_type n) { idx_ += n; return *this; }
+        iterator & operator-=(difference_type n) { idx_ -= n; return *this; }
+        iterator operator+(difference_type n) const { auto t = *this; return t += n; }
+        iterator operator-(difference_type n) const { auto t = *this; return t -= n; }
+        friend iterator operator+(difference_type n, iterator i) { return i += n; }
+        difference_type operator-(iterator const & o) const {
+            return static_cast<difference_type>(idx_) - static_cast<difference_type>(o.idx_);
+        }
+
+        bool operator==(iterator const & o) const = default;
+        std::strong_ordering operator<=>(iterator const & o) const { return idx_ <=> o.idx_; }
+
+    private:
+        friend class RingBuffer;
+        RingBuffer const * buf_ = nullptr;
+        size_t idx_ = 0;
+        iterator(RingBuffer const * buf, size_t idx) : buf_(buf), idx_(idx) { }
+    };
+
+    iterator begin() const { return {this, 0}; }
+    iterator end() const { return {this, count_}; }
+
+private:
+    size_t capacity_;
+    size_t size_;
+    size_t mask_;
+    size_t front_ = 0;
+    size_t back_ = 0;
+    size_t count_ = 0;
+    T * data_;
+
+    static T * alloc(size_t n) {
+        return static_cast<T *>(::operator new(n * sizeof(T), std::align_val_t(alignof(T))));
+    }
+
+    static void dealloc(T * p) {
+        if (p) ::operator delete(p, std::align_val_t(alignof(T)));
+    }
+
+    static constexpr size_t round_up_pow2(size_t n) {
+        assert(n > 0);
+        return std::bit_ceil(n);
+    }
+
+    void grow() {
+        size_t new_size = size_ * 2;
+        T * newdata = alloc(new_size);
+        for (size_t i = 0; i < count_; ++i) {
+            new (&newdata[i]) T{std::move(data_[(front_ + i) & mask_])};
+            data_[(front_ + i) & mask_].~T();
+        }
+        dealloc(data_);
+        data_ = newdata;
+        size_ = new_size;
+        mask_ = new_size - 1;
+        front_ = 0;
+        back_ = count_;
+    }
+};
+
+}
+
+#include <atomic>
 #include <climits>
 #include <exception>
 #include <memory>
@@ -101,7 +308,6 @@ private:
 #include <ranges>
 #include <stdexcept>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 
@@ -115,8 +321,12 @@ struct alignas(16) Slot {
     std::atomic<void*> channel{nullptr};   // Channel* (type-erased)
     std::atomic<size_t> refcount{1};       // strong refs (death detection)
     std::atomic<size_t> mem_refcount{1};   // memory refs: 1 from channel + N from weak refs
+    std::atomic_flag spin_ = ATOMIC_FLAG_INIT;  // serializes re-resolution with swap_slots
 
     explicit Slot(void* ch) : channel(ch) {}
+
+    void lock() { while (spin_.test_and_set(std::memory_order_acquire)) {} }
+    void unlock() { spin_.clear(std::memory_order_release); }
 
     // Release one memory ref. Deletes the slot when the last ref is released.
     void mem_release() {
@@ -705,6 +915,8 @@ struct chan {
         r.assign(cr);
     }
 
+    explicit chan(size_t capacity);
+
     chan(writer<T> w, reader<T> r) : w(std::move(w)), r(std::move(r)) {}
 
     chan(chan const &) = delete;
@@ -965,11 +1177,21 @@ template <typename F>
 inline void spawn_entry(void * data) {
     using SD = spawn_data<F>;
     std::unique_ptr<SD> sd{static_cast<SD *>(data)};
+    std::exception_ptr ex;
     try {
         auto f = std::move(sd->f);
         f();
     } catch (...) {
-        auto ex = std::current_exception();
+        ex = std::current_exception();
+    }
+    // Channel send must be OUTSIDE the catch block.  In M:N mode,
+    // prialt_begin can suspend the imp (context-switch).  If it
+    // resumes on a different OS thread, __cxa_end_catch would run
+    // on that thread while __cxa_begin_catch registered the
+    // exception on the original thread's __cxa_eh_globals —
+    // corrupting the C++ exception runtime state (SIGSEGV in
+    // __cxa_end_catch at address 0x0).
+    if (ex) {
         if (!(sd->w << ex) && !(global_exception_handler << ex)) {
             std::terminate();
         }
@@ -1216,6 +1438,62 @@ int prialt(std::vector<chan_op<T>> const & ops, none_t) {
 // Dead channel to assist non-blocking waits.
 extern reader<> const skip;
 
+// --- chan | composition ---
+
+// reader | chan → reader (forward reader into buffer)
+template <typename T>
+reader<T> operator|(reader<T> r, chan<T> ch) {
+    spawn([in = std::move(r), out = std::move(ch.w)] {
+        T v;
+        while (in >> v) {
+            if (!(out << std::move(v))) return;
+        }
+    });
+    return std::move(ch.r);
+}
+
+// chan | writer → writer (forward buffer into writer)
+template <typename T>
+writer<T> operator|(chan<T> ch, writer<T> w) {
+    spawn([in = std::move(ch.r), out = std::move(w)] {
+        T v;
+        while (in >> v) {
+            if (!(out << std::move(v))) return;
+        }
+    });
+    return std::move(ch.w);
+}
+
+// --- buffered channel constructor ---
+
+template <typename T>
+chan<T>::chan(size_t capacity) {
+    if (capacity == 0)
+        throw std::invalid_argument("buffer capacity must be at least 1");
+    auto ch = spawn_filter<T>([capacity](reader<T> in, writer<T> out) {
+        internal::descr("buffer");
+        detail::RingBuffer<T> buf(capacity);
+        for (;;) {
+            switch (alt(buf.full()  ? ~in  : in  >> buf.next(),
+                        buf.empty() ? ~out : out << buf.front())) {
+            case 0:  buf.push(); break;
+            case ~0:
+                while (!buf.empty() && out << std::move(buf.front())) buf.pop();
+                return;
+            case 1:  buf.pop(); break;
+            case ~1: return;
+#ifdef _MSC_VER
+            default: __assume(0);
+#else
+            default: __builtin_unreachable();
+#endif
+            }
+        }
+    });
+    w = std::move(ch.w);
+    r = std::move(ch.r);
+}
+
 }
 
 
@@ -1258,9 +1536,6 @@ template <typename Fn>
 /* csp/byte_reader.h */
 
 
-#include <algorithm>
-#include <cstring>
-
 namespace csp {
 
 // File-like byte stream interface over a reader<bytes>. Buffers
@@ -1277,39 +1552,7 @@ public:
     // Returns the number of bytes actually read. A return value less
     // than out.size() means the reader closed before the buffer could
     // be filled.
-    size_t read(bytes& out) {
-        size_t total = 0;
-        size_t need = out.size();
-
-        // Drain leftover from a previous call.
-        if (pos_ < buf_.size()) {
-            size_t avail = buf_.size() - pos_;
-            size_t n = std::min(avail, need);
-            std::memcpy(out.data(), buf_.data() + pos_, n);
-            pos_ += n;
-            total = n;
-            if (pos_ == buf_.size()) {
-                buf_.clear();
-                pos_ = 0;
-            }
-            if (total == need) return total;
-        }
-
-        // Pull chunks from the underlying reader.
-        bytes chunk;
-        while (total < need && (r_ >> chunk)) {
-            size_t n = std::min(chunk.size(), need - total);
-            std::memcpy(out.data() + total, chunk.data(), n);
-            total += n;
-            if (n < chunk.size()) {
-                buf_ = std::move(chunk);
-                pos_ = n;
-                return total;
-            }
-        }
-
-        return total;
-    }
+    size_t read(bytes& out);
 };
 
 }
@@ -1427,6 +1670,22 @@ private:
 #define CSP_FRAME_ADDRESS() __builtin_frame_address(0)
 #endif
 
+// ASan fiber annotations: tell ASan about user-mode context switches
+// so its fake-stack (detect_stack_use_after_return) bookkeeping stays
+// consistent across jump_fcontext.  Without these, ASan can free a
+// suspended fiber's fake-stack frames, causing SEGV when another
+// thread reads stack-resident data (e.g. a waiter's ChanOp).
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#define CSP_ASAN 1
+extern "C" {
+    void __sanitizer_start_switch_fiber(void **fake_stack_save,
+                                        const void *bottom, size_t size);
+    void __sanitizer_finish_switch_fiber(void *fake_stack_save,
+                                         const void **bottom_old,
+                                         size_t *size_old);
+}
+#endif
+
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across imp switches.
 #if defined(__SANITIZE_THREAD__)
@@ -1453,7 +1712,13 @@ enum class Status : intptr_t { run, sleep, detach, exit, spawn };
 
 struct Imp;
 
-extern thread_local Imp * g_imp;
+// Non-inline accessors for the per-thread current-imp pointer.
+// Defined in csp_globals.cpp.  The cross-TU function call prevents
+// the compiler from caching the thread-pointer register (TPIDR_EL0
+// on ARM64, FS/GS on x86) across jump_fcontext, which would cause
+// stale TLS access when an imp resumes on a different OS thread.
+Imp* current_imp();
+void set_current_imp(Imp* p);
 
 void do_switch(Status status = Status::sleep);
 
@@ -1512,6 +1777,9 @@ struct alignas(16) Imp {
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 
+#if CSP_ASAN
+    void* asan_fake_stack_ = nullptr;  // ASan fake-stack state for this fiber
+#endif
 #if CSP_TSAN
     void* tsan_fiber_ = nullptr;  // TSan fiber handle for this imp
 #endif
@@ -1539,7 +1807,6 @@ char const * getstatus(Imp const * imp) {
 // BLR-free read path: hamt_get uses only integer arithmetic,
 // std::popcount, and pointer chasing.
 
-#include <bit>
 #include <cstdint>
 
 namespace csp::internal {
@@ -1665,7 +1932,7 @@ public:
     // Snapshot the current imp's context.
     static context current() {
         context c;
-        c.root_ = detail::g_imp->dyn_ctx_;
+        c.root_ = detail::current_imp()->dyn_ctx_;
         if (c.root_) internal::hamt_retain(c.root_);
         return c;
     }
@@ -1679,17 +1946,17 @@ class context_scope {
     uintptr_t saved_;
 public:
     // Save current context and install a foreign one.
-    explicit context_scope(const context& ctx) : saved_(detail::g_imp->dyn_ctx_) {
+    explicit context_scope(const context& ctx) : saved_(detail::current_imp()->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
-        auto old = detail::g_imp->dyn_ctx_;
-        detail::g_imp->dyn_ctx_ = ctx.root();
+        auto old = detail::current_imp()->dyn_ctx_;
+        detail::current_imp()->dyn_ctx_ = ctx.root();
         if (ctx.root()) internal::hamt_retain(ctx.root());
         if (old) internal::hamt_release(old);
     }
 
     ~context_scope() {
-        auto current = detail::g_imp->dyn_ctx_;
-        detail::g_imp->dyn_ctx_ = saved_;
+        auto current = detail::current_imp()->dyn_ctx_;
+        detail::current_imp()->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -1738,8 +2005,8 @@ class local {
 
     void apply(dynamic_binding&& b) {
         b.consumed_ = true;
-        auto old = detail::g_imp->dyn_ctx_;
-        detail::g_imp->dyn_ctx_ = internal::hamt_assoc(
+        auto old = detail::current_imp()->dyn_ctx_;
+        detail::current_imp()->dyn_ctx_ = internal::hamt_assoc(
             old, b.key_id_, std::move(b.value_));
         if (old) internal::hamt_release(old);
     }
@@ -1748,14 +2015,14 @@ public:
     template <typename... Bs>
         requires (sizeof...(Bs) >= 1 &&
                   (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...))
-    local(Bs&&... bindings) : saved_(detail::g_imp->dyn_ctx_) {
+    local(Bs&&... bindings) : saved_(detail::current_imp()->dyn_ctx_) {
         if (saved_) internal::hamt_retain(saved_);
         (apply(std::forward<Bs>(bindings)), ...);
     }
 
     ~local() {
-        auto current = detail::g_imp->dyn_ctx_;
-        detail::g_imp->dyn_ctx_ = saved_;
+        auto current = detail::current_imp()->dyn_ctx_;
+        detail::current_imp()->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -1783,7 +2050,7 @@ public:
 
     // Read: HAMT lookup + any_cast. Returns by value (safe, no dangling).
     T operator*() const {
-        if (auto* a = internal::hamt_get(detail::g_imp->dyn_ctx_, key_.id()))
+        if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
             return *std::any_cast<T>(a);
         assert(default_.has_value());
         return *default_;
@@ -1815,7 +2082,7 @@ public:
 
     // Read: map lookup + any_cast. Returns by value.
     T operator*() const {
-        auto* m = detail::g_imp->local_ctx_;
+        auto* m = detail::current_imp()->local_ctx_;
         if (m) {
             auto it = m->find(key_.id());
             if (it != m->end())
@@ -1827,7 +2094,7 @@ public:
 
     // Write: direct mutation of per-imp map.
     imp_local& operator=(T val) {
-        auto*& m = detail::g_imp->local_ctx_;
+        auto*& m = detail::current_imp()->local_ctx_;
         if (!m) m = new std::unordered_map<uint64_t, std::any>();
         (*m)[key_.id()] = std::any(std::move(val));
         return *this;
@@ -1964,6 +2231,84 @@ std::exception_ptr cancel_reason();
 
 } // namespace csp
 
+/* csp/imp_exit.h */
+
+
+
+namespace csp {
+
+struct restart_policy {
+    int max_restarts = 3;
+    duration window = std::chrono::seconds(5);
+    duration backoff = duration::zero();
+};
+
+struct max_restarts_exceeded : csp::error {
+    std::exception_ptr cause;
+    max_restarts_exceeded(std::exception_ptr ex)
+        : csp::error("max restarts exceeded"), cause(std::move(ex)) {}
+};
+
+struct imp_event {
+    std::exception_ptr error;
+
+    void restart(duration d = duration::zero());
+
+    imp_event() = default;
+    imp_event(imp_event&&) noexcept;
+    imp_event& operator=(imp_event&&) noexcept;
+    ~imp_event();
+
+    imp_event(const imp_event&) = delete;
+    imp_event& operator=(const imp_event&) = delete;
+
+private:
+    writer<duration> response_;
+    imp_event(std::exception_ptr, writer<duration>);
+    friend class supervised_fn;
+};
+
+// Callable wrapper returned by supervised(). Contains the retry loop
+// in operator() (defined in imp_exit.cc, behind compilation firewall).
+// Used as: spawn(supervised(f))
+class supervised_fn {
+    std::function<void()> f_;
+public:
+    explicit supervised_fn(std::function<void()> f);
+    void operator()();
+};
+
+// Wrap a callable in a supervision retry loop.
+// The returned supervised_fn checks the imp_exit dynamic on each exit.
+// Move-only callables are supported via shared_ptr indirection.
+template <typename F>
+supervised_fn supervised(F&& f) {
+    auto p = std::make_shared<std::decay_t<F>>(std::forward<F>(f));
+    return supervised_fn([p = std::move(p)]() { (*p)(); });
+}
+
+class exit_guard {
+public:
+    exit_guard(exit_guard&&) noexcept;
+    exit_guard& operator=(exit_guard&&) noexcept;
+    ~exit_guard();
+
+    exit_guard(const exit_guard&) = delete;
+    exit_guard& operator=(const exit_guard&) = delete;
+
+private:
+    struct impl;
+    std::unique_ptr<impl> impl_;
+    friend exit_guard on_exit(std::function<void(imp_event)>);
+    friend exit_guard on_exit(restart_policy);
+    explicit exit_guard(std::unique_ptr<impl>);
+};
+
+exit_guard on_exit(std::function<void(imp_event)> handler);
+exit_guard on_exit(restart_policy policy);
+
+} // namespace csp
+
 /* csp/internal/blocking_pool.h */
 
 #include <condition_variable>
@@ -2012,7 +2357,6 @@ private:
 
 /* csp/internal/flat_hash_set.h */
 
-#include <new>
 
 namespace csp::detail {
 
@@ -2422,7 +2766,7 @@ public:
     chan_op<> operator~() const { return ~r_; }
 };
 
-// Factory functions — create a kqueue/epoll event and return the signal object.
+// Factory functions — create a reactor event and return the signal object.
 fd_signal create_fd_readable(int fd);
 fd_signal create_fd_writable(int fd);
 
@@ -2561,7 +2905,9 @@ private:
 #elif defined(__linux__)
     int epfd_ = -1;
     int wakefd_ = -1;
+    // Maps timerfd -> timer ident for epoll event dispatch.
     std::unordered_map<int, uintptr_t> timerfd_to_ident_;
+    // Maps timer ident -> timerfd for cancellation.
     std::unordered_map<uintptr_t, int> ident_to_timerfd_;
 #endif
 
@@ -2649,7 +2995,6 @@ struct Runtime {
 /* csp/io.h */
 
 
-
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -2659,8 +3004,6 @@ struct Runtime {
 using ssize_t = ptrdiff_t;
 #endif
 #else
-#include <cerrno>
-#include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -2716,11 +3059,7 @@ inline void close(socket_t fd) {
 #else
 
 // Set fd to non-blocking mode. Returns 0 on success, -1 on error.
-inline int set_nonblock(socket_t fd) {
-    int flags = fcntl(fd, F_GETFL);
-    if (flags < 0) return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
+int set_nonblock(int fd);
 
 // Close a file descriptor.
 inline void close(socket_t fd) {
@@ -2815,72 +3154,18 @@ inline void close(socket_t fd) {
 #else // !_WIN32
 
 // Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
-[[nodiscard]] inline ssize_t read(socket_t fd, void* buf, size_t len) {
-    for (;;) {
-        ssize_t n = ::read(fd, buf, len);
-        if (n >= 0) return n;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            wait_readable(fd);
-            continue;
-        }
-        return -1;
-    }
-}
+[[nodiscard]] ssize_t read(int fd, void* buf, size_t len);
 
 // Write all of buf. Returns total bytes written, or -1 on error.
 // Partial writes are retried automatically.
-[[nodiscard]] inline ssize_t write(socket_t fd, const void* buf, size_t len) {
-    size_t written = 0;
-    auto p = static_cast<const uint8_t*>(buf);
-    while (written < len) {
-        ssize_t n = ::write(fd, p + written, len - written);
-        if (n >= 0) {
-            written += static_cast<size_t>(n);
-            continue;
-        }
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            wait_writable(fd);
-            continue;
-        }
-        return -1;
-    }
-    return static_cast<ssize_t>(written);
-}
+[[nodiscard]] ssize_t write(int fd, const void* buf, size_t len);
 
 // Accept a connection. Returns new fd, or -1 on error.
-[[nodiscard]] inline socket_t accept(socket_t listen_fd,
-                                     struct sockaddr* addr,
-                                     socklen_t* addrlen) {
-    for (;;) {
-        int fd = ::accept(listen_fd, addr, addrlen);
-        if (fd >= 0) return fd;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            wait_readable(listen_fd);
-            continue;
-        }
-        return -1;
-    }
-}
+[[nodiscard]] int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen);
 
 // Non-blocking connect. Returns 0 on success, -1 on error.
 // The fd must already be non-blocking.
-[[nodiscard]] inline int connect(socket_t fd,
-                                 const struct sockaddr* addr,
-                                 socklen_t addrlen) {
-    int ret = ::connect(fd, addr, addrlen);
-    if (ret == 0) return 0;
-    if (errno != EINPROGRESS) return -1;
-
-    wait_writable(fd);
-    int err = 0;
-    socklen_t errlen = sizeof(err);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
-    if (err != 0) { errno = err; return -1; }
-    return 0;
-}
+[[nodiscard]] int connect(int fd, const struct sockaddr* addr, socklen_t addrlen);
 
 #endif // _WIN32
 
@@ -2911,19 +3196,9 @@ struct resolve_result {
 
 // Resolve host/service. hints may be nullptr for defaults.
 // Runs getaddrinfo on the blocking pool — never stalls the processor.
-[[nodiscard]] inline resolve_result resolve(const std::string& host,
+[[nodiscard]] resolve_result resolve(const std::string& host,
                               const std::string& service = {},
-                              const struct addrinfo* hints = nullptr) {
-    struct addrinfo* raw = nullptr;
-    int err = csp::blocking([&] {
-        return ::getaddrinfo(
-            host.c_str(),
-            service.empty() ? nullptr : service.c_str(),
-            hints, &raw);
-    });
-    if (err != 0) return resolve_result{.error = err};
-    return resolve_result{.info = addrinfo_ptr(raw)};
-}
+                              const struct addrinfo* hints = nullptr);
 
 }
 
@@ -3153,6 +3428,76 @@ auto operator|(producer<T, F> p, writer<T> w) {
     return std::move(p).bind(std::move(w));
 }
 
+// --- chan | composition (buffered pipeline stages) ---
+// These are all lazy — returning filter/producer/consumer — matching the
+// convention that only concrete endpoints (reader/writer) trigger eager
+// spawning.
+
+// filter | chan → filter
+template <typename T, typename F>
+auto operator|(filter<T, T, F> f, chan<T> ch) {
+    return make_filter<T>(
+        [f = std::move(f), ch = std::move(ch)]
+        (reader<T> in, writer<T> out) mutable {
+            spawn([f = std::move(f),
+                   in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                f(std::move(in), std::move(w));
+            });
+            for (T v; ch.r >> v;) {
+                if (!(out << std::move(v))) return;
+            }
+        });
+}
+
+// chan | filter → filter
+template <typename T, typename F>
+auto operator|(chan<T> ch, filter<T, T, F> f) {
+    return make_filter<T>(
+        [ch = std::move(ch), f = std::move(f)]
+        (reader<T> in, writer<T> out) mutable {
+            spawn([in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                for (T v; in >> v;) {
+                    if (!(w << std::move(v))) return;
+                }
+            });
+            f(std::move(ch.r), std::move(out));
+        });
+}
+
+// producer | chan → producer
+template <typename T, typename F>
+auto operator|(producer<T, F> p, chan<T> ch) {
+    return make_producer<T>(
+        [p = std::move(p), ch = std::move(ch)]
+        (writer<T> out) mutable {
+            spawn([p = std::move(p),
+                   w = std::move(ch.w)]() mutable {
+                p(std::move(w));
+            });
+            for (T v; ch.r >> v;) {
+                if (!(out << std::move(v))) return;
+            }
+        });
+}
+
+// chan | consumer → consumer
+template <typename T, typename F>
+auto operator|(chan<T> ch, consumer<T, F> c) {
+    return make_consumer<T>(
+        [ch = std::move(ch), c = std::move(c)]
+        (reader<T> in) mutable {
+            spawn([in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                for (T v; in >> v;) {
+                    if (!(w << std::move(v))) return;
+                }
+            });
+            c(std::move(ch.r));
+        });
+}
+
 }
 
 
@@ -3194,262 +3539,6 @@ template <typename T>
 inline auto const blackhole = make_consumer<T>([](reader<T> in) {
     for (T _; in >> _;) { }
 });
-
-}
-
-/* csp/part/buffer.h */
-
-
-/* csp/ringbuffer.h */
-
-#include <compare>
-
-namespace csp::detail {
-
-template <typename T>
-class RingBuffer {
-public:
-    static constexpr size_t npos = size_t(-1);
-
-    explicit RingBuffer(size_t capacity = npos)
-        : capacity_(capacity)
-        , size_(round_up_pow2(capacity == npos ? 4 : capacity))
-        , mask_(size_ - 1)
-        , data_(alloc(size_))
-    { }
-
-    ~RingBuffer() {
-        clear();
-        dealloc(data_);
-    }
-
-    RingBuffer(RingBuffer const &) = delete;
-    RingBuffer & operator=(RingBuffer const &) = delete;
-
-    RingBuffer(RingBuffer && o) noexcept
-        : capacity_(o.capacity_)
-        , size_(o.size_)
-        , mask_(o.mask_)
-        , front_(o.front_)
-        , back_(o.back_)
-        , count_(o.count_)
-        , data_(std::exchange(o.data_, nullptr))
-    {
-        o.count_ = 0;
-        o.front_ = o.back_ = 0;
-    }
-
-    RingBuffer & operator=(RingBuffer && o) noexcept {
-        if (this != &o) {
-            clear();
-            dealloc(data_);
-            capacity_ = o.capacity_;
-            size_ = o.size_;
-            mask_ = o.mask_;
-            front_ = o.front_;
-            back_ = o.back_;
-            count_ = o.count_;
-            data_ = std::exchange(o.data_, nullptr);
-            o.count_ = 0;
-            o.front_ = o.back_ = 0;
-        }
-        return *this;
-    }
-
-    size_t count() const { return count_; }
-    bool empty() const { return !count_; }
-    bool full() const { return count_ == capacity_; }
-    T & front() const { return data_[front_]; }
-
-    void * next() {
-        if (count_ == size_) {
-            assert(capacity_ == npos);
-            grow();
-        }
-        return &data_[back_];
-    }
-
-    void push() {
-        back_ = (back_ + 1) & mask_;
-        ++count_;
-    }
-
-    void push(T t) {
-        new (next()) T{std::move(t)};
-        push();
-    }
-
-    template <typename... Args>
-    void emplace(Args &&... args) {
-        new (next()) T{std::forward<Args>(args)...};
-        push();
-    }
-
-    void pop() {
-        assert(!empty());
-        data_[front_].~T();
-        front_ = (front_ + 1) & mask_;
-        --count_;
-    }
-
-    bool remove(T t) {
-        for (size_t i = 0; i < count_; ++i) {
-            if (data_[(front_ + i) & mask_] == t) {
-                if (i == 0) {
-                    pop();
-                } else if (i == count_ - 1) {
-                    back_ = (back_ - 1) & mask_;
-                    data_[back_].~T();
-                    --count_;
-                } else {
-                    // Fill hole from back.
-                    back_ = (back_ - 1) & mask_;
-                    data_[(front_ + i) & mask_] = std::move(data_[back_]);
-                    data_[back_].~T();
-                    --count_;
-                }
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void clear() {
-        while (!empty()) pop();
-    }
-
-    class iterator {
-    public:
-        using value_type = T;
-        using reference = T &;
-        using pointer = T *;
-        using difference_type = std::ptrdiff_t;
-        using iterator_category = std::random_access_iterator_tag;
-
-        iterator() = default;
-
-        reference operator*() const { return buf_->data_[(buf_->front_ + idx_) & buf_->mask_]; }
-        pointer operator->() const { return &**this; }
-        reference operator[](difference_type n) const { return *(*this + n); }
-
-        iterator & operator++() { ++idx_; return *this; }
-        iterator operator++(int) { auto t = *this; ++*this; return t; }
-        iterator & operator--() { --idx_; return *this; }
-        iterator operator--(int) { auto t = *this; --*this; return t; }
-
-        iterator & operator+=(difference_type n) { idx_ += n; return *this; }
-        iterator & operator-=(difference_type n) { idx_ -= n; return *this; }
-        iterator operator+(difference_type n) const { auto t = *this; return t += n; }
-        iterator operator-(difference_type n) const { auto t = *this; return t -= n; }
-        friend iterator operator+(difference_type n, iterator i) { return i += n; }
-        difference_type operator-(iterator const & o) const {
-            return static_cast<difference_type>(idx_) - static_cast<difference_type>(o.idx_);
-        }
-
-        bool operator==(iterator const & o) const = default;
-        std::strong_ordering operator<=>(iterator const & o) const { return idx_ <=> o.idx_; }
-
-    private:
-        friend class RingBuffer;
-        RingBuffer const * buf_ = nullptr;
-        size_t idx_ = 0;
-        iterator(RingBuffer const * buf, size_t idx) : buf_(buf), idx_(idx) { }
-    };
-
-    iterator begin() const { return {this, 0}; }
-    iterator end() const { return {this, count_}; }
-
-private:
-    size_t capacity_;
-    size_t size_;
-    size_t mask_;
-    size_t front_ = 0;
-    size_t back_ = 0;
-    size_t count_ = 0;
-    T * data_;
-
-    static T * alloc(size_t n) {
-        return static_cast<T *>(::operator new(n * sizeof(T), std::align_val_t(alignof(T))));
-    }
-
-    static void dealloc(T * p) {
-        if (p) ::operator delete(p, std::align_val_t(alignof(T)));
-    }
-
-    static constexpr size_t round_up_pow2(size_t n) {
-        assert(n > 0);
-        return std::bit_ceil(n);
-    }
-
-    void grow() {
-        size_t new_size = size_ * 2;
-        T * newdata = alloc(new_size);
-        for (size_t i = 0; i < count_; ++i) {
-            new (&newdata[i]) T{std::move(data_[(front_ + i) & mask_])};
-            data_[(front_ + i) & mask_].~T();
-        }
-        dealloc(data_);
-        data_ = newdata;
-        size_ = new_size;
-        mask_ = new_size - 1;
-        front_ = 0;
-        back_ = count_;
-    }
-};
-
-}
-
-
-namespace csp::part {
-
-// Bounded (or unbounded) FIFO buffer between producer and consumer.
-// Decouples production rate from consumption rate up to the given capacity.
-template <typename T>
-auto buffer(size_t capacity = size_t(-1)) {
-    if (capacity == 0) {
-        throw std::invalid_argument("buffer capacity must be at least 1");
-    }
-    return make_filter<T>([capacity](reader<T> in, writer<T> out) {
-        internal::descr("buffer");
-
-        static Logger log("chan/buffer");
-        static Logger scope("chan/buffer/scope");
-        BRAC_SCOPE(scope, "buffer", "%lu", capacity);
-
-        csp::detail::RingBuffer<T> buf(capacity);
-        for (;;) {
-            CSP_LOG(log, "buffer state: %s", buf.empty() ? "EMPTY" : buf.full() ? "FULL" : "JUST RIGHT");
-            switch (auto slot = alt(buf.full()  ? ~in  : in  >> buf.next(),
-                                    buf.empty() ? ~out : out << buf.front())) {
-            case 0:
-                CSP_LOG(log, "IN");
-                buf.push();
-                CSP_LOG(log, "PUSH%s", buf.full() ? " (full)" : "");
-                break;
-            case ~0:
-                CSP_LOG(log, "DRAIN");
-                while (!buf.empty() && out << std::move(buf.front())) {
-                    buf.pop();
-                }
-                return;
-            case 1:
-                CSP_LOG(log, "OUT");
-                buf.pop();
-                CSP_LOG(log, "POP %s", buf.empty() ? " (empty)": "");
-                break;
-            case ~1:
-                CSP_LOG(log, "~OUT");
-                return;
-            default:
-#ifdef _MSC_VER
-                __assume(0);
-#else
-                __builtin_unreachable();
-#endif
-            }
-        }
-    });
-}
 
 }
 
@@ -5596,6 +5685,7 @@ writer<double> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = wri
 /* csp/part/random.h */
 
 
+#include <algorithm>
 #include <random>
 
 namespace csp::part::rand {
@@ -6517,10 +6607,14 @@ auto try_map(F&& f, writer<std::exception_ptr> err) {
             internal::descr("try_map");
 
             for (A a; alt(in >> a, ~out) == 0;) {
+                std::exception_ptr ex;
                 try {
                     if (!(out << f(a))) break;
                 } catch (...) {
-                    if (!(err << std::current_exception())) break;
+                    ex = std::current_exception();
+                }
+                if (ex) {
+                    if (!(err << ex)) break;
                 }
             }
         });
@@ -6747,95 +6841,27 @@ stack_analysis analyze_stack_depth_cached(
 
 namespace csp {
 
-struct restart_policy {
-    int max_restarts = 3;
-    csp::duration window = std::chrono::seconds(5);
-    csp::duration backoff = csp::duration::zero();
-};
+// restart_policy and max_restarts_exceeded are defined in <csp/imp_exit.h>.
 
-struct max_restarts_exceeded : csp::error {
+// worker_group-specific exception with worker name.
+struct worker_max_restarts_exceeded : csp::error {
     std::string worker_name;
     std::exception_ptr cause;
 
-    max_restarts_exceeded(std::string name, std::exception_ptr ex)
+    worker_max_restarts_exceeded(std::string name, std::exception_ptr ex)
         : csp::error(
               "worker_group: max restarts exceeded for worker '" + name + "'")
         , worker_name(std::move(name))
         , cause(std::move(ex)) {}
 };
 
+// Deprecated: prefer on_exit(restart_policy) + spawn(supervised(...)).
 class worker_group {
 public:
     std::unordered_map<std::string, std::function<void()>> workers;
     restart_policy policy;
 
-    void operator()() {
-        if (workers.empty()) return;
-
-        // Snapshot into a vector for indexed alt access.
-        struct entry {
-            std::string const* name;
-            std::function<void()> const* factory;
-        };
-        std::vector<entry> specs;
-        specs.reserve(workers.size());
-        for (auto& [name, factory] : workers) {
-            specs.push_back({&name, &factory});
-        }
-
-        size_t n = specs.size();
-        std::vector<reader<std::exception_ptr>> handles(n);
-        std::vector<bool> done(n, false);
-        std::vector<std::deque<time_point>> restart_times(n);
-        size_t active = n;
-
-        for (size_t i = 0; i < n; ++i) {
-            handles[i] = spawn(std::function<void()>(*specs[i].factory));
-        }
-
-        while (active > 0) {
-            std::vector<chan_op<std::exception_ptr>> ops;
-            ops.reserve(n);
-            std::exception_ptr ep;
-            for (size_t i = 0; i < n; ++i) {
-                if (done[i]) {
-                    ops.emplace_back();
-                } else {
-                    ops.push_back(handles[i] >> ep);
-                }
-            }
-
-            int result = alt(ops);
-
-            if (result >= 0) {
-                auto idx = static_cast<size_t>(result);
-                auto tp = now();
-                auto& times = restart_times[idx];
-                while (!times.empty() &&
-                       times.front() + policy.window < tp) {
-                    times.pop_front();
-                }
-
-                if (static_cast<int>(times.size()) >= policy.max_restarts) {
-                    throw max_restarts_exceeded(*specs[idx].name, ep);
-                }
-
-                times.push_back(tp);
-
-                if (policy.backoff > csp::duration::zero()) {
-                    sleep(policy.backoff);
-                }
-
-                handles[idx] =
-                    spawn(std::function<void()>(*specs[idx].factory));
-            } else {
-                auto idx = static_cast<size_t>(~result);
-                done[idx] = true;
-                --active;
-            }
-        }
-    }
-
+    void operator()();
     void run() { (*this)(); }
 };
 

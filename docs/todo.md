@@ -2,155 +2,102 @@
 
 ## Tier C — Coordination and resilience
 
-- [x] **Supervision trees (v1: worker\_group)** — `worker_group` class with
-      `restart_policy`, one-for-one restart, sliding window, backoff, and
-      escalation via `max_restarts_exceeded`. Nests via `operator()`.
-      Remaining: one\_for\_all / rest\_for\_one strategies, dynamic child
-      add/remove, `retry` combinator. (Graceful shutdown is handled by
-      the existing cancellation mechanism — `cancel_guard` scope +
-      `done()` in child prialt loops.)
+- [x] **Imp death interception via dynamic scope** — Generalised
+      supervision primitive. A `dynamic<writer<imp_event>>` variable
+      (`imp_exit`) allows any parent to intercept child death. When an imp
+      is about to die, it checks the dynamic; if a writer is present, it
+      sends an event and waits for a decision — its channels stay alive
+      because the imp itself hasn't terminated yet. The event carries the
+      exception (null for normal exit) and exposes `restart()` /
+      `restart(duration)` methods that tell the imp to re-enter its
+      function from the top (same channels, fresh execution). If the event
+      is dropped without calling `restart()`, or if the writer is dead,
+      the imp proceeds to terminate normally (fail-fast default).
 
-  ### Design overview
+  This subsumes both the existing `worker_group` and the planned
+  `errgroup`:
+  - **Fail-fast (errgroup)**: No `imp_exit` binding (default) — imp dies,
+    exception propagates, done.
+  - **Restart policies**: An imp reads from the event channel and
+    implements whatever logic it wants (sliding window, backoff,
+    one-for-all, etc.).
+  - **Hierarchical supervision**: Dynamic scope inheritance means each
+    level can override `imp_exit` with its own channel, intercept its
+    children's deaths, and only propagate to its parent by dying itself
+    (escalation).
 
-  A **supervisor** is an imp that monitors child imps via their
-  `reader<exception_ptr>` join handles (returned by `spawn`). When a child
-  dies, the supervisor applies a restart strategy. Supervisors are themselves
-  supervisable, forming a tree.
-
-  ### Core types
-
-  ```cpp
-  namespace csp {
-
-  // Restart strategies (what to do when a child dies).
-  struct one_for_one {};   // Restart only the failed child.
-  struct one_for_all {};   // Restart all children when any fails.
-  struct rest_for_one {};  // Restart the failed child + all later siblings.
-
-  using restart_strategy = std::variant<one_for_one, one_for_all, rest_for_one>;
-
-  // Restart intensity limits.
-  struct restart_policy {
-      restart_strategy strategy = one_for_one{};
-      int max_restarts = 3;               // Within the window.
-      csp::duration window = 5s;   // Rolling window.
-      csp::duration backoff = 0s;  // Delay before restart (0 = immediate).
-      // If max_restarts exceeded within window, supervisor itself dies
-      // (escalates to its parent supervisor).
-  };
-
-  // Child specification.
-  struct child_spec {
-      std::string id;                // Unique name within this supervisor.
-      std::function<void()> start;   // Factory — called on each (re)start.
-      bool transient = false;        // true: don't restart on normal exit.
-  };
-
-  class supervisor;
-  }
-  ```
-
-  ### Supervisor API
+  ### Usage
 
   ```cpp
-  namespace csp {
+  // Fail-fast (default — no imp_exit binding)
+  spawn(task1);
+  spawn(task2);
+  join(h1, h2);
 
-  class supervisor {
-  public:
-      explicit supervisor(restart_policy policy = {});
-
-      // Register a child. Returns *this for chaining.
-      supervisor& add(std::string id, std::function<void()> f);
-      supervisor& add(child_spec spec);
-
-      // Start all children and run the supervision loop.
-      // Blocks until shutdown or escalation (max_restarts exceeded).
-      // Throws the escalating exception if it exits due to failure.
-      void run();
-
-      // Dynamic child management (from within supervised imps).
-      void add_child(child_spec spec);     // Hot-add.
-      void remove_child(std::string id);   // Graceful stop + remove.
-  };
-
+  // With restart policy
+  auto [ew, er] = chan<imp_event>();
+  auto scope = imp_exit.local(std::move(ew));
+  spawn(task1);
+  spawn(task2);
+  for (auto& e : er) {
+      if (e.error()) e.restart();
+      // normal exit: do nothing, worker stays dead
   }
+  // Channel closes when all workers dead and none restarted.
+
+  // Pre-built sliding window restart
+  auto ew = restart({.max_restarts = 3, .window = 5s, .backoff = 100ms});
+  auto scope = imp_exit.local(std::move(ew));
+  spawn(task1);
+  spawn(task2);
   ```
 
-  ### Supervision loop
+  `restart(...)` is sugar that spawns a policy imp and returns the writer.
+  `worker_group` may survive as a convenience wrapper but is no longer
+  core infrastructure.
 
-  The supervisor's `run()` method:
-  1. Spawns all registered children, collecting join handles.
-  2. Enters an `alt` loop over all join handles + an optional shutdown
-     channel.
-  3. When a join handle fires:
-     - If `exception_ptr` is null → normal exit. If child is `transient`,
-       don't restart. Otherwise restart per strategy.
-     - If `exception_ptr` is non-null → abnormal exit. Log, increment
-       restart counter, apply strategy.
-  4. Restart counter uses a sliding window: restarts older than `window`
-     are forgotten. If counter exceeds `max_restarts`, supervisor itself
-     throws (escalation).
+  ### Imp as its own membrane
 
-  ### Strategy semantics
+  The dying imp holds its channels open while it waits for the restart
+  decision. This eliminates the need for a separate `supervised_spawn`
+  wrapper or proxy channels for restart scenarios. The imp *is* the
+  membrane: it re-enters its function on restart (same channel endpoints,
+  fresh stack), or closes its channels and truly dies.
 
-  - **one_for_one**: Only the failed child is restarted. Other children
-    are unaffected. Simplest, most isolated.
-  - **one_for_all**: All children are stopped (in reverse start order) and
-    restarted (in start order). For tightly coupled children where one
-    failure invalidates the others' state.
-  - **rest_for_one**: The failed child and all children started after it
-    are stopped and restarted. For sequential dependencies (B depends on A,
-    C depends on B).
+  ### Channel persistence on restart
 
-  Stopping a child: cancel its `cancel_guard` scope (the child detects
-  cancellation via `done()` or gets it thrown from blocking calls),
-  then wait on its join handle.
+  When `e.restart()` is called, the imp re-enters its entry function with
+  the same channel endpoints. External producers/consumers never see a
+  death — the channels were never closed. This is the "supervised
+  endpoint" concept from the channel topology design, but achieved without
+  any swap/fuse machinery: the imp simply never died.
 
-  ### Cancellation integration
+  ### Open design questions
 
-  Children receive cancellation via the existing `csp::cancellation()`
-  mechanism. The supervisor wraps child spawns in a `cancel_guard` scope;
-  destroying the guard cancels all children. Children observe cancellation
-  via `done()` in their prialt loops, or have it thrown automatically
-  from `sleep`/`io` calls. Deadline-based shutdown uses
-  `cancellation(duration)`.
-
-  ### Escalation
-
-  When a supervisor exceeds its restart limit, it throws the last child's
-  exception. If this supervisor is itself a child of a parent supervisor,
-  the parent sees the death and applies its own strategy. This creates
-  the tree structure: leaf imps are supervised by mid-level supervisors,
-  which are supervised by a root supervisor.
-
-  ```
-  root_supervisor (one_for_one, max=5)
-  ├── db_supervisor (one_for_all, max=3)
-  │   ├── connection_pool
-  │   └── migration_worker
-  ├── web_supervisor (one_for_one, max=10)
-  │   ├── accept_loop
-  │   └── request_handler_pool
-  └── background_supervisor (rest_for_one, max=3)
-      ├── scheduler
-      └── worker_pool
-  ```
-
-  ### What CSP already provides
-
-  - `spawn()` → `reader<exception_ptr>`: natural death notification
-  - `alt` over join handles: supervisor select loop
-  - Endpoint death propagation: cancellation for free
-  - `after()`: restart delays, window timers
-  - `dynamic<T>`: propagate supervisor context to children
+  - **Dynamic propagation scope**: Should `imp_exit` propagate to all
+    descendants by default? A worker that spawns internal helper imps may
+    not want those helpers reporting to the supervision channel. Options:
+    the imp clears the dynamic before calling the user's function (opt-in
+    per spawn), or helpers are expected to be short-lived enough that it
+    doesn't matter.
+  - **Channel state on restart**: The imp's channels are intact, but any
+    in-flight data or partially completed operations from the previous
+    incarnation are gone (the stack is fresh). Is this always the right
+    semantic? Consider whether some form of "drain before restart" is
+    needed.
+  - **`restart()` response mechanism**: `restart()` on the event likely
+    writes to an internal response channel that the dying imp blocks on.
+    Need to nail down the exact protocol (synchronous reply vs flag).
 
   ### What needs building
 
-  - `supervisor` class with child registry and restart bookkeeping
-  - Sliding-window restart counter
-  - Strategy dispatch (one_for_one / one_for_all / rest_for_one)
-  - Optional: dynamic child add/remove (hot management)
-  - Optional: `supervisor_spec` for declarative tree construction
+  - `imp_event` type with `error()`, `restart()`, `restart(duration)`
+  - `imp_exit` dynamic variable (`dynamic<writer<imp_event>>`)
+  - Death interception in imp teardown path (check dynamic, send event,
+    wait for response, re-enter or die)
+  - Pre-built `restart(...)` policy helper
+  - Migration path from current `worker_group` (deprecate or reimplement
+    as thin wrapper over `imp_exit`)
 
   ### Relationship to stream combinators
 
@@ -163,13 +110,6 @@
   ```
 
   This is the stream-shaped surface of supervision, useful as a combinator.
-  The full `supervisor` class handles the non-stream case (arbitrary imps,
-  not just producers).
-
-- [ ] **circuit_breaker** `(reader<T>, config) → reader<T>` — Trips after
-      threshold failures, half-open probe, auto-reset. Can compose with
-      supervision: supervisor detects circuit-breaker escalation as a child
-      failure.
 
 - [x] ~~**balance** `(reader<T>, n, F(T)→U) → reader<U>`~~ — Subsumed by
       unordered `parallel_map`.
@@ -233,15 +173,11 @@ with entropy-seeded default, so configurable seeding is built in.
       variadic overloads) and shared-writer-death pattern. Channel
       refcounting is the waitgroup count; no manual `Add`/`Done`.
 
-- [ ] **errgroup** — Structured concurrency with first-error cancellation
-      and error collection. Spawns N imps, cancels all on first
-      failure, returns the error.
+- [x] ~~**errgroup**~~ — Subsumed by imp death interception via dynamic
+      scope. Fail-fast (first-error cancellation) is the default behavior
+      when no `imp_exit` binding is present. Structured concurrency with
+      error collection is just `cancellation()` + `spawn` + `join`.
 
-- [ ] **singleflight** — Deduplicate concurrent calls to the same key.
-      Only one executes; others wait for the result.
-
-- [ ] **semaphore** — Bounded concurrency: limit N concurrent imps
-      past a point.
 
 ## Channel topology operations
 
@@ -282,13 +218,11 @@ with entropy-seeded default, so configurable seeding is built in.
     already handled by `swap_slots`, but merging two channel internals
     (waiter lists, lock identity) is a deeper change. Would eliminate the
     extra context switch per message.
-  - **Supervision integration**: Supervised endpoints (from the supervision
-    tree design) are essentially auto-fuse-on-restart. A cut/fuse primitive
-    would be the mechanism the supervisor uses internally.
-  - **Relationship to proxy channels**: A "supervised endpoint" is a
-    persistent outer channel fused to a series of inner channels over time
-    (one per child lifetime). Each restart is a cut of the old inner + fuse
-    to the new inner.
+  - **Supervision integration**: Supervised endpoints are now handled by
+    imp death interception (see Tier C). The dying imp holds its channels
+    open while awaiting a restart decision, so no swap/fuse machinery is
+    needed for the restart case. Swap/fuse remains useful for mid-flight
+    topology changes unrelated to imp death.
 
 ## Buffered channels
 
@@ -375,6 +309,16 @@ with entropy-seeded default, so configurable seeding is built in.
       infrastructure from mmap-based stacks (SP checks at channel ops,
       yield, spawn) is the foundation for software-only guards.
 
+- [ ] **Context-aware stack depth analysis** — Revisit the ARM64 instruction
+      walker to exploit runtime context available at spawn time: deep closure
+      traversal (resolving nested function pointers), ADRP-based vtable and
+      global resolution, parameter-driven path pruning (when branch conditions
+      depend on values captured in the closure), interprocedural data flow
+      (propagating pointer provenance across call boundaries), and
+      profile-guided budget calibration. See
+      [docs/papers/08-context-aware-stack-analysis.md](papers/08-context-aware-stack-analysis.md)
+      for a full discussion of the design space.
+
 - [ ] **Ergonomic I/O wrappers** — Higher-level APIs around the existing
       non-blocking I/O reactor and `csp::blocking` pool. Goals: make common
       I/O patterns (TCP accept loops, line-buffered reads, HTTP requests,
@@ -440,10 +384,67 @@ with entropy-seeded default, so configurable seeding is built in.
         for a callback, mutex, or condition variable, there's a channel
         pattern instead.
 
+## Runtime / API
+
+- [ ] **`closer<EP>` type + `done()` / `spawn()` return it** —
+      Introduce `closer<EP>`: a wrapper around any endpoint that only
+      exposes `operator~` (vulture) and `operator bool` (liveness check).
+      No `>>`, no `<<`, no `read()`/`write()` — the type enforces that
+      the endpoint is for death observation only.
+      ```cpp
+      template <typename EP>
+      struct closer {
+          EP ep;
+          auto operator~() const { return ~ep; }
+          explicit operator bool() const { return bool(ep); }
+      };
+      ```
+      Instantiated as `closer<reader<>>` (done, spawn handles) or
+      `closer<writer<T>>` (observe writer death). Apply to: `done()` →
+      `closer<reader<>>`, `spawn(f)` → `closer<reader<std::exception_ptr>>`.
+      Users must write `~done()` and `~handle` — the `~` at the call
+      site mirrors `case ~0:` in the switch, making the vulture
+      convention self-documenting. Bare `done()` in prialt or
+      `handle >> exc` won't compile. Discovered via demo 15 hang
+      (infinite loop from `case 0:` never matching vulture result `~0`).
+
+- [x] **Rethink `pthread_setname_np` in `descr()`** — Removed per-imp
+      `pthread_setname_np` from `descr()` (stale in M:N mode). Worker
+      threads are now named `csp-1`, `csp-2`, … at creation time.
+      `csp-0` is reserved.
+
+- [ ] **Audit main()'s ability to perform CSP operations** — Investigate
+      whether `main()` (outside any spawned imp) should be able to use CSP
+      operations that require an active imp context, such as `csp::local`
+      (dynamic scope bindings), `csp::yield()`, channel reads/writes, etc.
+      Currently `csp::local` in `main()` crashes because there is no active
+      imp (`g_imp` is null). Determine whether this is by-design or whether
+      a lightweight "main imp" context should be established automatically.
+      The `fake_clock` demo (19) exposed this: `csp::local` had to be moved
+      inside a spawned imp rather than set up in `main()`.
+
+## Formal Verification
+
+- [ ] **Audit unmodeled concurrent decision points** — Survey the codebase for
+      concurrent exit/return decisions (loop exits, irreversible state transitions
+      based on shared variables) that don't yet have TLA+ specs in `formal/`.
+      Existing specs cover: SchedulerTermination, ReactorShutdown, MainLoopExit,
+      TimerCreateFire, WorkerParking, StealWork, DrainSuspended, and several
+      channel/alt/swap protocols. Look for gaps in: blocking pool shutdown,
+      stack pool reclamation, M:N worker join, and any new concurrent code
+      added since the last audit.
+
+## CI / Build
+
+- [ ] **Local Docker testing for Linux scenarios** — Add a Docker-based
+      workflow for testing Linux builds locally, including x86 (amd64)
+      cross-compilation. Avoids relying solely on GitHub Actions for
+      Linux CI feedback.
+
 ## Test cleanup
 
-- [ ] **Replace CHECK\_\* macros with plain CHECK()** — Use `CHECK(x == y)`
-      instead of `CHECK_EQ(x, y)`, etc. ~789 occurrences across 39 test files.
+- [x] **Replace CHECK\_\* macros with plain CHECK()** — 889 occurrences
+      replaced across 41 test files.
 
 ## Example applications
 
@@ -480,3 +481,7 @@ with entropy-seeded default, so configurable seeding is built in.
         severity, aggregate counts in time windows, flush periodically,
         alert on threshold. Demonstrates: merge, where, group_by, batch,
         timer tick, scan, tee.
+
+## Audit
+
+- [ ] **Signal handling audit** — Audit signal handling function for correctness under tight time and API-use constraints.

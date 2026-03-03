@@ -59,8 +59,8 @@ TEST_CASE("Leaf function") {
     if (!CSP_SANITIZED) CHECK(result.is_exact);
     // Compiler allocates at least some frame for the volatile write.
     CHECK(result.max_depth > 0);
-    // Should be well under 32KB.
-    CHECK(result.max_depth < 4096);
+    // Should be well under 32KB (sanitizers inflate frames).
+    CHECK(result.max_depth < (CSP_SANITIZED ? 16384 : 4096));
     MESSAGE("leaf_func depth: ", result.max_depth);
 }
 

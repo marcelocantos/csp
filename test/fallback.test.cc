@@ -24,7 +24,7 @@ TEST_CASE("Fallback - first reader produces") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{1, 2});
+    CHECK(got == std::vector<int>{1, 2});
 }
 
 TEST_CASE("Fallback - first empty, second produces") {
@@ -46,7 +46,7 @@ TEST_CASE("Fallback - first empty, second produces") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{10, 20});
+    CHECK(got == std::vector<int>{10, 20});
 }
 
 TEST_CASE("Fallback - all empty") {
@@ -87,5 +87,5 @@ TEST_CASE("Fallback - single reader") {
     });
     csp::schedule();
 
-    CHECK_EQ(got, std::vector<int>{42});
+    CHECK(got == std::vector<int>{42});
 }

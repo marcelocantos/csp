@@ -17,10 +17,10 @@ TEST_CASE("Collect - back_inserter") {
 
     while (csp::internal::run()) { }
 
-    REQUIRE_EQ(3, result.size());
-    CHECK_EQ(10, result[0]);
-    CHECK_EQ(20, result[1]);
-    CHECK_EQ(30, result[2]);
+    REQUIRE(3 == result.size());
+    CHECK(10 == result[0]);
+    CHECK(20 == result[1]);
+    CHECK(30 == result[2]);
 }
 
 TEST_CASE("Collect - raw pointer") {
@@ -34,9 +34,9 @@ TEST_CASE("Collect - raw pointer") {
 
     while (csp::internal::run()) { }
 
-    CHECK_EQ(1, buf[0]);
-    CHECK_EQ(2, buf[1]);
-    CHECK_EQ(3, buf[2]);
+    CHECK(1 == buf[0]);
+    CHECK(2 == buf[1]);
+    CHECK(3 == buf[2]);
 }
 
 TEST_CASE("Collect - pipeline") {
@@ -50,8 +50,8 @@ TEST_CASE("Collect - pipeline") {
 
     while (csp::internal::run()) { }
 
-    REQUIRE_EQ(3, result.size());
-    CHECK_EQ(4, result[0]);
-    CHECK_EQ(5, result[1]);
-    CHECK_EQ(6, result[2]);
+    REQUIRE(3 == result.size());
+    CHECK(4 == result[0]);
+    CHECK(5 == result[1]);
+    CHECK(6 == result[2]);
 }
