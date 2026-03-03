@@ -5,7 +5,6 @@
 #include "simple_stack_allocator.hpp"
 
 #include <functional>
-#include <memory>
 
 typedef boost::context::simple_stack_allocator<8 << 20, 64 << 10, 8 << 10> stack_allocator;
 
@@ -17,8 +16,7 @@ static csp::fcontext_t g_caller;
 // Trampoline: stores caller context in g_caller, invokes std::function from data.
 static void trampoline(csp::transfer_t t) {
     g_caller = t.fctx;
-    auto f = std::unique_ptr<std::function<void()>>((std::function<void()> *)t.data);
-    (*f)();
+    (*static_cast<std::function<void()> *>(t.data))();
 }
 
 struct task_stack {
@@ -31,8 +29,8 @@ static task_stack make_task(stack_allocator & alloc) {
     return {sp, csp::make_fcontext(sp, stksize, trampoline)};
 }
 
-static csp::transfer_t jmpf(csp::fcontext_t ctx, std::function<void()> && f) {
-    return csp::jump_fcontext(ctx, new std::function<void()>(std::move(f)));
+static csp::transfer_t jmpf(csp::fcontext_t ctx, std::function<void()> & f) {
+    return csp::jump_fcontext(ctx, &f);
 }
 
 //----------------------------------------------------------------
@@ -64,10 +62,11 @@ TEST_CASE("Context - StdFunction") {
     auto [sp, task] = make_task(alloc);
 
     CHECK_FALSE(ran_f1);
-    jmpf(task, [&]() {
+    std::function<void()> fn = [&]() {
         ran_f1 = true;
         csp::jump_fcontext(g_caller, nullptr);
-    });
+    };
+    jmpf(task, fn);
     CHECK(ran_f1);
     alloc.deallocate(sp, stksize);
 }
@@ -80,11 +79,12 @@ TEST_CASE("Context - AutoReturn") {
     bool ran_f1 = false;
 
     auto [sp, task] = make_task(alloc);
-    auto task_ctx = jmpf(task, [&]() {
+    std::function<void()> fn = [&]() {
         auto t = csp::jump_fcontext(g_caller, nullptr);
         ran_f1 = true;
         csp::jump_fcontext(t.fctx, nullptr);
-    }).fctx;
+    };
+    auto task_ctx = jmpf(task, fn).fctx;
 
     CHECK_FALSE(ran_f1);
     csp::jump_fcontext(task_ctx, nullptr);
@@ -102,14 +102,17 @@ TEST_CASE("Context - PingPong") {
     // Spawn helper that passes the full transfer_t to f, so f can
     // update context variables from the received fctx.
     std::vector<void*> stacks;
+    std::vector<std::function<void()>> fns;
+    fns.reserve(2);
     auto spawn = [&](std::function<void *(csp::transfer_t)> f) -> csp::fcontext_t {
         auto [sp, task] = make_task(alloc);
         stacks.push_back(sp);
-        return jmpf(task, [f = std::move(f)]() {
+        fns.emplace_back([f = std::move(f)]() {
             auto t = csp::jump_fcontext(g_caller, nullptr);
             auto result = f(t);
             csp::jump_fcontext(t.fctx, result);
-        }).fctx;
+        });
+        return jmpf(task, fns.back()).fctx;
     };
 
     ping = spawn([&](csp::transfer_t initial) -> void * {

@@ -872,30 +872,36 @@ TEST_CASE("ChanUtil - Throttle n=2") {
 TEST_CASE("ChanUtil - Throttle budget reset") {
     using namespace std::chrono_literals;
     RunStats stats;
+    fake_clock fc;
 
-    auto th = throttle<int>(tick(100ms), {.n = 2}).spawn();
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
 
-    stats.spawn([w = std::move(th.w)]{
-        // First burst: 1,2,3.
-        w << 1; w << 2; w << 3;
-        // Wait for tick to reset budget (wide margin for CI).
-        csp::sleep(250ms);
-        // Second burst: 4,5,6.
-        w << 4; w << 5; w << 6;
-    });
+        auto th = throttle<int>(tick(100ms), {.n = 2}).spawn();
 
-    // First burst: 1,2 pass, 3 dropped.
-    // After tick: 4,5 pass, 6 dropped.
-    stats.spawn([r = std::move(th.r)]{
-        CHECK(1 == r.read());
-        CHECK(2 == r.read());
-        CHECK(4 == r.read());
-        CHECK(5 == r.read());
+        csp::spawn([w = std::move(th.w)]{
+            // First burst: 1,2,3.
+            w << 1; w << 2; w << 3;
+            // Wait for tick to reset budget. Use a non-multiple of the tick
+            // interval so the sleep and tick don't expire at the same fake
+            // time (which would allow a mid-burst budget reset).
+            csp::sleep(150ms);
+            // Second burst: 4,5,6.
+            w << 4; w << 5; w << 6;
+        });
+
+        // First burst: 1,2 pass, 3 dropped.
+        // After tick: 4,5 pass, 6 dropped.
+        CHECK(1 == th.r.read());
+        CHECK(2 == th.r.read());
+        CHECK(4 == th.r.read());
+        CHECK(5 == th.r.read());
         int _;
-        CHECK_FALSE(bool(r >> _));
+        CHECK_FALSE(bool(th.r >> _));
     });
 
     csp::schedule();
+    fc.run();
 }
 
 TEST_CASE("ChanUtil - Sample") {
