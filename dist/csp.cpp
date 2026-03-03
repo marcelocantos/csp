@@ -500,8 +500,19 @@ namespace {
             Imp* peer;
             bool needs_unlock;
             bool use_run;           // single-P writer: unlock then run
+            bool has_pins;          // re-resolution alive_ pins active
         };
         static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
+
+        static void unpin_channel(Channel * ch) {
+            if (ch->alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                auto* ws = ch->write_slot_;
+                auto* rs = ch->read_slot_;
+                delete ch;
+                ws->mem_release();
+                rs->mem_release();
+            }
+        }
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
@@ -510,64 +521,94 @@ namespace {
                     current_imp()->stk_, __builtin_frame_address(0));
             }
 
-        retry:
-            // Re-resolve each chanop's Channel* through its Slot to ensure
-            // the pointer is fresh.  A swap or endpoint death on another
-            // thread may have changed (or deleted) the channel since the
-            // Waiter was originally constructed.
-            for (int i = 0; i < count; ++i) {
-                if (chanops[i].slot) {
-                    auto * slot = static_cast<Slot *>(chanops[i].slot);
-                    auto * new_ch = slot->channel.load(std::memory_order_acquire);
-                    auto flags = (uintptr_t)chanops[i].waiter.ptr & 15UL;
-                    const_cast<ChanOp &>(chanops[i]).waiter.ptr =
-                        (void *)((uintptr_t)new_ch | flags);
-                }
-            }
-
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
             mi->heap_alloc = nullptr;
+            mi->has_pins = false;
+
+        retry:
+            // Unpin channels from a previous iteration if active.
+            if (mi->has_pins) {
+                for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
+                mi->has_pins = false;
+            }
+            delete[] mi->heap_alloc;
+            mi->heap_alloc = nullptr;
+
             mi->peer = nullptr;
             mi->needs_unlock = false;
             mi->use_run = false;
             out->src = nullptr;
             out->dst = nullptr;
-
             out->result = 0;
 
-            // Collect unique channels, sorted by id for lock ordering.
+            // Re-resolve each chanop's Channel* through its Slot under the
+            // slot spinlock, and build the unique channel set with alive_
+            // pins.  Pinning under the spinlock prevents the channel from
+            // being freed between the load and the pin (see
+            // docs/papers/11-channel-reresolution-uaf.md).
             Channel* fixed_chans[8];
             std::vector<Channel*> variable_chans;
-            Channel** sorted = fixed_chans;
-            int n_sorted = 0;
+            Channel** chans = fixed_chans;
+            int n_chans = 0;
+
             for (int i = 0; i < count; ++i) {
-                if (Channel * ch = get_chan(chanops[i])) {
-                    if (n_sorted < 8) {
-                        fixed_chans[n_sorted++] = ch;
-                    } else {
-                        if (n_sorted == 8) {
-                            variable_chans.assign(fixed_chans, fixed_chans + 8);
+                Channel* new_ch;
+                auto * slot = chanops[i].slot
+                    ? static_cast<Slot *>(chanops[i].slot) : nullptr;
+
+                if (slot) slot->lock();
+
+                if (slot) {
+                    new_ch = static_cast<Channel*>(
+                        slot->channel.load(std::memory_order_acquire));
+                    auto flags = (uintptr_t)chanops[i].waiter.ptr & 15UL;
+                    const_cast<ChanOp &>(chanops[i]).waiter.ptr =
+                        (void *)((uintptr_t)new_ch | flags);
+                } else {
+                    new_ch = get_chan(chanops[i]);
+                }
+
+                if (new_ch) {
+                    // Dedup: check if already in unique set.
+                    bool found = false;
+                    for (int j = 0; j < n_chans; ++j) {
+                        if (chans[j] == new_ch) { found = true; break; }
+                    }
+                    if (!found) {
+                        // Pin to prevent deletion between slot unlock
+                        // and lock_all (see paper §Fix).
+                        new_ch->alive_.fetch_add(1, std::memory_order_relaxed);
+                        if (n_chans < 8) {
+                            fixed_chans[n_chans++] = new_ch;
+                        } else {
+                            if (n_chans == 8) {
+                                variable_chans.assign(fixed_chans, fixed_chans + 8);
+                            }
+                            variable_chans.push_back(new_ch);
+                            chans = variable_chans.data();
+                            n_chans++;
                         }
-                        variable_chans.push_back(ch);
-                        sorted = variable_chans.data();
-                        n_sorted++;
                     }
                 }
-            }
-            std::sort(sorted, sorted + n_sorted,
-                      [](Channel * a, Channel * b) { return a->id_ < b->id_; });
-            n_sorted = int(std::unique(sorted, sorted + n_sorted) - sorted);
 
-            // Copy sorted channels into persistent storage.
-            if (n_sorted <= 8) {
-                memcpy(mi->fixed_sorted, sorted, n_sorted * sizeof(Channel*));
+                if (slot) slot->unlock();
+            }
+
+            // Sort unique channels by id for lock ordering.
+            std::sort(chans, chans + n_chans,
+                      [](Channel * a, Channel * b) { return a->id_ < b->id_; });
+
+            // Copy into persistent storage in AltMatch opaque.
+            if (n_chans <= 8) {
+                memcpy(mi->fixed_sorted, chans, n_chans * sizeof(Channel*));
                 mi->sorted = mi->fixed_sorted;
             } else {
-                mi->heap_alloc = new Channel*[n_sorted];
-                memcpy(mi->heap_alloc, sorted, n_sorted * sizeof(Channel*));
+                mi->heap_alloc = new Channel*[n_chans];
+                memcpy(mi->heap_alloc, chans, n_chans * sizeof(Channel*));
                 mi->sorted = mi->heap_alloc;
             }
-            mi->n_sorted = n_sorted;
+            mi->n_sorted = n_chans;
+            mi->has_pins = true;
 
             auto lock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.lock(); };
             auto unlock_all = [&]{ for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock(); };
@@ -588,7 +629,6 @@ namespace {
                 }
                 if (stale) {
                     unlock_all();
-                    delete[] mi->heap_alloc;
                     goto retry;
                 }
             }
@@ -616,6 +656,8 @@ namespace {
                         } else {
                             // Vulture: dead is the expected signal.
                             unlock_all();
+                            for (int j = 0; j < mi->n_sorted; ++j) unpin_channel(mi->sorted[j]);
+                            mi->has_pins = false;
                             out->result = ~i;
                             return;
                         }
@@ -642,11 +684,10 @@ namespace {
                                     out->dst = const_cast<void *>(chop.message);
                                 }
 
-
                                 out->result = i;
                                 mi->peer = cw.thread;
                                 mi->needs_unlock = true;
-                                return;  // locks held
+                                return;  // locks + pins held → alt_end_impl unpins
                             }
                         }
                     }
@@ -656,17 +697,23 @@ namespace {
 
             if (dead_data_result) {
                 unlock_all();
+                for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
+                mi->has_pins = false;
                 out->result = dead_data_result;
                 return;
             }
 
             if (all_null || nowait) {
                 unlock_all();
+                for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
+                mi->has_pins = false;
                 if (nowait) out->result = INT_MIN;
                 return;
             }
 
             // Phase 2: Register on all channels and sleep.
+            // Re-resolution pins (alive_++) serve double duty: they keep
+            // channels alive while we sleep.  No separate pin loop needed.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
             current_imp()->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
@@ -675,14 +722,6 @@ namespace {
                     auto flags = (uintptr_t)chop.waiter.ptr;
                     ch->endpts_[flags & endpt_flag].wait(&chop);
                 }
-            }
-
-            // Pin all unique channels so they cannot be deleted while
-            // we sleep.  After wakeup, Phase 3 can safely lock and
-            // deregister; the unpin after Phase 3 may trigger deferred
-            // deletion if the channel's endpoints died in the interim.
-            for (int i = 0; i < mi->n_sorted; ++i) {
-                mi->sorted[i]->alive_.fetch_add(1, std::memory_order_relaxed);
             }
 
             current_imp()->chanops_ = chanops;
@@ -713,16 +752,8 @@ namespace {
 
             // Unpin channels.  If an endpoint died while we slept,
             // alive_ may reach 0 here, triggering deferred deletion.
-            for (int i = 0; i < mi->n_sorted; ++i) {
-                Channel * ch = mi->sorted[i];
-                if (ch->alive_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    auto* ws = ch->write_slot_;
-                    auto* rs = ch->read_slot_;
-                    delete ch;
-                    ws->mem_release();
-                    rs->mem_release();
-                }
-            }
+            for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
+            mi->has_pins = false;
 
             current_imp()->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
 
@@ -731,8 +762,6 @@ namespace {
             if (current_imp()->signal_ == INT_MIN) {
                 current_imp()->chanops_ = nullptr;
                 current_imp()->n_chanops_ = 0;
-                delete[] mi->heap_alloc;
-                mi->heap_alloc = nullptr;
                 goto retry;
             }
 
@@ -754,6 +783,9 @@ namespace {
                     if (mi->peer) mi->peer->schedule();
                     for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
                 }
+            }
+            if (mi->has_pins) {
+                for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
             }
             delete[] mi->heap_alloc;
         }
@@ -962,8 +994,15 @@ void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {
     assert(a_is_write == b_is_write && "cannot swap write slot with read slot");
 
     // Exchange channel pointers in slots.
+    // Hold slot spinlock to serialize with re-resolution pinning
+    // in prialt_begin_impl (see docs/papers/11-*.md).
+    sa->lock();
     sa->channel.store(cb, std::memory_order_release);
+    sa->unlock();
+
+    sb->lock();
     sb->channel.store(ca, std::memory_order_release);
+    sb->unlock();
 
     // Exchange back-pointers on channels.
     if (a_is_write) {

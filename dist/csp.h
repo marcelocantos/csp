@@ -320,8 +320,12 @@ struct alignas(16) Slot {
     std::atomic<void*> channel{nullptr};   // Channel* (type-erased)
     std::atomic<size_t> refcount{1};       // strong refs (death detection)
     std::atomic<size_t> mem_refcount{1};   // memory refs: 1 from channel + N from weak refs
+    std::atomic_flag spin_ = ATOMIC_FLAG_INIT;  // serializes re-resolution with swap_slots
 
     explicit Slot(void* ch) : channel(ch) {}
+
+    void lock() { while (spin_.test_and_set(std::memory_order_acquire)) {} }
+    void unlock() { spin_.clear(std::memory_order_release); }
 
     // Release one memory ref. Deletes the slot when the last ref is released.
     void mem_release() {
