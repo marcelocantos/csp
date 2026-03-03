@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev gdb
+          sudo sysctl -w kernel.core_pattern=core.%p
+
+      - name: Build and test (source)
+        run: |
+          ulimit -c unlimited
+          make ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        env:
+          # Catch heap corruption closer to its source on Linux.
+          # MALLOC_CHECK_=3: abort on any detected corruption
+          # MALLOC_PERTURB_=42: fill freed memory with 0x2a pattern
+          MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
+          MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
+
+      - name: GDB backtrace on crash (source)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/normal/csp_tests "$core" 2>&1 || true
+          done
+          # If no core dump, re-run the crashing test under GDB
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/normal/csp_tests 2>&1 || true
+          fi
+
+      - name: Generate dist
+        run: make dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+
+      - name: Check dist is up-to-date
+        run: git diff --exit-code dist/
+
+      - name: Build and test (dist)
+        run: |
+          ulimit -c unlimited
+          make test-dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        env:
+          MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
+          MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
+
+      - name: GDB backtrace on crash (dist)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
+          done
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/dist/csp_tests 2>&1 || true
+          fi
+
+  sanitize:
+    name: ${{ matrix.sanitize }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+        sanitize: ["address,undefined", thread]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev gdb
+          sudo sysctl -w kernel.core_pattern=core.%p
+
+      - name: Build and test (dist, ${{ matrix.sanitize }})
+        run: |
+          ulimit -c unlimited
+          make test-dist SANITIZE=${{ matrix.sanitize }} ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        env:
+          # libc++abi on Linux frees std::logic_error strings with free()
+          # instead of operator delete, triggering false positives under ASan.
+          ASAN_OPTIONS: alloc_dealloc_mismatch=0
+
+      - name: GDB backtrace on crash
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
+          done
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/dist/csp_tests 2>&1 || true
+          fi

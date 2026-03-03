@@ -1,12 +1,11 @@
 #include "testutil.h"
 
 using namespace csp;
-using namespace csp::part;
 
 TEST_CASE("ChanUtil - BufferBounded") {
     RunStats stats;
 
-    auto ch = buffer<int>(5).spawn();
+    auto ch = chan<int>(5);
 
     int sent = 0;
 
@@ -18,9 +17,9 @@ TEST_CASE("ChanUtil - BufferBounded") {
     });
 
     while (csp::internal::run()) { }
-    CHECK_EQ(0UL, stats.pending());
+    CHECK(0UL == stats.pending());
 
-    REQUIRE_EQ(15, sent);
+    REQUIRE(15 == sent);
 
     int received = 0;
 
@@ -32,11 +31,11 @@ TEST_CASE("ChanUtil - BufferBounded") {
     });
 
     while (csp::internal::run()) { }
-    CHECK_EQ(55, sent);
-    CHECK_EQ(55, received);
+    CHECK(55 == sent);
+    CHECK(55 == received);
 }
 
-TEST_CASE("ChanUtil - BufferUnbounded") {
+TEST_CASE("ChanUtil - BufferLargeCapacity") {
     RunStats stats;
 
     int sent = 0;
@@ -45,7 +44,7 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
     auto [send_w, send_r] = chan<>{};
     auto [recv_w, recv_r] = chan<>{};
 
-    auto buf = buffer<int>().spawn();
+    auto buf = chan<int>(1024);
 
     stats.spawn([trigger = std::move(send_r), out = std::move(buf.w), &sent]{
         for (int i = 0; trigger >> poke; ++i) {
@@ -56,7 +55,7 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
 
     stats.spawn([trigger = std::move(recv_r), in = std::move(buf.r), &received]{
         for (int i = 0; trigger >> poke; ++i) {
-            CHECK_EQ(i, in.read());
+            CHECK(i == in.read());
             received += 1;
         }
     });
@@ -76,14 +75,14 @@ TEST_CASE("ChanUtil - BufferUnbounded") {
 
     while (csp::internal::run()) { }
 
-    CHECK_EQ(55, sent);
-    CHECK_EQ(55, received);
+    CHECK(55 == sent);
+    CHECK(55 == received);
 }
 
 TEST_CASE("ChanUtil - BufferEmpty") {
     RunStats stats;
 
-    auto ch = buffer<int>(5).spawn();
+    auto ch = chan<int>(5);
 
     // Writer dies immediately without sending anything.
     stats.spawn([out = std::move(ch.w)]{ });
@@ -98,13 +97,13 @@ TEST_CASE("ChanUtil - BufferEmpty") {
 
     ch.release();
     csp::schedule();
-    CHECK_EQ(0, received);
+    CHECK(0 == received);
 }
 
 TEST_CASE("ChanUtil - BufferSingle") {
     RunStats stats;
 
-    auto ch = buffer<int>(1).spawn();
+    auto ch = chan<int>(1);
 
     stats.spawn([out = std::move(ch.w)]{
         for (int i = 1; i <= 5; ++i) {
@@ -114,7 +113,7 @@ TEST_CASE("ChanUtil - BufferSingle") {
 
     stats.spawn([in = std::move(ch.r)]{
         for (int i = 1; i <= 5; ++i) {
-            CHECK_EQ(i, in.read());
+            CHECK(i == in.read());
         }
     });
 
@@ -123,14 +122,14 @@ TEST_CASE("ChanUtil - BufferSingle") {
 }
 
 TEST_CASE("ChanUtil - BufferZeroThrows") {
-    CHECK_THROWS_AS(buffer<int>(0), std::invalid_argument);
+    CHECK_THROWS_AS(chan<int>(0), std::invalid_argument);
 }
 
 TEST_CASE("ChanUtil - BufferCapacityExact") {
-    // Verify buffer(N) holds exactly N items, not N+1 (off-by-one check).
+    // Verify chan<T>(N) holds exactly N items, not N+1 (off-by-one check).
     for (size_t cap = 1; cap <= 5; ++cap) {
         RunStats stats;
-        auto ch = buffer<int>(cap).spawn();
+        auto ch = chan<int>(cap);
 
         size_t sent = 0;
         stats.spawn([out = std::move(ch.w), &sent] {
@@ -144,7 +143,7 @@ TEST_CASE("ChanUtil - BufferCapacityExact") {
         while (csp::internal::run()) { }
 
         INFO("capacity=", cap);
-        CHECK_EQ(cap, sent);
+        CHECK(cap == sent);
 
         // Add consumer to drain and let writer finish.
         stats.spawn([in = std::move(ch.r)] {
@@ -154,4 +153,99 @@ TEST_CASE("ChanUtil - BufferCapacityExact") {
 
         while (csp::internal::run()) { }
     }
+}
+
+// --- chan | pipeline composition tests ---
+
+using namespace csp::part;
+
+TEST_CASE("Chan - filter | chan | filter pipeline") {
+    // Lazy composition: filter | chan | filter → filter
+    auto pipeline = where<int>([](int n) { return n > 0; })
+                  | chan<int>(4)
+                  | map<int>([](int n) { return n * 10; });
+
+    auto ch = std::move(pipeline).spawn();  // materializes everything
+
+    std::vector<int> results;
+    spawn([out = std::move(ch.w)] {
+        for (int i : {-1, 2, -3, 4, 5}) out << i;
+    });
+    spawn([in = std::move(ch.r), &results] {
+        for (int v : in) results.push_back(v);
+    });
+    csp::schedule();
+    CHECK(results == std::vector<int>{20, 40, 50});
+}
+
+TEST_CASE("Chan - reader | chan") {
+    auto source = count<int>(1, 6).spawn();
+    auto buffered = std::move(source) | chan<int>(8);
+    // buffered is reader<int>
+    std::vector<int> results;
+    spawn([in = std::move(buffered), &results] {
+        for (int v : in) results.push_back(v);
+    });
+    csp::schedule();
+    CHECK(results == std::vector<int>{1, 2, 3, 4, 5});
+}
+
+TEST_CASE("Chan - chan | writer") {
+    auto [w, r] = chan<int>{};
+    auto buffered_w = chan<int>(4) | std::move(w);
+    // buffered_w is writer<int>
+    spawn([out = std::move(buffered_w)] {
+        for (int i = 1; i <= 3; ++i) out << i;
+    });
+    std::vector<int> results;
+    spawn([in = std::move(r), &results] {
+        for (int v : in) results.push_back(v);
+    });
+    csp::schedule();
+    CHECK(results == std::vector<int>{1, 2, 3});
+}
+
+TEST_CASE("Chan - producer | chan") {
+    // Lazy: producer | chan → producer; .spawn() materializes
+    auto buffered = (count<int>(1, 4) | chan<int>(8)).spawn();
+    // buffered is reader<int>
+    std::vector<int> results;
+    spawn([in = std::move(buffered), &results] {
+        for (int v : in) results.push_back(v);
+    });
+    csp::schedule();
+    CHECK(results == std::vector<int>{1, 2, 3});
+}
+
+TEST_CASE("Chan - chan | consumer") {
+    // Lazy: chan | consumer → consumer; .spawn() materializes
+    std::vector<int> results;
+    auto input = (chan<int>(4) | sink<int>([&](int v) { results.push_back(v); })).spawn();
+    // input is writer<int>
+    spawn([out = std::move(input)] {
+        for (int i = 10; i <= 30; i += 10) out << i;
+    });
+    csp::schedule();
+    CHECK(results == std::vector<int>{10, 20, 30});
+}
+
+TEST_CASE("Chan - multiple buffer stages") {
+    auto pipeline = map<int>([](int n) { return n + 1; })
+                  | chan<int>(2)
+                  | map<int>([](int n) { return n * 2; })
+                  | chan<int>(2)
+                  | map<int>([](int n) { return n + 100; });
+
+    auto ch = std::move(pipeline).spawn();
+
+    spawn([w = std::move(ch.w)] {
+        for (int i : {1, 2, 3}) w << i;
+    });
+    std::vector<int> results;
+    spawn([r = std::move(ch.r), &results] {
+        for (int v : r) results.push_back(v);
+    });
+    csp::schedule();
+    // 1→2→4→104, 2→3→6→106, 3→4→8→108
+    CHECK(results == std::vector<int>{104, 106, 108});
 }

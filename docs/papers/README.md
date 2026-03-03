@@ -36,3 +36,14 @@ debugging of the CSP imp-based concurrency library.
    — Fuse and split splice instrumentation, diagnostics, and
    replacement processes into live channel graphs without modifying
    application logic.
+
+8. **[Context-Aware Stack Depth Analysis](08-context-aware-stack-analysis.md)**
+   — Spawn-time analysis occupies a unique point between static analysis
+   and profiling: it can read live runtime state to resolve indirect calls,
+   prune unreachable paths, and calibrate budgets.
+
+9. **[The Spawn HAMT Race](09-spawn-hamt-race.md)** *(stub)* — A
+   use-after-free in the spawn warmup handshake freed a HAMT node
+   before the child imp could retain it, plus an open investigation
+   into a related exception-lifetime race in the supervisor restart
+   path.

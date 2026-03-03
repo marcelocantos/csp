@@ -18,8 +18,8 @@ TEST_CASE("now() returns real time without override") {
         auto before = std::chrono::steady_clock::now();
         t = csp::now();
         auto after = std::chrono::steady_clock::now();
-        CHECK_GE(t, before);
-        CHECK_LE(t, after);
+        CHECK(t >= before);
+        CHECK(t <= after);
     });
     csp::schedule();
 }
@@ -30,9 +30,9 @@ TEST_CASE("now() returns fake time when overridden") {
     fake_clock fc;
     stats.spawn([&] {
         csp::local l{csp::clock = &fc};
-        CHECK_EQ(csp::now(), fc.now());
+        CHECK(csp::now() == fc.now());
         fc.advance(1s);
-        CHECK_EQ(csp::now(), fc.now());
+        CHECK(csp::now() == fc.now());
     });
     csp::schedule();
 }
@@ -41,9 +41,9 @@ TEST_CASE("advance moves time forward") {
     fake_clock fc;
     auto start = fc.now();
     fc.advance(500ms);
-    CHECK_EQ(fc.now(), start + 500ms);
+    CHECK(fc.now() == start + 500ms);
     fc.advance(500ms);
-    CHECK_EQ(fc.now(), start + 1s);
+    CHECK(fc.now() == start + 1s);
 }
 
 TEST_CASE("sleep with fake clock") {
@@ -97,7 +97,7 @@ TEST_CASE("after fires on advance") {
     fc.advance(1ms);
     while (csp::internal::run()) {}
     CHECK(fired_at != time_point{});
-    CHECK_EQ(fired_at, fc.now());
+    CHECK(fired_at == fc.now());
 }
 
 TEST_CASE("tick fires periodically") {
@@ -121,11 +121,11 @@ TEST_CASE("tick fires periodically") {
     // producer which discovers the dead reader and exits cleanly.
     fc.run();
 
-    REQUIRE_EQ(ticks.size(), 3);
+    REQUIRE(ticks.size() == 3);
     auto epoch = time_point{};
-    CHECK_EQ(ticks[0], epoch + 100ms);
-    CHECK_EQ(ticks[1], epoch + 200ms);
-    CHECK_EQ(ticks[2], epoch + 300ms);
+    CHECK(ticks[0] == epoch + 100ms);
+    CHECK(ticks[1] == epoch + 200ms);
+    CHECK(ticks[2] == epoch + 300ms);
 }
 
 TEST_CASE("advance_to_next jumps to exact deadline") {
@@ -145,7 +145,7 @@ TEST_CASE("advance_to_next jumps to exact deadline") {
 
     CHECK(!woke);
     CHECK(fc.advance_to_next());
-    CHECK_EQ(fc.now(), time_point{} + 42ms);
+    CHECK(fc.now() == time_point{} + 42ms);
     while (csp::internal::run()) {}
     CHECK(woke);
 }
@@ -173,7 +173,7 @@ TEST_CASE("multiple timers fire in order") {
         while (csp::internal::run()) {}
     }
 
-    CHECK_EQ(order, std::vector{1, 2, 3});
+    CHECK(order == std::vector{1, 2, 3});
 }
 
 TEST_CASE("auto-advance via run()") {
@@ -192,7 +192,7 @@ TEST_CASE("auto-advance via run()") {
 
     fc.run();
 
-    CHECK_EQ(order, std::vector{1, 2, 3});
+    CHECK(order == std::vector{1, 2, 3});
 }
 
 TEST_CASE("run_until_idle does not advance time") {
@@ -235,7 +235,7 @@ TEST_CASE("child inherits fake clock") {
     csp::schedule();
     while (csp::internal::run()) {}
 
-    CHECK_EQ(child_time, time_point{} + 42s);
+    CHECK(child_time == time_point{} + 42s);
 }
 
 TEST_CASE("sleep_until past time returns immediately") {
@@ -283,7 +283,7 @@ TEST_CASE("fake clock: debounce emits after quiet period") {
     csp::schedule();
     fc.run();
 
-    CHECK_EQ(out, std::vector{3});
+    CHECK(out == std::vector{3});
 }
 
 TEST_CASE("fake clock: timeout closes after inactivity") {
@@ -308,7 +308,7 @@ TEST_CASE("fake clock: timeout closes after inactivity") {
     csp::schedule();
     fc.run();
 
-    CHECK_EQ(out, std::vector{42});
+    CHECK(out == std::vector{42});
     // The timeout fired at fake time = 5s, closing the pipeline.
     // Total real time: ~0ms.
 }
@@ -344,7 +344,7 @@ TEST_CASE("fake clock: delay shifts values forward in time") {
 
     fc.advance(500ms);  // Now at 1s — all deadlines hit.
     fc.run();
-    CHECK_EQ(out, std::vector{10, 20, 30});
+    CHECK(out == std::vector{10, 20, 30});
 }
 
 TEST_CASE("fake clock: throttle rate-limits with tick trigger") {
@@ -372,7 +372,7 @@ TEST_CASE("fake clock: throttle rate-limits with tick trigger") {
     csp::schedule();
 
     // First value passed (initial budget = 1), rest dropped.
-    CHECK_EQ(out, std::vector{1});
+    CHECK(out == std::vector{1});
 
     // Advance one tick — budget resets. But no more input, so nothing new.
     fc.run();
@@ -438,10 +438,10 @@ TEST_CASE("fake_clock with non-default start time") {
     auto epoch = time_point{};
     auto start = epoch + 42s;
     fake_clock fc(start);
-    CHECK_EQ(fc.now(), start);
+    CHECK(fc.now() == start);
 
     fc.advance(10s);
-    CHECK_EQ(fc.now(), start + 10s);
+    CHECK(fc.now() == start + 10s);
 }
 
 TEST_CASE("fake clock: periodic polling with exact timing") {
@@ -466,12 +466,12 @@ TEST_CASE("fake clock: periodic polling with exact timing") {
     csp::schedule();
     fc.run();
 
-    CHECK_EQ(poll_count, 4);
+    CHECK(poll_count == 4);
 
     auto epoch = time_point{};
-    REQUIRE_EQ(poll_times.size(), 4);
-    CHECK_EQ(poll_times[0], epoch + 500ms);
-    CHECK_EQ(poll_times[1], epoch + 1s);
-    CHECK_EQ(poll_times[2], epoch + 1500ms);
-    CHECK_EQ(poll_times[3], epoch + 2s);
+    REQUIRE(poll_times.size() == 4);
+    CHECK(poll_times[0] == epoch + 500ms);
+    CHECK(poll_times[1] == epoch + 1s);
+    CHECK(poll_times[2] == epoch + 1500ms);
+    CHECK(poll_times[3] == epoch + 2s);
 }

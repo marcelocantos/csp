@@ -13,6 +13,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <unistd.h>
 
 namespace csp::tls {

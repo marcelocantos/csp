@@ -54,18 +54,18 @@ TEST_CASE("RingBuffer - PushPop") {
     buf.push(10);
     buf.push(20);
     buf.push(30);
-    CHECK_EQ(3, buf.count());
-    CHECK_EQ(10, buf.front()); buf.pop();
-    CHECK_EQ(20, buf.front()); buf.pop();
-    CHECK_EQ(30, buf.front()); buf.pop();
+    CHECK(3 == buf.count());
+    CHECK(10 == buf.front()); buf.pop();
+    CHECK(20 == buf.front()); buf.pop();
+    CHECK(30 == buf.front()); buf.pop();
     CHECK(buf.empty());
 }
 
 TEST_CASE("RingBuffer - Emplace") {
     RingBuffer<Tracked> buf;
     buf.emplace(42);
-    CHECK_EQ(1, buf.count());
-    CHECK_EQ(42, buf.front().value);
+    CHECK(1 == buf.count());
+    CHECK(42 == buf.front().value);
     buf.pop();
     CHECK(Tracked::alive().empty());
 }
@@ -76,15 +76,15 @@ TEST_CASE("RingBuffer - BoundedCapacity") {
     buf.push(2);
     buf.push(3);
     CHECK(buf.full());
-    CHECK_EQ(3, buf.count());
+    CHECK(3 == buf.count());
     buf.pop();
     CHECK_FALSE(buf.full());
     buf.push(4);
     CHECK(buf.full());
     // FIFO order preserved through wrap-around.
-    CHECK_EQ(2, buf.front()); buf.pop();
-    CHECK_EQ(3, buf.front()); buf.pop();
-    CHECK_EQ(4, buf.front()); buf.pop();
+    CHECK(2 == buf.front()); buf.pop();
+    CHECK(3 == buf.front()); buf.pop();
+    CHECK(4 == buf.front()); buf.pop();
     CHECK(buf.empty());
 }
 
@@ -96,7 +96,7 @@ TEST_CASE("RingBuffer - Iterator") {
 
     int sum = 0;
     for (auto const & v : buf) sum += v;
-    CHECK_EQ(60, sum);
+    CHECK(60 == sum);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ TEST_CASE("RingBuffer - GrowTracked") {
 
     // Verify FIFO order survived the grow.
     for (int i = 0; i < 10; ++i) {
-        CHECK_EQ(i, buf.front().value);
+        CHECK(i == buf.front().value);
         buf.pop();
     }
     CHECK(Tracked::alive().empty());
@@ -130,7 +130,7 @@ TEST_CASE("RingBuffer - GrowWrapped") {
     for (int i = 0; i < 5; ++i) buf.push(Tracked{100 + i});
 
     for (int i = 0; i < 5; ++i) {
-        CHECK_EQ(100 + i, buf.front().value);
+        CHECK(100 + i == buf.front().value);
         buf.pop();
     }
     CHECK(Tracked::alive().empty());
@@ -147,7 +147,7 @@ TEST_CASE("RingBuffer - RemoveNotFound") {
     buf.push(Tracked{1});
     buf.push(Tracked{2});
     CHECK_FALSE(buf.remove(Tracked{999}));
-    CHECK_EQ(2, buf.count());
+    CHECK(2 == buf.count());
 }
 
 TEST_CASE("RingBuffer - RemoveFront") {
@@ -156,8 +156,8 @@ TEST_CASE("RingBuffer - RemoveFront") {
     buf.push(Tracked{2});
     buf.push(Tracked{3});
     CHECK(buf.remove(Tracked{1}));
-    CHECK_EQ(2, buf.count());
-    CHECK_EQ(2, buf.front().value);
+    CHECK(2 == buf.count());
+    CHECK(2 == buf.front().value);
 }
 
 TEST_CASE("RingBuffer - RemoveBack") {
@@ -166,10 +166,10 @@ TEST_CASE("RingBuffer - RemoveBack") {
     buf.push(Tracked{2});
     buf.push(Tracked{3});
     CHECK(buf.remove(Tracked{3}));
-    CHECK_EQ(2, buf.count());
+    CHECK(2 == buf.count());
     // FIFO: 1, 2 remain.
-    CHECK_EQ(1, buf.front().value); buf.pop();
-    CHECK_EQ(2, buf.front().value); buf.pop();
+    CHECK(1 == buf.front().value); buf.pop();
+    CHECK(2 == buf.front().value); buf.pop();
     CHECK(Tracked::alive().empty());
 }
 
@@ -179,9 +179,9 @@ TEST_CASE("RingBuffer - RemoveMiddle") {
     buf.push(Tracked{2});
     buf.push(Tracked{3});
     CHECK(buf.remove(Tracked{2}));
-    CHECK_EQ(2, buf.count());
+    CHECK(2 == buf.count());
     // Front is still 1.
-    CHECK_EQ(1, buf.front().value);
+    CHECK(1 == buf.front().value);
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ TEST_CASE("RingBuffer - WrapAroundStress") {
         for (int i = 0; i < 4; ++i) buf.push(round * 4 + i);
         CHECK(buf.full());
         for (int i = 0; i < 4; ++i) {
-            CHECK_EQ(round * 4 + i, buf.front());
+            CHECK(round * 4 + i == buf.front());
             buf.pop();
         }
         CHECK(buf.empty());

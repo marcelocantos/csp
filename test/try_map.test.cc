@@ -16,9 +16,9 @@ TEST_CASE("TryMap - all succeed") {
 
     stats.spawn([w = std::move(src.w)]{ w << 1; w << 2; w << 3; });
     stats.spawn([r = std::move(out)] {
-        CHECK_EQ(r.read(), 2);
-        CHECK_EQ(r.read(), 4);
-        CHECK_EQ(r.read(), 6);
+        CHECK(r.read() == 2);
+        CHECK(r.read() == 4);
+        CHECK(r.read() == 6);
     });
     stats.spawn([r = std::move(err.r)] {
         std::exception_ptr ep;
@@ -53,8 +53,8 @@ TEST_CASE("TryMap - exceptions to error channel") {
     });
     csp::schedule();
 
-    CHECK_EQ(results, std::vector<int>{2, 4});
-    CHECK_EQ(errors, std::vector<std::string>{"negative", "negative"});
+    CHECK(results == std::vector<int>{2, 4});
+    CHECK(errors == std::vector<std::string>{"negative", "negative"});
 }
 
 TEST_CASE("TryMap - no error channel (exceptions propagate)") {
@@ -64,7 +64,7 @@ TEST_CASE("TryMap - no error channel (exceptions propagate)") {
 
     stats.spawn([w = std::move(src.w)]{ w << 10; });
     stats.spawn([r = std::move(out)] {
-        CHECK_EQ(r.read(), 11);
+        CHECK(r.read() == 11);
     });
     csp::schedule();
 }
@@ -92,8 +92,8 @@ TEST_CASE("TryMap - type-changing transform") {
     });
     csp::schedule();
 
-    CHECK_EQ(results, std::vector<std::string>{"42", "7"});
-    CHECK_EQ(error_count, 1);
+    CHECK(results == std::vector<std::string>{"42", "7"});
+    CHECK(error_count == 1);
 }
 
 TEST_CASE("TryMap - error channel closed stops processing") {
@@ -121,5 +121,5 @@ TEST_CASE("TryMap - error channel closed stops processing") {
     });
     csp::schedule();
 
-    CHECK_EQ(results, std::vector<int>{1});
+    CHECK(results == std::vector<int>{1});
 }

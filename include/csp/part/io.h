@@ -4,6 +4,7 @@
 #include <csp/part/part.h>
 
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace csp::part::io {

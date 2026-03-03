@@ -35,10 +35,10 @@ TEST_CASE("Mux - basic two types") {
         std::visit([&](auto&& val) {
             using T = std::decay_t<decltype(val)>;
             if constexpr (std::is_same_v<T, int>) {
-                CHECK_EQ(42, val);
+                CHECK(42 == val);
                 got_int = true;
             } else {
-                CHECK_EQ("hello", val);
+                CHECK("hello" == val);
                 got_str = true;
             }
         }, *v);
@@ -68,7 +68,7 @@ TEST_CASE("Mux - input death continues") {
     V v;
     mr >> v;
     CHECK(std::holds_alternative<int>(v));
-    CHECK_EQ(10, std::get<int>(v));
+    CHECK(10 == std::get<int>(v));
 
     // Int channel is dead. Send a string — should still work.
     stats.spawn([w = cs.w.copy()] { w << std::string("world"); });
@@ -77,7 +77,7 @@ TEST_CASE("Mux - input death continues") {
 
     mr >> v;
     CHECK(std::holds_alternative<std::string>(v));
-    CHECK_EQ("world", std::get<std::string>(v));
+    CHECK("world" == std::get<std::string>(v));
 
     mr = {};
     while (csp::internal::run()) { }
@@ -139,14 +139,14 @@ TEST_CASE("Demux - basic two types") {
 
     int n;
     ri >> n;
-    CHECK_EQ(42, n);
+    CHECK(42 == n);
 
     std::string s;
     rs >> s;
-    CHECK_EQ("hello", s);
+    CHECK("hello" == s);
 
     ri >> n;
-    CHECK_EQ(7, n);
+    CHECK(7 == n);
 }
 
 TEST_CASE("Demux - input closes all outputs") {
@@ -220,10 +220,10 @@ TEST_CASE("Mux/Demux - roundtrip") {
 
     while (csp::internal::run()) { }
 
-    CHECK_EQ(2, ints.size());
-    CHECK_EQ(1, ints[0]);
-    CHECK_EQ(2, ints[1]);
-    CHECK_EQ(2, strs.size());
-    CHECK_EQ("a", strs[0]);
-    CHECK_EQ("b", strs[1]);
+    CHECK(2 == ints.size());
+    CHECK(1 == ints[0]);
+    CHECK(2 == ints[1]);
+    CHECK(2 == strs.size());
+    CHECK("a" == strs[0]);
+    CHECK("b" == strs[1]);
 }

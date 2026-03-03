@@ -1,7 +1,6 @@
 #include "testutil.h"
 
 using namespace csp;
-using namespace csp::part;
 
 static Logger g_log("ChanMain.Test");
 
@@ -21,7 +20,7 @@ TEST_CASE("ChanMain - Write") {
     o << 42;
     csp::internal::run();
 
-    CHECK_EQ(42, result);
+    CHECK(42 == result);
 }
 
 TEST_CASE("ChanMain - Read") {
@@ -43,7 +42,7 @@ TEST_CASE("ChanMain - Read") {
     // Let reader exit.
     csp::internal::run();
 
-    CHECK_EQ(42, result);
+    CHECK(42 == result);
 }
 
 auto worker = [](auto && o, auto && i) {
@@ -60,7 +59,7 @@ auto worker = [](auto && o, auto && i) {
             csp::internal::run();
             result += n;
         };
-        CHECK_EQ(15, result);
+        CHECK(15 == result);
     };
 };
 
@@ -68,11 +67,8 @@ auto worker = [](auto && o, auto && i) {
 TEST_CASE("ChanMain - WriteReadNormal") {
     RunStats stats;
 
-    auto [a_w, a_r] = chan<int>{};
-    auto [b_w, b_r] = chan<int>{};
-
-    stats.spawn(buffer<int>(5).bind(std::move(a_r), std::move(b_w)));
-    stats.spawn(worker(std::move(a_w), std::move(b_r)));
+    auto ch = chan<int>(5);
+    stats.spawn(worker(std::move(ch.w), std::move(ch.r)));
 
     while (csp::internal::run()) { }
 }
@@ -81,11 +77,8 @@ TEST_CASE("ChanMain - WriteReadNormal") {
 TEST_CASE("ChanMain - WriteReadFromMain") {
     RunStats stats;
 
-    auto [a_w, a_r] = chan<int>{};
-    auto [b_w, b_r] = chan<int>{};
-
-    stats.spawn(buffer<int>(5).bind(std::move(a_r), std::move(b_w)));
-    auto work = worker(std::move(a_w), std::move(b_r));
+    auto ch = chan<int>(5);
+    auto work = worker(std::move(ch.w), std::move(ch.r));
 
     csp::internal::run();
     work();

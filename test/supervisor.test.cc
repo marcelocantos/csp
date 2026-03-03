@@ -53,7 +53,7 @@ TEST_CASE("max restarts exceeded") {
         };
         try {
             wg.run();
-        } catch (max_restarts_exceeded const& e) {
+        } catch (worker_max_restarts_exceeded const& e) {
             caught = true;
             CHECK(e.worker_name == "always_fail");
             CHECK(e.cause != nullptr);
@@ -148,7 +148,7 @@ TEST_CASE("nested groups") {
 
         try {
             outer.run();
-        } catch (max_restarts_exceeded const& e) {
+        } catch (worker_max_restarts_exceeded const& e) {
             caught = true;
             CHECK(e.worker_name == "inner_group");
         }

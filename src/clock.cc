@@ -24,7 +24,7 @@ fake_clock::fake_clock(time_point start) : current_(start) {}
 
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
-    pending_.push({tp, detail::g_imp});
+    pending_.push({tp, detail::current_imp()});
     internal::suspend();
 }
 

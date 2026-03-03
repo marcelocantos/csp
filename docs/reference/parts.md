@@ -146,7 +146,6 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 
 | Part | Type | Description |
 |---|---|---|
-| [buffer](parts/buffer.md) | filter | Bounded (or unbounded) FIFO buffer decoupling producer from consumer |
 | [sink](parts/sink.md) | consumer | Consume all values by applying a side-effect function |
 | [blackhole](parts/blackhole.md) | consumer | Consume and discard all values |
 | [deaf](parts/deaf.md) | consumer | Never reads; provides a permanently blocked writer |

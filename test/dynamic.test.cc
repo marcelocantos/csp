@@ -9,14 +9,14 @@ TEST_CASE("dynamic: basic read/write") {
     RunStats stats;
     static csp::dynamic<int> count;
     stats.spawn([&]{
-        CHECK_EQ(*count, 0);
+        CHECK(*count == 0);
         csp::local l{count = 42};
-        CHECK_EQ(*count, 42);
+        CHECK(*count == 42);
         {
             csp::local l2{count = *count + 1};
-            CHECK_EQ(*count, 43);
+            CHECK(*count == 43);
         }
-        CHECK_EQ(*count, 42);
+        CHECK(*count == 42);
     });
     csp::schedule();
 }
@@ -25,9 +25,9 @@ TEST_CASE("dynamic: explicit default") {
     RunStats stats;
     static csp::dynamic<int> count(99);
     stats.spawn([&]{
-        CHECK_EQ(*count, 99);
+        CHECK(*count == 99);
         csp::local l{count = 1};
-        CHECK_EQ(*count, 1);
+        CHECK(*count == 1);
     });
     csp::schedule();
 }
@@ -45,7 +45,7 @@ TEST_CASE("dynamic: spawn inherits parent context") {
     stats.spawn([&]{
         int v;
         result.r >> v;
-        CHECK_EQ(v, 42);
+        CHECK(v == 42);
     });
     csp::schedule();
 }
@@ -59,7 +59,7 @@ TEST_CASE("dynamic: child write isolation") {
         csp::local l{val = 10};
         stats.spawn([&]{
             csp::local l2{val = 99};
-            CHECK_EQ(*val, 99);
+            CHECK(*val == 99);
             child_done.w << 0;
         });
         int dummy;
@@ -70,7 +70,7 @@ TEST_CASE("dynamic: child write isolation") {
     stats.spawn([&]{
         int v;
         parent_result.r >> v;
-        CHECK_EQ(v, 10);
+        CHECK(v == 10);
     });
     csp::schedule();
 }
@@ -82,9 +82,9 @@ TEST_CASE("dynamic: local scoped revert") {
         csp::local l{val = 1};
         {
             csp::local l2{val = 2};
-            CHECK_EQ(*val, 2);
+            CHECK(*val == 2);
         }
-        CHECK_EQ(*val, 1);
+        CHECK(*val == 1);
     });
     csp::schedule();
 }
@@ -98,11 +98,11 @@ TEST_CASE("dynamic: nested locals") {
             csp::local l2{val = 2};
             {
                 csp::local l3{val = 3};
-                CHECK_EQ(*val, 3);
+                CHECK(*val == 3);
             }
-            CHECK_EQ(*val, 2);
+            CHECK(*val == 2);
         }
-        CHECK_EQ(*val, 1);
+        CHECK(*val == 1);
     });
     csp::schedule();
 }
@@ -113,14 +113,14 @@ TEST_CASE("dynamic: multiple keys") {
     static csp::dynamic<int> b;
     stats.spawn([&]{
         csp::local l{a = 10, b = 20};
-        CHECK_EQ(*a, 10);
-        CHECK_EQ(*b, 20);
+        CHECK(*a == 10);
+        CHECK(*b == 20);
         {
             csp::local l2{a = 30};
-            CHECK_EQ(*a, 30);
-            CHECK_EQ(*b, 20);
+            CHECK(*a == 30);
+            CHECK(*b == 20);
         }
-        CHECK_EQ(*a, 10);
+        CHECK(*a == 10);
     });
     csp::schedule();
 }
@@ -136,12 +136,12 @@ TEST_CASE("dynamic: context transfer over channel") {
     stats.spawn([&]{
         csp::context ctx;
         ch.r >> ctx;
-        CHECK_EQ(*val, 0);  // default before injection
+        CHECK(*val == 0);  // default before injection
         {
             csp::context_scope scope(ctx);
-            CHECK_EQ(*val, 42);  // injected context
+            CHECK(*val == 42);  // injected context
         }
-        CHECK_EQ(*val, 0);  // restored
+        CHECK(*val == 0);  // restored
     });
     csp::schedule();
 }
@@ -150,9 +150,9 @@ TEST_CASE("dynamic: string type") {
     RunStats stats;
     static csp::dynamic<std::string> name("default");
     stats.spawn([&]{
-        CHECK_EQ(*name, "default");
+        CHECK(*name == "default");
         csp::local l{name = std::string("hello")};
-        CHECK_EQ(*name, "hello");
+        CHECK(*name == "hello");
     });
     csp::schedule();
 }
@@ -164,12 +164,12 @@ TEST_CASE("dynamic: deep spawn chain") {
     stats.spawn([&]{
         csp::local l1{depth = 1};
         stats.spawn([&]{
-            CHECK_EQ(*depth, 1);
+            CHECK(*depth == 1);
             csp::local l2{depth = 2};
             stats.spawn([&]{
-                CHECK_EQ(*depth, 2);
+                CHECK(*depth == 2);
                 csp::local l3{depth = 3};
-                CHECK_EQ(*depth, 3);
+                CHECK(*depth == 3);
                 results.w << *depth;
             });
         });
@@ -177,7 +177,7 @@ TEST_CASE("dynamic: deep spawn chain") {
     stats.spawn([&]{
         int v;
         results.r >> v;
-        CHECK_EQ(v, 3);
+        CHECK(v == 3);
     });
     csp::schedule();
 }
@@ -189,9 +189,9 @@ TEST_CASE("dynamic: multi-bind local") {
     static csp::dynamic<std::string> z("none");
     stats.spawn([&]{
         csp::local l{x = 1, y = 2, z = std::string("hello")};
-        CHECK_EQ(*x, 1);
-        CHECK_EQ(*y, 2);
-        CHECK_EQ(*z, "hello");
+        CHECK(*x == 1);
+        CHECK(*y == 2);
+        CHECK(*z == "hello");
     });
     csp::schedule();
 }
@@ -204,14 +204,14 @@ TEST_CASE("dynamic: local binding reverts during exception") {
         csp::local l{val = 10};
         try {
             csp::local l2{val = 99};
-            CHECK_EQ(*val, 99);
+            CHECK(*val == 99);
             throw std::runtime_error("test exception");
         } catch (std::runtime_error const&) {
             after_catch = *val;
         }
     });
     csp::schedule();
-    CHECK_EQ(after_catch, 10);
+    CHECK(after_catch == 10);
 }
 
 TEST_CASE("dynamic: multiple locals in same scope both revert") {
@@ -223,15 +223,15 @@ TEST_CASE("dynamic: multiple locals in same scope both revert") {
     stats.spawn([&]{
         {
             csp::local l{a = 42, b = std::string("hello")};
-            CHECK_EQ(*a, 42);
-            CHECK_EQ(*b, "hello");
+            CHECK(*a == 42);
+            CHECK(*b == "hello");
         }
         a_after = *a;
         b_after = *b;
     });
     csp::schedule();
-    CHECK_EQ(a_after, 0);
-    CHECK_EQ(b_after, "default");
+    CHECK(a_after == 0);
+    CHECK(b_after == "default");
 }
 
 // --- imp_local tests ---
@@ -240,11 +240,11 @@ TEST_CASE("imp_local: basic read/write") {
     RunStats stats;
     static csp::imp_local<int> counter;
     stats.spawn([&]{
-        CHECK_EQ(*counter, 0);
+        CHECK(*counter == 0);
         counter = 42;
-        CHECK_EQ(*counter, 42);
+        CHECK(*counter == 42);
         counter = *counter + 1;
-        CHECK_EQ(*counter, 43);
+        CHECK(*counter == 43);
     });
     csp::schedule();
 }
@@ -253,9 +253,9 @@ TEST_CASE("imp_local: explicit default") {
     RunStats stats;
     static csp::imp_local<int> counter(99);
     stats.spawn([&]{
-        CHECK_EQ(*counter, 99);
+        CHECK(*counter == 99);
         counter = 1;
-        CHECK_EQ(*counter, 1);
+        CHECK(*counter == 1);
     });
     csp::schedule();
 }
@@ -266,7 +266,7 @@ TEST_CASE("imp_local: not inherited by child") {
     auto result = csp::chan<int>();
     stats.spawn([&]{
         val = 42;
-        CHECK_EQ(*val, 42);
+        CHECK(*val == 42);
         stats.spawn([&]{
             // Child should NOT see parent's value.
             result.w << *val;
@@ -275,7 +275,7 @@ TEST_CASE("imp_local: not inherited by child") {
     stats.spawn([&]{
         int v;
         result.r >> v;
-        CHECK_EQ(v, 0);  // default, not 42
+        CHECK(v == 0);  // default, not 42
     });
     csp::schedule();
 }
@@ -297,8 +297,8 @@ TEST_CASE("imp_local: independent per imp") {
         int v1, v2;
         ch1.r >> v1;
         ch2.r >> v2;
-        CHECK_EQ(v1, 10);
-        CHECK_EQ(v2, 20);
+        CHECK(v1 == 10);
+        CHECK(v2 == 20);
     });
     csp::schedule();
 }
@@ -307,9 +307,9 @@ TEST_CASE("imp_local: string type") {
     RunStats stats;
     static csp::imp_local<std::string> name("default");
     stats.spawn([&]{
-        CHECK_EQ(*name, "default");
+        CHECK(*name == "default");
         name = std::string("hello");
-        CHECK_EQ(*name, "hello");
+        CHECK(*name == "hello");
     });
     csp::schedule();
 }

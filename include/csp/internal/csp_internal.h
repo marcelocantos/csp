@@ -29,7 +29,13 @@ enum class Status : intptr_t { run, sleep, detach, exit, spawn };
 
 struct Imp;
 
-extern thread_local Imp * g_imp;
+// Non-inline accessors for the per-thread current-imp pointer.
+// Defined in csp_globals.cpp.  The cross-TU function call prevents
+// the compiler from caching the thread-pointer register (TPIDR_EL0
+// on ARM64, FS/GS on x86) across jump_fcontext, which would cause
+// stale TLS access when an imp resumes on a different OS thread.
+Imp* current_imp();
+void set_current_imp(Imp* p);
 
 void do_switch(Status status = Status::sleep);
 

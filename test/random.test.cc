@@ -22,7 +22,7 @@ TEST_CASE("Random - UniformInt seeded") {
     auto r1 = rand::uniform_int(0, 99, std::mt19937_64{42}).spawn();
     auto r2 = rand::uniform_int(0, 99, std::mt19937_64{42}).spawn();
     for (int i = 0; i < 100; ++i) {
-        CHECK_EQ(r1.read(), r2.read());
+        CHECK(r1.read() == r2.read());
     }
 }
 
@@ -85,7 +85,7 @@ TEST_CASE("Random - Choice") {
         seen.insert(v);
     }
     // After 100 picks from 3 values, should have seen all three.
-    CHECK_EQ(3, seen.size());
+    CHECK(3 == seen.size());
 }
 
 TEST_CASE("Random - Choice container") {
@@ -98,7 +98,7 @@ TEST_CASE("Random - Choice container") {
         CHECK((v == "alpha" || v == "beta" || v == "gamma"));
         seen.insert(v);
     }
-    CHECK_EQ(3, seen.size());
+    CHECK(3 == seen.size());
 }
 
 TEST_CASE("Random - Shuffle") {
@@ -110,11 +110,11 @@ TEST_CASE("Random - Shuffle") {
         got.push_back(v);
     }
     // Must be a permutation of 1..20.
-    CHECK_EQ(20, got.size());
+    CHECK(20 == got.size());
     auto sorted = got;
     std::sort(sorted.begin(), sorted.end());
     for (int i = 0; i < 20; ++i) {
-        CHECK_EQ(i + 1, sorted[i]);
+        CHECK(i + 1 == sorted[i]);
     }
 }
 
@@ -125,7 +125,7 @@ TEST_CASE("Random - Shuffle seeded") {
     auto r2 = (count(1, 11)
         | rand::shuffle<int>(3, std::mt19937_64{99})).spawn();
     for (int i = 0; i < 10; ++i) {
-        CHECK_EQ(r1.read(), r2.read());
+        CHECK(r1.read() == r2.read());
     }
 }
 
@@ -137,10 +137,10 @@ TEST_CASE("Random - Shuffle small input") {
     for (int v : r) {
         got.push_back(v);
     }
-    CHECK_EQ(3, got.size());
+    CHECK(3 == got.size());
     auto sorted = got;
     std::sort(sorted.begin(), sorted.end());
-    CHECK_EQ(1, sorted[0]);
-    CHECK_EQ(2, sorted[1]);
-    CHECK_EQ(3, sorted[2]);
+    CHECK(1 == sorted[0]);
+    CHECK(2 == sorted[1]);
+    CHECK(3 == sorted[2]);
 }

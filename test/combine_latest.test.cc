@@ -31,10 +31,10 @@ TEST_CASE("Two inputs - basic") {
     });
 
     csp::schedule();
-    REQUIRE_EQ(3u, got.size());
-    CHECK_EQ(T(1, "x"), got[0]);
-    CHECK_EQ(T(2, "x"), got[1]);
-    CHECK_EQ(T(2, "y"), got[2]);
+    REQUIRE(3u == got.size());
+    CHECK(T(1, "x") == got[0]);
+    CHECK(T(2, "x") == got[1]);
+    CHECK(T(2, "y") == got[2]);
 }
 
 TEST_CASE("No emission until all inputs produce") {
@@ -59,8 +59,8 @@ TEST_CASE("No emission until all inputs produce") {
     });
 
     csp::schedule();
-    REQUIRE_EQ(1u, got.size());
-    CHECK_EQ(std::make_tuple(3, 10), got[0]);
+    REQUIRE(1u == got.size());
+    CHECK(std::make_tuple(3, 10) == got[0]);
 }
 
 TEST_CASE("Input dies after producing - retains last value") {
@@ -88,10 +88,10 @@ TEST_CASE("Input dies after producing - retains last value") {
     });
 
     csp::schedule();
-    REQUIRE_EQ(3u, got.size());
-    CHECK_EQ(std::make_tuple(1, 10), got[0]);
-    CHECK_EQ(std::make_tuple(1, 20), got[1]);
-    CHECK_EQ(std::make_tuple(1, 30), got[2]);
+    REQUIRE(3u == got.size());
+    CHECK(std::make_tuple(1, 10) == got[0]);
+    CHECK(std::make_tuple(1, 20) == got[1]);
+    CHECK(std::make_tuple(1, 30) == got[2]);
 }
 
 TEST_CASE("Input dies before producing - output closes") {
@@ -138,7 +138,7 @@ TEST_CASE("Output death stops") {
         using T = std::tuple<int, int>;
         T t;
         CHECK(bool(r >> t));
-        CHECK_EQ(std::make_tuple(1, 2), t);
+        CHECK(std::make_tuple(1, 2) == t);
         // Drop reader — output dies.
     });
 
@@ -168,9 +168,9 @@ TEST_CASE("Three inputs") {
     });
 
     csp::schedule();
-    REQUIRE_EQ(2u, got.size());
-    CHECK_EQ(T(1, 2.5, "hi"), got[0]);
-    CHECK_EQ(T(3, 2.5, "hi"), got[1]);
+    REQUIRE(2u == got.size());
+    CHECK(T(1, 2.5, "hi") == got[0]);
+    CHECK(T(3, 2.5, "hi") == got[1]);
 }
 
 TEST_CASE("Combining function") {
@@ -196,10 +196,10 @@ TEST_CASE("Combining function") {
     });
 
     csp::schedule();
-    REQUIRE_EQ(3u, got.size());
-    CHECK_EQ(11, got[0]);
-    CHECK_EQ(21, got[1]);
-    CHECK_EQ(22, got[2]);
+    REQUIRE(3u == got.size());
+    CHECK(11 == got[0]);
+    CHECK(21 == got[1]);
+    CHECK(22 == got[2]);
 }
 
 }

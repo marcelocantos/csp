@@ -8,21 +8,21 @@ TEST_CASE("ChanUtil - Batch") {
     auto r = batch<int>(3).spawn(count(1, 11).spawn());
 
     auto v = r.read();
-    CHECK_EQ(3, v.size());
-    CHECK_EQ(1, v[0]); CHECK_EQ(2, v[1]); CHECK_EQ(3, v[2]);
+    CHECK(3 == v.size());
+    CHECK(1 == v[0]); CHECK(2 == v[1]); CHECK(3 == v[2]);
 
     v = r.read();
-    CHECK_EQ(3, v.size());
-    CHECK_EQ(4, v[0]); CHECK_EQ(5, v[1]); CHECK_EQ(6, v[2]);
+    CHECK(3 == v.size());
+    CHECK(4 == v[0]); CHECK(5 == v[1]); CHECK(6 == v[2]);
 
     v = r.read();
-    CHECK_EQ(3, v.size());
-    CHECK_EQ(7, v[0]); CHECK_EQ(8, v[1]); CHECK_EQ(9, v[2]);
+    CHECK(3 == v.size());
+    CHECK(7 == v[0]); CHECK(8 == v[1]); CHECK(9 == v[2]);
 
     // Partial final batch.
     v = r.read();
-    CHECK_EQ(1, v.size());
-    CHECK_EQ(10, v[0]);
+    CHECK(1 == v.size());
+    CHECK(10 == v[0]);
 
     std::vector<int> _;
     CHECK_FALSE(bool(r >> _));
@@ -33,12 +33,12 @@ TEST_CASE("ChanUtil - Batch exact") {
     auto r = batch<int>(3).spawn(count(1, 7).spawn());
 
     auto v = r.read();
-    CHECK_EQ(3, v.size());
-    CHECK_EQ(1, v[0]);
+    CHECK(3 == v.size());
+    CHECK(1 == v[0]);
 
     v = r.read();
-    CHECK_EQ(3, v.size());
-    CHECK_EQ(4, v[0]);
+    CHECK(3 == v.size());
+    CHECK(4 == v[0]);
 
     std::vector<int> _;
     CHECK_FALSE(bool(r >> _));
@@ -69,7 +69,7 @@ TEST_CASE("ChanUtil - Chain") {
     auto c = chain<int>(std::move(v3)).spawn();
 
     for (int i = 0, n; c >> n; ++i) {
-        CHECK_EQ(i, n);
+        CHECK(i == n);
     }
 }
 
@@ -79,7 +79,7 @@ TEST_CASE("ChanUtil - Count") {
     auto e = count(2, 12345, 7).spawn();
 
     for (int i = 2, n; e >> n; i += 7) {
-        CHECK_EQ(i, n);
+        CHECK(i == n);
     }
 }
 
@@ -89,7 +89,7 @@ TEST_CASE("ChanUtil - CountCyclic") {
     auto e = count(2, 15, 7, true).spawn();
 
     for (int i = 0; i < 100; i += 7) {
-        CHECK_EQ(2 + i % (15 - 2), e.read());
+        CHECK(2 + i % (15 - 2) == e.read());
     }
 }
 
@@ -100,7 +100,7 @@ TEST_CASE("ChanUtil - CountForever") {
 
     for (int i = 2, n; i < 10000; i += 11) {
         CHECK(bool(e >> n));
-        CHECK_EQ(i, n);
+        CHECK(i == n);
     }
 }
 
@@ -111,7 +111,7 @@ TEST_CASE("ChanUtil - Deaf") {
     auto [give_up_w, give_up_r] = chan<>{};
 
     stats.spawn([w = std::move(w), give_up = std::move(give_up_r)]{
-        CHECK_EQ(~1, prialt(w << 42, ~give_up));
+        CHECK(~1 == prialt(w << 42, ~give_up));
     });
 
     while (csp::internal::run()) { }
@@ -133,7 +133,7 @@ TEST_CASE("ChanUtil - Enumerate") {
     e = {};
     while (csp::internal::run()) { }
 
-    CHECK_EQ(2 * 3 * 5 * 2, product);
+    CHECK(2 * 3 * 5 * 2 == product);
 }
 
 TEST_CASE("ChanUtil - KillSwitch") {
@@ -143,7 +143,7 @@ TEST_CASE("ChanUtil - KillSwitch") {
     auto ks = killswitch<int>(std::move(keepalive_r)).spawn();
 
     CHECK(bool(ks.w.copy() << 42));
-    CHECK_EQ(42, ks.r.copy().read());
+    CHECK(42 == ks.r.copy().read());
 
     keepalive_w = {};
     CHECK_FALSE((ks.w.copy() << 21));
@@ -157,7 +157,7 @@ TEST_CASE("ChanUtil - Latch") {
     auto lat = latch<int>.spawn();
 
     stats.spawn([in = lat.r.copy()]{
-        CHECK_EQ(1, in.read());
+        CHECK(1 == in.read());
     });
 
     while (csp::internal::run()) { }
@@ -171,7 +171,7 @@ TEST_CASE("ChanUtil - Latch") {
     while (csp::internal::run()) { }
 
     stats.spawn([in = std::move(lat.r)]{
-        CHECK_EQ(5, in.read());
+        CHECK(5 == in.read());
     });
 
     while (csp::internal::run()) { }
@@ -187,7 +187,7 @@ TEST_CASE("ChanUtil - Map") {
     });
 
     stats.spawn([in = std::move(plus_one.r)]{
-        CHECK_EQ(42, in.read());
+        CHECK(42 == in.read());
     });
 
     while (csp::internal::run()) { }
@@ -209,7 +209,7 @@ TEST_CASE("ChanUtil - MapStrToLen") {
     });
 
     for (size_t i : {3, 4, 2, 5, 5, 6, 2, 3, 5}) {
-        CHECK_EQ(i, lengths_r.read());
+        CHECK(i == lengths_r.read());
     }
 
     while (csp::internal::run()) { }
@@ -225,11 +225,11 @@ TEST_CASE("ChanUtil - Merge") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(15, got.size());
+    CHECK(15 == got.size());
 
     std::sort(got.begin(), got.end());
     std::vector<int> expect = {0,1,2,3,4, 10,11,12,13,14, 20,21,22,23,24};
-    CHECK_EQ(expect, got);
+    CHECK(expect == got);
 }
 
 TEST_CASE("ChanUtil - Merge single") {
@@ -237,9 +237,9 @@ TEST_CASE("ChanUtil - Merge single") {
     rs.push_back(count(1, 4).spawn());
     auto r = merge(std::move(rs)).spawn();
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
-    CHECK_EQ(3, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
+    CHECK(3 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -263,11 +263,11 @@ TEST_CASE("ChanUtil - Scan") {
     auto r = scan<int, int>(0, [](int acc, int v) { return acc + v; })
                  .spawn(count(1, 6).spawn());
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(3, r.read());
-    CHECK_EQ(6, r.read());
-    CHECK_EQ(10, r.read());
-    CHECK_EQ(15, r.read());
+    CHECK(1 == r.read());
+    CHECK(3 == r.read());
+    CHECK(6 == r.read());
+    CHECK(10 == r.read());
+    CHECK(15 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -277,9 +277,9 @@ TEST_CASE("ChanUtil - Scan type change") {
     auto r = scan<std::string, int>(0, [](int acc, std::string s) { return acc + (int)s.size(); })
                  .spawn(enumerate<std::string>({"ab", "cde", "f"}).spawn());
 
-    CHECK_EQ(2, r.read());
-    CHECK_EQ(5, r.read());
-    CHECK_EQ(6, r.read());
+    CHECK(2 == r.read());
+    CHECK(5 == r.read());
+    CHECK(6 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -296,7 +296,7 @@ TEST_CASE("ChanUtil - Share single subscriber") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - Share multiple subscribers") {
@@ -312,16 +312,16 @@ TEST_CASE("ChanUtil - Share multiple subscribers") {
 
         // Interleave writes and reads so latches deliver each value.
         in.w << 10;
-        CHECK_EQ(10, a.read());
-        CHECK_EQ(10, b.read());
+        CHECK(10 == a.read());
+        CHECK(10 == b.read());
 
         in.w << 20;
-        CHECK_EQ(20, a.read());
-        CHECK_EQ(20, b.read());
+        CHECK(20 == a.read());
+        CHECK(20 == b.read());
 
         in.w << 30;
-        CHECK_EQ(30, a.read());
-        CHECK_EQ(30, b.read());
+        CHECK(30 == a.read());
+        CHECK(30 == b.read());
 
         in.w = {};
         int _;
@@ -344,24 +344,24 @@ TEST_CASE("ChanUtil - Share late subscriber gets current value") {
 
         // Publish two values; subscriber a reads them.
         in.w << 1;
-        CHECK_EQ(1, a.read());
+        CHECK(1 == a.read());
         in.w << 2;
-        CHECK_EQ(2, a.read());
+        CHECK(2 == a.read());
 
         // Late subscriber joins — should get current value (2).
         auto b = subs.read();
         first_val = b.read();
 
         in.w << 3;
-        CHECK_EQ(3, a.read());
-        CHECK_EQ(3, b.read());
+        CHECK(3 == a.read());
+        CHECK(3 == b.read());
 
         in.w = {};
         subs = {};
     });
 
     csp::schedule();
-    CHECK_EQ(2, first_val);
+    CHECK(2 == first_val);
 }
 
 TEST_CASE("ChanUtil - Share subscriber dropped") {
@@ -377,17 +377,17 @@ TEST_CASE("ChanUtil - Share subscriber dropped") {
 
         // Both get first value.
         in.w << 1;
-        CHECK_EQ(1, a.read());
-        CHECK_EQ(1, b.read());
+        CHECK(1 == a.read());
+        CHECK(1 == b.read());
 
         // Drop b.
         b = {};
 
         // a should still work.
         in.w << 2;
-        CHECK_EQ(2, a.read());
+        CHECK(2 == a.read());
         in.w << 3;
-        CHECK_EQ(3, a.read());
+        CHECK(3 == a.read());
 
         in.w = {};
         int _;
@@ -405,8 +405,8 @@ TEST_CASE("ChanUtil - Share source dies") {
         auto r = subs.read();
         subs = {};
 
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -420,11 +420,11 @@ TEST_CASE("ChanUtil - Metrics basic") {
     // Drain all data first.
     std::vector<int> got;
     for (int n; data >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5}), got);
+    CHECK(std::vector<int>({1, 2, 3, 4, 5}) == got);
 
     // Pull final stats.
     auto snap = stats.read();
-    CHECK_EQ(5, snap.count);
+    CHECK(5 == snap.count);
     CHECK(snap.elapsed.count() > 0);
 }
 
@@ -441,17 +441,17 @@ TEST_CASE("ChanUtil - Metrics mid-stream pull") {
     });
 
     // Read 3 values.
-    CHECK_EQ(1, data.read());
-    CHECK_EQ(2, data.read());
-    CHECK_EQ(3, data.read());
+    CHECK(1 == data.read());
+    CHECK(2 == data.read());
+    CHECK(3 == data.read());
 
     // Pull stats mid-stream.
     auto snap = stats.read();
-    CHECK_EQ(3, snap.count);
+    CHECK(3 == snap.count);
 
     // Read remaining.
-    CHECK_EQ(4, data.read());
-    CHECK_EQ(5, data.read());
+    CHECK(4 == data.read());
+    CHECK(5 == data.read());
     int _;
     CHECK_FALSE(bool(data >> _));
 }
@@ -465,7 +465,7 @@ TEST_CASE("ChanUtil - Metrics stats reader dropped") {
     // Data should still flow.
     std::vector<int> got;
     for (int n; data >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - Metrics data reader dropped") {
@@ -485,7 +485,7 @@ TEST_CASE("ChanUtil - Mute") {
 
     stats.spawn([r = r.copy(), give_up = std::move(give_up_r)]{
         int n;
-        CHECK_GT(0, prialt(r >> n, ~give_up));
+        CHECK(0 > prialt(r >> n, ~give_up));
     });
 
     while (csp::internal::run()) { }
@@ -504,7 +504,7 @@ TEST_CASE("ChanUtil - Sink") {
         snk << i;
     }
 
-    CHECK_EQ(55, total);
+    CHECK(55 == total);
 }
 
 TEST_CASE("ChanUtil - Where") {
@@ -520,7 +520,7 @@ TEST_CASE("ChanUtil - Where") {
 
     int n;
     for (int i = 0; threes.r >> n; i += 3) {
-        CHECK_EQ(i, n);
+        CHECK(i == n);
     }
 }
 
@@ -546,7 +546,7 @@ TEST_CASE("ChanUtil - WhereAll") {
 
     ch.release();
     csp::schedule();
-    CHECK_EQ(0, received);
+    CHECK(0 == received);
 }
 
 TEST_CASE("ChanUtil - WhereNone") {
@@ -570,7 +570,7 @@ TEST_CASE("ChanUtil - WhereNone") {
 
     ch.release();
     csp::schedule();
-    CHECK_EQ(45, total);
+    CHECK(45 == total);
 }
 
 TEST_CASE("ChanUtil - TeeBasic") {
@@ -598,8 +598,8 @@ TEST_CASE("ChanUtil - TeeBasic") {
     side.release();
 
     csp::schedule();
-    CHECK_EQ(15, main_total);
-    CHECK_EQ(15, side_total);
+    CHECK(15 == main_total);
+    CHECK(15 == side_total);
 }
 
 TEST_CASE("ChanUtil - TeeSideChannelDeath") {
@@ -631,8 +631,8 @@ TEST_CASE("ChanUtil - TeeSideChannelDeath") {
     dst.release();
 
     csp::schedule();
-    CHECK_EQ(2, side_count);
-    CHECK_EQ(15, main_total);
+    CHECK(2 == side_count);
+    CHECK(15 == main_total);
 }
 
 TEST_CASE("ChanUtil - LatchRepeat") {
@@ -650,9 +650,9 @@ TEST_CASE("ChanUtil - LatchRepeat") {
 
     // After writer dies, latch serves the last value repeatedly.
     stats.spawn([in = std::move(lat.r)]{
-        CHECK_EQ(5, in.read());
-        CHECK_EQ(5, in.read());
-        CHECK_EQ(5, in.read());
+        CHECK(5 == in.read());
+        CHECK(5 == in.read());
+        CHECK(5 == in.read());
     });
 
     while (csp::internal::run()) { }
@@ -662,11 +662,11 @@ TEST_CASE("ChanUtil - Zip binary") {
     auto r = zip(count(1, 4).spawn(), count(10, 40, 10).spawn()).spawn();
 
     auto [a, b] = r.read();
-    CHECK_EQ(1, a); CHECK_EQ(10, b);
+    CHECK(1 == a); CHECK(10 == b);
     std::tie(a, b) = r.read();
-    CHECK_EQ(2, a); CHECK_EQ(20, b);
+    CHECK(2 == a); CHECK(20 == b);
     std::tie(a, b) = r.read();
-    CHECK_EQ(3, a); CHECK_EQ(30, b);
+    CHECK(3 == a); CHECK(30 == b);
     std::tuple<int, int> _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -677,8 +677,8 @@ TEST_CASE("ChanUtil - Zip early termination") {
 
     for (int i = 0; i < 3; ++i) {
         auto [a, b] = r.read();
-        CHECK_EQ(i, a);
-        CHECK_EQ(i, b);
+        CHECK(i == a);
+        CHECK(i == b);
     }
     std::tuple<int, int> _;
     CHECK_FALSE(bool(r >> _));
@@ -688,10 +688,10 @@ TEST_CASE("ChanUtil - Zip binary with function") {
     auto r = zip<int, int>(count(1, 5).spawn(), count(10, 50, 10).spawn(),
                            [](int a, int b) { return a * b; }).spawn();
 
-    CHECK_EQ(10, r.read());
-    CHECK_EQ(40, r.read());
-    CHECK_EQ(90, r.read());
-    CHECK_EQ(160, r.read());
+    CHECK(10 == r.read());
+    CHECK(40 == r.read());
+    CHECK(90 == r.read());
+    CHECK(160 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -701,11 +701,11 @@ TEST_CASE("ChanUtil - Zip") {
                  count(100, 400, 100).spawn()).spawn();
 
     auto [a, b, c] = r.read();
-    CHECK_EQ(1, a); CHECK_EQ(10, b); CHECK_EQ(100, c);
+    CHECK(1 == a); CHECK(10 == b); CHECK(100 == c);
     std::tie(a, b, c) = r.read();
-    CHECK_EQ(2, a); CHECK_EQ(20, b); CHECK_EQ(200, c);
+    CHECK(2 == a); CHECK(20 == b); CHECK(200 == c);
     std::tie(a, b, c) = r.read();
-    CHECK_EQ(3, a); CHECK_EQ(30, b); CHECK_EQ(300, c);
+    CHECK(3 == a); CHECK(30 == b); CHECK(300 == c);
     std::tuple<int, int, int> _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -716,9 +716,9 @@ TEST_CASE("ChanUtil - Zip ternary with function") {
                   count(100, 400, 100).spawn(),
                   [](int a, int b, int c) { return a + b + c; }).spawn();
 
-    CHECK_EQ(111, r.read());
-    CHECK_EQ(222, r.read());
-    CHECK_EQ(333, r.read());
+    CHECK(111 == r.read());
+    CHECK(222 == r.read());
+    CHECK(333 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -730,7 +730,7 @@ TEST_CASE("ChanUtil - Sinkhole") {
     for (int i = 1; i <= 10; ++i) {
         w << i;
     }
-    CHECK_EQ(10, latest);
+    CHECK(10 == latest);
 
     w = {};
     while (csp::internal::run()) { }
@@ -739,9 +739,9 @@ TEST_CASE("ChanUtil - Sinkhole") {
 TEST_CASE("ChanUtil - First") {
     auto r = first<int>(3).spawn(count(1, 11).spawn());
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
-    CHECK_EQ(3, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
+    CHECK(3 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -749,8 +749,8 @@ TEST_CASE("ChanUtil - First") {
 TEST_CASE("ChanUtil - First short input") {
     auto r = first<int>(5).spawn(count(1, 3).spawn());
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -758,9 +758,9 @@ TEST_CASE("ChanUtil - First short input") {
 TEST_CASE("ChanUtil - Last") {
     auto r = last<int>(3).spawn(count(1, 11).spawn());
 
-    CHECK_EQ(8, r.read());
-    CHECK_EQ(9, r.read());
-    CHECK_EQ(10, r.read());
+    CHECK(8 == r.read());
+    CHECK(9 == r.read());
+    CHECK(10 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -768,8 +768,8 @@ TEST_CASE("ChanUtil - Last") {
 TEST_CASE("ChanUtil - Last short input") {
     auto r = last<int>(5).spawn(count(1, 3).spawn());
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -778,7 +778,7 @@ TEST_CASE("ChanUtil - SkipFirst") {
     auto r = skip_first<int>(3).spawn(count(1, 11).spawn());
 
     for (int i = 4; i <= 10; ++i) {
-        CHECK_EQ(i, r.read());
+        CHECK(i == r.read());
     }
     int _;
     CHECK_FALSE(bool(r >> _));
@@ -795,7 +795,7 @@ TEST_CASE("ChanUtil - SkipLast") {
     auto r = skip_last<int>(3).spawn(count(1, 11).spawn());
 
     for (int i = 1; i <= 7; ++i) {
-        CHECK_EQ(i, r.read());
+        CHECK(i == r.read());
     }
     int _;
     CHECK_FALSE(bool(r >> _));
@@ -815,7 +815,7 @@ TEST_CASE("ChanUtil - Debounce rapid") {
     // Input closes → pending (5) emitted immediately.
     auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
 
-    CHECK_EQ(5, r.read());
+    CHECK(5 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -836,9 +836,9 @@ TEST_CASE("ChanUtil - Debounce spaced") {
 
     // Each value has 100ms quiet (> 50ms debounce), so all emitted.
     stats.spawn([r = std::move(db.r)]{
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
-        CHECK_EQ(3, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
+        CHECK(3 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -852,7 +852,7 @@ TEST_CASE("ChanUtil - Throttle n=1") {
     // Budget=1, interval=1s. Only first value passes; rest dropped before tick.
     auto r = throttle<int>(tick(1s)).spawn(count(1, 6).spawn());
 
-    CHECK_EQ(1, r.read());
+    CHECK(1 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -863,8 +863,8 @@ TEST_CASE("ChanUtil - Throttle n=2") {
     // Budget=2, interval=1s. First two pass, rest dropped.
     auto r = throttle<int>(tick(1s), {.n = 2}).spawn(count(1, 6).spawn());
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -878,8 +878,8 @@ TEST_CASE("ChanUtil - Throttle budget reset") {
     stats.spawn([w = std::move(th.w)]{
         // First burst: 1,2,3.
         w << 1; w << 2; w << 3;
-        // Wait for tick to reset budget.
-        csp::sleep(150ms);
+        // Wait for tick to reset budget (wide margin for CI).
+        csp::sleep(250ms);
         // Second burst: 4,5,6.
         w << 4; w << 5; w << 6;
     });
@@ -887,10 +887,10 @@ TEST_CASE("ChanUtil - Throttle budget reset") {
     // First burst: 1,2 pass, 3 dropped.
     // After tick: 4,5 pass, 6 dropped.
     stats.spawn([r = std::move(th.r)]{
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
-        CHECK_EQ(4, r.read());
-        CHECK_EQ(5, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
+        CHECK(4 == r.read());
+        CHECK(5 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -913,8 +913,8 @@ TEST_CASE("ChanUtil - Sample") {
 
     stats.spawn([r = std::move(r)]{
         // Source 1,2,3 all latched; triggers emit latest (3) twice.
-        CHECK_EQ(3, r.read());
-        CHECK_EQ(3, r.read());
+        CHECK(3 == r.read());
+        CHECK(3 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -930,9 +930,9 @@ TEST_CASE("ChanUtil - Delay") {
 
     stats.spawn([r = std::move(r)]{
         auto start = std::chrono::steady_clock::now();
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
-        CHECK_EQ(3, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
+        CHECK(3 == r.read());
         auto elapsed = std::chrono::steady_clock::now() - start;
         CHECK(elapsed >= 45ms);
         int _;
@@ -948,11 +948,11 @@ TEST_CASE("ChanUtil - Timeout no expiry") {
     // count sends 1–5 instantly — well within any timeout.
     auto r = timeout<int>(1s).spawn(count(1, 6).spawn());
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
-    CHECK_EQ(3, r.read());
-    CHECK_EQ(4, r.read());
-    CHECK_EQ(5, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
+    CHECK(3 == r.read());
+    CHECK(4 == r.read());
+    CHECK(5 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -970,7 +970,7 @@ TEST_CASE("ChanUtil - Timeout expiry") {
     });
 
     stats.spawn([r = std::move(to.r)]{
-        CHECK_EQ(1, r.read());
+        CHECK(1 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -988,10 +988,10 @@ TEST_CASE("ChanUtil - Distinct adjacent") {
     });
 
     stats.spawn([r = std::move(d.r)]{
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
-        CHECK_EQ(3, r.read());
-        CHECK_EQ(1, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
+        CHECK(3 == r.read());
+        CHECK(1 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -1009,7 +1009,7 @@ TEST_CASE("ChanUtil - Distinct all same") {
     });
 
     stats.spawn([r = std::move(d.r)]{
-        CHECK_EQ(5, r.read());
+        CHECK(5 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -1034,8 +1034,8 @@ TEST_CASE("ChanUtil - Distinct custom comparator") {
     });
 
     stats.spawn([r = std::move(d.r)]{
-        CHECK_EQ("Foo", r.read());
-        CHECK_EQ("Bar", r.read());
+        CHECK("Foo" == r.read());
+        CHECK("Bar" == r.read());
         std::string _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -1053,10 +1053,10 @@ TEST_CASE("ChanUtil - Unique") {
     });
 
     stats.spawn([r = std::move(u.r)]{
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
-        CHECK_EQ(3, r.read());
-        CHECK_EQ(4, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
+        CHECK(3 == r.read());
+        CHECK(4 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -1077,10 +1077,10 @@ TEST_CASE("ChanUtil - Unique bounded FIFO") {
     });
 
     stats.spawn([r = std::move(u.r)]{
-        CHECK_EQ(1, r.read());
-        CHECK_EQ(2, r.read());
-        CHECK_EQ(3, r.read());
-        CHECK_EQ(1, r.read());
+        CHECK(1 == r.read());
+        CHECK(2 == r.read());
+        CHECK(3 == r.read());
+        CHECK(1 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });
@@ -1099,7 +1099,7 @@ TEST_CASE("ChanUtil - FlatMap") {
     for (int n; r >> n;) got.push_back(n);
     std::sort(got.begin(), got.end());
     std::vector<int> expect = {10, 11, 12, 20, 21, 22, 30, 31, 32};
-    CHECK_EQ(expect, got);
+    CHECK(expect == got);
 }
 
 TEST_CASE("ChanUtil - FlatMap single") {
@@ -1108,8 +1108,8 @@ TEST_CASE("ChanUtil - FlatMap single") {
              })
                  .spawn(count(5, 6).spawn());
 
-    CHECK_EQ(5, r.read());
-    CHECK_EQ(6, r.read());
+    CHECK(5 == r.read());
+    CHECK(6 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -1156,7 +1156,7 @@ TEST_CASE("ChanUtil - FlatMap type change") {
     for (std::string s; r >> s;) got.push_back(std::move(s));
     std::sort(got.begin(), got.end());
     std::vector<std::string> expect = {"1", "2", "3"};
-    CHECK_EQ(expect, got);
+    CHECK(expect == got);
 }
 
 TEST_CASE("ChanUtil - RoundRobin") {
@@ -1165,7 +1165,7 @@ TEST_CASE("ChanUtil - RoundRobin") {
     // Distribute 1..9 across 3 outputs. Must drain concurrently since
     // channels are synchronous and round_robin writes in strict order.
     auto outs = round_robin(count(1, 10).spawn(), 3);
-    CHECK_EQ(3, outs.size());
+    CHECK(3 == outs.size());
 
     std::vector<int> g0, g1, g2;
     stats.spawn([r = std::move(outs[0]), &g0]{
@@ -1179,18 +1179,18 @@ TEST_CASE("ChanUtil - RoundRobin") {
     });
     csp::schedule();
 
-    CHECK_EQ(std::vector<int>({1, 4, 7}), g0);
-    CHECK_EQ(std::vector<int>({2, 5, 8}), g1);
-    CHECK_EQ(std::vector<int>({3, 6, 9}), g2);
+    CHECK(std::vector<int>({1, 4, 7}) == g0);
+    CHECK(std::vector<int>({2, 5, 8}) == g1);
+    CHECK(std::vector<int>({3, 6, 9}) == g2);
 }
 
 TEST_CASE("ChanUtil - RoundRobin single output") {
     auto outs = round_robin(count(1, 4).spawn(), 1);
-    CHECK_EQ(1, outs.size());
+    CHECK(1 == outs.size());
 
-    CHECK_EQ(1, outs[0].read());
-    CHECK_EQ(2, outs[0].read());
-    CHECK_EQ(3, outs[0].read());
+    CHECK(1 == outs[0].read());
+    CHECK(2 == outs[0].read());
+    CHECK(3 == outs[0].read());
     int _;
     CHECK_FALSE(bool(outs[0] >> _));
 }
@@ -1223,7 +1223,7 @@ TEST_CASE("ChanUtil - Interleave") {
     for (int n; r >> n;) got.push_back(n);
     // Strict interleaving: 10,20,30, 11,21,31, 12,22,32.
     std::vector<int> expect = {10, 20, 30, 11, 21, 31, 12, 22, 32};
-    CHECK_EQ(expect, got);
+    CHECK(expect == got);
 }
 
 TEST_CASE("ChanUtil - Interleave single") {
@@ -1231,9 +1231,9 @@ TEST_CASE("ChanUtil - Interleave single") {
     rs.push_back(count(1, 4).spawn());
     auto r = interleave(std::move(rs)).spawn();
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
-    CHECK_EQ(3, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
+    CHECK(3 == r.read());
     int _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -1248,7 +1248,7 @@ TEST_CASE("ChanUtil - Interleave uneven") {
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
     // 1, 10, 2, 11, <first dies>, 12, 13
-    CHECK_EQ(std::vector<int>({1, 10, 2, 11, 12, 13}), got);
+    CHECK(std::vector<int>({1, 10, 2, 11, 12, 13}) == got);
 }
 
 TEST_CASE("ChanUtil - Interleave output death") {
@@ -1281,9 +1281,9 @@ TEST_CASE("ChanUtil - Slide fixed") {
     csp::schedule();
 
     // All 6 elements enter.
-    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5, 6}), ins);
+    CHECK(std::vector<int>({1, 2, 3, 4, 5, 6}) == ins);
     // Elements 1, 2, 3 expire when 4, 5, 6 arrive.
-    CHECK_EQ(std::vector<int>({1, 2, 3}), outs);
+    CHECK(std::vector<int>({1, 2, 3}) == outs);
 }
 
 TEST_CASE("ChanUtil - Slide fixed no slide_in") {
@@ -1302,8 +1302,8 @@ TEST_CASE("ChanUtil - Slide fixed no slide_in") {
 
     // slide_in=false: no events during growth (elements 1, 2, 3).
     // Events start when element 4 arrives and element 1 expires.
-    CHECK_EQ(std::vector<int>({4, 5, 6}), ins);
-    CHECK_EQ(std::vector<int>({1, 2, 3}), outs);
+    CHECK(std::vector<int>({4, 5, 6}) == ins);
+    CHECK(std::vector<int>({1, 2, 3}) == outs);
 }
 
 TEST_CASE("ChanUtil - Slide fixed window larger than input") {
@@ -1320,7 +1320,7 @@ TEST_CASE("ChanUtil - Slide fixed window larger than input") {
     });
     csp::schedule();
 
-    CHECK_EQ(std::vector<int>({1, 2, 3}), ins);
+    CHECK(std::vector<int>({1, 2, 3}) == ins);
     CHECK(outs.empty());
 }
 
@@ -1343,9 +1343,9 @@ TEST_CASE("ChanUtil - Slide predicate") {
     csp::schedule();
 
     // All elements enter.
-    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5, 6, 7, 8}), ins);
+    CHECK(std::vector<int>({1, 2, 3, 4, 5, 6, 7, 8}) == ins);
     // 1 expires when 4 arrives, 2 when 5, etc.
-    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5}), outs);
+    CHECK(std::vector<int>({1, 2, 3, 4, 5}) == outs);
 }
 
 TEST_CASE("ChanUtil - Slide output death") {
@@ -1368,12 +1368,12 @@ TEST_CASE("ChanUtil - Window") {
     // Window of 3 over 1..6. Emits full vector each time.
     auto r = window<int>(3).spawn(count(1, 7).spawn());
 
-    CHECK_EQ(std::vector<int>({1}), r.read());
-    CHECK_EQ(std::vector<int>({1, 2}), r.read());
-    CHECK_EQ(std::vector<int>({1, 2, 3}), r.read());
-    CHECK_EQ(std::vector<int>({2, 3, 4}), r.read());
-    CHECK_EQ(std::vector<int>({3, 4, 5}), r.read());
-    CHECK_EQ(std::vector<int>({4, 5, 6}), r.read());
+    CHECK(std::vector<int>({1}) == r.read());
+    CHECK(std::vector<int>({1, 2}) == r.read());
+    CHECK(std::vector<int>({1, 2, 3}) == r.read());
+    CHECK(std::vector<int>({2, 3, 4}) == r.read());
+    CHECK(std::vector<int>({3, 4, 5}) == r.read());
+    CHECK(std::vector<int>({4, 5, 6}) == r.read());
     std::vector<int> _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -1381,9 +1381,9 @@ TEST_CASE("ChanUtil - Window") {
 TEST_CASE("ChanUtil - Window larger than input") {
     auto r = window<int>(10).spawn(count(1, 4).spawn());
 
-    CHECK_EQ(std::vector<int>({1}), r.read());
-    CHECK_EQ(std::vector<int>({1, 2}), r.read());
-    CHECK_EQ(std::vector<int>({1, 2, 3}), r.read());
+    CHECK(std::vector<int>({1}) == r.read());
+    CHECK(std::vector<int>({1, 2}) == r.read());
+    CHECK(std::vector<int>({1, 2, 3}) == r.read());
     std::vector<int> _;
     CHECK_FALSE(bool(r >> _));
 }
@@ -1404,7 +1404,7 @@ TEST_CASE("ChanUtil - Partition N-way") {
     // Classify 0..8 into 3 buckets by modulo.
     auto outs = partition<int>(count(0, 9).spawn(), 3,
         [](const int& n) -> size_t { return n % 3; });
-    CHECK_EQ(3, outs.size());
+    CHECK(3 == outs.size());
 
     std::vector<int> g0, g1, g2;
     stats.spawn([r = std::move(outs[0]), &g0]{
@@ -1418,9 +1418,9 @@ TEST_CASE("ChanUtil - Partition N-way") {
     });
     csp::schedule();
 
-    CHECK_EQ(std::vector<int>({0, 3, 6}), g0);
-    CHECK_EQ(std::vector<int>({1, 4, 7}), g1);
-    CHECK_EQ(std::vector<int>({2, 5, 8}), g2);
+    CHECK(std::vector<int>({0, 3, 6}) == g0);
+    CHECK(std::vector<int>({1, 4, 7}) == g1);
+    CHECK(std::vector<int>({2, 5, 8}) == g2);
 }
 
 TEST_CASE("ChanUtil - Partition binary") {
@@ -1429,7 +1429,7 @@ TEST_CASE("ChanUtil - Partition binary") {
     // Split into even/odd.
     auto outs = partition<int>(count(1, 7).spawn(),
         [](const int& n) { return n % 2 != 0; });
-    CHECK_EQ(2, outs.size());
+    CHECK(2 == outs.size());
 
     std::vector<int> evens, odds;
     stats.spawn([r = std::move(outs[0]), &evens]{
@@ -1440,8 +1440,8 @@ TEST_CASE("ChanUtil - Partition binary") {
     });
     csp::schedule();
 
-    CHECK_EQ(std::vector<int>({2, 4, 6}), evens);
-    CHECK_EQ(std::vector<int>({1, 3, 5}), odds);
+    CHECK(std::vector<int>({2, 4, 6}) == evens);
+    CHECK(std::vector<int>({1, 3, 5}) == odds);
 }
 
 TEST_CASE("ChanUtil - Partition output death") {
@@ -1464,7 +1464,7 @@ TEST_CASE("ChanUtil - Partition output death") {
 TEST_CASE("ChanUtil - Reduce sum") {
     auto result = (count(1, 6) | reduce<int, int>(0,
         [](int acc, int v) { return acc + v; })).spawn().single();
-    CHECK_EQ(15, result);  // 1+2+3+4+5
+    CHECK(15 == result);  // 1+2+3+4+5
 }
 
 TEST_CASE("ChanUtil - Reduce string concat") {
@@ -1473,7 +1473,7 @@ TEST_CASE("ChanUtil - Reduce string concat") {
         | reduce<std::string, std::string>("",
             [](std::string acc, const std::string& v) { return acc + v; })
     ).spawn().single();
-    CHECK_EQ("123", result);
+    CHECK("123" == result);
 }
 
 TEST_CASE("ChanUtil - Reduce empty") {
@@ -1482,7 +1482,7 @@ TEST_CASE("ChanUtil - Reduce empty") {
         | reduce<int, int>(42,
             [](int acc, int v) { return acc + v; })
     ).spawn().single();
-    CHECK_EQ(42, result);  // init returned unchanged
+    CHECK(42 == result);  // init returned unchanged
 }
 
 TEST_CASE("ChanUtil - Gate") {
@@ -1513,7 +1513,7 @@ TEST_CASE("ChanUtil - Gate") {
     // Values should flow while open, pause while closed.
     CHECK(got.size() > 0);
     // First value should be 1 (gate starts open).
-    CHECK_EQ(1, got.front());
+    CHECK(1 == got.front());
 }
 
 TEST_CASE("ChanUtil - Gate control dies open") {
@@ -1527,7 +1527,7 @@ TEST_CASE("ChanUtil - Gate control dies open") {
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
 
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - Gate output death") {
@@ -1563,8 +1563,8 @@ TEST_CASE("ChanUtil - GroupBy") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({2, 4, 6}), evens);
-    CHECK_EQ(std::vector<int>({1, 3, 5}), odds);
+    CHECK(std::vector<int>({2, 4, 6}) == evens);
+    CHECK(std::vector<int>({1, 3, 5}) == odds);
 }
 
 TEST_CASE("ChanUtil - GroupBy sub-stream dropped") {
@@ -1591,7 +1591,7 @@ TEST_CASE("ChanUtil - GroupBy sub-stream dropped") {
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({2, 4}), got);
+    CHECK(std::vector<int>({2, 4}) == got);
 }
 
 TEST_CASE("ChanUtil - GroupBy meta-reader dropped") {
@@ -1632,7 +1632,7 @@ TEST_CASE("ChanUtil - FirstWins") {
     });
     csp::schedule();
 
-    CHECK_EQ(42, result);
+    CHECK(42 == result);
 }
 
 TEST_CASE("ChanUtil - FirstWins with dead readers") {
@@ -1656,7 +1656,7 @@ TEST_CASE("ChanUtil - FirstWins with dead readers") {
     });
     csp::schedule();
 
-    CHECK_EQ(7, result);
+    CHECK(7 == result);
 }
 
 TEST_CASE("ChanUtil - FirstWins all dead") {
@@ -1710,7 +1710,7 @@ TEST_CASE("ChanUtil - Compose filter | filter") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({6, 8, 10}), got);
+    CHECK(std::vector<int>({6, 8, 10}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose producer | filter") {
@@ -1720,7 +1720,7 @@ TEST_CASE("ChanUtil - Compose producer | filter") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({10, 20, 30, 40, 50}), got);
+    CHECK(std::vector<int>({10, 20, 30, 40, 50}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose three filters") {
@@ -1732,7 +1732,7 @@ TEST_CASE("ChanUtil - Compose three filters") {
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
     // (1+1)*2=4, (2+1)*2=6, (3+1)*2=8, (4+1)*2=10, (5+1)*2=12
-    CHECK_EQ(std::vector<int>({8, 10, 12}), got);
+    CHECK(std::vector<int>({8, 10, 12}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose producer | filter chain") {
@@ -1743,7 +1743,7 @@ TEST_CASE("ChanUtil - Compose producer | filter chain") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({6, 9}), got);
+    CHECK(std::vector<int>({6, 9}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose filter | consumer") {
@@ -1756,7 +1756,7 @@ TEST_CASE("ChanUtil - Compose filter | consumer") {
     w = {};
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({2, 4, 6}), got);
+    CHECK(std::vector<int>({2, 4, 6}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose producer | consumer") {
@@ -1766,7 +1766,7 @@ TEST_CASE("ChanUtil - Compose producer | consumer") {
     csp::spawn(std::move(run_it));
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose reader | filter") {
@@ -1775,7 +1775,7 @@ TEST_CASE("ChanUtil - Compose reader | filter") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({2, 4, 6, 8, 10}), got);
+    CHECK(std::vector<int>({2, 4, 6, 8, 10}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose reader | consumer") {
@@ -1785,7 +1785,7 @@ TEST_CASE("ChanUtil - Compose reader | consumer") {
     csp::spawn(std::move(run_it));
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose filter | writer") {
@@ -1801,7 +1801,7 @@ TEST_CASE("ChanUtil - Compose filter | writer") {
     w = {};
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({2, 4, 6}), got);
+    CHECK(std::vector<int>({2, 4, 6}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose producer | writer") {
@@ -1815,7 +1815,7 @@ TEST_CASE("ChanUtil - Compose producer | writer") {
     csp::spawn(std::move(run_it));
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - Compose reader | filter | filter") {
@@ -1825,7 +1825,7 @@ TEST_CASE("ChanUtil - Compose reader | filter | filter") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({14, 15}), got);
+    CHECK(std::vector<int>({14, 15}) == got);
 }
 
 // --- take_while / skip_while ---
@@ -1836,7 +1836,7 @@ TEST_CASE("ChanUtil - TakeWhile") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - TakeWhile all pass") {
@@ -1845,7 +1845,7 @@ TEST_CASE("ChanUtil - TakeWhile all pass") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - TakeWhile none pass") {
@@ -1862,7 +1862,7 @@ TEST_CASE("ChanUtil - SkipWhile") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({4, 5, 6, 7}), got);
+    CHECK(std::vector<int>({4, 5, 6, 7}) == got);
 }
 
 TEST_CASE("ChanUtil - SkipWhile all skipped") {
@@ -1879,7 +1879,7 @@ TEST_CASE("ChanUtil - SkipWhile none skipped") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 // --- pairwise ---
@@ -1887,10 +1887,10 @@ TEST_CASE("ChanUtil - SkipWhile none skipped") {
 TEST_CASE("ChanUtil - Pairwise") {
     auto r = pairwise<int>.spawn(count(1, 6).spawn());
 
-    CHECK_EQ(std::make_pair(1, 2), r.read());
-    CHECK_EQ(std::make_pair(2, 3), r.read());
-    CHECK_EQ(std::make_pair(3, 4), r.read());
-    CHECK_EQ(std::make_pair(4, 5), r.read());
+    CHECK(std::make_pair(1, 2) == r.read());
+    CHECK(std::make_pair(2, 3) == r.read());
+    CHECK(std::make_pair(3, 4) == r.read());
+    CHECK(std::make_pair(4, 5) == r.read());
     std::pair<int, int> p;
     CHECK_FALSE(bool(r >> p));
 }
@@ -1915,10 +1915,10 @@ TEST_CASE("ChanUtil - Pairwise empty") {
 TEST_CASE("ChanUtil - Nwise 3") {
     auto r = nwise<3, int>().spawn(count(1, 7).spawn());
 
-    CHECK_EQ(std::make_tuple(1, 2, 3), r.read());
-    CHECK_EQ(std::make_tuple(2, 3, 4), r.read());
-    CHECK_EQ(std::make_tuple(3, 4, 5), r.read());
-    CHECK_EQ(std::make_tuple(4, 5, 6), r.read());
+    CHECK(std::make_tuple(1, 2, 3) == r.read());
+    CHECK(std::make_tuple(2, 3, 4) == r.read());
+    CHECK(std::make_tuple(3, 4, 5) == r.read());
+    CHECK(std::make_tuple(4, 5, 6) == r.read());
     std::tuple<int, int, int> t;
     CHECK_FALSE(bool(r >> t));
 }
@@ -1926,9 +1926,9 @@ TEST_CASE("ChanUtil - Nwise 3") {
 TEST_CASE("ChanUtil - Nwise 2 matches pairwise") {
     auto r = nwise<2, int>().spawn(count(1, 5).spawn());
 
-    CHECK_EQ(std::make_tuple(1, 2), r.read());
-    CHECK_EQ(std::make_tuple(2, 3), r.read());
-    CHECK_EQ(std::make_tuple(3, 4), r.read());
+    CHECK(std::make_tuple(1, 2) == r.read());
+    CHECK(std::make_tuple(2, 3) == r.read());
+    CHECK(std::make_tuple(3, 4) == r.read());
     std::tuple<int, int> t;
     CHECK_FALSE(bool(r >> t));
 }
@@ -1948,7 +1948,7 @@ TEST_CASE("ChanUtil - Flatten") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3, 4, 5, 6, 7}), got);
+    CHECK(std::vector<int>({1, 2, 3, 4, 5, 6, 7}) == got);
 }
 
 TEST_CASE("ChanUtil - Flatten empty vectors") {
@@ -1964,7 +1964,7 @@ TEST_CASE("ChanUtil - Flatten empty vectors") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 // --- unzip ---
@@ -1982,8 +1982,8 @@ TEST_CASE("ChanUtil - Unzip binary") {
     });
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({1, 2, 3}), as);
-    CHECK_EQ(std::vector<int>({10, 20, 30}), bs);
+    CHECK(std::vector<int>({1, 2, 3}) == as);
+    CHECK(std::vector<int>({10, 20, 30}) == bs);
 }
 
 TEST_CASE("ChanUtil - Unzip with function (binary)") {
@@ -2000,8 +2000,8 @@ TEST_CASE("ChanUtil - Unzip with function (binary)") {
     });
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({0, 0, 1, 1, 2}), qs);
-    CHECK_EQ(std::vector<int>({0, 1, 0, 1, 0}), rs);
+    CHECK(std::vector<int>({0, 0, 1, 1, 2}) == qs);
+    CHECK(std::vector<int>({0, 1, 0, 1, 0}) == rs);
 }
 
 TEST_CASE("ChanUtil - Unzip tuple") {
@@ -2022,9 +2022,9 @@ TEST_CASE("ChanUtil - Unzip tuple") {
     });
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({1, 2, 3}), as);
-    CHECK_EQ(std::vector<int>({10, 20, 30}), bs);
-    CHECK_EQ(std::vector<int>({100, 200, 300}), cs);
+    CHECK(std::vector<int>({1, 2, 3}) == as);
+    CHECK(std::vector<int>({10, 20, 30}) == bs);
+    CHECK(std::vector<int>({100, 200, 300}) == cs);
 }
 
 TEST_CASE("ChanUtil - Unzip with function (ternary)") {
@@ -2045,9 +2045,9 @@ TEST_CASE("ChanUtil - Unzip with function (ternary)") {
     });
     while (csp::internal::run()) { }
 
-    CHECK_EQ(std::vector<int>({0, 1, 2, 3}), as);
-    CHECK_EQ(std::vector<int>({0, 10, 20, 30}), bs);
-    CHECK_EQ(std::vector<int>({0, 100, 200, 300}), cs);
+    CHECK(std::vector<int>({0, 1, 2, 3}) == as);
+    CHECK(std::vector<int>({0, 10, 20, 30}) == bs);
+    CHECK(std::vector<int>({0, 100, 200, 300}) == cs);
 }
 
 // --- default_if_empty ---
@@ -2058,14 +2058,14 @@ TEST_CASE("ChanUtil - DefaultIfEmpty with values") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("ChanUtil - DefaultIfEmpty empty input") {
     auto r = default_if_empty<int>(99)
                  .spawn(merge(std::vector<reader<int>>{}).spawn());
 
-    CHECK_EQ(99, r.read());
+    CHECK(99 == r.read());
     int n;
     CHECK_FALSE(bool(r >> n));
 }
@@ -2077,7 +2077,7 @@ TEST_CASE("ChanUtil - Stride 3") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 4, 7, 10}), got);
+    CHECK(std::vector<int>({1, 4, 7, 10}) == got);
 }
 
 TEST_CASE("ChanUtil - Stride 1 is identity") {
@@ -2085,7 +2085,7 @@ TEST_CASE("ChanUtil - Stride 1 is identity") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 2, 3, 4}), got);
+    CHECK(std::vector<int>({1, 2, 3, 4}) == got);
 }
 
 TEST_CASE("ChanUtil - Stride 2") {
@@ -2093,5 +2093,5 @@ TEST_CASE("ChanUtil - Stride 2") {
 
     std::vector<int> got;
     for (int n; r >> n;) got.push_back(n);
-    CHECK_EQ(std::vector<int>({1, 3, 5, 7}), got);
+    CHECK(std::vector<int>({1, 3, 5, 7}) == got);
 }

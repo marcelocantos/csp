@@ -34,7 +34,7 @@ TEST_CASE("Protocol - A1 steal_work contention") {
 
     csp::schedule();
 
-    CHECK_EQ(N, count.load());
+    CHECK(N == count.load());
 
     csp::shutdown_runtime();
 }
@@ -80,8 +80,8 @@ TEST_CASE("Protocol - A2 concurrent channel close + alt sleep") {
     csp::schedule();
 
     // All N readers should have been woken by the dead channel.
-    CHECK_EQ(N, dead_count.load());
-    CHECK_EQ(0, data_count.load());
+    CHECK(N == dead_count.load());
+    CHECK(0 == data_count.load());
 
     csp::shutdown_runtime();
 }
@@ -124,8 +124,8 @@ TEST_CASE("Protocol - A3 concurrent endpoint release") {
     csp::schedule();
 
     // Channel count should return to baseline (no leaks).
-    CHECK_EQ(baseline_w, csp::internal::channel_count(0));
-    CHECK_EQ(baseline_r, csp::internal::channel_count(1));
+    CHECK(baseline_w == csp::internal::channel_count(0));
+    CHECK(baseline_r == csp::internal::channel_count(1));
 
     csp::shutdown_runtime();
 }
@@ -163,7 +163,7 @@ TEST_CASE("Protocol - A4 early wake path") {
 
     csp::schedule();
 
-    CHECK_EQ(ROUNDS, success.load());
+    CHECK(ROUNDS == success.load());
 
     csp::shutdown_runtime();
 }
@@ -194,7 +194,7 @@ TEST_CASE("Protocol - A5 timer heap boundary") {
 
     csp::schedule();
 
-    CHECK_EQ(N, count.load());
+    CHECK(N == count.load());
 
     csp::shutdown_runtime();
 }
@@ -219,7 +219,7 @@ TEST_CASE("Protocol - A6 implicit re-init") {
             });
         }
         csp::schedule();
-        CHECK_EQ(N1, count1.load());
+        CHECK(N1 == count1.load());
     }
 
     // Re-init WITHOUT shutdown_runtime() — Runtime::init() calls
@@ -235,7 +235,7 @@ TEST_CASE("Protocol - A6 implicit re-init") {
             });
         }
         csp::schedule();
-        CHECK_EQ(N2, count2.load());
+        CHECK(N2 == count2.load());
     }
 
     csp::shutdown_runtime();

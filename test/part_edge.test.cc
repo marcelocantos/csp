@@ -103,7 +103,7 @@ TEST_CASE("Empty input - window") {
 TEST_CASE("Empty input - reduce emits initial value") {
     RunStats rs;
     auto r = reduce<int>(0, std::plus<>{}).spawn(reader<int>::dead());
-    CHECK_EQ(0, r.read());
+    CHECK(0 == r.read());
     int v;
     CHECK_FALSE(bool(r >> v));
 }
@@ -124,9 +124,9 @@ TEST_CASE("Output death - map") {
     auto r = map<int, int>([](int n) { return n * 2; })
                  .spawn(count_forever(1).spawn());
 
-    CHECK_EQ(2, r.read());
-    CHECK_EQ(4, r.read());
-    CHECK_EQ(6, r.read());
+    CHECK(2 == r.read());
+    CHECK(4 == r.read());
+    CHECK(6 == r.read());
     // Drop the output reader; combinator should terminate cleanly.
     r = {};
     while (csp::internal::run()) { }
@@ -137,8 +137,8 @@ TEST_CASE("Output death - where") {
     auto r = where<int>([](int) { return true; })
                  .spawn(count_forever(1).spawn());
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
     // Drop the output reader.
     r = {};
     while (csp::internal::run()) { }
@@ -149,9 +149,9 @@ TEST_CASE("Output death - scan") {
     auto r = scan<int, int>(0, [](int acc, int v) { return acc + v; })
                  .spawn(count_forever(1).spawn());
 
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(3, r.read());
-    CHECK_EQ(6, r.read());
+    CHECK(1 == r.read());
+    CHECK(3 == r.read());
+    CHECK(6 == r.read());
     // Drop the output reader.
     r = {};
     while (csp::internal::run()) { }
@@ -162,9 +162,9 @@ TEST_CASE("Output death - batch") {
     auto r = batch<int>(2).spawn(count_forever(1).spawn());
 
     auto v = r.read();
-    CHECK_EQ(2, v.size());
-    CHECK_EQ(1, v[0]);
-    CHECK_EQ(2, v[1]);
+    CHECK(2 == v.size());
+    CHECK(1 == v[0]);
+    CHECK(2 == v[1]);
     // Drop after 1 batch.
     r = {};
     while (csp::internal::run()) { }
@@ -179,10 +179,10 @@ TEST_CASE("random_bytes produces correct chunk size") {
     auto r = rand::random_bytes(64).spawn();
 
     auto chunk = r.read();
-    CHECK_EQ(64, chunk.size());
+    CHECK(64 == chunk.size());
 
     auto chunk2 = r.read();
-    CHECK_EQ(64, chunk2.size());
+    CHECK(64 == chunk2.size());
 
     // Drop reader; producer should terminate cleanly.
     r = {};
@@ -209,9 +209,9 @@ TEST_CASE("map with unique_ptr") {
         }
     });
 
-    CHECK_EQ(10, *r.read());
-    CHECK_EQ(20, *r.read());
-    CHECK_EQ(30, *r.read());
+    CHECK(10 == *r.read());
+    CHECK(20 == *r.read());
+    CHECK(30 == *r.read());
 
     std::unique_ptr<int> v;
     CHECK_FALSE(bool(r >> v));

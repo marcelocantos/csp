@@ -37,7 +37,7 @@ TEST_CASE("Sieve - Eratosthenes") {
     auto [out_w, out_r] = chan<int>{};
     stats.spawn(eratosthenes(std::move(out_w), stats));
     for (int i : primes()) {
-        CHECK_EQ(i, out_r.read());
+        CHECK(i == out_r.read());
     }
     out_r = {};
     csp::schedule();

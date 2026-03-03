@@ -31,13 +31,13 @@ TEST_CASE("Interleave - DrainSeesWakePending") {
         csp::spawn([r = std::move(r), &completed, i] {
             int v = 0;
             r >> v;
-            CHECK_EQ(i, v);
+            CHECK(i == v);
             completed.fetch_add(1, std::memory_order_relaxed);
         });
     }
 
     csp::schedule();
-    CHECK_EQ(ITERS, completed.load());
+    CHECK(ITERS == completed.load());
 
     csp::shutdown_runtime();
 }
@@ -110,8 +110,8 @@ TEST_CASE("Interleave - SurplusPWindDown") {
 
     csp::schedule();
 
-    CHECK_EQ(2, stalls_done.load());
-    CHECK_EQ(WORK, work_done.load());
+    CHECK(2 == stalls_done.load());
+    CHECK(WORK == work_done.load());
 
     // shutdown_runtime() must complete promptly — surplus Ps must not
     // be stuck. If they leaked, join() would hang.
@@ -120,7 +120,7 @@ TEST_CASE("Interleave - SurplusPWindDown") {
     auto elapsed = std::chrono::steady_clock::now() - start;
     // Shutdown should take well under 1 second (surplus Ps exit when
     // stopping=true, no need to wait for 5s wind-down).
-    CHECK_LT(elapsed, 2s);
+    CHECK(elapsed < 2s);
 }
 
 // C4. Multi-waker alt claim
@@ -156,23 +156,17 @@ TEST_CASE("Interleave - MultiWakerAltClaim") {
             });
         }
 
-        // Drain readers for the channels that didn't win the alt.
-        for (int c = 0; c < CHANS; ++c) {
-            csp::spawn([r = chans[c].r.copy()] {
-                int v;
-                r >> v; // Drain if there's a remaining writer.
-            });
-        }
-
-        // Release our copies.
+        // Release our copies.  The alt reader holds the only reader
+        // references.  After the alt fires and the alt reader exits,
+        // the remaining writers see dead read endpoints and unblock.
         for (auto& ch : chans) ch.release();
 
         csp::schedule();
 
         // Exactly one channel must have won.
         int which = alt_result.load();
-        CHECK_GE(which, 0);
-        CHECK_LT(which, CHANS);
+        CHECK(which >= 0);
+        CHECK(which < CHANS);
     }
 
     csp::shutdown_runtime();
@@ -224,7 +218,7 @@ TEST_CASE("Interleave - PrialtDeterminism") {
         csp::schedule();
 
         // prialt always picks channel 0 (first in priority order).
-        CHECK_EQ(0, alt_result.load());
+        CHECK(0 == alt_result.load());
     }
 }
 
@@ -253,7 +247,7 @@ TEST_CASE("Interleave - DrainStress") {
     csp::schedule();
 
     int64_t expected = (int64_t)N * (N - 1) / 2;
-    CHECK_EQ(expected, total.load());
+    CHECK(expected == total.load());
 
     csp::shutdown_runtime();
 }

@@ -10,98 +10,118 @@ TEST_SUITE("Pace") {
 
 TEST_CASE("Pace - all values pass through") {
     RunStats stats;
-
-    auto p = pace<int>(tick(50ms)).spawn();
-
-    stats.spawn([w = std::move(p.w)]{
-        w << 1; w << 2; w << 3;
-    });
+    fake_clock fc;
 
     std::vector<int> got;
-    stats.spawn([r = std::move(p.r), &got]{
-        for (int v; r >> v;) got.push_back(v);
+
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+        auto p = pace<int>(tick(50ms)).spawn();
+
+        csp::spawn([w = std::move(p.w)]{
+            w << 1; w << 2; w << 3;
+        });
+
+        for (int v; p.r >> v;) got.push_back(v);
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    fc.run();
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("Pace - enforces minimum interval") {
     RunStats stats;
-
-    auto p = pace<int>(tick(80ms)).spawn();
-
-    stats.spawn([w = std::move(p.w)]{
-        w << 1; w << 2; w << 3;
-    });
+    fake_clock fc;
+    auto epoch = time_point{};
 
     std::vector<csp::time_point> times;
-    stats.spawn([r = std::move(p.r), &times]{
-        for (int v; r >> v;) {
+
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+        auto p = pace<int>(tick(80ms)).spawn();
+
+        csp::spawn([w = std::move(p.w)]{
+            w << 1; w << 2; w << 3;
+        });
+
+        for (int v; p.r >> v;) {
             (void)v;
-            times.push_back(std::chrono::steady_clock::now());
+            times.push_back(csp::now());
         }
     });
 
     csp::schedule();
-    REQUIRE_EQ(3u, times.size());
-    // First → second and second → third should each be >= 80ms.
-    CHECK_GE(times[1] - times[0], 75ms);  // small tolerance
-    CHECK_GE(times[2] - times[1], 75ms);
+    fc.run();
+    REQUIRE(3u == times.size());
+    CHECK(times[0] == epoch);
+    CHECK(times[1] == epoch + 80ms);
+    CHECK(times[2] == epoch + 160ms);
 }
 
 TEST_CASE("Pace - first value passes immediately") {
     RunStats stats;
-
-    auto p = pace<int>(tick(200ms)).spawn();
-    auto start = std::chrono::steady_clock::now();
-
-    stats.spawn([w = std::move(p.w)]{
-        w << 42;
-    });
+    fake_clock fc;
+    auto epoch = time_point{};
 
     csp::time_point received;
-    stats.spawn([r = std::move(p.r), &received]{
+
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+        auto p = pace<int>(tick(200ms)).spawn();
+
+        csp::spawn([w = std::move(p.w)]{
+            w << 42;
+        });
+
         int v;
-        r >> v;
-        CHECK_EQ(42, v);
-        received = std::chrono::steady_clock::now();
+        p.r >> v;
+        CHECK(42 == v);
+        received = csp::now();
     });
 
     csp::schedule();
-    CHECK_LT(received - start, 50ms);  // should be near-instant
+    fc.run();
+    CHECK(received == epoch);
 }
 
 TEST_CASE("Pace - output death stops") {
     RunStats stats;
+    fake_clock fc;
 
-    auto p = pace<int>(tick(50ms)).spawn();
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+        auto p = pace<int>(tick(50ms)).spawn();
 
-    stats.spawn([w = std::move(p.w)]{
-        // Send many values — output will die after first read.
-        for (int i = 0; i < 100; ++i) w << i;
-    });
+        csp::spawn([w = std::move(p.w)]{
+            // Send many values — output will die after first read.
+            for (int i = 0; i < 100; ++i) w << i;
+        });
 
-    stats.spawn([r = std::move(p.r)]{
-        CHECK_EQ(0, r.read());
+        CHECK(0 == p.r.read());
         // Drop reader — output dies.
     });
 
     csp::schedule();
+    fc.run();
 }
 
 TEST_CASE("Pace - pipe composition") {
     RunStats stats;
-
-    auto r = count(1, 4).spawn() | pace<int>(tick(50ms));
+    fake_clock fc;
 
     std::vector<int> got;
-    stats.spawn([r = std::move(r), &got]{
+
+    stats.spawn([&]{
+        csp::local l{csp::clock = &fc};
+        auto r = count(1, 4).spawn() | pace<int>(tick(50ms));
+
         for (int v; r >> v;) got.push_back(v);
     });
 
     csp::schedule();
-    CHECK_EQ(std::vector<int>({1, 2, 3}), got);
+    fc.run();
+    CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
 TEST_CASE("Pace - trigger death stops") {
@@ -117,7 +137,7 @@ TEST_CASE("Pace - trigger death stops") {
     });
 
     stats.spawn([r = std::move(p.r)]{
-        CHECK_EQ(1, r.read());
+        CHECK(1 == r.read());
         int _;
         CHECK_FALSE(bool(r >> _));
     });

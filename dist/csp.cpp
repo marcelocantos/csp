@@ -82,13 +82,56 @@ void BlockingPool::worker() {
 namespace csp::internal {
 
 void run_blocking(std::function<void()> fn) {
-    detail::g_imp->suspending_.store(true, std::memory_order_release);
-    detail::BlockingPool::instance().submit(detail::g_imp, std::move(fn));
+    detail::current_imp()->suspending_.store(true, std::memory_order_release);
+    detail::BlockingPool::instance().submit(detail::current_imp(), std::move(fn));
     detail::do_switch(detail::Status::detach);
-    detail::g_imp->suspending_.store(false, std::memory_order_release);
+    detail::current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal
+
+/* byte_reader.cc */
+
+#include <algorithm>
+#include <cstring>
+
+namespace csp {
+
+size_t byte_reader::read(bytes& out) {
+    size_t total = 0;
+    size_t need = out.size();
+
+    // Drain leftover from a previous call.
+    if (pos_ < buf_.size()) {
+        size_t avail = buf_.size() - pos_;
+        size_t n = std::min(avail, need);
+        std::memcpy(out.data(), buf_.data() + pos_, n);
+        pos_ += n;
+        total = n;
+        if (pos_ == buf_.size()) {
+            buf_.clear();
+            pos_ = 0;
+        }
+        if (total == need) return total;
+    }
+
+    // Pull chunks from the underlying reader.
+    bytes chunk;
+    while (total < need && (r_ >> chunk)) {
+        size_t n = std::min(chunk.size(), need - total);
+        std::memcpy(out.data() + total, chunk.data(), n);
+        total += n;
+        if (n < chunk.size()) {
+            buf_ = std::move(chunk);
+            pos_ = n;
+            return total;
+        }
+    }
+
+    return total;
+}
+
+} // namespace csp
 
 /* cancel.cc */
 
@@ -247,11 +290,9 @@ std::exception_ptr cancel_reason() {
 
 /* channel.cc */
 
-#include <algorithm>
 #include <climits>
 #include <cstdarg>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <mutex>
 #include <random>
@@ -464,9 +505,9 @@ namespace {
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
-            if (g_imp->stk_) {
+            if (current_imp()->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, __builtin_frame_address(0));
+                    current_imp()->stk_, __builtin_frame_address(0));
             }
 
         retry:
@@ -627,7 +668,7 @@ namespace {
 
             // Phase 2: Register on all channels and sleep.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
-            g_imp->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
+            current_imp()->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
@@ -644,8 +685,8 @@ namespace {
                 mi->sorted[i]->alive_.fetch_add(1, std::memory_order_relaxed);
             }
 
-            g_imp->chanops_ = chanops;
-            g_imp->n_chanops_ = count;
+            current_imp()->chanops_ = chanops;
+            current_imp()->n_chanops_ = count;
             // Mark suspending_ before unlock_all so that schedule()
             // (called by a waker on another thread) will set
             // wake_pending_ instead of pushing to the global queue.
@@ -654,18 +695,18 @@ namespace {
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
-            g_imp->suspending_.store(true, std::memory_order_release);
+            current_imp()->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            g_imp->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            current_imp()->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < g_imp->n_chanops_; ++i) {
-                auto const & chop = g_imp->chanops_[i];
+            for (int i = 0; i < current_imp()->n_chanops_; ++i) {
+                auto const & chop = current_imp()->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, g_imp);
+                    ch->endpts_[flags & endpt_flag].remove(&chop, current_imp());
                 }
             }
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
@@ -683,21 +724,21 @@ namespace {
                 }
             }
 
-            g_imp->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+            current_imp()->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
 
             // Check for swap wake-up: if signal_ is INT_MIN, a channel swap
             // occurred. Re-resolve happens at retry: label.
-            if (g_imp->signal_ == INT_MIN) {
-                g_imp->chanops_ = nullptr;
-                g_imp->n_chanops_ = 0;
+            if (current_imp()->signal_ == INT_MIN) {
+                current_imp()->chanops_ = nullptr;
+                current_imp()->n_chanops_ = 0;
                 delete[] mi->heap_alloc;
                 mi->heap_alloc = nullptr;
                 goto retry;
             }
 
-            out->result = g_imp->signal_;
-            g_imp->chanops_ = nullptr;
-            g_imp->n_chanops_ = 0;
+            out->result = current_imp()->signal_;
+            current_imp()->chanops_ = nullptr;
+            current_imp()->n_chanops_ = 0;
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
@@ -735,9 +776,9 @@ namespace {
             void wait(ChanOp const * chop) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
-                    waiters.emplace(chop, g_imp);
+                    waiters.emplace(chop, current_imp());
                 } else {
-                    vultures.emplace(chop, g_imp);
+                    vultures.emplace(chop, current_imp());
                 }
             }
 
@@ -988,7 +1029,7 @@ fake_clock::fake_clock(time_point start) : current_(start) {}
 
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
-    pending_.push({tp, detail::g_imp});
+    pending_.push({tp, detail::current_imp()});
     internal::suspend();
 }
 
@@ -1027,8 +1068,6 @@ void fake_clock::run_until_idle() {
 
 /* csp.cc */
 
-#include <pthread.h>
-
 #include <thread>
 #include <utility>
 
@@ -1039,11 +1078,17 @@ static void default_scheduler_impl() {
     while (true) {
         if (csp::internal::run()) continue;
         if (rt.live_gs.load(std::memory_order_acquire) == 0) break;
-        // If no reactor signals are pending, no external events can
-        // wake blocked imps. Exit like the old scheduler (deadlock or done).
-        if (!csp::detail::Reactor::instance().has_pending_signals()) break;
-        // Park until the reactor posts work to the global queue,
-        // or all imps have exited.
+        // In single-P mode, if no reactor signals are pending and no
+        // global work is queued, no external event can wake blocked
+        // imps — exit (deadlock or done).  Both conditions must hold:
+        // the reactor decrements pending_signals *after* scheduling
+        // the woken imp (which sets has_global_work_), so checking
+        // both avoids a race where pending_signals is already zero
+        // but the woken imp hasn't been run yet.
+        if (!rt.mn_mode_
+            && !csp::detail::Reactor::instance().has_pending_signals()
+            && !rt.has_global_work_.load(std::memory_order_acquire)) break;
+        // Park until work arrives or all imps have exited.
         std::unique_lock<std::mutex> lk(rt.park_mu);
         rt.park_cv.wait(lk, [&rt] {
             return rt.live_gs.load(std::memory_order_acquire) == 0
@@ -1104,7 +1149,7 @@ namespace csp {
         }
 
         static intptr_t switch_to(Imp & target, intptr_t data) {
-            auto self = g_imp;
+            auto self = current_imp();
             // Acquire-load ctx_ to synchronize with the release-store
             // that saved the target's context on a (possibly different)
             // OS thread.  This ensures the saved register data on the
@@ -1218,8 +1263,8 @@ namespace csp {
         void Imp::run(Status status) {
             auto& p = current_p();
             auto& busy = p.busy;
-            assert(this != g_imp);
-            auto self = g_imp;
+            auto self = current_imp();
+            assert(this != self);
 
             // Manipulate run queue under lock, but release before context switch.
             {
@@ -1229,31 +1274,31 @@ namespace csp {
                 case Status::run:
                     break;
                 case Status::sleep:
-                    if (g_imp == busy) {
+                    if (self == busy) {
                         busy = busy->next_;
                     }
                     break;
                 case Status::detach: // TLA:StealWork.VDeschedule
                 case Status::exit:
                     // Inline deschedule without re-acquiring run_mu.
-                    assert(g_imp->next_);
-                    if (busy == g_imp && (busy = g_imp->next_) == g_imp) {
+                    assert(self->next_);
+                    if (busy == self && (busy = self->next_) == self) {
                         busy = nullptr;
                     }
-                    if (g_imp->next_) g_imp->next_->prev_ = g_imp->prev_;
-                    if (g_imp->prev_) g_imp->prev_->next_ = g_imp->next_;
-                    g_imp->next_ = nullptr;
-                    g_imp->prev_ = nullptr;
+                    if (self->next_) self->next_->prev_ = self->prev_;
+                    if (self->prev_) self->prev_->next_ = self->next_;
+                    self->next_ = nullptr;
+                    self->prev_ = nullptr;
 
                     // TLA:DrainSuspended.CheckWP
                     if (status == Status::detach &&
-                        g_imp->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                        self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                         if (busy) {
-                            g_imp->next_ = busy;
-                            g_imp->prev_ = busy->prev_;
-                            g_imp->next_->prev_ = g_imp->prev_->next_ = g_imp;
+                            self->next_ = busy;
+                            self->prev_ = busy->prev_;
+                            self->next_->prev_ = self->prev_->next_ = self;
                         } else {
-                            busy = g_imp->next_ = g_imp->prev_ = g_imp;
+                            busy = self->next_ = self->prev_ = self;
                         }
                         return;
                     }
@@ -1273,23 +1318,24 @@ namespace csp {
                 }
             }
 
-            auto killme = status == Status::exit ? g_imp : nullptr;
+            auto killme = status == Status::exit ? self : nullptr;
             auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
             if (killyou) {
                 destroy_imp(killyou);
             }
 
             if (!killme) {
-                g_imp = self;
+                set_current_imp(self);
             }
         }
 
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
+            auto* self = current_imp();
             // Reclaim unused stack pages before suspending.
-            if (g_imp->stk_) {
+            if (self->stk_) {
                 StackPool::instance().maybe_shrink(
-                    g_imp->stk_, __builtin_frame_address(0));
+                    self->stk_, __builtin_frame_address(0));
             }
             Imp* target;
             {
@@ -1298,9 +1344,9 @@ namespace csp {
                 // (local_next sets running for the initial pick; chained
                 // do_switch calls keep it current as execution moves
                 // between imps.)
-                current_p().running = g_imp;
+                current_p().running = self;
                 auto& busy = current_p().busy;
-                if (busy == g_imp) {
+                if (busy == self) {
                     busy = busy->next_;
                 }
                 target = busy;
@@ -1352,12 +1398,16 @@ static void start(transfer_t t) {
     auto data = sd.data;
     auto * self = &sd.self;
     auto parent_dyn_ctx = sd.caller.dyn_ctx_;
-    g_imp = self;
+    // Retain and assign parent's dynamic context BEFORE the warmup
+    // switch.  After the switch the parent continues running and may
+    // release its dyn_ctx (e.g. by exiting a context_scope or dying),
+    // which could free the HAMT node before this imp resumes.
+    if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
+    self->dyn_ctx_ = parent_dyn_ctx;
+    set_current_imp(self);
     auto killyou_val = switch_to(sd.caller, 0);
     // After warmup switch, sd may be invalid. Use local copies only.
-    g_imp = self;
-    self->dyn_ctx_ = parent_dyn_ctx;
-    if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
+    set_current_imp(self);
 
     // In M:N mode, the resuming switch may carry a killyou pointer — a
     // dying imp that exited and chained into us via run(exit).
@@ -1377,11 +1427,12 @@ static void start(transfer_t t) {
 namespace csp::internal {
 
 int spawn(EntryFn start_f, void * data) {
-    (void)current_p(); // Ensure g_imp is bound before use.
+    (void)current_p(); // Ensure current_imp() is bound before use.
+    auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
-    if (g_imp->stk_) {
+    if (self->stk_) {
         StackPool::instance().maybe_shrink(
-            g_imp->stk_, __builtin_frame_address(0));
+            self->stk_, __builtin_frame_address(0));
     }
     try {
 #if CSP_USE_MMAP_STACKS
@@ -1408,10 +1459,9 @@ int spawn(EntryFn start_f, void * data) {
         imp->tsan_fiber_ = __tsan_create_fiber(0);
 #endif
 
-        StartData const start_data = {start_f, data, *imp, *g_imp};
-        auto self = g_imp;
+        StartData const start_data = {start_f, data, *imp, *self};
         switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
-        g_imp = self;
+        set_current_imp(self);
 
         auto& rt = Runtime::instance();
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
@@ -1441,9 +1491,9 @@ int spawn(EntryFn start_f, void * data) {
 }
 
 void suspend() {
-    g_imp->suspending_.store(true, std::memory_order_release);
+    current_imp()->suspending_.store(true, std::memory_order_release);
     do_switch(Status::detach);
-    g_imp->suspending_.store(false, std::memory_order_release);
+    current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 int run() {
@@ -1466,10 +1516,11 @@ int run() {
     {
         std::lock_guard<std::mutex> lk(p.run_mu);
         auto& busy = p.busy;
-        if (busy == g_imp) {
+        auto* ci = current_imp();
+        if (busy == ci) {
             busy = busy->next_;
         }
-        if (busy != g_imp) {
+        if (busy != ci) {
             target = busy;
         }
     }
@@ -1499,14 +1550,12 @@ void yield() {
 void descr(char const * fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    vstatus(g_imp, fmt, args);
+    vstatus(current_imp(), fmt, args);
     va_end(args);
-
-    pthread_setname_np(getstatus(g_imp));
 }
 
 char const * get_descr(void * thr) {
-    return getfullstatus(thr ? static_cast<Imp const *>(thr) : g_imp);
+    return getfullstatus(thr ? static_cast<Imp const *>(thr) : current_imp());
 }
 
 } // namespace csp::internal
@@ -1649,7 +1698,145 @@ uintptr_t hamt_assoc(uintptr_t root, uint64_t key, std::any value) {
 
 } // namespace csp::internal
 
+/* imp_exit.cc */
+
+#include <deque>
+
+namespace csp {
+
+struct imp_exit_state {
+    writer<imp_event> sink;
+};
+
+static dynamic<std::shared_ptr<imp_exit_state>> g_imp_exit{};
+
+// --- imp_event ---
+
+imp_event::imp_event(std::exception_ptr ex, writer<duration> w)
+    : error(std::move(ex)), response_(std::move(w)) {}
+
+imp_event::imp_event(imp_event&&) noexcept = default;
+imp_event& imp_event::operator=(imp_event&&) noexcept = default;
+imp_event::~imp_event() = default;
+
+void imp_event::restart(duration d) {
+    response_ << d;
+    response_ = {};  // release writer after successful send
+}
+
+// --- supervised_fn ---
+
+supervised_fn::supervised_fn(std::function<void()> f) : f_(std::move(f)) {}
+
+void supervised_fn::operator()() {
+    for (;;) {
+        std::exception_ptr ex;
+        try {
+            f_();
+        } catch (...) {
+            ex = std::current_exception();
+        }
+
+        auto state = *g_imp_exit;
+        if (!state) {
+            if (ex) std::rethrow_exception(ex);
+            return;
+        }
+
+        // Send event and wait for decision.
+        // Copy ex (not move) — we need it if the send fails.
+        chan<duration> response;
+        imp_event event(ex, std::move(response.w));
+
+        if (!(state->sink << std::move(event))) {
+            // Policy channel dead — fall back to fail-fast.
+            if (ex) std::rethrow_exception(ex);
+            return;
+        }
+
+        duration d;
+        if (!(response.r >> d)) {
+            // Handler dropped event without restart() — die normally.
+            // The handler already saw the exception and decided not to restart.
+            return;
+        }
+
+        if (d > duration::zero()) csp::sleep(d);
+    }
+}
+
+// --- exit_guard ---
+
+struct exit_guard::impl {
+    std::shared_ptr<imp_exit_state> state;
+    csp::local binding;
+
+    impl(std::shared_ptr<imp_exit_state> s)
+        : state(std::move(s))
+        , binding(g_imp_exit = state) {}
+};
+
+exit_guard::exit_guard(std::unique_ptr<impl> p) : impl_(std::move(p)) {}
+exit_guard::exit_guard(exit_guard&&) noexcept = default;
+exit_guard& exit_guard::operator=(exit_guard&&) noexcept = default;
+exit_guard::~exit_guard() = default;
+
+// --- on_exit ---
+
+exit_guard on_exit(std::function<void(imp_event)> handler) {
+    auto state = std::make_shared<imp_exit_state>();
+    chan<imp_event> ch;
+    state->sink = std::move(ch.w);
+
+    spawn([handler = std::move(handler), r = std::move(ch.r)]() {
+        for (;;) {
+            imp_event ev;
+            if (!(r >> ev)) break;
+            handler(std::move(ev));
+        }
+    });
+
+    return exit_guard(std::make_unique<exit_guard::impl>(state));
+}
+
+exit_guard on_exit(restart_policy policy) {
+    auto state = std::make_shared<imp_exit_state>();
+    chan<imp_event> ch;
+    state->sink = std::move(ch.w);
+
+    spawn([policy, r = std::move(ch.r)]() {
+        std::deque<time_point> times;
+        std::exception_ptr last_error;
+        for (;;) {
+            imp_event ev;
+            if (!(r >> ev)) break;
+
+            if (!ev.error) continue;  // ev destroyed at block end → imp dies
+
+            auto tp = csp::now();
+            while (!times.empty() && times.front() + policy.window < tp)
+                times.pop_front();
+
+            if (static_cast<int>(times.size()) >= policy.max_restarts) {
+                break;  // ev destroyed at block end → imp dies with original exception
+            }
+
+            times.push_back(tp);
+            ev.restart(policy.backoff);
+        }
+    });
+
+    return exit_guard(std::make_unique<exit_guard::impl>(state));
+}
+
+} // namespace csp
+
 /* io.cc */
+
+#include <cerrno>
+#include <cstdint>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace csp::internal {
 
@@ -1690,6 +1877,88 @@ void io_wait_writable(int fd) {
 }
 
 } // namespace csp::internal
+
+namespace csp::io {
+
+int set_nonblock(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0) return -1;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+ssize_t read(int fd, void* buf, size_t len) {
+    for (;;) {
+        ssize_t n = ::read(fd, buf, len);
+        if (n >= 0) return n;
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            wait_readable(fd);
+            continue;
+        }
+        return -1;
+    }
+}
+
+ssize_t write(int fd, const void* buf, size_t len) {
+    size_t written = 0;
+    auto p = static_cast<const uint8_t*>(buf);
+    while (written < len) {
+        ssize_t n = ::write(fd, p + written, len - written);
+        if (n >= 0) {
+            written += static_cast<size_t>(n);
+            continue;
+        }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            wait_writable(fd);
+            continue;
+        }
+        return -1;
+    }
+    return static_cast<ssize_t>(written);
+}
+
+int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
+    for (;;) {
+        int fd = ::accept(listen_fd, addr, addrlen);
+        if (fd >= 0) return fd;
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            wait_readable(listen_fd);
+            continue;
+        }
+        return -1;
+    }
+}
+
+int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
+    int ret = ::connect(fd, addr, addrlen);
+    if (ret == 0) return 0;
+    if (errno != EINPROGRESS) return -1;
+
+    wait_writable(fd);
+    int err = 0;
+    socklen_t errlen = sizeof(err);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
+    if (err != 0) { errno = err; return -1; }
+    return 0;
+}
+
+resolve_result resolve(const std::string& host,
+                       const std::string& service,
+                       const struct addrinfo* hints) {
+    struct addrinfo* raw = nullptr;
+    int err = csp::blocking([&] {
+        return ::getaddrinfo(
+            host.c_str(),
+            service.empty() ? nullptr : service.c_str(),
+            hints, &raw);
+    });
+    if (err != 0) return resolve_result{.error = err};
+    return resolve_result{.info = addrinfo_ptr(raw)};
+}
+
+} // namespace csp::io
 
 /* log.cc */
 
@@ -1981,10 +2250,14 @@ namespace csp {
 
 /* reactor.cc */
 
+#ifdef __APPLE__
 #include <sys/event.h>
-#include <unistd.h>
+#elif defined(__linux__)
+#include <sys/epoll.h>
+#include <sys/timerfd.h>
+#include <sys/eventfd.h>
+#endif
 
-#include <cerrno>
 
 namespace csp::detail {
 
@@ -1994,6 +2267,12 @@ Reactor& Reactor::instance() {
     static Reactor r;
     return r;
 }
+
+// ============================================================
+// Platform: macOS (kqueue)
+// ============================================================
+
+#ifdef __APPLE__
 
 void Reactor::ensure_started() {
     if (running_.load(std::memory_order_acquire)) return;
@@ -2029,7 +2308,6 @@ void Reactor::shutdown() {
     close(kq_);
     kq_ = -1;
 
-    // Clear remaining writers (events that never fired).
     {
         std::lock_guard<std::mutex> slk(signal_mu_);
         timer_writers_.clear();
@@ -2046,8 +2324,6 @@ void Reactor::wake() {
     EV_SET(&ev, 0, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
     kevent(kq_, &ev, 1, nullptr, 0, nullptr);
 }
-
-// --- Signal creation ---
 
 std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
     chan<> ch;
@@ -2068,12 +2344,14 @@ std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
     return {std::move(ch.r), ident};
 }
 
-reader<> Reactor::create_fd_event(int fd, int16_t filter) {
+reader<> Reactor::create_fd_event(int fd, fd_event event) {
     chan<> ch;
+
+    int16_t filter = (event == fd_event::read) ? EVFILT_READ : EVFILT_WRITE;
 
     {
         std::lock_guard<std::mutex> lk(signal_mu_);
-        if (filter == EVFILT_READ)
+        if (event == fd_event::read)
             read_writers_.insert_or_assign(fd, std::move(ch.w));
         else
             write_writers_.insert_or_assign(fd, std::move(ch.w));
@@ -2088,10 +2366,7 @@ reader<> Reactor::create_fd_event(int fd, int16_t filter) {
     return std::move(ch.r);
 }
 
-// --- Signal cancellation ---
-
 void Reactor::cancel_timer(uintptr_t ident) {
-    // EV_DELETE first (while kq_ is still valid), then erase writer.
     struct kevent ev;
     EV_SET(&ev, ident, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
     kevent(kq_, &ev, 1, nullptr, 0, nullptr);  // ignore error (may have fired)
@@ -2101,32 +2376,35 @@ void Reactor::cancel_timer(uintptr_t ident) {
         pending_signals_.fetch_sub(1, std::memory_order_release);
 }
 
-void Reactor::cancel_fd(int fd, int16_t filter) {
+void Reactor::cancel_fd(int fd, fd_event event) {
+    int16_t filter = (event == fd_event::read) ? EVFILT_READ : EVFILT_WRITE;
+
     struct kevent ev;
     EV_SET(&ev, fd, filter, EV_DELETE, 0, 0, nullptr);
     kevent(kq_, &ev, 1, nullptr, 0, nullptr);  // ignore error
 
     std::lock_guard<std::mutex> lk(signal_mu_);
-    size_t erased = (filter == EVFILT_READ)
+    size_t erased = (event == fd_event::read)
         ? read_writers_.erase(fd)
         : write_writers_.erase(fd);
     if (erased)
         pending_signals_.fetch_sub(1, std::memory_order_release);
 }
 
-// --- Reactor loop ---
-
-void Reactor::fire_signal(uintptr_t ident, int16_t filter) {
+void Reactor::fire_signal(uintptr_t ident, fd_event event) {
     size_t erased = 0;
     {
         std::lock_guard<std::mutex> lk(signal_mu_);
-        switch (filter) {
-        case EVFILT_TIMER: erased = timer_writers_.erase(ident); break;
-        case EVFILT_READ:  erased = read_writers_.erase(static_cast<int>(ident)); break;
-        case EVFILT_WRITE: erased = write_writers_.erase(static_cast<int>(ident)); break;
+        // On macOS, timer fire_signal is called with fd_event::read
+        // as a sentinel — we dispatch on ident presence in timer_writers_.
+        erased = timer_writers_.erase(ident);
+        if (!erased) {
+            int fd = static_cast<int>(ident);
+            if (event == fd_event::read)
+                erased = read_writers_.erase(fd);
+            else
+                erased = write_writers_.erase(fd);
         }
-        // writer<> destructor runs here → writer_release → resolve_endpoint_death
-        // → wakes any imp in prialt watching ~reader on the same channel.
     }
     if (erased)
         pending_signals_.fetch_sub(1, std::memory_order_release);
@@ -2142,10 +2420,227 @@ void Reactor::loop() {
         }
         for (int i = 0; i < n; ++i) {
             if (events[i].filter == EVFILT_USER) continue;
-            fire_signal(events[i].ident, events[i].filter);
+            fd_event ev = (events[i].filter == EVFILT_WRITE)
+                ? fd_event::write : fd_event::read;
+            fire_signal(events[i].ident, ev);
         }
     }
 }
+
+// ============================================================
+// Platform: Linux (epoll + timerfd + eventfd)
+// ============================================================
+
+#elif defined(__linux__)
+
+void Reactor::ensure_started() {
+    if (running_.load(std::memory_order_acquire)) return;
+
+    std::lock_guard<std::mutex> lk(start_mu_);
+    if (running_.load(std::memory_order_relaxed)) return;
+
+    stopping_.store(false, std::memory_order_relaxed);
+
+    epfd_ = epoll_create1(0);
+    assert(epfd_ >= 0);
+
+    // Create eventfd for shutdown/wakeup.
+    wakefd_ = eventfd(0, EFD_NONBLOCK);
+    assert(wakefd_ >= 0);
+
+    struct epoll_event ev{};
+    ev.events = EPOLLIN;
+    ev.data.fd = wakefd_;
+    int rc = epoll_ctl(epfd_, EPOLL_CTL_ADD, wakefd_, &ev);
+    assert(rc == 0);
+
+    thread_ = std::thread([this] { loop(); });
+    running_.store(true, std::memory_order_release);
+}
+
+void Reactor::shutdown() {
+    if (!running_.load(std::memory_order_acquire)) return;
+
+    std::lock_guard<std::mutex> lk(start_mu_);
+    if (!running_.load(std::memory_order_relaxed)) return;
+
+    stopping_.store(true, std::memory_order_release);
+    wake();
+    thread_.join();
+
+    // Close all timerfd descriptors.
+    {
+        std::lock_guard<std::mutex> slk(signal_mu_);
+        for (auto& [tfd, ident] : timerfd_to_ident_)
+            close(tfd);
+        timerfd_to_ident_.clear();
+        ident_to_timerfd_.clear();
+        timer_writers_.clear();
+        read_writers_.clear();
+        write_writers_.clear();
+    }
+
+    close(wakefd_);
+    wakefd_ = -1;
+    close(epfd_);
+    epfd_ = -1;
+
+    pending_signals_.store(0, std::memory_order_release);
+    running_.store(false, std::memory_order_release);
+}
+
+void Reactor::wake() {
+    uint64_t val = 1;
+    [[maybe_unused]] auto n = ::write(wakefd_, &val, sizeof(val));
+}
+
+std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
+    chan<> ch;
+    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed);
+
+    int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+    assert(tfd >= 0);
+
+    struct itimerspec ts{};
+    ts.it_value.tv_sec  = delay_ns / 1'000'000'000;
+    ts.it_value.tv_nsec = delay_ns % 1'000'000'000;
+    // Zero delay: arm with 1 ns to ensure the timer fires.
+    if (ts.it_value.tv_sec == 0 && ts.it_value.tv_nsec == 0)
+        ts.it_value.tv_nsec = 1;
+    int rc = timerfd_settime(tfd, 0, &ts, nullptr);
+    assert(rc == 0);
+
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        timer_writers_.emplace(ident, std::move(ch.w));
+        timerfd_to_ident_.emplace(tfd, ident);
+        ident_to_timerfd_.emplace(ident, tfd);
+    }
+    pending_signals_.fetch_add(1, std::memory_order_release);
+
+    struct epoll_event ev{};
+    ev.events = EPOLLIN | EPOLLONESHOT;
+    ev.data.fd = tfd;
+    rc = epoll_ctl(epfd_, EPOLL_CTL_ADD, tfd, &ev);
+    assert(rc == 0);
+
+    return {std::move(ch.r), ident};
+}
+
+reader<> Reactor::create_fd_event(int fd, fd_event event) {
+    chan<> ch;
+
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        if (event == fd_event::read)
+            read_writers_.insert_or_assign(fd, std::move(ch.w));
+        else
+            write_writers_.insert_or_assign(fd, std::move(ch.w));
+    }
+    pending_signals_.fetch_add(1, std::memory_order_release);
+
+    struct epoll_event ev{};
+    ev.events = ((event == fd_event::read) ? EPOLLIN : EPOLLOUT)
+              | EPOLLONESHOT;
+    ev.data.fd = fd;
+    int rc = epoll_ctl(epfd_, EPOLL_CTL_ADD, fd, &ev);
+    assert(rc == 0);
+
+    return std::move(ch.r);
+}
+
+void Reactor::cancel_timer(uintptr_t ident) {
+    std::lock_guard<std::mutex> lk(signal_mu_);
+    auto it = ident_to_timerfd_.find(ident);
+    if (it != ident_to_timerfd_.end()) {
+        int tfd = it->second;
+        epoll_ctl(epfd_, EPOLL_CTL_DEL, tfd, nullptr);
+        close(tfd);
+        timerfd_to_ident_.erase(tfd);
+        ident_to_timerfd_.erase(it);
+    }
+    if (timer_writers_.erase(ident))
+        pending_signals_.fetch_sub(1, std::memory_order_release);
+}
+
+void Reactor::cancel_fd(int fd, fd_event event) {
+    epoll_ctl(epfd_, EPOLL_CTL_DEL, fd, nullptr);  // ignore error
+
+    std::lock_guard<std::mutex> lk(signal_mu_);
+    size_t erased = (event == fd_event::read)
+        ? read_writers_.erase(fd)
+        : write_writers_.erase(fd);
+    if (erased)
+        pending_signals_.fetch_sub(1, std::memory_order_release);
+}
+
+void Reactor::fire_signal(uintptr_t ident, fd_event event) {
+    size_t erased = 0;
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        erased = timer_writers_.erase(ident);
+        if (!erased) {
+            int fd = static_cast<int>(ident);
+            if (event == fd_event::read)
+                erased = read_writers_.erase(fd);
+            else
+                erased = write_writers_.erase(fd);
+        }
+    }
+    if (erased)
+        pending_signals_.fetch_sub(1, std::memory_order_release);
+}
+
+void Reactor::loop() {
+    struct epoll_event events[64];
+    while (!stopping_.load(std::memory_order_acquire)) {
+        int n = epoll_wait(epfd_, events, 64, -1);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        for (int i = 0; i < n; ++i) {
+            int fd = events[i].data.fd;
+
+            // Wakeup event — drain and continue.
+            if (fd == wakefd_) {
+                uint64_t val;
+                [[maybe_unused]] auto nr = ::read(wakefd_, &val, sizeof(val));
+                continue;
+            }
+
+            // Check if this is a timerfd.
+            uintptr_t ident;
+            fd_event ev;
+            {
+                std::lock_guard<std::mutex> lk(signal_mu_);
+                auto it = timerfd_to_ident_.find(fd);
+                if (it != timerfd_to_ident_.end()) {
+                    ident = it->second;
+                    // Drain the timerfd.
+                    uint64_t val;
+                    [[maybe_unused]] auto nr = ::read(fd, &val, sizeof(val));
+                    // Clean up timerfd.
+                    close(fd);
+                    timerfd_to_ident_.erase(it);
+                    ident_to_timerfd_.erase(ident);
+                    ev = fd_event::read;  // sentinel for timer
+                } else {
+                    ident = static_cast<uintptr_t>(fd);
+                    ev = (events[i].events & EPOLLOUT)
+                        ? fd_event::write : fd_event::read;
+                }
+            }
+            fire_signal(ident, ev);
+        }
+    }
+}
+
+#endif // __APPLE__ / __linux__
+
+// ============================================================
+// Shared: timer_signal / fd_signal RAII + factory functions
+// ============================================================
 
 // --- timer_signal ---
 
@@ -2173,29 +2668,27 @@ timer_signal::~timer_signal() {
 
 // --- fd_signal ---
 
-fd_signal::fd_signal(reader<> r, int fd, int16_t filter)
-    : r_(std::move(r)), fd_(fd), filter_(filter) {}
+fd_signal::fd_signal(reader<> r, int fd, fd_event event)
+    : r_(std::move(r)), fd_(fd), event_(event) {}
 
 fd_signal::fd_signal(fd_signal&& o) noexcept
-    : r_(std::move(o.r_)), fd_(o.fd_), filter_(o.filter_) {
+    : r_(std::move(o.r_)), fd_(o.fd_), event_(o.event_) {
     o.fd_ = -1;
-    o.filter_ = 0;
 }
 
 fd_signal& fd_signal::operator=(fd_signal&& o) noexcept {
     if (this != &o) {
-        if (fd_ >= 0) Reactor::instance().cancel_fd(fd_, filter_);
+        if (fd_ >= 0) Reactor::instance().cancel_fd(fd_, event_);
         r_ = std::move(o.r_);
         fd_ = o.fd_;
-        filter_ = o.filter_;
+        event_ = o.event_;
         o.fd_ = -1;
-        o.filter_ = 0;
     }
     return *this;
 }
 
 fd_signal::~fd_signal() {
-    if (fd_ >= 0) Reactor::instance().cancel_fd(fd_, filter_);
+    if (fd_ >= 0) Reactor::instance().cancel_fd(fd_, event_);
 }
 
 // --- Factory functions ---
@@ -2210,25 +2703,37 @@ timer_signal create_timer_signal(int64_t delay_ns) {
 fd_signal create_fd_readable(int fd) {
     auto& reactor = Reactor::instance();
     reactor.ensure_started();
-    auto r = reactor.create_fd_event(fd, EVFILT_READ);
-    return {std::move(r), fd, EVFILT_READ};
+    auto r = reactor.create_fd_event(fd, fd_event::read);
+    return {std::move(r), fd, fd_event::read};
 }
 
 fd_signal create_fd_writable(int fd) {
     auto& reactor = Reactor::instance();
     reactor.ensure_started();
-    auto r = reactor.create_fd_event(fd, EVFILT_WRITE);
-    return {std::move(r), fd, EVFILT_WRITE};
+    auto r = reactor.create_fd_event(fd, fd_event::write);
+    return {std::move(r), fd, fd_event::write};
 }
 
 } // namespace csp::detail
 
 /* runtime.cpp */
 
+#include <pthread.h>
+
 
 namespace csp {
 
     namespace detail {
+
+        static void set_thread_name(int id) {
+            char name[16];
+            snprintf(name, sizeof(name), "csp-%d", id);
+#ifdef __APPLE__
+            pthread_setname_np(name);
+#else
+            pthread_setname_np(pthread_self(), name);
+#endif
+        }
 
         static Runtime g_runtime;
 
@@ -2272,6 +2777,7 @@ namespace csp {
 
             for (int i = 1; i < num_procs; ++i) {
                 workers.emplace_back([this, i] {
+                    set_thread_name(i);
                     bind_processor(procs[i].get());
                     worker_loop();
                 });
@@ -2323,7 +2829,6 @@ namespace csp {
 
         void Runtime::worker_loop() {
             auto& p = current_p();
-
             // TLA:WorkerParking.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
@@ -2427,6 +2932,7 @@ namespace csp {
             num_procs_.store(idx + 1, std::memory_order_release);
 
             workers.emplace_back([this, idx] {
+                set_thread_name(idx);
                 bind_processor(procs[idx].get());
                 worker_loop();
             });
@@ -2444,12 +2950,13 @@ namespace csp {
                 return nullptr;
             }
 
-            // Skip past g_imp (the sentinel/main) to find real work.
+            // Skip past the main imp (sentinel) to find real work.
+            auto* ci = current_imp();
             auto* candidate = busy;
-            if (candidate == g_imp) {
+            if (candidate == ci) {
                 candidate = candidate->next_;
             }
-            if (candidate == g_imp || candidate == &p.main) {
+            if (candidate == ci || candidate == &p.main) {
                 p.running = nullptr;
                 return nullptr;
             }
@@ -2551,7 +3058,6 @@ namespace csp {
 
 #include <signal.h>
 
-#include <cstdint>
 
 // Self-pipe trick for async-signal-safe delivery.
 //
@@ -2684,7 +3190,6 @@ reader<int> notify(std::initializer_list<int> sigs) {
 
 #if defined(__aarch64__)
 
-#include <deque>
 
 namespace csp {
 
@@ -3836,6 +4341,81 @@ void StackPool::drain() {
 #endif // CSP_USE_MMAP_STACKS
 
 } // namespace csp::detail
+
+/* supervisor.cc */
+
+
+namespace csp {
+
+void worker_group::operator()() {
+    if (workers.empty()) return;
+
+    // Snapshot into a vector for indexed alt access.
+    struct entry {
+        std::string const* name;
+        std::function<void()> const* factory;
+    };
+    std::vector<entry> specs;
+    specs.reserve(workers.size());
+    for (auto& [name, factory] : workers) {
+        specs.push_back({&name, &factory});
+    }
+
+    size_t n = specs.size();
+    std::vector<reader<std::exception_ptr>> handles(n);
+    std::vector<bool> done(n, false);
+    std::vector<std::deque<time_point>> restart_times(n);
+    size_t active = n;
+
+    for (size_t i = 0; i < n; ++i) {
+        handles[i] = spawn(std::function<void()>(*specs[i].factory));
+    }
+
+    while (active > 0) {
+        std::vector<chan_op<std::exception_ptr>> ops;
+        ops.reserve(n);
+        std::exception_ptr ep;
+        for (size_t i = 0; i < n; ++i) {
+            if (done[i]) {
+                ops.emplace_back();
+            } else {
+                ops.push_back(handles[i] >> ep);
+            }
+        }
+
+        int result = alt(ops);
+
+        if (result >= 0) {
+            auto idx = static_cast<size_t>(result);
+            auto tp = now();
+            auto& times = restart_times[idx];
+            while (!times.empty() &&
+                   times.front() + policy.window < tp) {
+                times.pop_front();
+            }
+
+            if (static_cast<int>(times.size()) >= policy.max_restarts) {
+                throw worker_max_restarts_exceeded(
+                    *specs[idx].name, ep);
+            }
+
+            times.push_back(tp);
+
+            if (policy.backoff > csp::duration::zero()) {
+                sleep(policy.backoff);
+            }
+
+            handles[idx] =
+                spawn(std::function<void()>(*specs[idx].factory));
+        } else {
+            auto idx = static_cast<size_t>(~result);
+            done[idx] = true;
+            --active;
+        }
+    }
+}
+
+} // namespace csp
 
 /* timer.cc */
 

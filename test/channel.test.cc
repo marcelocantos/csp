@@ -15,8 +15,8 @@ TEST_CASE("Channel - RefCounts1") {
         auto wr = ch.w.copy();
         auto rd = ch.r.copy();
     }
-    CHECK_EQ(0, csp::internal::channel_count(0));
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(0 == csp::internal::channel_count(0));
+    CHECK(0 == csp::internal::channel_count(1));
 }
 
 TEST_CASE("Channel - RefCounts2") {
@@ -25,35 +25,35 @@ TEST_CASE("Channel - RefCounts2") {
         auto f = [in = ch.w.copy(), out = ch.r.copy()]{ };
         f();
     }
-    CHECK_EQ(0, csp::internal::channel_count(0));
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(0 == csp::internal::channel_count(0));
+    CHECK(0 == csp::internal::channel_count(1));
 }
 
 TEST_CASE("Channel - RefCounts3") {
-    CHECK_EQ(0, csp::internal::channel_count(0));
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(0 == csp::internal::channel_count(0));
+    CHECK(0 == csp::internal::channel_count(1));
 
     chan<int> ch;
-    CHECK_EQ(1, csp::internal::channel_count(0));
+    CHECK(1 == csp::internal::channel_count(0));
 
     ch.release();
-    CHECK_EQ(0, csp::internal::channel_count(0));
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(0 == csp::internal::channel_count(0));
+    CHECK(0 == csp::internal::channel_count(1));
 }
 
 TEST_CASE("Channel - ThreadRefCounts") {
-    CHECK_EQ(0, csp::internal::channel_count(0));
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(0 == csp::internal::channel_count(0));
+    CHECK(0 == csp::internal::channel_count(1));
     {
         chan<int> ch;
 
-        CHECK_EQ(1, csp::internal::channel_count(1));
+        CHECK(1 == csp::internal::channel_count(1));
 
         ch.release();
 
-        CHECK_EQ(0, csp::internal::channel_count(1));
+        CHECK(0 == csp::internal::channel_count(1));
     }
-    CHECK_EQ(0, csp::internal::channel_count(1));
+    CHECK(0 == csp::internal::channel_count(1));
 }
 
 TEST_CASE("Channel - OneShot") {
@@ -69,7 +69,7 @@ TEST_CASE("Channel - OneShot") {
 
     csp::schedule();
 
-    CHECK_EQ(42, result);
+    CHECK(42 == result);
 }
 
 // Repeat OneShot to exercise a SEGFAULT bug.
@@ -86,7 +86,7 @@ TEST_CASE("Channel - OneShotAgain") {
 
     csp::schedule();
 
-    CHECK_EQ(42, result);
+    CHECK(42 == result);
 }
 
 TEST_CASE("Channel - OneShotStats") {
@@ -104,7 +104,7 @@ TEST_CASE("Channel - OneShotStats") {
 
     csp::schedule();
 
-    CHECK_EQ(42, result);
+    CHECK(42 == result);
 }
 
 TEST_CASE("Channel - Basic") {
@@ -132,7 +132,7 @@ TEST_CASE("Channel - Basic") {
 
     csp::schedule();
 
-    CHECK_EQ(321, result);
+    CHECK(321 == result);
 }
 
 TEST_CASE("Channel - WriterGone") {
@@ -158,7 +158,7 @@ TEST_CASE("Channel - WriterGone") {
 
     csp::schedule();
 
-    CHECK_EQ(55, total);
+    CHECK(55 == total);
 }
 
 TEST_CASE("Channel - ReaderGone") {
@@ -181,7 +181,7 @@ TEST_CASE("Channel - ReaderGone") {
 
     csp::schedule();
 
-    CHECK_EQ(1023, total);
+    CHECK(1023 == total);
 }
 
 TEST_CASE("Channel - NWriters") {
@@ -211,7 +211,7 @@ TEST_CASE("Channel - NWriters") {
     csp::schedule();
 
     std::sort(total.begin(), total.end());
-    CHECK_EQ(std::vector<int>({1, 2}), total);
+    CHECK(std::vector<int>({1, 2}) == total);
 }
 
 TEST_CASE("Channel - NReaders") {
@@ -237,7 +237,7 @@ TEST_CASE("Channel - NReaders") {
 
     csp::schedule();
 
-    CHECK_EQ(1023, total);
+    CHECK(1023 == total);
 }
 
 // We don't want channel.test.cc to depend on rpc.h.
@@ -268,17 +268,17 @@ TEST_CASE("Channel - AltIn") {
     });
 
     stats.spawn([out0 = std::move(up0_w), out1 = std::move(up1_w), in = std::move(down_r), &received]() mutable {
-        CHECK_EQ(11, rpc(std::move(out0), in.copy())(11));
+        CHECK(11 == rpc(std::move(out0), in.copy())(11));
         ++received;
 
-        CHECK_EQ(42, rpc(std::move(out1), std::move(in))(42));
+        CHECK(42 == rpc(std::move(out1), std::move(in))(42));
         ++received;
     });
 
     csp::schedule();
 
-    CHECK_EQ(2, sent);
-    CHECK_EQ(2, received);
+    CHECK(2 == sent);
+    CHECK(2 == received);
 }
 
 TEST_CASE("Channel - AltDead") {
@@ -310,7 +310,7 @@ TEST_CASE("Channel - AltDead") {
         auto echo = rpc(out.copy(), in.copy());
 
         for (int i = 1; i <= 10; ++i) {
-            CHECK_EQ(i, echo(i));
+            CHECK(i == echo(i));
             ++reps;
         }
 
@@ -322,8 +322,8 @@ TEST_CASE("Channel - AltDead") {
 
     csp::schedule();
 
-    CHECK_EQ(10, reqs);
-    CHECK_EQ(10, reps);
+    CHECK(10 == reqs);
+    CHECK(10 == reps);
 }
 
 TEST_CASE("Channel - AltNull") {
@@ -333,7 +333,7 @@ TEST_CASE("Channel - AltNull") {
     auto [down_w, down_r] = chan<int>{};
 
     stats.spawn([in = up_r.copy()]{
-        CHECK_EQ(42, in.read());
+        CHECK(42 == in.read());
     });
 
     stats.spawn([out = down_w.copy()]{
@@ -348,12 +348,12 @@ TEST_CASE("Channel - AltNull") {
         actions.push_back(down >> n);
         for (int i = 0; i < 2; ++i) {
             auto a = alt(actions);
-            CHECK_NE(a, 1);
-            CHECK_NE(a, ~1);
+            CHECK(a != 1);
+            CHECK(a != ~1);
             if (a == 0) {
                 actions[0] = {};
             } else if (a == 2) {
-                CHECK_EQ(11, n);
+                CHECK(11 == n);
                 actions[2] = {};
             } else {
                 FAIL_CHECK("unexpected a = " << a);
@@ -380,7 +380,7 @@ TEST_CASE("Channel - Range") {
         total += n;
     }
 
-    CHECK_EQ(55, total);
+    CHECK(55 == total);
 }
 
 TEST_CASE("Channel - SpawnRange") {
@@ -400,7 +400,7 @@ TEST_CASE("Channel - SpawnRange") {
     int total = 0;
 
     CHECK_THROWS_AS(for (auto n : r) total += n, borkborkbork);
-    CHECK_EQ(15, total);
+    CHECK(15 == total);
 }
 
 // Test chan_op objects that send larger-than-pointer message.
@@ -428,11 +428,11 @@ TEST_CASE("Channel - ActionBig") {
         r >> big3;
     });
 
-    CHECK_EQ(0, csp::alt(a));
-    CHECK_EQ(big2.a, big3.a);
-    CHECK_EQ(big2.b, big3.b);
-    CHECK_EQ(big2.c, big3.c);
-    CHECK_EQ(big2.d, big3.d);
+    CHECK(0 == csp::alt(a));
+    CHECK(big2.a == big3.a);
+    CHECK(big2.b == big3.b);
+    CHECK(big2.c == big3.c);
+    CHECK(big2.d == big3.d);
 }
 
 TEST_CASE("Channel - String") {
@@ -492,7 +492,7 @@ TEST_CASE("Channel - String") {
             in << c.first;
             std::string s;
             CHECK(bool(out >> s));
-            CHECK_EQ(c.second, s);
+            CHECK(c.second == s);
         }
     }
     in = {};
@@ -514,7 +514,7 @@ TEST_CASE("Channel - FeedbackLoop") {
 
     RunStats stats;
 
-    auto buf = buffer<int>().spawn();
+    auto buf = chan<int>(1024);
 
     constexpr int cadence = 5;
 
@@ -537,8 +537,8 @@ TEST_CASE("Channel - FeedbackLoop") {
     spawn(tee<int>(std::move(buf.w)).bind(std::move(inner_r), ++out));
 
     for (int i = 0; i < 100; i += cadence) {
-        for (int j = 0; j < cadence; ++j) REQUIRE_EQ(i + j, out.read());
-        for (int j = 0; j < cadence; ++j) REQUIRE_EQ(i + 5, out.read());
+        for (int j = 0; j < cadence; ++j) REQUIRE(i + j == out.read());
+        for (int j = 0; j < cadence; ++j) REQUIRE(i + 5 == out.read());
     }
 
     csp::schedule();
@@ -637,8 +637,8 @@ TEST_CASE("Channel - MoveOnly") {
 
     csp::schedule();
 
-    REQUIRE_NE(nullptr, result);
-    CHECK_EQ(42, *result);
+    REQUIRE(nullptr != result);
+    CHECK(42 == *result);
 }
 
 TEST_CASE("Channel - StreamTo") {
@@ -660,7 +660,7 @@ TEST_CASE("Channel - StreamTo") {
         total += n;
     }
 
-    CHECK_EQ(55, total);
+    CHECK(55 == total);
 }
 
 TEST_CASE("Channel - CopySemantics") {
@@ -671,17 +671,17 @@ TEST_CASE("Channel - CopySemantics") {
     // Copy writer and reader via .copy().
     auto w1 = ch.w.copy();
     auto w2 = w1.copy();
-    CHECK_EQ(w1, w2);
+    CHECK(w1 == w2);
 
     auto r1 = ch.r.copy();
     auto r2 = r1.copy();
-    CHECK_EQ(r1, r2);
+    CHECK(r1 == r2);
 
     ch.release();
 
     // Both reader copies should work.
     stats.spawn([r = std::move(r2)]{
-        CHECK_EQ(42, r.read());
+        CHECK(42 == r.read());
     });
 
     w1 << 42;
@@ -690,7 +690,7 @@ TEST_CASE("Channel - CopySemantics") {
     w1 = {};
 
     stats.spawn([r = std::move(r1)]{
-        CHECK_EQ(99, r.read());
+        CHECK(99 == r.read());
     });
 
     w2 << 99;
@@ -721,8 +721,8 @@ TEST_CASE("Channel - NWritersNReaders") {
 
     csp::schedule();
 
-    CHECK_EQ(N, sent);
-    CHECK_EQ(N, received);
+    CHECK(N == sent);
+    CHECK(N == received);
 }
 
 TEST_CASE("Channel - AltFairness") {
@@ -753,7 +753,7 @@ TEST_CASE("Channel - AltFairness") {
 
     // alt uses random_shuffle; in cooperative scheduling the bias
     // can be extreme, so just verify both channels were serviced.
-    CHECK_EQ(trials, count_a + count_b);
+    CHECK(trials == count_a + count_b);
 }
 
 TEST_CASE("Channel - PrialtOrder") {
@@ -769,8 +769,8 @@ TEST_CASE("Channel - PrialtOrder") {
 
     int n = -1;
     // prialt scans in order: channel a (with pending writer) is found first.
-    CHECK_EQ(0, prialt(ra >> n, rb >> n));
-    CHECK_EQ(42, n);
+    CHECK(0 == prialt(ra >> n, rb >> n));
+    CHECK(42 == n);
 
     ra = {};
     rb = {};
@@ -785,8 +785,8 @@ TEST_CASE("Channel - NonBlocking") {
     int n = -1;
 
     // No writer ready; skip (dead channel) fires immediately.
-    CHECK_GT(0, prialt(r >> n, ~skip));
-    CHECK_EQ(-1, n);
+    CHECK(0 > prialt(r >> n, ~skip));
+    CHECK(-1 == n);
 
     // Make a writer ready.
     stats.spawn([w = ch.w.copy()]{ w << 42; });
@@ -794,8 +794,8 @@ TEST_CASE("Channel - NonBlocking") {
     while (csp::internal::run()) { }
 
     // Writer is waiting; read should succeed.
-    CHECK_EQ(0, prialt(r >> n, ~skip));
-    CHECK_EQ(42, n);
+    CHECK(0 == prialt(r >> n, ~skip));
+    CHECK(42 == n);
 
     r = {};
     while (csp::internal::run()) { }
@@ -809,8 +809,8 @@ TEST_CASE("Channel - None basic") {
     int n = -1;
 
     // No writer ready; none fires immediately.
-    CHECK_EQ(csp::none, prialt(r >> n, csp::none));
-    CHECK_EQ(-1, n);  // n unchanged
+    CHECK(csp::none == prialt(r >> n, csp::none));
+    CHECK(-1 == n);  // n unchanged
 
     ch.release();
     while (csp::internal::run()) { }
@@ -831,8 +831,8 @@ TEST_CASE("Channel - None ready channel wins") {
 
     // Writer is waiting; read should succeed over none.
     int n = -1;
-    CHECK_EQ(0, prialt(r >> n, csp::none));
-    CHECK_EQ(42, n);
+    CHECK(0 == prialt(r >> n, csp::none));
+    CHECK(42 == n);
 
     r = {};
     while (csp::internal::run()) { }
@@ -850,8 +850,8 @@ TEST_CASE("Channel - None dead channel") {
 
     // Dead channel reports death (negative result), not none.
     int result = prialt(r >> n, csp::none);
-    CHECK_EQ(~0, result);
-    CHECK_EQ(-1, n);
+    CHECK(~0 == result);
+    CHECK(-1 == n);
 
     r = {};
     while (csp::internal::run()) { }
@@ -870,7 +870,7 @@ TEST_CASE("Channel - None switch pattern") {
     case csp::none: hit_none = true;  break;
     }
     CHECK(hit_none);
-    CHECK_EQ(-1, n);
+    CHECK(-1 == n);
 
     ch.release();
     r = {};
@@ -885,8 +885,8 @@ TEST_CASE("Channel - None with alt") {
     int n = -1;
 
     // alt randomises but with no ready peer, none still fires.
-    CHECK_EQ(csp::none, alt(r >> n, csp::none));
-    CHECK_EQ(-1, n);
+    CHECK(csp::none == alt(r >> n, csp::none));
+    CHECK(-1 == n);
 
     ch.release();
     r = {};
@@ -903,8 +903,8 @@ TEST_CASE("Channel - None vector") {
     std::vector<chan_op<int>> ops;
     ops.push_back(r >> n);
 
-    CHECK_EQ(csp::none, alt(ops, csp::none));
-    CHECK_EQ(-1, n);
+    CHECK(csp::none == alt(ops, csp::none));
+    CHECK(-1 == n);
 
     ops.clear();
     ch.release();
@@ -934,10 +934,10 @@ TEST_CASE("Channel - AltManyChannels") {
     }
 
     int result = alt(actions);
-    CHECK_GE(result, 0);
-    CHECK_LT(result, N);
-    CHECK_GE(n, 0);
-    CHECK_LT(n, N);
+    CHECK(result >= 0);
+    CHECK(result < N);
+    CHECK(n >= 0);
+    CHECK(n < N);
 
     // Clean up: release readers so remaining writers unblock.
     actions.clear();
@@ -957,7 +957,7 @@ TEST_CASE("Channel - csp::error messages") {
         r.read();
         FAIL_CHECK("expected csp::error");
     } catch (csp::error const & e) {
-        CHECK_EQ(std::string("reader exhausted"), e.what());
+        CHECK(std::string("reader exhausted") == e.what());
     }
 
     // operator-- on an already-attached writer throws.
@@ -966,7 +966,7 @@ TEST_CASE("Channel - csp::error messages") {
         --ch.w;
         FAIL_CHECK("expected csp::error");
     } catch (csp::error const & e) {
-        CHECK_EQ(std::string("writer already attached channel"), e.what());
+        CHECK(std::string("writer already attached channel") == e.what());
     }
 
     // operator++ on an already-attached reader throws.
@@ -974,7 +974,7 @@ TEST_CASE("Channel - csp::error messages") {
         ++ch.r;
         FAIL_CHECK("expected csp::error");
     } catch (csp::error const & e) {
-        CHECK_EQ(std::string("reader already attached to channel"), e.what());
+        CHECK(std::string("reader already attached to channel") == e.what());
     }
 }
 
@@ -991,8 +991,8 @@ TEST_CASE("Channel - reader::read() on exhausted reader") {
     csp::schedule();
 
     // Drain everything the writer sent.
-    CHECK_EQ(1, r.read());
-    CHECK_EQ(2, r.read());
+    CHECK(1 == r.read());
+    CHECK(2 == r.read());
 
     // Reader is now exhausted (writer is gone, no more data).
     CHECK_THROWS_AS(r.read(), csp::error);
@@ -1059,8 +1059,8 @@ TEST_CASE("Channel - Nested prialt") {
     csp::schedule();
 
     // a is 10 or 20, b is 20 or 30. Total should be one of: 30, 40, 50.
-    CHECK_GE(result, 30);
-    CHECK_LE(result, 50);
+    CHECK(result >= 30);
+    CHECK(result <= 50);
 }
 
 TEST_CASE("Channel - Many imps on one channel") {
@@ -1086,10 +1086,10 @@ TEST_CASE("Channel - Many imps on one channel") {
     csp::schedule();
 
     // All messages arrive; sort to verify completeness.
-    CHECK_EQ(static_cast<size_t>(N), received.size());
+    CHECK(static_cast<size_t>(N) == received.size());
     std::sort(received.begin(), received.end());
     for (int i = 0; i < N; ++i) {
-        CHECK_EQ(i, received[i]);
+        CHECK(i == received[i]);
     }
 }
 
@@ -1102,8 +1102,8 @@ TEST_CASE("Channel - prialt(vector, none)") {
     std::vector<chan_op<int>> ops;
     ops.push_back(r >> n);
 
-    CHECK_EQ(csp::none, prialt(ops, csp::none));
-    CHECK_EQ(-1, n);
+    CHECK(csp::none == prialt(ops, csp::none));
+    CHECK(-1 == n);
 
     ops.clear();
     ch.release();
@@ -1193,7 +1193,7 @@ TEST_CASE("Channel - chan destroyed while imp blocked") {
 TEST_CASE("Channel - buffer(1) single-element") {
     RunStats stats;
 
-    auto buf = buffer<int>(1).spawn();
+    auto buf = chan<int>(1);
 
     int r1 = 0, r2 = 0;
 
@@ -1212,6 +1212,6 @@ TEST_CASE("Channel - buffer(1) single-element") {
 
     csp::schedule();
 
-    CHECK_EQ(42, r1);
-    CHECK_EQ(99, r2);
+    CHECK(42 == r1);
+    CHECK(99 == r2);
 }

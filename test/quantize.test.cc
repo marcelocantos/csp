@@ -15,8 +15,8 @@ TEST_CASE("Quantize - Simple") {
 
     quanta << 5; quanta = {};
     in << 7; in = {};
-    CHECK_EQ(5, out.read());
-    CHECK_EQ(2, residue.read());
+    CHECK(5 == out.read());
+    CHECK(2 == residue.read());
     csp::schedule();
 }
 
@@ -55,7 +55,7 @@ TEST_CASE("Quantize - Complex") {
                 delivered += v;
                 CSP_LOG(g_log, "i=%3d n=%d v=%d", i, n, v);
                 INFO("i = " << i);
-                CHECK_EQ(n, v);
+                CHECK(n == v);
             }
         }
         CHECK_FALSE((sink >> nullptr));
@@ -65,7 +65,7 @@ TEST_CASE("Quantize - Complex") {
     csp::schedule();
 
     INFO(sent << " ≠ " << undelivered << " + " << delivered);
-    CHECK_EQ(sent, undelivered + delivered);
+    CHECK(sent == undelivered + delivered);
 }
 
 TEST_CASE("Quantize - Uniform") {
@@ -89,7 +89,7 @@ TEST_CASE("Quantize - Uniform") {
 
     stats.spawn([sink = std::move(sink), quantum, &delivered]{
         for (int n; sink >> n;) {
-            CHECK_EQ(quantum, n);
+            CHECK(quantum == n);
             delivered += n;
         }
 
@@ -100,5 +100,5 @@ TEST_CASE("Quantize - Uniform") {
     csp::schedule();
 
     INFO(sent << " ≠ " << undelivered << " + " << delivered);
-    CHECK_EQ(sent, undelivered + delivered);
+    CHECK(sent == undelivered + delivered);
 }
