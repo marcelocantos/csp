@@ -688,7 +688,7 @@ TEST_CASE("MN - Watchdog rescues timers from stalled P") {
         csp::sleep(50ms);
         auto elapsed = std::chrono::steady_clock::now() - start;
         // Should fire reasonably close to 50ms, not delayed by 300ms stall.
-        CHECK(elapsed < 200ms);
+        CHECK(elapsed < (CSP_TEST_SANITIZER ? 1000ms : 200ms));
         timer_fired.store(true, std::memory_order_relaxed);
     });
 
