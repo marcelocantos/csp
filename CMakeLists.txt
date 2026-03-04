@@ -105,6 +105,9 @@ set(LIB_SRCS
     src/reactor.cc
     src/blocking_pool.cc
     src/stack_pool.cc
+    src/imp_exit.cc
+    src/supervisor.cc
+    src/byte_reader.cc
 )
 
 if(WIN32)
