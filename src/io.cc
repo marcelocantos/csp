@@ -6,8 +6,10 @@
 
 #include <cerrno>
 #include <cstdint>
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 namespace csp::internal {
 

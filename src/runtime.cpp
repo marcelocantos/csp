@@ -1,6 +1,10 @@
 #include <csp/internal/runtime.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 
 #include <algorithm>
 #include <cassert>
@@ -13,7 +17,12 @@ namespace csp {
         static void set_thread_name(int id) {
             char name[16];
             snprintf(name, sizeof(name), "csp-%d", id);
-#ifdef __APPLE__
+#ifdef _WIN32
+            // SetThreadDescription expects wide string
+            wchar_t wname[16];
+            mbstowcs(wname, name, 16);
+            SetThreadDescription(GetCurrentThread(), wname);
+#elif defined(__APPLE__)
             pthread_setname_np(name);
 #else
             pthread_setname_np(pthread_self(), name);
