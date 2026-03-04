@@ -95,6 +95,8 @@ void io_wait_writable(int fd) {
 
 namespace csp::io {
 
+#ifndef _WIN32
+
 int set_nonblock(int fd) {
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0) return -1;
@@ -158,6 +160,8 @@ int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
     if (err != 0) { errno = err; return -1; }
     return 0;
 }
+
+#endif // !_WIN32
 
 resolve_result resolve(const std::string& host,
                        const std::string& service,
