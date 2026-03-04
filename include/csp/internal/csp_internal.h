@@ -24,8 +24,14 @@
 // consistent across jump_fcontext.  Without these, ASan can free a
 // suspended fiber's fake-stack frames, causing SEGV when another
 // thread reads stack-resident data (e.g. a waiter's ChanOp).
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#if defined(__SANITIZE_ADDRESS__)
 #define CSP_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define CSP_ASAN 1
+#endif
+#endif
+#ifdef CSP_ASAN
 extern "C" {
     void __sanitizer_start_switch_fiber(void **fake_stack_save,
                                         const void *bottom, size_t size);
