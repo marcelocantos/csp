@@ -1,9 +1,11 @@
 #include "testutil.h"
 
 #include <atomic>
-#include <fcntl.h>
 #include <stdexcept>
+#ifndef _WIN32
+#include <fcntl.h>
 #include <unistd.h>
+#endif
 
 using namespace csp;
 

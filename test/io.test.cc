@@ -4,8 +4,10 @@
 #include <cstring>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <vector>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 #ifndef _WIN32
 #include <csignal>
