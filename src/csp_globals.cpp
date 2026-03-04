@@ -3,13 +3,27 @@
 #include <csp/internal/runtime.h>
 #include <csp/internal/stack_pool.h>
 
+#include <cstdio>
+
 namespace csp {
 
+    static struct StaticInitDiag {
+        StaticInitDiag() { fprintf(stderr, "CSP_DIAG: csp_globals static init begin\n"); fflush(stderr); }
+    } s_diag;
+
     writer<std::exception_ptr> global_exception_handler = std::move(chan<std::exception_ptr>().w);
+
+    static struct StaticInitDiag2 {
+        StaticInitDiag2() { fprintf(stderr, "CSP_DIAG: global_exception_handler OK\n"); fflush(stderr); }
+    } s_diag2;
 
     poke_t poke;
 
     reader<> const skip = std::move(chan<>().r);
+
+    static struct StaticInitDiag3 {
+        StaticInitDiag3() { fprintf(stderr, "CSP_DIAG: skip OK, csp_globals init done\n"); fflush(stderr); }
+    } s_diag3;
 
     namespace detail {
 

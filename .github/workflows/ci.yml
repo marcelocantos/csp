@@ -199,8 +199,16 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      - name: Check exe
+        run: |
+          dir build\Release\csp_tests.exe
+          dumpbin /dependents build\Release\csp_tests.exe
+
       - name: Test
-        run: build\Release\csp_tests.exe
+        run: |
+          $ErrorActionPreference = "Continue"
+          & build\Release\csp_tests.exe 2>&1 | Write-Host
+          exit $LASTEXITCODE
 
   # --- TLA+ model checking (macOS only) ---
   tla:

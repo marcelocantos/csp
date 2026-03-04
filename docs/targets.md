@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: 246e063 -->
+<!-- last-evaluated: 31832bf -->
 
 ## Active
 
@@ -16,15 +16,6 @@
 - **Status**: converging
 - **Discovered**: 2026-03-01
 
-### 🎯T1.2 macOS mn.test MultipleThreads flake is fixed
-- **Weight**: 2 (value 3 / cost 2)
-- **Estimated-cost**: 2
-- **Acceptance**: macOS arm64 CI test job passes reliably (no flake on `CHECK(thread_ids.size() > 1)`)
-- **Context**: The M:N threading test assumes CI runners schedule work across >1 OS thread, but low-core runners may not. Needs WARN or yield-based fix.
-- **Parent**: 🎯T1
-- **Status**: identified
-- **Discovered**: 2026-03-04
-
 ### 🎯T1.3 Windows test exe runs and reports results
 - **Weight**: 1 (value 5 / cost 5)
 - **Estimated-cost**: 5
@@ -37,6 +28,17 @@
 - **Discovered**: 2026-03-04
 
 ## Achieved
+
+### 🎯T1.2 macOS mn.test MultipleThreads flake is fixed
+- **Weight**: 2 (value 3 / cost 2)
+- **Estimated-cost**: 2
+- **Actual-cost**: 1
+- **Acceptance**: macOS arm64 CI test job passes reliably (no flake on `CHECK(thread_ids.size() > 1)`)
+- **Context**: Replaced busy-loop with `csp::yield()` to force scheduler distribution across Ps and OS threads.
+- **Parent**: 🎯T1
+- **Status**: achieved
+- **Discovered**: 2026-03-04
+- **Achieved**: 2026-03-05
 
 ### 🎯T1.1 Dist files are regenerated and committed
 - **Weight**: 8 (value 8 / cost 1)
