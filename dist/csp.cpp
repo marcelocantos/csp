@@ -1895,8 +1895,10 @@ exit_guard on_exit(restart_policy policy) {
 
 #include <cerrno>
 #include <cstdint>
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 namespace csp::internal {
 
@@ -1982,6 +1984,8 @@ void io_wait_writable(int fd) {
 
 namespace csp::io {
 
+#ifndef _WIN32
+
 int set_nonblock(int fd) {
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0) return -1;
@@ -2045,6 +2049,8 @@ int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
     if (err != 0) { errno = err; return -1; }
     return 0;
 }
+
+#endif // !_WIN32
 
 resolve_result resolve(const std::string& host,
                        const std::string& service,
@@ -3095,6 +3101,10 @@ fd_signal create_fd_writable(int fd) {
 
 /* runtime.cpp */
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#endif
 
 
 namespace csp {
@@ -3104,7 +3114,12 @@ namespace csp {
         static void set_thread_name(int id) {
             char name[16];
             snprintf(name, sizeof(name), "csp-%d", id);
-#ifdef __APPLE__
+#ifdef _WIN32
+            // SetThreadDescription expects wide string
+            wchar_t wname[16];
+            mbstowcs(wname, name, 16);
+            SetThreadDescription(GetCurrentThread(), wname);
+#elif defined(__APPLE__)
             pthread_setname_np(name);
 #else
             pthread_setname_np(pthread_self(), name);
@@ -4583,7 +4598,6 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>
 #else
 #include <sys/mman.h>
 #endif

@@ -1675,8 +1675,14 @@ private:
 // consistent across jump_fcontext.  Without these, ASan can free a
 // suspended fiber's fake-stack frames, causing SEGV when another
 // thread reads stack-resident data (e.g. a waiter's ChanOp).
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#if defined(__SANITIZE_ADDRESS__)
 #define CSP_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define CSP_ASAN 1
+#endif
+#endif
+#ifdef CSP_ASAN
 extern "C" {
     void __sanitizer_start_switch_fiber(void **fake_stack_save,
                                         const void *bottom, size_t size);
@@ -3559,16 +3565,16 @@ auto chain(R rr) {
         static Logger scope("chan/chain/scope");
         BRAC_SCOPE(scope, "chain", "%d readers", rr.size());
 
-        static Logger log("chan/chain/log");
+        static Logger s_log("chan/chain/log");
 
         for (auto & r : rr) {
             for (T n; csp::alt(r >> n, ~w) == 0;) {
-                CSP_LOG(log, "loop");
+                CSP_LOG(s_log, "loop");
                 if (!(w << std::move(n))) {
                     break;
                 }
             }
-            CSP_LOG(log, "next in");
+            CSP_LOG(s_log, "next in");
         }
     });
 }
@@ -3822,8 +3828,8 @@ auto count(T start, T stop, T step = 1, bool cyclic = false) {
     return make_producer<T>([start, stop, step, cyclic](writer<T> sink) {
         internal::descr("count");
 
-        static Logger log("chan/count");
-        BRAC_SCOPE(log, "count", "..., cyclic=%s", cyclic ? "true" : "false");
+        static Logger s_log("chan/count");
+        BRAC_SCOPE(s_log, "count", "..., cyclic=%s", cyclic ? "true" : "false");
 
         T i = start;
         do {
@@ -3843,8 +3849,8 @@ auto count_forever(T start, T step = 1) {
     return make_producer<T>([start, step](writer<T> sink) {
         internal::descr("count_∞");
 
-        static Logger log("chan/count_forever");
-        BRAC_SCOPE(log, "count_forever", "");
+        static Logger s_log("chan/count_forever");
+        BRAC_SCOPE(s_log, "count_forever", "");
 
         for (T i = start; sink << i; i += step) { }
     });
@@ -4281,10 +4287,10 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
     static Logger scope("chan/fanout/scope");
     BRAC_SCOPE(scope, "fanout", "");
 
-    static Logger log("chan/fanout/log");
+    static Logger s_log("chan/fanout/log");
 
     for (writer<T> out; prialt(~new_in, new_out >> out) >= 0;) {
-        CSP_LOG(log, "first new_out");
+        CSP_LOG(s_log, "first new_out");
 
         reader<T> in;
         writer<T> in_val = ++in;  // slot 0 write buffer
@@ -4326,44 +4332,44 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
 
             switch (m.result) {
             case 0:
-                CSP_LOG(log, "new_in");
+                CSP_LOG(s_log, "new_in");
                 chanops[0] = {{}, nullptr};
                 chanops[1] = {internal::wait(in.internal_reader()), &t, internal::get_slot(in.internal_reader().ptr)};
                 break;
             case ~0:
-                CSP_LOG(log, "~new_in");
+                CSP_LOG(s_log, "~new_in");
                 return;
             case 1:
-                CSP_LOG(log, "in");
+                CSP_LOG(s_log, "in");
                 // Traverse backwards in case of in-situ deletions.
                 for (auto oi = end(outs); oi-- != begin(outs);) {
-                    CSP_LOG(log, "out << t");
+                    CSP_LOG(s_log, "out << t");
                     if (!(*oi << t)) {
-                        CSP_LOG(log, "~out");
+                        CSP_LOG(s_log, "~out");
                         drop(oi - begin(outs));
                     }
                 }
                 break;
             case ~1:
-                CSP_LOG(log, "~in");
+                CSP_LOG(s_log, "~in");
                 in = {};
                 in_val = ++in;
                 chanops[0] = {internal::wait(new_in.internal_writer()), &in_val, internal::get_slot(new_in.internal_writer().ptr)};
                 chanops[1] = {{}, nullptr};
                 break;
             case 2:  // new_out
-                CSP_LOG(log, "new_out");
+                CSP_LOG(s_log, "new_out");
                 chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr, internal::get_slot(out_val.internal_writer().ptr)});
                 outs.push_back(std::move(out_val));
                 break;
             case ~2:
-                CSP_LOG(log, "~new_out");
+                CSP_LOG(s_log, "~new_out");
                 // No more new outs.
                 chanops[2] = {{}, nullptr};
                 break;
             default: {  // ~outs
                 auto i = ~m.result - 3;
-                CSP_LOG(log, "~outs[%d]", i);
+                CSP_LOG(s_log, "~outs[%d]", i);
                 drop(i);
             }
             }
@@ -5563,12 +5569,12 @@ auto quantize(reader<T> source,  // incoming units
             sink = std::move(sink), residue = std::move(residue)]{
         internal::descr("quantize");
 
-        static Logger log("chan/quantize");
+        static Logger s_log("chan/quantize");
 
         T acc = {}, q = {}, t = {};
 
         auto deliver_residue = onScopeExit([&]{
-            CSP_LOG(log, "quantize: residue << %d", t);
+            CSP_LOG(s_log, "quantize: residue << %d", t);
             residue << acc;
         });
 
@@ -5577,26 +5583,26 @@ auto quantize(reader<T> source,  // incoming units
                                  !q ? quanta >> q : ~quanta,
                                  q && q <= acc ? sink << q : ~sink)) {
             case 0: // source
-                CSP_LOG(log, "quantize: source >> %d", t);
+                CSP_LOG(s_log, "quantize: source >> %d", t);
                 acc += t;
                 break;
             case 1: // quanta
-                CSP_LOG(log, "quantize: quanta >> %d", q);
+                CSP_LOG(s_log, "quantize: quanta >> %d", q);
                 // Deliver 0-quantum immediately.
                 if (!q && !(sink << q)) {
                     return;
                 }
                 break;
             case 2: // sink
-                CSP_LOG(log, "quantize: sink << %d", q);
+                CSP_LOG(s_log, "quantize: sink << %d", q);
                 acc -= q;
                 q = 0;
                 break;
             default:
-                CSP_LOG(log, "quantize: ~%d", ~rc);
+                CSP_LOG(s_log, "quantize: ~%d", ~rc);
                 if (rc == ~0) { // Dead source; deliver quantum, if any.
                     if (q && q <= acc && sink << q) {
-                        CSP_LOG(log, "quantize[~source]: sink << %d", q);
+                        CSP_LOG(s_log, "quantize[~source]: sink << %d", q);
                         acc -= q;
                     }
                 } else if (rc == ~1) { // Dead quanta; drain source.
@@ -5604,17 +5610,17 @@ auto quantize(reader<T> source,  // incoming units
                         switch (int rc = alt(acc < q ? source >> t : ~source,
                                              q <= acc ? sink << q : ~sink)) {
                         case 0: // source
-                            CSP_LOG(log, "quantize[~quanta]: source >> %d", t);
+                            CSP_LOG(s_log, "quantize[~quanta]: source >> %d", t);
                             acc += t;
                             break;
                         case 1: // sink
-                            CSP_LOG(log, "quantize[~quanta]: sink << %d", q);
+                            CSP_LOG(s_log, "quantize[~quanta]: sink << %d", q);
                             acc -= q;
                             return;
                         default:
-                            CSP_LOG(log, "quantize[~quanta]: ~%d", ~rc);
+                            CSP_LOG(s_log, "quantize[~quanta]: ~%d", ~rc);
                             if (q && q <= acc && sink << q) {
-                                CSP_LOG(log, "quantize[~quanta,~%s]: sink << %d",
+                                CSP_LOG(s_log, "quantize[~quanta,~%s]: sink << %d",
                                          rc == ~0 ? "source" : "sink", q);
                                 acc -= q;
                             }
@@ -6441,7 +6447,7 @@ auto tee(writer<T> side) {
         static Logger scope("chan/tee/scope");
         BRAC_SCOPE(scope, "tee", "");
 
-        static Logger log("chan/tee/log");
+        static Logger s_log("chan/tee/log");
 
         for (T t; prialt(~out, in >> t) >= 0 && out << t && side << std::move(t);) { }
         for (T t; prialt(~out, in >> t) >= 0 && out << std::move(t);) { }
@@ -6678,16 +6684,16 @@ auto where(Pred&& pred) {
     return make_filter<T>([pred = std::forward<Pred>(pred)](reader<T> in, writer<T> out) {
         internal::descr("where");
 
-        static Logger log("chan/where");
-        CSP_LOG(log, "start");
+        static Logger s_log("chan/where");
+        CSP_LOG(s_log, "start");
 
         for (T t; csp::alt(in >> t, ~out) == 0;) {
-            CSP_LOG(log, "loop");
+            CSP_LOG(s_log, "loop");
             if (pred(t) && !(out << std::move(t))) {
                 break;
             }
         }
-        CSP_LOG(log, "finish");
+        CSP_LOG(s_log, "finish");
     });
 }
 
