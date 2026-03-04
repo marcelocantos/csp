@@ -10,9 +10,9 @@ option(CSP_BUILD_TESTS "Build tests" ON)
 
 # --- Compiler flags ---
 if(MSVC OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC"))
-    # clang-cl or MSVC
-    add_compile_options(/W4 /O2 /DDEBUG)
-    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+    # clang-cl or MSVC — use generator expressions so /W4 /O2 don't leak to MASM
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/W4> $<$<COMPILE_LANGUAGE:C,CXX>:/O2>)
+    add_compile_definitions(DEBUG NOMINMAX WIN32_LEAN_AND_MEAN)
 else()
     add_compile_options(-O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
@@ -32,9 +32,9 @@ if(WIN32)
     if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         # Native MSVC: use MASM assembly
         enable_language(ASM_MASM)
-        # Boost.Context MASM files reference BOOST_CONTEXT_EXPORT; define as
-        # empty for static-library builds (matches Boost's own CMakeLists.txt).
-        set(CMAKE_ASM_MASM_FLAGS "${CMAKE_ASM_MASM_FLAGS} /DBOOST_CONTEXT_EXPORT=")
+        # BOOST_CONTEXT_EXPORT define is applied via target_compile_definitions
+        # below (after add_library) — CMAKE_ASM_MASM_FLAGS doesn't reliably
+        # pass trailing = in VS generators.
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
             if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
                 set(FCONTEXT_SRCS
@@ -126,6 +126,12 @@ endif()
 add_library(csp STATIC ${LIB_SRCS} ${FCONTEXT_SRCS})
 
 target_include_directories(csp PUBLIC include vendor/include)
+
+# Boost.Context MASM files reference BOOST_CONTEXT_EXPORT; define as empty
+# for static-library builds.
+if(WIN32 AND MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_definitions(csp PRIVATE "BOOST_CONTEXT_EXPORT=")
+endif()
 
 if(CSP_TLS)
     target_compile_definitions(csp PUBLIC CSP_TLS)

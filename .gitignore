@@ -1,4 +1,5 @@
 build/
+build-dist/
 demos/build/
 *.d
 .DS_Store
