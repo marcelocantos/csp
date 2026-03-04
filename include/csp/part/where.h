@@ -11,16 +11,16 @@ auto where(Pred&& pred) {
     return make_filter<T>([pred = std::forward<Pred>(pred)](reader<T> in, writer<T> out) {
         internal::descr("where");
 
-        static Logger log("chan/where");
-        CSP_LOG(log, "start");
+        static Logger s_log("chan/where");
+        CSP_LOG(s_log, "start");
 
         for (T t; csp::alt(in >> t, ~out) == 0;) {
-            CSP_LOG(log, "loop");
+            CSP_LOG(s_log, "loop");
             if (pred(t) && !(out << std::move(t))) {
                 break;
             }
         }
-        CSP_LOG(log, "finish");
+        CSP_LOG(s_log, "finish");
     });
 }
 

@@ -17,12 +17,12 @@ auto quantize(reader<T> source,  // incoming units
             sink = std::move(sink), residue = std::move(residue)]{
         internal::descr("quantize");
 
-        static Logger log("chan/quantize");
+        static Logger s_log("chan/quantize");
 
         T acc = {}, q = {}, t = {};
 
         auto deliver_residue = onScopeExit([&]{
-            CSP_LOG(log, "quantize: residue << %d", t);
+            CSP_LOG(s_log, "quantize: residue << %d", t);
             residue << acc;
         });
 
@@ -31,26 +31,26 @@ auto quantize(reader<T> source,  // incoming units
                                  !q ? quanta >> q : ~quanta,
                                  q && q <= acc ? sink << q : ~sink)) {
             case 0: // source
-                CSP_LOG(log, "quantize: source >> %d", t);
+                CSP_LOG(s_log, "quantize: source >> %d", t);
                 acc += t;
                 break;
             case 1: // quanta
-                CSP_LOG(log, "quantize: quanta >> %d", q);
+                CSP_LOG(s_log, "quantize: quanta >> %d", q);
                 // Deliver 0-quantum immediately.
                 if (!q && !(sink << q)) {
                     return;
                 }
                 break;
             case 2: // sink
-                CSP_LOG(log, "quantize: sink << %d", q);
+                CSP_LOG(s_log, "quantize: sink << %d", q);
                 acc -= q;
                 q = 0;
                 break;
             default:
-                CSP_LOG(log, "quantize: ~%d", ~rc);
+                CSP_LOG(s_log, "quantize: ~%d", ~rc);
                 if (rc == ~0) { // Dead source; deliver quantum, if any.
                     if (q && q <= acc && sink << q) {
-                        CSP_LOG(log, "quantize[~source]: sink << %d", q);
+                        CSP_LOG(s_log, "quantize[~source]: sink << %d", q);
                         acc -= q;
                     }
                 } else if (rc == ~1) { // Dead quanta; drain source.
@@ -58,17 +58,17 @@ auto quantize(reader<T> source,  // incoming units
                         switch (int rc = alt(acc < q ? source >> t : ~source,
                                              q <= acc ? sink << q : ~sink)) {
                         case 0: // source
-                            CSP_LOG(log, "quantize[~quanta]: source >> %d", t);
+                            CSP_LOG(s_log, "quantize[~quanta]: source >> %d", t);
                             acc += t;
                             break;
                         case 1: // sink
-                            CSP_LOG(log, "quantize[~quanta]: sink << %d", q);
+                            CSP_LOG(s_log, "quantize[~quanta]: sink << %d", q);
                             acc -= q;
                             return;
                         default:
-                            CSP_LOG(log, "quantize[~quanta]: ~%d", ~rc);
+                            CSP_LOG(s_log, "quantize[~quanta]: ~%d", ~rc);
                             if (q && q <= acc && sink << q) {
-                                CSP_LOG(log, "quantize[~quanta,~%s]: sink << %d",
+                                CSP_LOG(s_log, "quantize[~quanta,~%s]: sink << %d",
                                          rc == ~0 ? "source" : "sink", q);
                                 acc -= q;
                             }

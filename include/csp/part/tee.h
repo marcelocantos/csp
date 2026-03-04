@@ -17,7 +17,7 @@ auto tee(writer<T> side) {
         static Logger scope("chan/tee/scope");
         BRAC_SCOPE(scope, "tee", "");
 
-        static Logger log("chan/tee/log");
+        static Logger s_log("chan/tee/log");
 
         for (T t; prialt(~out, in >> t) >= 0 && out << t && side << std::move(t);) { }
         for (T t; prialt(~out, in >> t) >= 0 && out << std::move(t);) { }
