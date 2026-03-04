@@ -610,7 +610,7 @@ TEST_CASE("Channel - Capillaries") {
     spawn_outward_tree(stats, --in, ww, WIDTH);
     spawn_inward_tree(stats, rr, WIDTH, ++out);
 
-    stats.spawn(count(0UL, MESSAGES).bind(std::move(in)));
+    stats.spawn(count(size_t{0}, MESSAGES).bind(std::move(in)));
 
     std::bitset<MESSAGES> received;
     for (size_t i; out >> i;) {
