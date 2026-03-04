@@ -25,8 +25,8 @@ TEST_CASE("MN - MultipleThreads") {
                 std::lock_guard<std::mutex> lk(mu);
                 thread_ids.insert(id);
             }
-            // Do enough work to let the scheduler spread across threads.
-            for (int j = 0; j < 1000; ++j) { std::atomic_signal_fence(std::memory_order_seq_cst); }
+            // Yield to let the scheduler spread imps across Ps (and OS threads).
+            csp::yield();
             done.fetch_add(1, std::memory_order_relaxed);
         });
     }
@@ -34,7 +34,7 @@ TEST_CASE("MN - MultipleThreads") {
     csp::schedule();
 
     CHECK(N == done.load());
-    // With 4 processors, we should see more than 1 OS thread used.
+    // With 4 processors and yields, we should see more than 1 OS thread used.
     CHECK(thread_ids.size() > 1);
 
     csp::shutdown_runtime();
