@@ -200,9 +200,7 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Check exe
-        run: |
-          dir build\Release\csp_tests.exe
-          dumpbin /dependents build\Release\csp_tests.exe
+        run: dir build\Release\csp_tests.exe
 
       - name: Test
         run: |
