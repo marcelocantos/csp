@@ -477,9 +477,11 @@ public:
     // Read exactly one value and assert the reader produces no more.
     T single() const {
         T t;
-        assert(static_cast<bool>(*this >> t) && "single() called on exhausted reader");
+        [[maybe_unused]] bool ok = static_cast<bool>(*this >> t);
+        assert(ok && "single() called on exhausted reader");
         T discard;
-        assert(!static_cast<bool>(*this >> discard) && "single() reader produced more than one value");
+        [[maybe_unused]] bool extra = static_cast<bool>(*this >> discard);
+        assert(!extra && "single() reader produced more than one value");
         return t;
     }
 
