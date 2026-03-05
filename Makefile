@@ -47,6 +47,10 @@ ifneq ($(CSP_INCLUDE),include)
 BUILDDIR := $(BUILDDIR)-$(CSP_INCLUDE)
 endif
 
+ifeq ($(CSP_TLS),0)
+BUILDDIR := $(BUILDDIR)-notls
+endif
+
 # --- Auto-dependencies ---
 # -MMD generates .d files alongside .o files listing header deps.
 # -MP adds phony targets for each header, preventing errors when
@@ -68,7 +72,7 @@ MBEDTLS_DIR    := vendor/github.com/Mbed-TLS/mbedtls/library
 MBEDTLS_SRCS   := $(wildcard $(MBEDTLS_DIR)/*.c)
 MBEDTLS_OBJS   := $(patsubst $(MBEDTLS_DIR)/%.c,$(BUILDDIR)/mbedtls/%.o,$(MBEDTLS_SRCS))
 MBEDTLS_CFLAGS := -O2 -DMBEDTLS_CONFIG_FILE='"mbedtls_config.h"' \
-                  -I$(CSP_INCLUDE) -Ivendor/github.com/Mbed-TLS/mbedtls/include
+                  -Iinclude -Ivendor/github.com/Mbed-TLS/mbedtls/include
 ifneq ($(SANITIZE),)
 MBEDTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
@@ -200,10 +204,10 @@ $(BUILDDIR)/mbedtls/%.o: $(MBEDTLS_DIR)/%.c
 	$(CC) -c $(MBEDTLS_CFLAGS) -o $@ $<
 endif
 
-# Distribution sources (self-contained, no -Iinclude needed)
+# Distribution sources
 $(BUILDDIR)/dist/%.o: dist/%.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
 
 # Test sources
 $(BUILDDIR)/test/%.o: test/%.cc
@@ -255,6 +259,7 @@ dist:
 	python3 scripts/amalgamate.py
 
 test-dist: dist
+	$(MAKE) CSP_INCLUDE=dist CSP_TLS=1 test
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=0 test
 
 # --- include cleaner (clang-tidy) ---

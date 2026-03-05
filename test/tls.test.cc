@@ -2,8 +2,6 @@
 
 #include "testutil.h"
 
-#include <csp/tls.h>
-
 #include <arpa/inet.h>
 #include <cstring>
 #include <fstream>
