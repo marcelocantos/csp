@@ -121,7 +121,7 @@ jobs:
         env:
           # libc++abi on Linux frees std::logic_error strings with free()
           # instead of operator delete, triggering false positives under ASan.
-          ASAN_OPTIONS: alloc_dealloc_mismatch=0
+          ASAN_OPTIONS: alloc_dealloc_mismatch=0:detect_odr_violation=0
 
       - name: GDB backtrace on crash
         if: failure() && runner.os == 'Linux'

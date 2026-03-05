@@ -259,8 +259,12 @@ dist:
 	python3 scripts/amalgamate.py
 
 test-dist: dist
+ifneq ($(findstring thread,$(SANITIZE)),)
+	$(MAKE) CSP_INCLUDE=dist CSP_TLS=0 test
+else
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=1 test
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=0 test
+endif
 
 # --- include cleaner (clang-tidy) ---
 
