@@ -512,7 +512,7 @@ namespace {
         using Vultures = detail::RingBuffer<ChanopWaiter>;
 
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
-        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%lu", id_); return std::string(b); }();
+        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%zu", id_); return std::string(b); }();
         std::atomic<int> alive_{2};  // endpoints (2) + sleeping waiters; last to 0 deletes
         std::mutex mu_;
         Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot

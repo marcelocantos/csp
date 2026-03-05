@@ -796,7 +796,7 @@ namespace {
         using Vultures = detail::RingBuffer<ChanopWaiter>;
 
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
-        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%lu", id_); return std::string(b); }();
+        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%zu", id_); return std::string(b); }();
         std::atomic<int> alive_{2};  // endpoints (2) + sleeping waiters; last to 0 deletes
         std::mutex mu_;
         Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot
@@ -1156,7 +1156,7 @@ namespace csp {
         static void vstatus(Imp * imp, char const * msg, va_list args) {
             char * buf = imp->status_;
             int len = sizeof(imp->status_);
-            int n = snprintf(buf, len, "§%lu ", imp->id_);
+            int n = snprintf(buf, len, "§%zu ", imp->id_);
             vsnprintf(buf += n, len -= n, msg, args);
         }
 
@@ -1223,7 +1223,7 @@ namespace csp {
 
         Imp::Imp(fcontext_t ctx, StackRegion stk) : ctx_(ctx), stk_(stk) {
             prev_ = next_ = nullptr;
-            snprintf(status_, sizeof(status_), "§%lu", id_);
+            snprintf(status_, sizeof(status_), "§%zu", id_);
         }
 
         Imp::Imp() : Imp(nullptr, {}) {
