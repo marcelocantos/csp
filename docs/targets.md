@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: 31832bf -->
+<!-- last-evaluated: 3a7aa6c -->
 
 ## Active
 
@@ -22,9 +22,9 @@
 - **Acceptance**:
   - `csp_tests.exe` prints doctest summary on Windows CI
   - Exit code reflects test results (0 = all pass)
-- **Context**: Windows build links successfully but test exe crashes at startup (exit code 1, no doctest output). Likely fcontext init, reactor, or TLS globals issue.
+- **Context**: Static init crash fixed (`~15UL` pointer truncation, 7d69868). Tests now run — ~100+ pass. Crash during "ChanUtil - CountForever" test (909 reads from infinite producer, 3s then exit code 1). Likely reader-death-signal propagation or scheduler exit issue on Windows.
 - **Parent**: 🎯T1
-- **Status**: identified
+- **Status**: converging
 - **Discovered**: 2026-03-04
 
 ## Achieved
