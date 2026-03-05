@@ -79,7 +79,7 @@ namespace {
 
     // Extract Channel* from a Waiter/ChanOp pointer (Channel* with flags in low bits).
     Channel * get_chan(void * ptr) {
-        auto p = (uintptr_t)ptr & ~15UL;
+        auto p = (uintptr_t)ptr & ~uintptr_t{15};
         return p ? reinterpret_cast<Channel *>(p) : nullptr;
     }
 
@@ -277,7 +277,7 @@ namespace {
                 if (slot) {
                     new_ch = static_cast<Channel*>(
                         slot->channel.load(std::memory_order_acquire));
-                    auto flags = (uintptr_t)chanops[i].waiter.ptr & 15UL;
+                    auto flags = (uintptr_t)chanops[i].waiter.ptr & uintptr_t{15};
                     const_cast<ChanOp &>(chanops[i]).waiter.ptr =
                         (void *)((uintptr_t)new_ch | flags);
                 } else {
@@ -546,7 +546,7 @@ namespace {
     };
 
     char const * describe(void * ptr) {
-        auto p = (uintptr_t)ptr & ~15UL;
+        auto p = (uintptr_t)ptr & ~uintptr_t{15};
         if (p) {
             auto * ch = reinterpret_cast<Channel *>(p);
             return ch->descr_.c_str();

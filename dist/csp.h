@@ -338,7 +338,7 @@ struct alignas(16) Slot {
 
 // Extract Slot* from an endpoint ref (mask off low flag bits).
 inline Slot* get_slot(void* ptr) {
-    return reinterpret_cast<Slot*>((uintptr_t)ptr & ~15UL);
+    return reinterpret_cast<Slot*>((uintptr_t)ptr & ~uintptr_t{15});
 }
 
 // Opaque channel endpoint handles.
