@@ -202,10 +202,14 @@ jobs:
       - name: Check exe
         run: dir build\Release\csp_tests.exe
 
+      - name: List tests
+        run: |
+          & build\Release\csp_tests.exe --list-test-cases 2>&1 | Write-Host
+
       - name: Test
         run: |
           $ErrorActionPreference = "Continue"
-          & build\Release\csp_tests.exe 2>&1 | Write-Host
+          & build\Release\csp_tests.exe -s --duration 2>&1 | Write-Host
           exit $LASTEXITCODE
 
   # --- TLA+ model checking (macOS only) ---
