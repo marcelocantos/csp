@@ -35,15 +35,19 @@ if(WIN32)
         # BOOST_CONTEXT_EXPORT define is applied via target_compile_definitions
         # below (after add_library) — CMAKE_ASM_MASM_FLAGS doesn't reliably
         # pass trailing = in VS generators.
+        # Use CSP's local make_fcontext copies (src/asm/) which have
+        # trampoline/finish separated into their own PROCs with correct
+        # .pdata/.xdata for MSVC x64 exception unwinding on imp stacks.
+        # jump_fcontext is unchanged, so it comes from the vendor submodule.
         if(CMAKE_SIZEOF_VOID_P EQUAL 8)
             if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
                 set(FCONTEXT_SRCS
                     ${FCONTEXT_DIR}/jump_arm64_aapcs_pe_armasm.asm
-                    ${FCONTEXT_DIR}/make_arm64_aapcs_pe_armasm.asm)
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/asm/make_arm64_aapcs_pe_armasm.asm)
             else()
                 set(FCONTEXT_SRCS
                     ${FCONTEXT_DIR}/jump_x86_64_ms_pe_masm.asm
-                    ${FCONTEXT_DIR}/make_x86_64_ms_pe_masm.asm)
+                    ${CMAKE_CURRENT_SOURCE_DIR}/src/asm/make_x86_64_ms_pe_masm.asm)
             endif()
         else()
             set(FCONTEXT_SRCS

@@ -35,12 +35,37 @@ static LONG WINAPI veh_handler(EXCEPTION_POINTERS* ep) {
         int rw = (int)ep->ExceptionRecord->ExceptionInformation[0]; // 0=read, 1=write
         snprintf(buf, sizeof(buf),
                  "CSP_DIAG: VEH exception=0x%08lX (ACCESS_VIOLATION %s %p) "
-                 "addr=%p rsp=%p",
+                 "addr=%p rsp=%p rbp=%p",
                  code, rw ? "write" : "read", fault_addr,
-                 addr, (void*)ep->ContextRecord->Rsp);
+                 addr, (void*)ep->ContextRecord->Rsp,
+                 (void*)ep->ContextRecord->Rbp);
     } else {
         snprintf(buf, sizeof(buf),
                  "CSP_DIAG: VEH exception=0x%08lX addr=%p rsp=%p",
+                 code, addr, (void*)ep->ContextRecord->Rsp);
+    }
+    write_crash_file(buf);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// Last-resort handler: fires when VEH and SEH both fail to handle
+// the exception (e.g., double-fault during exception dispatch).
+static LONG WINAPI uef_handler(EXCEPTION_POINTERS* ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    void* addr = ep->ExceptionRecord->ExceptionAddress;
+    char buf[512];
+    if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
+        void* fault_addr = (void*)ep->ExceptionRecord->ExceptionInformation[1];
+        int rw = (int)ep->ExceptionRecord->ExceptionInformation[0];
+        snprintf(buf, sizeof(buf),
+                 "CSP_DIAG: UEF exception=0x%08lX (ACCESS_VIOLATION %s %p) "
+                 "addr=%p rsp=%p rbp=%p",
+                 code, rw ? "write" : "read", fault_addr,
+                 addr, (void*)ep->ContextRecord->Rsp,
+                 (void*)ep->ContextRecord->Rbp);
+    } else {
+        snprintf(buf, sizeof(buf),
+                 "CSP_DIAG: UEF exception=0x%08lX addr=%p rsp=%p",
                  code, addr, (void*)ep->ContextRecord->Rsp);
     }
     write_crash_file(buf);
@@ -54,6 +79,7 @@ int main(int argc, char** argv) {
 
 #ifdef _WIN32
     AddVectoredExceptionHandler(1, veh_handler);
+    SetUnhandledExceptionFilter(uef_handler);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     _set_error_mode(_OUT_TO_STDERR);
     std::set_terminate([] {
