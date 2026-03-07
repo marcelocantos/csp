@@ -180,24 +180,19 @@ void StackPool::release(StackRegion region) {
     }
 }
 
-void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
-    char* usable = static_cast<char*>(region.base) + page_size_;
-    // Round SP down to page boundary.
-    auto sp_val = reinterpret_cast<uintptr_t>(current_sp);
-    char* sp_page = reinterpret_cast<char*>(sp_val & ~(page_size_ - 1));
-    // Keep 2 pages of headroom below SP to avoid thrashing.
-    char* shrink_to = sp_page - 2 * page_size_;
-    if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
-        size_t reclaimable = static_cast<size_t>(shrink_to - usable);
-        VirtualFree(usable, reclaimable, MEM_DECOMMIT);
-        // Update NT_TIB StackLimit to reflect the new committed boundary.
-        // Without this, exception dispatch would see a StackLimit that
-        // points into decommitted pages and crash.
-        auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
-        if (shrink_to > static_cast<char*>(tib->StackLimit)) {
-            tib->StackLimit = shrink_to;
-        }
-    }
+void StackPool::maybe_shrink(StackRegion const&, void*) {
+    // No-op on Windows.  Decommitting pages (MEM_DECOMMIT) and raising
+    // StackLimit is unsafe because MSVC's C++ exception dispatch
+    // (RtlDispatchException → RtlVirtualUnwind) runs on the current
+    // stack.  If the dispatch needs more stack than the headroom between
+    // RSP and StackLimit, it faults on uncommitted pages.  That nested
+    // ACCESS_VIOLATION during exception dispatch is a double-fault that
+    // terminates the process without VEH notification — our
+    // demand-commit handler never gets a chance to commit the page.
+    //
+    // Pages stay committed until the stack is released to the pool,
+    // where release() decommits everything and re-commits only the
+    // initial region.
 }
 
 void StackPool::drain() {
