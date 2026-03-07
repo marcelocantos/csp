@@ -48,20 +48,82 @@ StackPool::StackPool()
 #ifdef _WIN32
 
 // --- Windows: VirtualAlloc-based stack regions ---
+//
+// Reserve 1MB of virtual address space per stack but only commit a small
+// initial portion at the top (where RSP starts). A Vectored Exception
+// Handler (VEH) commits pages on demand when the stack grows, replicating
+// the demand-paged behavior of mmap on Unix. This keeps the commit charge
+// proportional to actual stack usage, not the number of live imps.
+
+// Initial committed region per stack (at the top, where RSP starts).
+static constexpr size_t kInitialCommit = 64 * 1024;  // 64 KB
+
+static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    auto fault_addr = reinterpret_cast<char*>(
+        ep->ExceptionRecord->ExceptionInformation[1]);
+
+    // Check if the fault is in one of our stack regions by trying to
+    // commit the faulting page. VirtualAlloc on an already-committed page
+    // is a no-op and succeeds; on a page outside any reserved region it
+    // returns NULL. We commit one page at a time.
+    auto& pool = StackPool::instance();
+    size_t page = pool.page_size();
+
+    // Align fault address down to page boundary.
+    auto page_base = reinterpret_cast<void*>(
+        reinterpret_cast<uintptr_t>(fault_addr) & ~(page - 1));
+
+    // Try to commit the page. If it's in a reserved region, this succeeds.
+    void* result = VirtualAlloc(page_base, page, MEM_COMMIT, PAGE_READWRITE);
+    if (result) {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static std::once_flag g_veh_once;
 
 StackRegion StackPool::mmap_new() {
+    // Install the demand-commit VEH once.
+    std::call_once(g_veh_once, [] {
+        AddVectoredExceptionHandler(1, stack_guard_handler);
+    });
+
+    // Reserve address space without committing physical pages.
     void* base = VirtualAlloc(nullptr, stack_size_,
-                              MEM_RESERVE | MEM_COMMIT,
-                              PAGE_READWRITE);
+                              MEM_RESERVE,
+                              PAGE_NOACCESS);
     if (!base) {
         throw std::bad_alloc();
     }
-    // Guard page at the bottom (lowest address).
-    DWORD old_protect;
-    if (!VirtualProtect(base, page_size_, PAGE_NOACCESS, &old_protect)) {
+
+    // Commit guard page at the bottom (PAGE_NOACCESS after commit — use
+    // PAGE_READWRITE then protect, since MEM_COMMIT requires valid protection).
+    void* guard = VirtualAlloc(base, page_size_,
+                               MEM_COMMIT, PAGE_READWRITE);
+    if (!guard) {
         VirtualFree(base, 0, MEM_RELEASE);
         throw std::bad_alloc();
     }
+    DWORD old_protect;
+    VirtualProtect(base, page_size_, PAGE_NOACCESS, &old_protect);
+
+    // Commit the initial region at the top of the stack (where RSP starts).
+    char* top = static_cast<char*>(base) + stack_size_;
+    size_t commit = (kInitialCommit < stack_size_ - page_size_)
+                        ? kInitialCommit
+                        : stack_size_ - page_size_;
+    void* committed = VirtualAlloc(top - commit, commit,
+                                   MEM_COMMIT, PAGE_READWRITE);
+    if (!committed) {
+        VirtualFree(base, 0, MEM_RELEASE);
+        throw std::bad_alloc();
+    }
+
     return {base, stack_size_};
 }
 
@@ -82,13 +144,16 @@ StackRegion StackPool::allocate() {
 }
 
 void StackPool::release(StackRegion region) {
-    // Decommit the usable area (above guard page) to release physical pages.
-    // The pages are re-committed on next access (demand-paged).
+    // Decommit everything except the guard page to release physical pages.
     char* usable = static_cast<char*>(region.base) + page_size_;
     size_t usable_len = region.total_size - page_size_;
     VirtualFree(usable, usable_len, MEM_DECOMMIT);
-    // Re-commit so the region is usable again when recycled from the pool.
-    VirtualAlloc(usable, usable_len, MEM_COMMIT, PAGE_READWRITE);
+
+    // Re-commit only the initial portion at the top so the stack is
+    // usable when recycled from the pool. The VEH handles further growth.
+    char* top = static_cast<char*>(region.base) + region.total_size;
+    size_t commit = (kInitialCommit < usable_len) ? kInitialCommit : usable_len;
+    VirtualAlloc(top - commit, commit, MEM_COMMIT, PAGE_READWRITE);
 
     std::lock_guard<std::mutex> lk(mu_);
     if (free_list_.size() < kMaxPooled) {
@@ -108,7 +173,6 @@ void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
     if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
         size_t reclaimable = static_cast<size_t>(shrink_to - usable);
         VirtualFree(usable, reclaimable, MEM_DECOMMIT);
-        VirtualAlloc(usable, reclaimable, MEM_COMMIT, PAGE_READWRITE);
     }
 }
 
