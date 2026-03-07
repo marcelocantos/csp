@@ -62,13 +62,19 @@ static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
     if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
         return EXCEPTION_CONTINUE_SEARCH;
 
-    auto fault_addr = reinterpret_cast<char*>(
+    auto fault_addr = reinterpret_cast<void*>(
         ep->ExceptionRecord->ExceptionInformation[1]);
 
-    // Check if the fault is in one of our stack regions by trying to
-    // commit the faulting page. VirtualAlloc on an already-committed page
-    // is a no-op and succeeds; on a page outside any reserved region it
-    // returns NULL. We commit one page at a time.
+    // Only commit pages that are in MEM_RESERVE state (reserved but not
+    // yet committed).  This prevents accidentally changing the protection
+    // of already-committed pages (guard pages, read-only pages, etc.)
+    // which would mask real crashes.
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(fault_addr, &mbi, sizeof(mbi)))
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (mbi.State != MEM_RESERVE)
+        return EXCEPTION_CONTINUE_SEARCH;
+
     auto& pool = StackPool::instance();
     size_t page = pool.page_size();
 
@@ -76,7 +82,6 @@ static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
     auto page_base = reinterpret_cast<void*>(
         reinterpret_cast<uintptr_t>(fault_addr) & ~(page - 1));
 
-    // Try to commit the page. If it's in a reserved region, this succeeds.
     void* result = VirtualAlloc(page_base, page, MEM_COMMIT, PAGE_READWRITE);
     if (result) {
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -88,9 +93,11 @@ static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
 static std::once_flag g_veh_once;
 
 StackRegion StackPool::mmap_new() {
-    // Install the demand-commit VEH once.
+    // Install the demand-commit VEH once.  Use priority 0 (end of chain)
+    // so the diagnostic VEH in test/main.cc (registered with priority 1)
+    // always sees exceptions first for logging.
     std::call_once(g_veh_once, [] {
-        AddVectoredExceptionHandler(1, stack_guard_handler);
+        AddVectoredExceptionHandler(0, stack_guard_handler);
     });
 
     // Reserve address space without committing physical pages.

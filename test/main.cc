@@ -56,6 +56,20 @@ int main(int argc, char** argv) {
     AddVectoredExceptionHandler(1, veh_handler);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     _set_error_mode(_OUT_TO_STDERR);
+    std::set_terminate([] {
+        write_crash_file("CSP_DIAG: std::terminate() called");
+        auto ep = std::current_exception();
+        if (ep) {
+            try { std::rethrow_exception(ep); }
+            catch (std::exception const& e) {
+                char buf[512];
+                snprintf(buf, sizeof(buf), "CSP_DIAG: terminate reason: %s", e.what());
+                write_crash_file(buf);
+            }
+            catch (...) { write_crash_file("CSP_DIAG: terminate reason: unknown exception"); }
+        }
+        std::abort();
+    });
 #endif
 
     fprintf(stderr, "CSP_DIAG: main() entered\n");
