@@ -37,7 +37,8 @@ state.operation(args) ─┤guard├──➤ effects; result
 
 | Document | Header | Contents |
 |---|---|---|
-| [Supervision](supervisor.md) | `csp/supervisor.h` | `restart_policy`, `worker_group`, `max_restarts_exceeded` |
+| [Imp Exit](imp-exit.md) | `csp/imp_exit.h` | `supervised`, `on_exit`, `exit_guard`, `imp_event`, `restart_policy`, `max_restarts_exceeded` |
+| [Supervision](supervisor.md) | `csp/supervisor.h` | `worker_group`, `worker_max_restarts_exceeded` (deprecated -- prefer `on_exit` + `supervised`) |
 
 ## Scoping
 

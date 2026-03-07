@@ -1,18 +1,25 @@
 # Convergence Report
 
 **Generated**: 2026-03-05
-**Branch**: master (uncommitted changes: Makefile, test/tls.test.cc)
+**Branch**: test-dist-tls (PR #6 open)
 
 ## Standing invariants
 
-- **Tests**: passing (636/636 source, 636+628 dist TLS=1/TLS=0) — local only
-- **CI**: last master run failed (run 22609674116); last successful run was on `fix-ci-flakes` branch (merged as e74c81c). Current changes not yet pushed.
+- **Tests**: passing (636/636 source)
+- **CI**: PR #6 latest run all green (9/9 jobs, commit 1f41d59)
+
+## Movement
+
+- 🎯T1: close -> close (PR #6 created, CI green — ready to merge)
+- 🎯T2: (unchanged)
+- 🎯T3: (unchanged)
 
 ## Gap report
 
 ### 🎯T1 Test-dist exercises both TLS modes  [high]
 **Gap**: close
-All code changes are complete and verified locally. `make test-dist` runs 636 tests (TLS=1) then 628 tests (TLS=0), both passing. Remaining: commit, push through PR, get CI green.
+All code changes complete. PR #6 open, latest CI run (22705986141) is fully green (9/9 jobs). Ready to merge.
+  Implied: not yet delivered (PR #6 open, CI green — merge pending)
 
 ### 🎯T3 Imp exit / supervision documentation  [medium]
 **Gap**: significant
@@ -20,31 +27,30 @@ Code is complete (15 tests passing, merged to master). No documentation exists y
 
 ### 🎯T2 Windows port  [medium]
 **Gap**: significant
-CI builds and links successfully. Test executable crashes at startup (exit code 1, no doctest output). Diagnostic markers added but crash not yet diagnosed. PR #4 open on `worktree-windows-port` branch. Effective weight 0.6 — high cost relative to value.
+CI builds and links successfully. Test executable crashes at startup. PR #4 open. Effective weight 0.6 — high cost relative to value.
 
 ## Recommendation
 
 Work on: **🎯T1 Test-dist exercises both TLS modes**
-Reason: Highest effective weight (8.0), gap is "close" — all code done, just needs delivery. Cheapest path to closing a target.
+Reason: Highest effective weight (8.0), gap is "close" — code done, CI green, just needs merge. Cheapest path to closing a target.
 
 ## Suggested action
 
-Run `/push` to commit the Makefile and tls.test.cc changes, create a PR, and monitor CI.
+Run `/push` to merge PR #6 (CI is already green).
 
 Type **go** to execute the suggested action.
 
 <!-- convergence-deps
-evaluated: 2026-03-05T00:00:00Z
-sha: e74c81c
+evaluated: 2026-03-05T10:00:00Z
+sha: 1f41d59
 
 🎯T1:
   gap: close
-  assessment: "All code changes complete and locally verified. Needs commit and PR merge."
+  assessment: "All code complete. PR #6 open, CI green. Ready to merge."
   read:
     - Makefile
     - test/tls.test.cc
-    - dist/csp.h
-    - include/csp.h
+    - .github/workflows/ci.yml
 
 🎯T2:
   gap: significant
