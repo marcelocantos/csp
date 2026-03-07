@@ -67,13 +67,21 @@ void shutdown_runtime();
 // Cooperative yield (no-op outside an imp).
 void yield();
 
-// Worker group: monitors imps, restarts on failure, escalates on max_restarts.
+// Imp exit interception: supervised + on_exit.
 struct restart_policy { int max_restarts=3; duration window=5s; duration backoff=0s; };
-worker_group wg;
-wg.workers = {{"name", factory}, ...};  // public unordered_map
-wg.policy.max_restarts = 5;             // public restart_policy
-wg.run();                               // blocks until all done or escalation
-// worker_group is callable (operator()) — nests as a worker in a parent group.
+
+// Custom handler: inspect event, call ev.restart() or drop.
+auto guard = on_exit([](imp_event ev) {
+    if (ev.error) ev.restart(1s);  // restart on exception
+});
+spawn(supervised([]() { do_work(); }));
+
+// Policy-based: automatic restart with sliding window.
+auto guard = on_exit(restart_policy{.max_restarts = 5});
+spawn(supervised([]() { serve(); }));
+
+// Only spawn(supervised(f)) is intercepted; regular spawn is unaffected.
+// Dynamic scoping: child imps inherit the exit handler automatically.
 ```
 
 ## Channel Operations

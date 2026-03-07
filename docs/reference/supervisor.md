@@ -1,5 +1,9 @@
 # Supervision Reference
 
+> **Deprecated**: Prefer [`on_exit`](imp-exit.md) with `supervised()` for new
+> code. `worker_group` is retained for backward compatibility but offers less
+> flexibility than the composable `on_exit` + `supervised` pattern.
+
 Worker lifecycle management with automatic restart and failure escalation.
 
 All types live in `namespace csp`. Header: `#include "csp/supervisor.h"`.
