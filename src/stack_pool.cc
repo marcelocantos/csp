@@ -55,8 +55,7 @@ StackPool::StackPool()
 // the demand-paged behavior of mmap on Unix. This keeps the commit charge
 // proportional to actual stack usage, not the number of live imps.
 
-// Initial committed region per stack (at the top, where RSP starts).
-static constexpr size_t kInitialCommit = 64 * 1024;  // 64 KB
+static constexpr size_t kInitialCommit = StackPool::kInitialCommitSize;
 
 static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
     if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
@@ -84,6 +83,17 @@ static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
 
     void* result = VirtualAlloc(page_base, page, MEM_COMMIT, PAGE_READWRITE);
     if (result) {
+        // Keep NT_TIB StackLimit in sync with the committed boundary.
+        // jump_fcontext sets StackLimit from the saved context on each
+        // switch; if a demand-committed page extends below the current
+        // StackLimit, update the TEB so MSVC's C++ exception dispatch
+        // (which probes the stack using StackLimit) doesn't fault on
+        // uncommitted pages — a nested ACCESS_VIOLATION during dispatch
+        // terminates the process without VEH notification.
+        auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        if (page_base < tib->StackLimit) {
+            tib->StackLimit = page_base;
+        }
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -180,6 +190,13 @@ void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
     if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
         size_t reclaimable = static_cast<size_t>(shrink_to - usable);
         VirtualFree(usable, reclaimable, MEM_DECOMMIT);
+        // Update NT_TIB StackLimit to reflect the new committed boundary.
+        // Without this, exception dispatch would see a StackLimit that
+        // points into decommitted pages and crash.
+        auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        if (shrink_to > static_cast<char*>(tib->StackLimit)) {
+            tib->StackLimit = shrink_to;
+        }
     }
 }
 

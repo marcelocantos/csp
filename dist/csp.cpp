@@ -1499,7 +1499,27 @@ int spawn(EntryFn start_f, void * data) {
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
         assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
-        auto ctx = make_fcontext(imp, (char*)imp - usable_base, start);
+        auto usable_size = static_cast<size_t>((char*)imp - usable_base);
+#ifdef _WIN32
+        // On Windows, pass only the initially committed stack size to
+        // make_fcontext.  This sets NT_TIB StackLimit (saved in the
+        // fcontext at offset 0xc0) to the bottom of the committed
+        // region instead of the bottom of the full MEM_RESERVE region.
+        // If StackLimit points into uncommitted pages, MSVC's C++
+        // exception dispatch (RtlVirtualUnwind) faults during stack
+        // probing — a nested ACCESS_VIOLATION that terminates the
+        // process without VEH notification.
+        auto committed = std::min(StackPool::kInitialCommitSize, usable_size);
+        auto ctx = make_fcontext(imp, committed, start);
+        // make_fcontext also sets DeallocationStack (offset 0xb8) to
+        // the same value as StackLimit.  Patch it to the actual bottom
+        // of the reserved region so Windows stack-overflow detection
+        // knows the full extent of the stack.
+        *reinterpret_cast<void**>(
+            static_cast<char*>(ctx) + 0xb8) = usable_base;
+#else
+        auto ctx = make_fcontext(imp, usable_size, start);
+#endif
         new (imp) Imp(ctx, region);
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
@@ -4645,8 +4665,7 @@ StackPool::StackPool()
 // the demand-paged behavior of mmap on Unix. This keeps the commit charge
 // proportional to actual stack usage, not the number of live imps.
 
-// Initial committed region per stack (at the top, where RSP starts).
-static constexpr size_t kInitialCommit = 64 * 1024;  // 64 KB
+static constexpr size_t kInitialCommit = StackPool::kInitialCommitSize;
 
 static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
     if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
@@ -4674,6 +4693,17 @@ static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
 
     void* result = VirtualAlloc(page_base, page, MEM_COMMIT, PAGE_READWRITE);
     if (result) {
+        // Keep NT_TIB StackLimit in sync with the committed boundary.
+        // jump_fcontext sets StackLimit from the saved context on each
+        // switch; if a demand-committed page extends below the current
+        // StackLimit, update the TEB so MSVC's C++ exception dispatch
+        // (which probes the stack using StackLimit) doesn't fault on
+        // uncommitted pages — a nested ACCESS_VIOLATION during dispatch
+        // terminates the process without VEH notification.
+        auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        if (page_base < tib->StackLimit) {
+            tib->StackLimit = page_base;
+        }
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -4770,6 +4800,13 @@ void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
     if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
         size_t reclaimable = static_cast<size_t>(shrink_to - usable);
         VirtualFree(usable, reclaimable, MEM_DECOMMIT);
+        // Update NT_TIB StackLimit to reflect the new committed boundary.
+        // Without this, exception dispatch would see a StackLimit that
+        // points into decommitted pages and crash.
+        auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        if (shrink_to > static_cast<char*>(tib->StackLimit)) {
+            tib->StackLimit = shrink_to;
+        }
     }
 }
 

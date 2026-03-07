@@ -6,6 +6,7 @@
 #include <pthread.h>
 #endif
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdarg>
@@ -399,7 +400,27 @@ int spawn(EntryFn start_f, void * data) {
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
         assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
-        auto ctx = make_fcontext(imp, (char*)imp - usable_base, start);
+        auto usable_size = static_cast<size_t>((char*)imp - usable_base);
+#ifdef _WIN32
+        // On Windows, pass only the initially committed stack size to
+        // make_fcontext.  This sets NT_TIB StackLimit (saved in the
+        // fcontext at offset 0xc0) to the bottom of the committed
+        // region instead of the bottom of the full MEM_RESERVE region.
+        // If StackLimit points into uncommitted pages, MSVC's C++
+        // exception dispatch (RtlVirtualUnwind) faults during stack
+        // probing — a nested ACCESS_VIOLATION that terminates the
+        // process without VEH notification.
+        auto committed = std::min(StackPool::kInitialCommitSize, usable_size);
+        auto ctx = make_fcontext(imp, committed, start);
+        // make_fcontext also sets DeallocationStack (offset 0xb8) to
+        // the same value as StackLimit.  Patch it to the actual bottom
+        // of the reserved region so Windows stack-overflow detection
+        // knows the full extent of the stack.
+        *reinterpret_cast<void**>(
+            static_cast<char*>(ctx) + 0xb8) = usable_base;
+#else
+        auto ctx = make_fcontext(imp, usable_size, start);
+#endif
         new (imp) Imp(ctx, region);
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.

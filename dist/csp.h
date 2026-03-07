@@ -1655,6 +1655,12 @@ private:
 
     static constexpr size_t kDefaultStackSize = 1 << 20;  // 1MB
     static constexpr size_t kMaxPooled = 256;
+public:
+    // Initial committed region per stack on Windows (at the top, where RSP
+    // starts).  The rest of the 1 MB virtual region is MEM_RESERVE, committed
+    // on demand by the VEH handler.  Exposed here so spawn() can pass this
+    // value to make_fcontext, which stores it as NT_TIB StackLimit.
+    static constexpr size_t kInitialCommitSize = 64 * 1024;  // 64 KB
 };
 
 } // namespace csp::detail
