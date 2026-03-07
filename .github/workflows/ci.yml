@@ -207,10 +207,10 @@ jobs:
         run: |
           & build\Release\csp_tests.exe --list-test-cases 2>&1 | Write-Host
 
-      - name: Test (excluding known crashes — see docs/targets.md T1.3)
+      - name: Test
         run: |
           $ErrorActionPreference = "Continue"
-          & build\Release\csp_tests.exe -s --duration --test-case-exclude="*CountForever*,*entropy*" 2>&1 | Write-Host
+          & build\Release\csp_tests.exe -s --duration 2>&1 | Write-Host
           exit $LASTEXITCODE
 
   # --- TLA+ model checking (macOS only) ---
