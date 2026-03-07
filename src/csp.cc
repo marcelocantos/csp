@@ -410,7 +410,15 @@ int spawn(EntryFn start_f, void * data) {
         // exception dispatch (RtlVirtualUnwind) faults during stack
         // probing — a nested ACCESS_VIOLATION that terminates the
         // process without VEH notification.
-        auto committed = std::min(StackPool::kInitialCommitSize, usable_size);
+        // The committed region is [top - kInitialCommitSize, top].
+        // make_fcontext computes StackLimit as (imp - size), so the size
+        // must be measured from imp (not top) to the committed bottom:
+        //   size = imp - (top - kInitialCommitSize)
+        //        = kInitialCommitSize - sizeof(Imp)
+        auto* committed_bottom = top - std::min(
+            StackPool::kInitialCommitSize,
+            static_cast<size_t>(top - usable_base));
+        auto committed = static_cast<size_t>((char*)imp - committed_bottom);
         auto ctx = make_fcontext(imp, committed, start);
         // make_fcontext also sets DeallocationStack (offset 0xb8) to
         // the same value as StackLimit.  Patch it to the actual bottom

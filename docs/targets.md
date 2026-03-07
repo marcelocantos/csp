@@ -22,7 +22,7 @@
 - **Acceptance**:
   - `csp_tests.exe` prints doctest summary on Windows CI
   - Exit code reflects test results (0 = all pass)
-- **Context**: Static init crash fixed (`~15UL` pointer truncation, 7d69868). Tests now run — ~100+ pass. Crash during "ChanUtil - CountForever" test (909 reads from infinite producer, 3s then exit code 1). Likely reader-death-signal propagation or scheduler exit issue on Windows.
+- **Context**: Static init crash fixed (`~15UL` pointer truncation, 7d69868). `single()` assert side-effect bug fixed (e49b032). Console signal test killing CI fixed (9c68124). Demand-commit stack pool fixed (905b839, 89e1f40). .pdata separation fix (d668bb3) did not resolve exception crash. NT_TIB StackLimit fix (3776b2f): make_fcontext set StackLimit to bottom of 1MB MEM_RESERVE but only 64KB committed → MSVC exception dispatch probed into uncommitted pages → double-fault. Fix: pass committed size to make_fcontext, update StackLimit in VEH handler and maybe_shrink. CountForever still excluded (hangs). CI run pending.
 - **Parent**: 🎯T1
 - **Status**: converging
 - **Discovered**: 2026-03-04
