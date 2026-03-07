@@ -30,6 +30,11 @@ namespace csp::win::signal {
 //   );
 reader<DWORD> notify(std::initializer_list<DWORD> events);
 
+// Inject a console control event directly into the signal machinery,
+// bypassing GenerateConsoleCtrlEvent (which sends to the entire process
+// group and kills the CI runner). Safe for use in tests.
+void raise(DWORD event);
+
 }
 
 #endif // _WIN32

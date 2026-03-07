@@ -664,7 +664,9 @@ TEST_CASE("IO - Console signal delivery") {
 
     csp::spawn([] {
         csp::sleep(std::chrono::milliseconds(10));
-        GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+        // Use raise() instead of GenerateConsoleCtrlEvent() — the latter
+        // sends to the entire process group and kills CI runners.
+        csp::win::signal::raise(CTRL_C_EVENT);
     });
 
     csp::schedule();
@@ -691,9 +693,9 @@ TEST_CASE("IO - Console signal multiple events") {
 
     csp::spawn([] {
         csp::sleep(std::chrono::milliseconds(10));
-        GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+        csp::win::signal::raise(CTRL_C_EVENT);
         csp::sleep(std::chrono::milliseconds(10));
-        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
+        csp::win::signal::raise(CTRL_BREAK_EVENT);
     });
 
     csp::schedule();
@@ -716,7 +718,7 @@ TEST_CASE("IO - Console signal reader drop cleanup") {
     csp::schedule();
 
     // Event after cleanup — handler skips (mask cleared).
-    GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+    csp::win::signal::raise(CTRL_C_EVENT);
 
     csp::shutdown_runtime();
 }

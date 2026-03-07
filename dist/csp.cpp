@@ -5412,6 +5412,10 @@ reader<DWORD> notify(std::initializer_list<DWORD> events) {
     });
 }
 
+void raise(DWORD event) {
+    console_handler(event);
+}
+
 } // namespace csp::win::signal
 
 #endif // _WIN32
