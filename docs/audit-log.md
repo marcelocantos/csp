@@ -110,6 +110,14 @@ maintenance activities. Append-only — newest entries at the bottom.
   cross-platform matrix (macOS/Linux, clang/gcc). Build artifacts moved under
   `build/`. Non-template implementations moved from headers to `.cc` files.
 
+## 2026-03-08 — /release v0.3.0
+
+- **Commit**: `62f732a`
+- **Outcome**: Released v0.3.0. Windows port (PR #4), buffered channels, imp
+  exit/supervision, GitHub Actions CI (11-job matrix), platform-neutral I/O.
+  STABILITY.md updated (resolved version macros gap, added new symbols,
+  updated out-of-scope items). 636/636 tests pass on all platforms.
+
 ## 2026-02-28 — platform-expansion (reconstructed)
 
 - **Commit**: `8167ab9`
