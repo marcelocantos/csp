@@ -18,17 +18,17 @@ running -> [*] : f() returns / throws
 
 ## Table of Contents
 
-1. [spawn](#spawn) -- create a new imp
-2. [schedule](#schedule) -- run the scheduler to completion
-3. [yield](#yield) -- cooperative context switch
-4. [init_runtime](#init_runtime) -- enable M:N multi-threaded mode
-5. [spawn_producer](#spawn_producer) -- spawn an imp with an output channel
-6. [spawn_consumer](#spawn_consumer) -- spawn an imp with an input channel
-7. [spawn_filter](#spawn_filter) -- spawn an imp with input and output channels
+1. [csp::spawn](#cspspawn) -- create a new imp
+2. [csp::schedule](#cspschedule) -- run the scheduler to completion
+3. [csp::yield](#cspyield) -- cooperative context switch
+4. [csp::init_runtime](#cspinit_runtime) -- enable M:N multi-threaded mode
+5. [csp::spawn_producer](#cspspawn_producer) -- spawn an imp with an output channel
+6. [csp::spawn_consumer](#cspspawn_consumer) -- spawn an imp with an input channel
+7. [csp::spawn_filter](#cspspawn_filter) -- spawn an imp with input and output channels
 
 ---
 
-## spawn
+## csp::spawn
 
 Create a new imp that executes a callable.
 
@@ -90,7 +90,7 @@ csp::schedule();
 
 ---
 
-## schedule
+## csp::schedule
 
 Drive the imp scheduler to completion.
 
@@ -140,7 +140,7 @@ csp::schedule();  // runs both imps to completion
 
 ---
 
-## yield
+## csp::yield
 
 Cooperatively yield execution to another runnable imp.
 
@@ -186,7 +186,7 @@ csp::schedule();
 
 ---
 
-## init_runtime
+## csp::init_runtime
 
 Enable M:N multi-threaded mode with multiple worker OS threads.
 
@@ -243,7 +243,7 @@ csp::shutdown_runtime();
 
 ---
 
-## spawn_producer
+## csp::spawn_producer
 
 Spawn an imp that writes to a new channel, returning the read end.
 
@@ -298,7 +298,7 @@ csp::schedule();
 
 ---
 
-## spawn_consumer
+## csp::spawn_consumer
 
 Spawn an imp that reads from a new channel, returning the write end.
 
@@ -349,7 +349,7 @@ csp::schedule();
 
 ---
 
-## spawn_filter
+## csp::spawn_filter
 
 Spawn an imp that reads from one channel and writes to another,
 returning both external endpoints.

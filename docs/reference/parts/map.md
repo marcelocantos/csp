@@ -1,4 +1,4 @@
-# map
+# csp::part::map
 
 Transforms each element of a stream by applying a function. `map<A, B>(f)`
 converts a `reader<A>` into a `reader<B>`. When the input and output types are

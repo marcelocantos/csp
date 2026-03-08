@@ -1,4 +1,4 @@
-# timeout
+# csp::part::timeout
 
 Close the output if no value arrives within a deadline. Each incoming value
 resets the timer. Values are forwarded unchanged.

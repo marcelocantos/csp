@@ -1,4 +1,4 @@
-# random
+# csp::part::rand
 
 Random number generators and a shuffle filter. All functions live in
 `namespace csp::part::rand`.

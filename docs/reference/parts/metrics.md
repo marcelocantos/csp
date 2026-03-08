@@ -1,4 +1,4 @@
-# metrics
+# csp::part::metrics
 
 Transparent passthrough that reports throughput statistics on a side channel.
 Data flows through unchanged; stats are pull-based and delivered on demand when

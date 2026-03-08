@@ -1,4 +1,4 @@
-# scan
+# csp::part::scan
 
 Running fold (accumulator). Starts with an initial value, applies
 `acc = f(acc, value)` for each input element, and emits the new accumulator

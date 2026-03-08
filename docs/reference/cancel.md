@@ -3,23 +3,23 @@
 Cooperative, scope-based cancellation for imps. Cancellation cascades from
 parent to child scopes automatically.
 
-All types live in `namespace csp`. Header: `#include "csp/cancel.h"`.
+All types live in `namespace csp`. Header: `#include "csp.h"`.
 
 ---
 
 ## Table of Contents
 
-1. [canceled](#canceled) -- exception type
-2. [timed_out](#timed_out) -- deadline exception type
-3. [cancel_guard](#cancel_guard) -- RAII cancellation scope
-4. [cancellation](#cancellation) -- create a cancellation scope (with optional deadline)
-5. [done](#done) -- channel operation for observing cancellation
-6. [cancel_reason](#cancel_reason) -- retrieve the cancellation reason
+1. [csp::canceled](#cspcanceled) -- exception type
+2. [csp::timed_out](#csptimed_out) -- deadline exception type
+3. [csp::cancel_guard](#cspcancel_guard) -- RAII cancellation scope
+4. [csp::cancellation](#cspcancellation) -- create a cancellation scope (with optional deadline)
+5. [csp::done](#cspdone) -- channel operation for observing cancellation
+6. [csp::cancel_reason](#cspcancel_reason) -- retrieve the cancellation reason
 7. [Cancellation-aware primitives](#cancellation-aware-primitives) -- sleep and I/O
 
 ---
 
-## canceled
+## csp::canceled
 
 Exception thrown when an imp is cancelled during a cancellation-aware operation
 (sleep or I/O).
@@ -34,7 +34,7 @@ struct canceled : csp::error {
 
 ---
 
-## timed_out
+## csp::timed_out
 
 Exception thrown when a deadline expires. Inherits from `canceled`, so code
 catching `canceled` also catches timeouts.
@@ -49,7 +49,7 @@ struct timed_out : canceled {
 
 ---
 
-## cancel_guard
+## csp::cancel_guard
 
 RAII guard that owns a cancellation scope. When destroyed, auto-cancels with
 `canceled{}` if not already cancelled. Move-only.
@@ -80,7 +80,7 @@ guard goes out of scope without explicit cancellation.
 
 ---
 
-## cancellation
+## csp::cancellation
 
 Create a new cancellation scope. Returns a `cancel_guard` that owns the scope.
 
@@ -134,7 +134,7 @@ guard(ep)                                ➤ cancel_state.cancelled = true;
 
 ---
 
-## done
+## csp::done
 
 Return a channel operation suitable for `alt`/`prialt` that fires when the
 current cancellation scope is cancelled.
@@ -173,7 +173,7 @@ csp::spawn([]{
 
 ---
 
-## cancel_reason
+## csp::cancel_reason
 
 Retrieve the exception that caused cancellation.
 

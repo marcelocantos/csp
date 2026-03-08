@@ -1,4 +1,4 @@
-# throttle
+# csp::part::throttle
 
 Rate-limit a stream: forward up to `n` values per trigger, dropping excess.
 The budget starts at `n`, so the first `n` values pass immediately. Each

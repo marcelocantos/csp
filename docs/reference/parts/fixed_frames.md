@@ -1,4 +1,4 @@
-# fixed_frames
+# csp::part::io::fixed_frames
 
 Splits a byte stream into fixed-size frames. Discards any partial trailing
 frame when the input closes.

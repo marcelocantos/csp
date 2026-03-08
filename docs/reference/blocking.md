@@ -7,11 +7,11 @@ the imp scheduler.
 
 ## Table of Contents
 
-1. [blocking](#blocking) -- run a callable on the blocking thread pool
+1. [csp::blocking](#cspblocking) -- run a callable on the blocking thread pool
 
 ---
 
-## blocking
+## csp::blocking
 
 Run a callable on an OS thread pool, suspending the calling imp until
 it completes.
@@ -23,7 +23,7 @@ template <typename Fn>
 auto blocking(Fn&& fn) -> std::invoke_result_t<Fn>;
 ```
 
-**Header:** `#include "csp/blocking.h"`
+**Header:** `#include "csp.h"`
 
 ### Description
 
@@ -70,7 +70,6 @@ blocking(fn) ─┤fn throws e├────➤ e propagated to calling MT on r
 
 ```cpp
 #include "csp.h"
-#include "csp/blocking.h"
 
 #include <fstream>
 #include <string>

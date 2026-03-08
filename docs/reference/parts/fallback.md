@@ -1,4 +1,4 @@
-# fallback
+# csp::part::fallback
 
 Sequential failover across multiple readers. Tries each reader in order; the
 first reader that produces at least one value is drained fully to the output.

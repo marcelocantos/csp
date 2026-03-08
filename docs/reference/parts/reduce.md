@@ -1,4 +1,4 @@
-# reduce
+# csp::part::reduce
 
 Folds a channel down to a single value. Consumes the entire input stream, then
 emits the final accumulator as a single output element. Unlike `scan`, `reduce`

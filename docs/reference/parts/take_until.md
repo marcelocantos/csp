@@ -1,4 +1,4 @@
-# take_until
+# csp::part::take_until
 
 Forwards elements from the input until a predicate returns true, inclusive of
 the terminating element. Unlike `take_while`, which excludes the element that

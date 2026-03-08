@@ -1,4 +1,4 @@
-# share
+# csp::part::share
 
 Broadcasts a single source stream to multiple independent subscribers. Each
 subscriber gets a dedicated latch imp with independent backpressure: a

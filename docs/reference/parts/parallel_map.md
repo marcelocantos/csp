@@ -1,4 +1,4 @@
-# parallel_map
+# csp::part::parallel_map
 
 Concurrent transform: fan out to N workers with demand-driven dispatch.
 Whichever worker is free reads the next input item and applies the transform

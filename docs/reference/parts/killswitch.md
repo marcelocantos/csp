@@ -1,4 +1,4 @@
-# killswitch
+# csp::part::killswitch
 
 Forwards values from input to output until a keepalive channel dies. When the
 keepalive reader closes, the filter shuts down immediately, closing both

@@ -11,16 +11,16 @@ All types live in `namespace csp`. Header: `#include "csp.h"`.
 
 ## Table of Contents
 
-1. [chan\<T\>](#chant) -- channel factory
-2. [writer\<T\>](#writert) -- write endpoint
-3. [reader\<T\>](#readert) -- read endpoint
-4. [chan_op\<T\>](#chan_opt) -- deferred channel operation
-5. [poke_t](#poke_t) -- empty signal type
+1. [csp::chan\<T\>](#cspchant) -- channel factory
+2. [csp::writer\<T\>](#cspwritert) -- write endpoint
+3. [csp::reader\<T\>](#cspreadert) -- read endpoint
+4. [csp::chan_op\<T\>](#cspchan_opt) -- deferred channel operation
+5. [csp::poke_t](#csppoke_t) -- empty signal type
 6. [Rendezvous](#rendezvous) -- how writes and reads meet
 
 ---
 
-## chan\<T\>
+## csp::chan\<T\>
 
 An unbuffered synchronous channel, owning one write endpoint and one read
 endpoint.
@@ -82,7 +82,7 @@ csp::schedule();
 
 ---
 
-## writer\<T\>
+## csp::writer\<T\>
 
 The write endpoint of a channel. Sending a value through a writer suspends the
 current imp until a reader is ready to receive it.
@@ -201,7 +201,7 @@ csp::schedule();
 
 ---
 
-## reader\<T\>
+## csp::reader\<T\>
 
 The read endpoint of a channel. Reading from a reader suspends the current
 imp until a writer provides a value.
@@ -360,7 +360,7 @@ csp::schedule();
 
 ---
 
-## chan_op\<T\>
+## csp::chan_op\<T\>
 
 A deferred channel operation. Returned by `writer::operator<<`,
 `reader::operator>>`, and the death-watch operators. The operation executes
@@ -463,7 +463,7 @@ csp::schedule();
 
 ---
 
-## poke_t
+## csp::poke_t
 
 An empty struct used as the default type parameter for channels. Carries no
 data; used purely for signaling.
@@ -576,7 +576,7 @@ through the slot indirection layer: every endpoint handle points to a
 shared *slot*, and the slot points to the channel. Swapping slots
 transparently redirects all copies of an endpoint.
 
-### swap
+### csp::swap
 
 ```cpp
 template <typename T> void swap(writer<T>& a, writer<T>& b);
@@ -588,7 +588,7 @@ If `a` targeted Channel X and `b` targeted Channel Y, afterward `a`
 targets Y and `b` targets X. All copies of each endpoint (made via
 `.copy()`) follow the redirection through the shared slot.
 
-### swap (4-argument)
+### csp::swap (4-argument)
 
 ```cpp
 template <typename T>
@@ -608,7 +608,7 @@ Two calling patterns:
   then the consumed middle endpoints die on return, killing the
   original channel.
 
-### fuse
+### csp::fuse
 
 ```cpp
 template <typename T> void fuse(writer<T>& w, reader<T>& r);
@@ -630,7 +630,7 @@ After fuse(a.w, b.r):
           ╳ Channel B (b.w sees reader death)
 ```
 
-### tap
+### csp::tap
 
 ```cpp
 template <typename T> reader<T> tap(writer<T>& w, reader<T>& r);
@@ -670,7 +670,7 @@ consumed for the pipeline to make progress. The forwarding imp writes
 to the tap channel first, then forwards to the original reader. If
 either side stalls, the entire pipeline stalls.
 
-### splice
+### csp::splice
 
 ```cpp
 template <typename T, typename F>

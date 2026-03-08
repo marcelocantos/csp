@@ -1,4 +1,4 @@
-# byte_reader
+# csp::part::io::byte_reader
 
 Produces byte chunks from a non-blocking file descriptor. Each message contains
 as much data as was available from a single `read()` call. Owns the fd and

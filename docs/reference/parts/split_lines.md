@@ -1,4 +1,4 @@
-# split_lines
+# csp::part::io::split_lines
 
 Splits a byte stream into newline-delimited strings. Pure channel transform
 with no I/O knowledge -- testable with synthetic data.

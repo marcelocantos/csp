@@ -4,20 +4,20 @@ Primitives for time-based operations: sleeping, one-shot timers, and periodic
 ticks. All functions run inside imps and integrate with the scheduler's
 sleep queue.
 
-All types and functions live in `namespace csp`. Header: `#include "csp/timer.h"`.
+All types and functions live in `namespace csp`. Header: `#include "csp.h"`.
 
 ---
 
 ## Table of Contents
 
 1. [clock](#clock) -- time types and current time
-2. [now](#now) -- current time (respects fake clock)
-3. [sleep](#sleep) -- suspend for a duration
-4. [sleep_until](#sleep_until) -- suspend until a time point
-5. [after](#after) -- one-shot timer
-6. [tick](#tick) -- periodic timer
-7. [fake_clock](#fake_clock) -- deterministic time for testing
-8. [clock](#clock-1) -- dynamic variable for clock injection
+2. [csp::now](#cspnow) -- current time (respects fake clock)
+3. [csp::sleep](#cspsleep) -- suspend for a duration
+4. [csp::sleep_until](#cspsleep_until) -- suspend until a time point
+5. [csp::after](#cspafter) -- one-shot timer
+6. [csp::tick](#csptick) -- periodic timer
+7. [csp::fake_clock](#cspfake_clock) -- deterministic time for testing
+8. [csp::clock](#cspclock) -- dynamic variable for clock injection
 
 ---
 
@@ -51,7 +51,7 @@ returns `std::chrono::steady_clock::now()`.
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 auto start = csp::now();
 // ... work ...
@@ -60,7 +60,7 @@ auto elapsed = csp::now() - start;
 
 ---
 
-## now
+## csp::now
 
 Current time, respecting clock override.
 
@@ -83,7 +83,7 @@ transparently.
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::fake_clock fc;
 csp::local l{csp::clock = &fc};
@@ -95,7 +95,7 @@ auto t2 = csp::now();     // epoch + 1s
 
 ---
 
-## sleep
+## csp::sleep
 
 Suspend the current imp for a given duration.
 
@@ -128,7 +128,7 @@ sleep(d) ────────────────➤ suspend; deadline =
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::spawn([] {
     csp::sleep(std::chrono::milliseconds(100));
@@ -139,7 +139,7 @@ csp::schedule();
 
 ---
 
-## sleep_until
+## csp::sleep_until
 
 Suspend the current imp until an absolute time point.
 
@@ -169,7 +169,7 @@ sleep_until(tp) ─┤tp in past├────➤ yield; return
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::spawn([] {
     auto deadline = csp::now() + std::chrono::seconds(1);
@@ -184,7 +184,7 @@ csp::schedule();
 
 ---
 
-## after
+## csp::after
 
 One-shot timer that fires after a duration.
 
@@ -241,7 +241,7 @@ reader >> dest ─┤waiting├───────➤ suspend until value read
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::spawn([] {
     auto [w, r] = csp::chan<int>{};
@@ -266,7 +266,7 @@ csp::schedule();
 
 ---
 
-## tick
+## csp::tick
 
 Periodic timer that fires at a regular interval.
 
@@ -320,7 +320,7 @@ producer loop:
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::spawn([] {
     auto ticker = csp::tick(std::chrono::milliseconds(100));
@@ -336,7 +336,7 @@ csp::schedule();
 
 ---
 
-## fake_clock
+## csp::fake_clock
 
 Deterministic clock for testing time-dependent code.
 
@@ -417,7 +417,7 @@ assert(woke);       // Now.
 
 ---
 
-## clock
+## csp::clock
 
 Dynamic variable for injecting a fake clock.
 

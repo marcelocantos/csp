@@ -1,4 +1,4 @@
-# switch_all
+# csp::part::switch_all
 
 Flatten a stream of sub-streams with latest-wins cancellation.
 `reader<reader<B>>` becomes `reader<B>`. When a new sub-stream arrives, the

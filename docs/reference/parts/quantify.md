@@ -1,4 +1,4 @@
-# quantify (any_of / all_of)
+# csp::part::quantify (csp::part::any_of / csp::part::all_of)
 
 Short-circuiting stream quantifiers. `any_of` emits `true` as soon as any
 element satisfies the predicate; `all_of` emits `false` as soon as any element

@@ -3,7 +3,7 @@
 Non-blocking I/O primitives that integrate with the imp scheduler via
 a kqueue reactor. All functions live in `namespace csp::io`.
 
-Header: `#include "csp/io.h"` (or `#include "csp.h"`)
+Header: `#include "csp.h"`
 
 All I/O functions must be called from within an imp. The reactor is a
 singleton kqueue event loop running on a dedicated OS thread; when a
@@ -14,17 +14,17 @@ suspends cooperatively and is woken by the reactor when the fd becomes ready.
 
 ## Table of Contents
 
-1. [wait_readable / wait_writable](#wait_readable-wait_writable) -- suspend until fd is ready
-2. [set_nonblock](#set_nonblock) -- set fd to non-blocking mode
-3. [read](#read) -- non-blocking read
-4. [write](#write) -- non-blocking write
-5. [accept](#accept) -- accept a connection
-6. [connect](#connect) -- non-blocking connect
-7. [resolve](#resolve) -- async DNS resolution
+1. [csp::io::wait_readable / csp::io::wait_writable](#cspiowait_readable-cspiowait_writable) -- suspend until fd is ready
+2. [csp::io::set_nonblock](#cspioset_nonblock) -- set fd to non-blocking mode
+3. [csp::io::read](#cspioread) -- non-blocking read
+4. [csp::io::write](#cspiowrite) -- non-blocking write
+5. [csp::io::accept](#cspioaccept) -- accept a connection
+6. [csp::io::connect](#cspioconnect) -- non-blocking connect
+7. [csp::io::resolve](#cspioresolve) -- async DNS resolution
 
 ---
 
-## wait_readable / wait_writable
+## csp::io::wait_readable / csp::io::wait_writable
 
 Suspend the current imp until a file descriptor is ready for reading
 or writing.
@@ -74,7 +74,7 @@ csp::schedule();
 
 ---
 
-## set_nonblock
+## csp::io::set_nonblock
 
 Set a file descriptor to non-blocking mode.
 
@@ -107,7 +107,7 @@ csp::io::set_nonblock(sock);
 
 ---
 
-## read
+## csp::io::read
 
 Non-blocking read from a file descriptor.
 
@@ -160,7 +160,7 @@ csp::schedule();
 
 ---
 
-## write
+## csp::io::write
 
 Non-blocking write to a file descriptor. Writes all bytes before returning.
 
@@ -207,7 +207,7 @@ csp::schedule();
 
 ---
 
-## accept
+## csp::io::accept
 
 Accept a connection on a listening socket.
 
@@ -274,7 +274,7 @@ csp::schedule();
 
 ---
 
-## connect
+## csp::io::connect
 
 Initiate a non-blocking TCP connection.
 
@@ -335,7 +335,7 @@ csp::schedule();
 
 ---
 
-## resolve
+## csp::io::resolve
 
 Asynchronous DNS resolution.
 

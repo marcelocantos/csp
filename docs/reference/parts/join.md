@@ -1,4 +1,4 @@
-# join
+# csp::part::join
 
 Blocks the calling imp until all input channels close. All values
 received are drained and discarded. This is a synchronization barrier -- it

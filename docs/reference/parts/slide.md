@@ -1,4 +1,4 @@
-# slide
+# csp::part::slide
 
 Two-channel sliding window. Instead of emitting the full window contents,
 `slide` provides two separate readers: one for elements entering the window

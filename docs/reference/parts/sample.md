@@ -1,4 +1,4 @@
-# sample
+# csp::part::sample
 
 On each trigger, emit the most recent value from a source stream. The source
 is latched (not consumed on each trigger), so the same value can be emitted

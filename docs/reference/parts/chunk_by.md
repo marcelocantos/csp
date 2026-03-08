@@ -1,4 +1,4 @@
-# chunk_by
+# csp::part::chunk_by
 
 Groups consecutive elements into vectors based on a binary predicate over
 adjacent pairs. A new chunk starts whenever `f(prev, curr)` returns false.

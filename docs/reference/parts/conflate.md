@@ -1,4 +1,4 @@
-# conflate
+# csp::part::conflate
 
 When downstream is slow, merge pending upstream values via a combining function
 instead of buffering or dropping. Each value passes through individually when

@@ -1,4 +1,4 @@
-# rpc
+# csp::part::rpc
 
 Request-response communication over CSP channels. Two variants are provided:
 **channel-pair RPC** (separate request and reply channels) and **reply-in-request

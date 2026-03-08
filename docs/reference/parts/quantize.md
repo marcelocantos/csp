@@ -1,4 +1,4 @@
-# quantize
+# csp::part::quantize
 
 Batches an incoming stream of additive values into variable-size quanta.
 Accumulates values from a source until enough has been collected to fill the

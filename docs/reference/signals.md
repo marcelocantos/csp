@@ -2,17 +2,17 @@
 
 Receive Unix signals as values on a CSP channel.
 
-All types live in `namespace csp::signal`. Header: `#include "csp/signal.h"`.
+All types live in `namespace csp::signal`. Header: `#include "csp.h"`.
 
 ---
 
 ## Table of Contents
 
-1. [signal::notify](#signalnotify) -- subscribe to Unix signals
+1. [csp::signal::notify](#cspsignalnotify) -- subscribe to Unix signals
 
 ---
 
-## signal::notify
+## csp::signal::notify
 
 Return a reader that emits signal numbers whenever specified Unix signals are
 delivered to the process.
@@ -27,7 +27,7 @@ reader<int> notify(std::initializer_list<int> sigs);
 }
 ```
 
-**Header:** `#include "csp/signal.h"`
+**Header:** `#include "csp.h"`
 
 ### Description
 
@@ -97,8 +97,6 @@ Graceful shutdown on SIGINT or SIGTERM:
 
 ```cpp
 #include "csp.h"
-#include "csp/signal.h"
-#include "csp/timer.h"
 
 #include <csignal>
 
@@ -138,7 +136,6 @@ A simpler pattern that just waits for a signal:
 
 ```cpp
 #include "csp.h"
-#include "csp/signal.h"
 
 #include <csignal>
 #include <cstdio>
@@ -165,9 +162,9 @@ On Windows, POSIX signals are not available. CSP provides an equivalent API in
 `namespace csp::win::signal` that converts Windows console control events into
 channel reads.
 
-**Header:** `#include "csp/win/signal.h"` (also included via `#include "csp.h"`)
+**Header:** `#include "csp.h"`
 
-### win::signal::notify
+### csp::win::signal::notify
 
 ```cpp
 namespace csp::win::signal {

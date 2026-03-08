@@ -1,4 +1,4 @@
-# try_map
+# csp::part::try_map
 
 Transforms each element, catching exceptions from the mapping function. On
 success, the mapped value passes through. On exception, the `exception_ptr` is

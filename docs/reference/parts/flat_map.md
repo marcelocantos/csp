@@ -1,4 +1,4 @@
-# flat_map
+# csp::part::flat_map
 
 Maps each input element to a sub-stream via a function, then merges all
 sub-streams into a single output. Sub-streams are read concurrently, so output

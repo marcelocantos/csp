@@ -1,10 +1,10 @@
-# timer
+# csp::part::timer
 
 Convert a stream of sleep requests into a stream of actual fire times. Each
 value read from the control channel triggers a sleep (relative or absolute),
 after which the actual wall-clock time is emitted.
 
-**Header:** `<csp/part/timer.h>`
+**Header:** `#include "csp.h"`
 
 ## Signature
 

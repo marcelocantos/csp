@@ -1,4 +1,4 @@
-# count
+# csp::part::count
 
 Generate a sequence of arithmetic values as a stream. `count` produces a
 bounded sequence; `count_forever` produces an unbounded one. Both are

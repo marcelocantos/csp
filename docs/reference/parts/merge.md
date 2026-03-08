@@ -1,4 +1,4 @@
-# merge
+# csp::part::merge
 
 Non-deterministic merge of N input readers into a single output. Values are
 forwarded from whichever input is ready first. When a reader dies it is

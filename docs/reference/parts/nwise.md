@@ -1,4 +1,4 @@
-# nwise
+# csp::part::nwise
 
 Sliding N-element window that emits tuples. `nwise<N, T>()` collects a
 window of exactly `N` consecutive elements and emits each window as a

@@ -1,4 +1,4 @@
-# gate
+# csp::part::gate
 
 Pause and resume a stream via a boolean control channel. The gate starts
 **open**. When the control sends `false`, data stops flowing (the synchronous

@@ -10,13 +10,13 @@ parameter passing. All types live in `namespace csp`. Header:
 
 ## Table of Contents
 
-1. [context\_key](#context_key) -- unique variable identity
-2. [dynamic\<T\>](#dynamict) -- inherited dynamic variable
-3. [dynamic\_binding](#dynamic_binding) -- deferred binding token
-4. [local](#local) -- scoped binding installer
-5. [context](#context) -- portable context handle
-6. [context\_scope](#context_scope) -- foreign context installer
-7. [imp\_local\<T\>](#imp_localt) -- imp-local variable
+1. [csp::context\_key](#cspcontext_key) -- unique variable identity
+2. [csp::dynamic\<T\>](#cspdynamict) -- inherited dynamic variable
+3. [csp::dynamic\_binding](#cspdynamic_binding) -- deferred binding token
+4. [csp::local](#csplocal) -- scoped binding installer
+5. [csp::context](#cspcontext) -- portable context handle
+6. [csp::context\_scope](#cspcontext_scope) -- foreign context installer
+7. [csp::imp\_local\<T\>](#cspimp_localt) -- imp-local variable
 
 ---
 
@@ -44,7 +44,7 @@ C -> C : local in child (path-copy)
 
 ---
 
-## context\_key
+## csp::context\_key
 
 Unique, monotonically increasing identity for a dynamic variable.
 
@@ -75,7 +75,7 @@ exposed for completeness.
 
 ---
 
-## dynamic\<T\>
+## csp::dynamic\<T\>
 
 A typed dynamic-scoped variable. The value is inherited by child imps
 via `spawn` and scoped via `local`.
@@ -158,7 +158,7 @@ csp::schedule();
 
 ---
 
-## dynamic\_binding
+## csp::dynamic\_binding
 
 An opaque, move-only token representing a deferred binding of a dynamic
 variable to a value. Created by `dynamic<T>::operator=`, consumed by `local`.
@@ -202,7 +202,7 @@ local(move(binding))     ────────➤ consumed_ = true; apply to 
 
 ---
 
-## local
+## csp::local
 
 RAII scope that installs one or more dynamic variable bindings. Saves the
 current HAMT root on construction and restores it on destruction.
@@ -288,7 +288,7 @@ csp::schedule();
 
 ---
 
-## context
+## csp::context
 
 A copyable, sendable handle to a snapshot of an HAMT root. Allows dynamic
 variable bindings to be transferred across imp boundaries.
@@ -364,7 +364,7 @@ csp::schedule();
 
 ---
 
-## context\_scope
+## csp::context\_scope
 
 RAII guard that saves the current imp's dynamic context and installs
 a foreign context obtained from another imp.
@@ -443,7 +443,7 @@ csp::schedule();
 
 ---
 
-## imp\_local\<T\>
+## csp::imp\_local\<T\>
 
 A imp-local variable. Each imp has its own independent value,
 stored in a lazily allocated per-imp map. Unlike `dynamic<T>`,

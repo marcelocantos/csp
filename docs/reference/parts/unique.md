@@ -1,4 +1,4 @@
-# unique
+# csp::part::unique
 
 Suppresses all-time duplicate values using a hash set. Each value is emitted at
 most once (or once per eviction cycle when bounded). An optional

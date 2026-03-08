@@ -1,4 +1,4 @@
-# flatten
+# csp::part::flatten
 
 Flattens a stream of containers into a stream of individual elements.
 `reader<Container<T>>` becomes `reader<T>`.

@@ -1,4 +1,4 @@
-# batch
+# csp::part::batch
 
 Collects elements into fixed-size vectors and emits each vector as a single
 value. `batch<T>(n)` groups every `n` input elements into a

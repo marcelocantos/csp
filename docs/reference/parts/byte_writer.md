@@ -1,4 +1,4 @@
-# byte_writer
+# csp::part::io::byte_writer
 
 Consumes byte chunks from a channel and writes them to a file descriptor. Owns
 the fd and closes it on exit.

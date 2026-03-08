@@ -15,16 +15,16 @@ Header: `#include "csp.h"`
 
 ## Table of Contents
 
-1. [producer\<T, F\>](#producert-f) -- writer-producing wrapper
-2. [filter\<In, Out, F\>](#filterin-out-f) -- reader-to-writer transform wrapper
-3. [consumer\<T, F\>](#consumert-f) -- reader-consuming wrapper
-4. [make_producer, make_filter, make_consumer](#factory-functions) -- factory functions
-5. [Pipe operator (|)](#pipe-operator) -- composition via operator|
-6. [spawn_producer, spawn_consumer, spawn_filter](#immediate-spawn-helpers) -- immediate-spawn helpers
+1. [csp::part::producer\<T, F\>](#csppartproducert-f) -- writer-producing wrapper
+2. [csp::part::filter\<In, Out, F\>](#csppartfilterin-out-f) -- reader-to-writer transform wrapper
+3. [csp::part::consumer\<T, F\>](#csppartconsumert-f) -- reader-consuming wrapper
+4. [csp::part::make\_producer / make\_filter / make\_consumer](#csppartmake_producer-csppartmake_filter-csppartmake_consumer) -- factory functions
+5. [csp::part::operator|](#csppartoperator) -- composition via operator|
+6. [csp::spawn\_producer / spawn\_consumer / spawn\_filter](#cspspawn_producer-cspspawn_consumer-cspspawn_filter) -- immediate-spawn helpers
 
 ---
 
-## producer\<T, F\>
+## csp::part::producer\<T, F\>
 
 A lazy wrapper holding a body function that writes values to a `writer<T>`.
 Nothing executes until `spawn()` is called.
@@ -103,7 +103,7 @@ schedule();
 
 ---
 
-## filter\<In, Out, F\>
+## csp::part::filter\<In, Out, F\>
 
 A lazy wrapper holding a body function that transforms a `reader<In>` into a
 `writer<Out>`. Provides multiple `spawn` overloads for binding one or both
@@ -216,7 +216,7 @@ schedule();
 
 ---
 
-## consumer\<T, F\>
+## csp::part::consumer\<T, F\>
 
 A lazy wrapper holding a body function that reads values from a `reader<T>`.
 Nothing executes until `spawn()` is called.
@@ -290,7 +290,7 @@ schedule();
 
 ---
 
-## Factory Functions
+## csp::part::make\_producer / csp::part::make\_filter / csp::part::make\_consumer
 
 Factory functions that wrap a callable in the appropriate combinator struct.
 
@@ -353,7 +353,7 @@ schedule();
 
 ---
 
-## Pipe Operator
+## csp::part::operator|
 
 The `|` operator composes combinators into larger structures. Eight overloads
 cover all useful combinations of `producer`, `filter`, `consumer`, `reader`,
@@ -461,7 +461,7 @@ schedule();
 
 ---
 
-## Immediate-Spawn Helpers
+## csp::spawn\_producer / csp::spawn\_consumer / csp::spawn\_filter
 
 Convenience functions that create a channel, spawn an imp, and return
 the external endpoint in one step. These are not lazy -- the imp starts

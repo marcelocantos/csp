@@ -1,4 +1,4 @@
-# interleave
+# csp::part::interleave
 
 Merges N input streams into a single output in strict round-robin order. This
 is the deterministic dual of [round_robin](round_robin.md).

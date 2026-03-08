@@ -1,4 +1,4 @@
-# distinct
+# csp::part::distinct
 
 Suppresses consecutive duplicate values from a stream. Non-adjacent duplicates
 pass through. An optional equality comparator can be supplied (default:

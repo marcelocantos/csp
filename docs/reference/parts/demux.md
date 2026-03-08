@@ -1,4 +1,4 @@
-# demux
+# csp::part::demux
 
 Split a `variant<Ts...>` stream into N typed readers, one per alternative.
 Each variant value is routed to the corresponding output channel by its

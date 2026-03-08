@@ -1,4 +1,4 @@
-# first / last / skip_first / skip_last
+# csp::part::first / csp::part::last / csp::part::skip_first / csp::part::skip_last
 
 Four position-based filtering combinators for selecting or skipping elements at
 the beginning or end of a stream. All are defined in `<csp/part/first_last.h>`.
