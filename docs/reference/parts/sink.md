@@ -1,4 +1,4 @@
-# sink
+# csp::part::sink
 
 Consumes all values from a stream by applying a side-effect function to each
 one. `sinkhole` is a convenience variant that assigns each value to a

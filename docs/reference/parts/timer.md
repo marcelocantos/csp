@@ -1,4 +1,4 @@
-# timer
+# csp::part::timer
 
 Convert a stream of sleep requests into a stream of actual fire times. Each
 value read from the control channel triggers a sleep (relative or absolute),

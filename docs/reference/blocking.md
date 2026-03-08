@@ -7,11 +7,11 @@ the imp scheduler.
 
 ## Table of Contents
 
-1. [blocking](#blocking) -- run a callable on the blocking thread pool
+1. [csp::blocking](#cspblocking) -- run a callable on the blocking thread pool
 
 ---
 
-## blocking
+## csp::blocking
 
 Run a callable on an OS thread pool, suspending the calling imp until
 it completes.

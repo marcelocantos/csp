@@ -1,4 +1,4 @@
-# window
+# csp::part::window
 
 Sliding window that emits the full window contents as a vector after every
 input element. `window<T>(n)` maintains a sliding window of at most `n`

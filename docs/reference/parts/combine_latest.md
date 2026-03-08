@@ -1,4 +1,4 @@
-# combine_latest
+# csp::part::combine_latest
 
 Emit a tuple of the latest values from N heterogeneous inputs whenever any
 input updates. No output until every input has produced at least one value.

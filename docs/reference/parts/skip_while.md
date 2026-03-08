@@ -1,4 +1,4 @@
-# skip_while
+# csp::part::skip_while
 
 Drops elements from the input while a predicate returns true. Once an element
 fails the predicate, that element and all subsequent elements are forwarded.

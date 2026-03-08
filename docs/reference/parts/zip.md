@@ -1,4 +1,4 @@
-# zip
+# csp::part::zip
 
 Combines N input readers element-wise, producing one output value per
 synchronized read across all inputs. Terminates when any input is exhausted

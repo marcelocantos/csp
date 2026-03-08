@@ -1,4 +1,4 @@
-# first_wins
+# csp::part::first_wins
 
 Reads from whichever source responds first and discards the rest. This is a
 blocking synchronous call -- not a filter or producer -- that resolves a race

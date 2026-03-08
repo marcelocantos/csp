@@ -1,4 +1,4 @@
-# concat_all
+# csp::part::concat_all
 
 Flatten a stream of sub-streams by draining each sequentially.
 `reader<reader<B>>` becomes `reader<B>`. Each sub-stream is fully consumed

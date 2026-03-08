@@ -1,4 +1,4 @@
-# where
+# csp::part::where
 
 Filters a stream, forwarding only elements for which a predicate returns true.
 

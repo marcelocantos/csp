@@ -1,4 +1,4 @@
-# mux
+# csp::part::mux
 
 Non-deterministic merge of N heterogeneous readers into a single
 `variant<Ts...>` stream. Reads from whichever input is ready first. When an

@@ -1,4 +1,4 @@
-# sort_merge
+# csp::part::sort_merge
 
 Merges N pre-sorted input streams into a single sorted output stream using a
 min-heap. Each input must already be sorted according to the comparator.

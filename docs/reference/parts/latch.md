@@ -1,4 +1,4 @@
-# latch
+# csp::part::latch
 
 Holds and serves the most recent value. While the writer is alive, each read
 returns the latest written value, with newer writes overwriting the pending

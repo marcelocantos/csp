@@ -1,4 +1,4 @@
-# blackhole
+# csp::part::blackhole
 
 Consumes and discards all values from a stream. Useful when a writer endpoint
 must exist (to keep the producer alive) but the values are not needed.

@@ -1,4 +1,4 @@
-# partition
+# csp::part::partition
 
 Routes each input element to one of N outputs based on a classifier function.
 Available in two forms: N-way (with an explicit bucket count and classifier) and

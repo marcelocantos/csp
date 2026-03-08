@@ -1,4 +1,4 @@
-# enumerate
+# csp::part::enumerate
 
 Stream the elements of a container or initializer list as channel values.
 `enumerate` produces a bounded stream (or cyclic if requested); `cycle` is a

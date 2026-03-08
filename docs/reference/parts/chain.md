@@ -1,4 +1,4 @@
-# chain
+# csp::part::chain
 
 Concatenates multiple readers into a single sequential stream. Reads each
 input to exhaustion in order, then moves to the next. The output closes when

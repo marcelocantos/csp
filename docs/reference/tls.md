@@ -8,13 +8,13 @@ All types live in `namespace csp::tls`. Header: `#include "csp.h"`.
 
 ## Table of Contents
 
-1. [error](#error) -- TLS exception type
-2. [context](#context) -- TLS configuration (shared across connections)
-3. [conn](#conn) -- TLS session on a socket
+1. [csp::tls::error](#csptlserror) -- TLS exception type
+2. [csp::tls::context](#csptlscontext) -- TLS configuration (shared across connections)
+3. [csp::tls::conn](#csptlsconn) -- TLS session on a socket
 
 ---
 
-## error
+## csp::tls::error
 
 Exception thrown on TLS failures. Wraps an mbedTLS error code with a
 human-readable message.
@@ -31,7 +31,7 @@ struct error : csp::error {
 
 ---
 
-## context
+## csp::tls::context
 
 TLS configuration: certificate chain, private key, CA trust store, and
 protocol settings. Thread-safe after construction. A single context can
@@ -72,7 +72,7 @@ public:
 
 ---
 
-## conn
+## csp::tls::conn
 
 A TLS session on an existing non-blocking, connected socket. Does not
 own or close the fd.

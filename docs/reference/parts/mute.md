@@ -1,4 +1,4 @@
-# mute
+# csp::part::mute
 
 A producer that never emits any values. Spawning it creates a reader endpoint
 that is permanently blocked -- any attempt to read from it will block

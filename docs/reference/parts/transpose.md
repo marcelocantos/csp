@@ -1,4 +1,4 @@
-# transpose
+# csp::part::transpose
 
 Dynamic-width lockstep zip. Reads one element from each of N input readers per
 round and emits the collected values as a `std::vector<T>`. Stops as soon as

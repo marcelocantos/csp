@@ -1,4 +1,4 @@
-# default_if_empty
+# csp::part::default_if_empty
 
 Passes all input values through unchanged. If the input closes without
 producing any value, emits a single default value before closing the output.

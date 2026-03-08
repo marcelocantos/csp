@@ -11,13 +11,13 @@ All types live in `namespace csp`. Header: `#include "csp.h"`.
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [supervised / supervised\_fn](#supervised-supervised_fn) -- wrap a callable for exit interception
-3. [on\_exit (handler)](#on_exit-handler) -- custom exit handler
-4. [on\_exit (restart\_policy)](#on_exit-restart_policy) -- automatic restart
-5. [exit\_guard](#exit_guard) -- RAII scope for exit interception
-6. [imp\_event](#imp_event) -- exit event delivered to handlers
-7. [restart\_policy](#restart_policy) -- restart limits and backoff
-8. [max\_restarts\_exceeded](#max_restarts_exceeded) -- escalation exception
+2. [csp::supervised / csp::supervised\_fn](#cspsupervised-cspsupervised_fn) -- wrap a callable for exit interception
+3. [csp::on\_exit (handler)](#cspon_exit-handler) -- custom exit handler
+4. [csp::on\_exit (restart\_policy)](#cspon_exit-restart_policy) -- automatic restart
+5. [csp::exit\_guard](#cspexit_guard) -- RAII scope for exit interception
+6. [csp::imp\_event](#cspimp_event) -- exit event delivered to handlers
+7. [csp::restart\_policy](#csprestart_policy) -- restart limits and backoff
+8. [csp::max\_restarts\_exceeded](#cspmax_restarts_exceeded) -- escalation exception
 
 ---
 
@@ -61,7 +61,7 @@ sequenceDiagram
 
 ---
 
-## supervised / supervised\_fn
+## csp::supervised / csp::supervised\_fn
 
 Wrap a callable in a supervision retry loop. The returned `supervised_fn`
 checks the dynamic exit binding on each exit and either restarts or
@@ -111,7 +111,7 @@ runs once and exits normally.
 
 ---
 
-## on\_exit (handler)
+## csp::on\_exit (handler)
 
 Install a custom exit handler. Returns an `exit_guard` that scopes the
 binding.
@@ -154,7 +154,7 @@ spawn(supervised([]() {
 
 ---
 
-## on\_exit (restart\_policy)
+## csp::on\_exit (restart\_policy)
 
 Install a policy-based exit handler with sliding-window restart limiting.
 
@@ -190,7 +190,7 @@ spawn(supervised([]() {
 
 ---
 
-## exit\_guard
+## csp::exit\_guard
 
 RAII guard that scopes an exit handler binding. When destroyed, the dynamic
 binding is restored and the handler imp's channel is closed.
@@ -218,7 +218,7 @@ scope.
 
 ---
 
-## imp\_event
+## csp::imp\_event
 
 An exit event delivered to a custom handler. Contains the exception (if any)
 and a one-shot restart channel.
@@ -257,7 +257,7 @@ destroyed, the supervised imp exits normally (the response channel closes).
 
 ---
 
-## restart\_policy
+## csp::restart\_policy
 
 Configuration for the policy-based exit handler.
 
@@ -281,7 +281,7 @@ one in a crash loop is stopped.
 
 ---
 
-## max\_restarts\_exceeded
+## csp::max\_restarts\_exceeded
 
 Exception type available for custom handlers that want to escalate when
 restarts are exhausted.

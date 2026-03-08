@@ -1,4 +1,4 @@
-# group_by
+# csp::part::group_by
 
 Dynamically partitions a stream by key. Each unique key lazily spawns a new
 sub-stream. A meta-channel emits `(key, reader<T>)` pairs as new groups

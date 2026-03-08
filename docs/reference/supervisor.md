@@ -12,13 +12,13 @@ All types live in `namespace csp`. Header: `#include "csp.h"`.
 
 ## Table of Contents
 
-1. [restart\_policy](#restart_policy) -- restart limits and backoff
-2. [worker\_group](#worker_group) -- monitored set of worker imps
-3. [max\_restarts\_exceeded](#max_restarts_exceeded) -- escalation exception
+1. [csp::restart\_policy](#csprestart_policy) -- restart limits and backoff
+2. [csp::worker\_group](#cspworker_group) -- monitored set of worker imps
+3. [csp::worker\_max\_restarts\_exceeded](#cspworker_max_restarts_exceeded) -- escalation exception
 
 ---
 
-## restart\_policy
+## csp::restart\_policy
 
 ```cpp
 struct restart_policy {
@@ -41,7 +41,7 @@ restarting.
 
 ---
 
-## worker\_group
+## csp::worker\_group
 
 A monitor that owns a set of named worker imps. When a worker throws, the
 group restarts it according to the configured `restart_policy`. When a worker
@@ -114,7 +114,7 @@ exception and applies its own restart policy, forming a supervision tree.
 
 ---
 
-## max\_restarts\_exceeded
+## csp::worker\_max\_restarts\_exceeded
 
 ```cpp
 struct max_restarts_exceeded : csp::error {

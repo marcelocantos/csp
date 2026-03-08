@@ -1,4 +1,4 @@
-# round_robin
+# csp::part::round_robin
 
 Distributes input elements across N outputs in round-robin fashion. Each value
 goes to exactly one output. This is the deterministic dual of

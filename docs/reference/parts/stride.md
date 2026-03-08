@@ -1,4 +1,4 @@
-# stride
+# csp::part::stride
 
 Takes every Nth element from a stream (0-indexed: emits elements at indices
 0, N, 2N, ...). `stride(1)` is the identity; `stride(2)` emits every other

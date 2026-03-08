@@ -1,4 +1,4 @@
-# deaf
+# csp::part::deaf
 
 A consumer that never reads any values. Spawning it creates a writer endpoint
 that is permanently blocked -- any attempt to write to it will block

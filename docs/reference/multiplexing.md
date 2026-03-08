@@ -22,18 +22,18 @@ death -> [*] : return ~index
 
 ## Table of Contents
 
-1. [alt](#alt) -- fair (randomized) select
-2. [prialt](#prialt) -- priority (declaration-order) select
+1. [csp::alt](#cspalt) -- fair (randomized) select
+2. [csp::prialt](#cspprialt) -- priority (declaration-order) select
 3. [Death-watch](#death-watch) -- `~reader` / `~writer`
-4. [chan_op\<T\>](#chan_opt) -- channel operation descriptors
+4. [csp::chan_op\<T\>](#cspchan_opt) -- channel operation descriptors
 5. [chan_op RAII](#chan_op-raii) -- standalone blocking via destructor
-6. [none](#none) -- non-blocking guard (preferred)
-7. [skip](#skip) -- non-blocking guard (legacy)
+6. [csp::none](#cspnone) -- non-blocking guard (preferred)
+7. [csp::skip](#cspskip) -- non-blocking guard (legacy)
 8. [Interactions](#interactions)
 
 ---
 
-## alt
+## csp::alt
 
 Fair multiplexing across channel operations.
 
@@ -89,7 +89,7 @@ case 1:  /* received from b */ break;
 
 ---
 
-## prialt
+## csp::prialt
 
 Priority multiplexing across channel operations.
 
@@ -213,7 +213,7 @@ csp::spawn([r = std::move(ch.r)] {
 
 ---
 
-## chan_op\<T\>
+## csp::chan_op\<T\>
 
 A channel operation descriptor that participates in `alt` and `prialt`.
 
@@ -337,7 +337,7 @@ if (w << 42) {
 
 ---
 
-## none
+## csp::none
 
 A non-blocking guard for `alt` and `prialt`.
 
@@ -410,7 +410,7 @@ if (csp::alt(ops, csp::none) == csp::none) {
 
 ---
 
-## skip
+## csp::skip
 
 A pre-dead reader used as a non-blocking guard (legacy).
 

@@ -1,4 +1,4 @@
-# take_while
+# csp::part::take_while
 
 Forwards elements from the input while a predicate returns true. As soon as an
 element fails the predicate, the output is closed and the imp exits.

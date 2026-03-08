@@ -1,4 +1,4 @@
-# unzip
+# csp::part::unzip
 
 Splits a reader of tuples into N independent readers, one per tuple element.
 The inverse of [zip](zip.md).

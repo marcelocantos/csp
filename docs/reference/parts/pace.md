@@ -1,4 +1,4 @@
-# pace
+# csp::part::pace
 
 Rate-limited passthrough via an external trigger channel. All values are
 preserved (backpressure, no drops). The first value passes immediately;

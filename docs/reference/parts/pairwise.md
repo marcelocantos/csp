@@ -1,4 +1,4 @@
-# pairwise
+# csp::part::pairwise
 
 Emits consecutive pairs from a stream. `pairwise<T>` produces a
 `std::pair<T, T>` for each pair of adjacent elements: `(a,b)`, `(b,c)`,

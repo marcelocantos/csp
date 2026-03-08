@@ -8,11 +8,11 @@ All types live in `namespace csp::signal`. Header: `#include "csp.h"`.
 
 ## Table of Contents
 
-1. [signal::notify](#signalnotify) -- subscribe to Unix signals
+1. [csp::signal::notify](#cspsignalnotify) -- subscribe to Unix signals
 
 ---
 
-## signal::notify
+## csp::signal::notify
 
 Return a reader that emits signal numbers whenever specified Unix signals are
 delivered to the process.
@@ -164,7 +164,7 @@ channel reads.
 
 **Header:** `#include "csp.h"`
 
-### win::signal::notify
+### csp::win::signal::notify
 
 ```cpp
 namespace csp::win::signal {

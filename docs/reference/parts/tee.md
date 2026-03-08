@@ -1,4 +1,4 @@
-# tee
+# csp::part::tee
 
 Duplicates a stream to a side channel. Each value read from the input is
 written to both the main output and a side `writer<T>`. If the side channel

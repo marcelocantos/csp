@@ -1,4 +1,4 @@
-# exhaust_all
+# csp::part::exhaust_all
 
 Flatten a stream of sub-streams, ignoring new arrivals while the current
 sub-stream is active. `reader<reader<B>>` becomes `reader<B>`. Prevents

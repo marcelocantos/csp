@@ -1,4 +1,4 @@
-# debounce
+# csp::part::debounce
 
 Suppress rapid values; emit only after a quiet period elapses. Each incoming
 value restarts the timer. Only the most recent value survives a burst.

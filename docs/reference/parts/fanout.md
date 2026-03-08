@@ -1,4 +1,4 @@
-# fanout
+# csp::part::fanout
 
 Broadcasts each value from an input stream to a dynamic set of subscribers.
 New subscribers register by sending their `writer<T>` endpoint via a control

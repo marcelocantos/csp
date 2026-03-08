@@ -1,4 +1,4 @@
-# delay
+# csp::part::delay
 
 Delay each value by a fixed duration. Values are queued with absolute deadlines
 and emitted in order. Multiple in-flight values are delayed independently (not

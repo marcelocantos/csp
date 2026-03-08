@@ -1,4 +1,4 @@
-# foreach_emit
+# csp::part::foreach_emit
 
 Generalized stateful transform with separate update and extraction functions.
 Maintains an internal state that is updated on each input element, and emits
