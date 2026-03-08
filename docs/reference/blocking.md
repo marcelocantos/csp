@@ -23,7 +23,7 @@ template <typename Fn>
 auto blocking(Fn&& fn) -> std::invoke_result_t<Fn>;
 ```
 
-**Header:** `#include "csp/blocking.h"`
+**Header:** `#include "csp.h"`
 
 ### Description
 
@@ -70,7 +70,6 @@ blocking(fn) ─┤fn throws e├────➤ e propagated to calling MT on r
 
 ```cpp
 #include "csp.h"
-#include "csp/blocking.h"
 
 #include <fstream>
 #include <string>

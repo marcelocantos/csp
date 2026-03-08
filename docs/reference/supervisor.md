@@ -6,7 +6,7 @@
 
 Worker lifecycle management with automatic restart and failure escalation.
 
-All types live in `namespace csp`. Header: `#include "csp/supervisor.h"`.
+All types live in `namespace csp`. Header: `#include "csp.h"`.
 
 ---
 

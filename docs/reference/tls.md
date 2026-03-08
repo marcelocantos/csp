@@ -2,7 +2,7 @@
 
 Cancel-aware TLS via mbedTLS. Available when `CSP_TLS` is defined.
 
-All types live in `namespace csp::tls`. Header: `#include "csp/tls.h"`.
+All types live in `namespace csp::tls`. Header: `#include "csp.h"`.
 
 ---
 

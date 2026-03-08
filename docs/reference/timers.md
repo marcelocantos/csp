@@ -4,7 +4,7 @@ Primitives for time-based operations: sleeping, one-shot timers, and periodic
 ticks. All functions run inside imps and integrate with the scheduler's
 sleep queue.
 
-All types and functions live in `namespace csp`. Header: `#include "csp/timer.h"`.
+All types and functions live in `namespace csp`. Header: `#include "csp.h"`.
 
 ---
 
@@ -51,7 +51,7 @@ returns `std::chrono::steady_clock::now()`.
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 auto start = csp::now();
 // ... work ...
@@ -83,7 +83,7 @@ transparently.
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::fake_clock fc;
 csp::local l{csp::clock = &fc};
@@ -128,7 +128,7 @@ sleep(d) ────────────────➤ suspend; deadline =
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::spawn([] {
     csp::sleep(std::chrono::milliseconds(100));
@@ -169,7 +169,7 @@ sleep_until(tp) ─┤tp in past├────➤ yield; return
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::spawn([] {
     auto deadline = csp::now() + std::chrono::seconds(1);
@@ -241,7 +241,7 @@ reader >> dest ─┤waiting├───────➤ suspend until value read
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::spawn([] {
     auto [w, r] = csp::chan<int>{};
@@ -320,7 +320,7 @@ producer loop:
 ### Example
 
 ```cpp
-#include "csp/timer.h"
+#include "csp.h"
 
 csp::spawn([] {
     auto ticker = csp::tick(std::chrono::milliseconds(100));

@@ -3,7 +3,7 @@
 Cooperative, scope-based cancellation for imps. Cancellation cascades from
 parent to child scopes automatically.
 
-All types live in `namespace csp`. Header: `#include "csp/cancel.h"`.
+All types live in `namespace csp`. Header: `#include "csp.h"`.
 
 ---
 

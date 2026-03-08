@@ -22,23 +22,23 @@ state.operation(args) ─┤guard├──➤ effects; result
 
 | Document | Header | Contents |
 |---|---|---|
-| [Timers](timers.md) | `csp/timer.h` | `sleep`, `sleep_until`, `after`, `tick` |
-| [I/O](io.md) | `csp/io.h` | `wait_readable`, `wait_writable`, `read`, `write`, `accept`, `connect`, `resolve` (kqueue reactor) |
-| [Signals](signals.md) | `csp/signal.h` | `signal::notify` (self-pipe trick, reactor-driven) |
-| [Blocking](blocking.md) | `csp/blocking.h` | `blocking(fn)` (offload to OS thread pool) |
+| [Timers](timers.md) | `csp.h` | `sleep`, `sleep_until`, `after`, `tick` |
+| [I/O](io.md) | `csp.h` | `wait_readable`, `wait_writable`, `read`, `write`, `accept`, `connect`, `resolve` (kqueue reactor) |
+| [Signals](signals.md) | `csp.h` | `signal::notify` (self-pipe trick, reactor-driven) |
+| [Blocking](blocking.md) | `csp.h` | `blocking(fn)` (offload to OS thread pool) |
 
 ## Security
 
 | Document | Header | Contents |
 |---|---|---|
-| [TLS](tls.md) | `csp/tls.h` | `tls::context`, `tls::conn`, `tls::error` (cancel-aware TLS via mbedTLS, `#ifdef CSP_TLS`) |
+| [TLS](tls.md) | `csp.h` | `tls::context`, `tls::conn`, `tls::error` (cancel-aware TLS via mbedTLS, `#ifdef CSP_TLS`) |
 
 ## Supervision
 
 | Document | Header | Contents |
 |---|---|---|
-| [Imp Exit](imp-exit.md) | `csp/imp_exit.h` | `supervised`, `on_exit`, `exit_guard`, `imp_event`, `restart_policy`, `max_restarts_exceeded` |
-| [Supervision](supervisor.md) | `csp/supervisor.h` | `worker_group`, `worker_max_restarts_exceeded` (deprecated -- prefer `on_exit` + `supervised`) |
+| [Imp Exit](imp-exit.md) | `csp.h` | `supervised`, `on_exit`, `exit_guard`, `imp_event`, `restart_policy`, `max_restarts_exceeded` |
+| [Supervision](supervisor.md) | `csp.h` | `worker_group`, `worker_max_restarts_exceeded` (deprecated -- prefer `on_exit` + `supervised`) |
 
 ## Scoping
 

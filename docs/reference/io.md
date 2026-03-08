@@ -3,7 +3,7 @@
 Non-blocking I/O primitives that integrate with the imp scheduler via
 a kqueue reactor. All functions live in `namespace csp::io`.
 
-Header: `#include "csp/io.h"` (or `#include "csp.h"`)
+Header: `#include "csp.h"`
 
 All I/O functions must be called from within an imp. The reactor is a
 singleton kqueue event loop running on a dedicated OS thread; when a

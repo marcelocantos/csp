@@ -4,7 +4,7 @@ Intercept imp exit events (normal return or exception) with custom handlers
 or automatic restart policies. This is the building block for supervision
 strategies.
 
-All types live in `namespace csp`. Header: `#include "csp/imp_exit.h"`.
+All types live in `namespace csp`. Header: `#include "csp.h"`.
 
 ---
 
@@ -298,7 +298,7 @@ exception. When the policy's restart limit is reached, it simply drops the
 event (the supervised imp exits normally). Custom handlers can throw
 `max_restarts_exceeded` explicitly if escalation semantics are desired.
 
-`worker_max_restarts_exceeded` (in `csp/supervisor.h`) is the
+`worker_max_restarts_exceeded` (in `csp.h`) is the
 `worker_group`-specific variant that includes a `worker_name` field.
 
 ---
