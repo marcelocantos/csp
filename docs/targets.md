@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: 3a7aa6c -->
+<!-- last-evaluated: 1e8eea3 -->
 
 ## Active
 
@@ -16,18 +16,20 @@
 - **Status**: converging
 - **Discovered**: 2026-03-01
 
+## Achieved
+
 ### 🎯T1.3 Windows test exe runs and reports results
 - **Weight**: 1 (value 5 / cost 5)
 - **Estimated-cost**: 5
+- **Actual-cost**: 5
 - **Acceptance**:
   - `csp_tests.exe` prints doctest summary on Windows CI
   - Exit code reflects test results (0 = all pass)
-- **Context**: Static init crash fixed (`~15UL` pointer truncation, 7d69868). `single()` assert side-effect bug fixed (e49b032). Console signal test killing CI fixed (9c68124). Demand-commit stack pool fixed (905b839, 89e1f40). .pdata separation fix (d668bb3) did not resolve exception crash. NT_TIB StackLimit fix (3776b2f): make_fcontext set StackLimit to bottom of 1MB MEM_RESERVE but only 64KB committed → MSVC exception dispatch probed into uncommitted pages → double-fault. Fix: pass committed size to make_fcontext, update StackLimit in VEH handler and maybe_shrink. CountForever still excluded (hangs). CI run pending.
+- **Context**: 621/621 tests pass on Windows CI. Bugs fixed: `~15UL` pointer truncation (7d69868), `single()` assert side-effect (e49b032), console signal killing CI (9c68124), demand-commit stack pool (905b839, 89e1f40), .pdata separation (d668bb3), NT_TIB StackLimit (3776b2f, 434c612), maybe_shrink double-fault during MSVC exception dispatch (1e8eea3).
 - **Parent**: 🎯T1
-- **Status**: converging
+- **Status**: achieved
 - **Discovered**: 2026-03-04
-
-## Achieved
+- **Achieved**: 2026-03-08
 
 ### 🎯T1.2 macOS mn.test MultipleThreads flake is fixed
 - **Weight**: 2 (value 3 / cost 2)

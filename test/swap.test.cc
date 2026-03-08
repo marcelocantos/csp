@@ -423,30 +423,46 @@ TEST_CASE("MN Swap - multi-channel swap storm") {
 
     std::vector<chan<int>> chans(N_CHANS);
 
+    // Gate channel: each swap imp holds a copy of gate.w.  When all
+    // swap imps finish, every copy is destroyed and the write endpoint
+    // dies — the coordinator imp detects this via prialt(~gate_r) and
+    // proceeds to spawn writers and readers.  Without this barrier,
+    // a writer imp can run before its slot's swap imp, send through
+    // the pre-swap channel, and then the swap imp's copy destruction
+    // signals endpoint death on the post-swap channel — losing one
+    // write.
+    chan<poke_t> gate;
+
     // Swapper copies — each swapper gets its own copies so there's
     // no data race with other imps or the parent.
     for (int s = 0; s < SWAPS; ++s) {
         int i = s % N_CHANS;
         int j = (s * 7 + 3) % N_CHANS;
         if (i == j) j = (j + 1) % N_CHANS;
-        csp::spawn([wi = chans[i].w.copy(), wj = chans[j].w.copy()]() mutable {
+        csp::spawn([wi = chans[i].w.copy(), wj = chans[j].w.copy(),
+                     gw = gate.w.copy()]() mutable {
             swap(wi, wj);
         });
     }
 
     // After all swaps settle, write through each writer and read from
     // each reader. Total should be conserved.
-    for (auto & ch : chans) {
-        csp::spawn([w = std::move(ch.w)] { w << 1; });
-    }
-
     std::atomic<int> total{0};
-    for (auto & ch : chans) {
-        csp::spawn([r = std::move(ch.r), &total] {
-            int v;
-            if (bool(r >> v)) total.fetch_add(v, std::memory_order_relaxed);
-        });
-    }
+    csp::spawn([gate_r = std::move(gate.r), &chans, &total] {
+        // Wait for all swap imps to finish (gate write endpoint dies).
+        csp::prialt(~gate_r);
+
+        for (auto & ch : chans) {
+            csp::spawn([w = std::move(ch.w)] { w << 1; });
+        }
+        for (auto & ch : chans) {
+            csp::spawn([r = std::move(ch.r), &total] {
+                int v;
+                if (bool(r >> v)) total.fetch_add(v, std::memory_order_relaxed);
+            });
+        }
+    });
+    gate.w = {}; // Release parent's copy so only swap imps hold it.
 
     csp::schedule();
 

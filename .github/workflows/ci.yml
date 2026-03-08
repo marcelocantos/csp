@@ -212,11 +212,6 @@ jobs:
           build\Release\csp_tests.exe -s --duration
         shell: cmd
 
-      - name: Show crash log
-        if: failure()
-        run: |
-          if exist csp_crash.log (type csp_crash.log) else (echo No crash log found)
-        shell: cmd
 
   # --- TLA+ model checking (macOS only) ---
   tla:
