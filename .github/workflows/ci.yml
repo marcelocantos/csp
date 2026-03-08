@@ -3,7 +3,33 @@ name: CI
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - 'docs/guide/**'
+      - 'docs/papers/**'
+      - 'docs/reference/**'
+      - 'docs/audit-log.md'
+      - 'docs/targets.md'
+      - 'docs/todo.md'
+      - 'docs/convergence-report.md'
+      - 'README.md'
+      - 'CLAUDE.md'
+      - 'STABILITY.md'
+      - 'NOTICES'
+      - 'LICENSE'
   pull_request:
+    paths-ignore:
+      - 'docs/guide/**'
+      - 'docs/papers/**'
+      - 'docs/reference/**'
+      - 'docs/audit-log.md'
+      - 'docs/targets.md'
+      - 'docs/todo.md'
+      - 'docs/convergence-report.md'
+      - 'README.md'
+      - 'CLAUDE.md'
+      - 'STABILITY.md'
+      - 'NOTICES'
+      - 'LICENSE'
   workflow_dispatch:
 
 concurrency:
