@@ -25,8 +25,9 @@ TEST_CASE("MN - MultipleThreads") {
                 std::lock_guard<std::mutex> lk(mu);
                 thread_ids.insert(id);
             }
-            // Do enough work to let the scheduler spread across threads.
-            for (int j = 0; j < 1000; ++j) { std::atomic_signal_fence(std::memory_order_seq_cst); }
+            // Yield to give the work-stealing scheduler a chance to
+            // distribute imps across OS threads.
+            for (int j = 0; j < 10; ++j) { csp::yield(); }
             done.fetch_add(1, std::memory_order_relaxed);
         });
     }
