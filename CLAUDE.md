@@ -87,7 +87,7 @@ These are generated from the development sources by `scripts/amalgamate.py`
 - **Always add documentation when implementing a new part.** Create a detail
   page in `docs/reference/parts/<name>.md`, add an entry to the catalog table
   in `docs/reference/parts.md`, and add a row to the Combinator Reference table
-  in `docs/agent-guide.md`.
+  in `dist/AGENTS-CSP.md`.
 
 ### Key design points
 
@@ -110,9 +110,10 @@ These are generated from the development sources by `scripts/amalgamate.py`
 
 When making code changes, keep the following documentation in sync:
 
-- **`docs/agent-guide.md`** — Token-efficient reference for coding agents.
+- **`dist/AGENTS-CSP.md`** — Token-efficient reference for coding agents.
   Update the Combinator Reference table when adding/removing/renaming parts.
-  Update API sections when core types or functions change.
+  Update API sections when core types or functions change. This file is
+  maintained directly (not generated).
 - **`docs/reference/parts.md`** — Parts catalog with per-section tables.
   Add new parts to the appropriate category table, linked to their detail page.
 - **`docs/reference/parts/<name>.md`** — Per-part detail page. Create one for

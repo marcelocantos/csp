@@ -382,55 +382,10 @@ def generate_gateway(include_dir, csp_dir):
     print(f'  {gateway}  ({len(headers)} headers)')
 
 
-AGENTS_INTEGRATION = """\
-## Integration
-
-Copy these files into your project:
-
-| File | Purpose |
-|---|---|
-| `csp.h` | Single header (all public API) |
-| `csp.cpp` | Implementation + context-switching assembly |
-| `csp_globals.cpp` | Thread-local state (**must** be a separate translation unit — see [docs/tls-caching-bug.md](https://github.com/marcelocantos/csp/blob/master/docs/tls-caching-bug.md)) |
-| `AGENTS-CSP.md` | This file — agent reference for CSP |
-
-Compile with C++20 and libc++:
-
-```bash
-c++ -std=c++20 -O2 -c csp.cpp -o csp.o
-c++ -std=c++20 -O2 -c csp_globals.cpp -o csp_globals.o
-```
-
-Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to
-give coding agents CSP expertise.
-"""
-
-
-def generate_agents_guide(docs_dir, out_dir):
-    """Generate AGENTS-CSP.md from docs/agent-guide.md with Build section replaced."""
-    source = docs_dir / 'agent-guide.md'
-    output = out_dir / 'AGENTS-CSP.md'
-
-    with open(source) as f:
-        content = f.read()
-
-    # Replace the Build section (## Build ... to end of file or next ## heading)
-    # The Build section is at the end of agent-guide.md.
-    build_re = re.compile(r'\n## Build\n.*', re.DOTALL)
-    content = build_re.sub('\n' + AGENTS_INTEGRATION, content)
-
-    with open(output, 'w') as f:
-        f.write(content)
-
-    lines = sum(1 for line in content.splitlines() if line.strip())
-    print(f'  {output}  ({lines} non-blank lines)')
-
-
 def main():
     root = Path(__file__).resolve().parent.parent
     include_dir = root / 'include'
     src_dir = root / 'src'
-    docs_dir = root / 'docs'
     out_dir = root / 'dist'
 
     csp_dir = include_dir / 'csp'
@@ -488,9 +443,6 @@ def main():
     for f in sorted(out_dir.glob('*.cpp')) + sorted(out_dir.glob('*.h')):
         dedup_includes(f)
 
-    # --- AGENTS-CSP.md: agent reference guide ---
-    print('AGENTS-CSP.md:')
-    generate_agents_guide(docs_dir, out_dir)
 
 
 if __name__ == '__main__':
