@@ -1,60 +1,50 @@
 # Convergence Report
 
 **Generated**: 2026-03-08
-**Branch**: master (uncommitted: swap storm fix)
+**Branch**: fix-swap-storm-test-race (PR #8)
 
 ## Standing invariants
 
 - **Tests**: passing (636/636 source, 628/628 dist locally)
-- **CI**: master green (run 22809593057, commit d13675a)
+- **CI**: PR #8 — 17/18 pass, macOS TSan pending
 
 ## Movement
 
-- 🎯T2: close → close (swap storm flake diagnosed and fixed locally, not yet committed)
+- 🎯T2: close → close (swap storm + MN thread flake both fixed, PR #8 CI 17/18 green)
 
 ## Gap report
 
 ### 🎯T2 Windows port  [medium]
 **Gap**: close
-Windows CI job passes (621/621 tests, 10/11 jobs green). The one CI failure was a macOS arm64 dist flake (`swap.test.cc:454` — swap storm race). **Root cause found and fixed locally**: swap imps and writer imps ran concurrently without synchronization; added a barrier channel so writers only run after all swaps complete. Fix passes 50/50 local stress runs, 636/636 source, 628/628 dist.
+Two CI flakes fixed in PR #8 (swap storm barrier, MN MultipleThreads yield). 17/18 CI jobs pass, macOS TSan pending. Once CI is fully green, PR #8 is ready to merge. After merge, rebase Windows port branch and verify its CI.
 
 **Effective weight**: 0.6 (value 5 / cost 8) — cost exceeds value.
 
-**Stale field**: "Blocked by: startup crash diagnosis" — resolved through bugs 1-9.
+**Stale field**: "Blocked by: startup crash diagnosis" — resolved.
 
-Remaining to close:
-1. Commit and merge the swap storm fix to master
-2. Remove stale "Blocked by" from targets.md
-3. Rebase Windows port branch, verify all CI jobs green
-4. Merge PR #4
-
-### 🎯T1 Test-dist exercises both TLS modes  [high]
-**Gap**: achieved (merged 2026-03-06)
-
-### 🎯T3 Imp exit / supervision documentation  [medium]
-**Gap**: achieved (merged 2026-03-07)
+### 🎯T1, 🎯T3: achieved
 
 ## Recommendation
 
 Work on: **🎯T2 Windows port**
-Reason: Only active target. The swap storm fix unblocks CI green. Next step is delivery — commit the fix and push it through.
+Reason: Only active target. PR #8 CI nearly green — merge once TSan passes, then rebase Windows branch.
 
 ## Suggested action
 
-Commit the swap storm fix (`test/swap.test.cc`) and run `/push` to merge it to master. Then rebase the Windows port branch and verify CI.
+Wait for macOS TSan to complete on PR #8. Once green, run `/push` to merge. Then rebase `worktree-windows-port` and verify CI.
 
 Type **go** to execute the suggested action.
 
 <!-- convergence-deps
-evaluated: 2026-03-08T01:00:00Z
-sha: d13675a
+evaluated: 2026-03-08T02:30:00Z
+sha: a00ac0b
 
 🎯T2:
   gap: close
-  assessment: "Windows 621/621 pass. Swap storm flake fixed locally (barrier channel). Needs commit+merge, then Windows branch rebase."
+  assessment: "Two CI flakes fixed (swap storm barrier, MN yield). PR #8 17/18 green, TSan pending. Merge then rebase Windows branch."
   read:
     - test/swap.test.cc
-    - docs/convergence-report.md
+    - test/mn.test.cc
 
 🎯T1:
   gap: achieved
