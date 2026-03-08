@@ -423,30 +423,49 @@ TEST_CASE("MN Swap - multi-channel swap storm") {
 
     std::vector<chan<int>> chans(N_CHANS);
 
+    // Barrier: each swap imp holds a copy of the barrier writer.
+    // When all swap imps finish, the writer endpoint dies, signalling
+    // the coordinator that the permutation has settled.
+    chan<poke_t> barrier;
+
     // Swapper copies — each swapper gets its own copies so there's
     // no data race with other imps or the parent.
     for (int s = 0; s < SWAPS; ++s) {
         int i = s % N_CHANS;
         int j = (s * 7 + 3) % N_CHANS;
         if (i == j) j = (j + 1) % N_CHANS;
-        csp::spawn([wi = chans[i].w.copy(), wj = chans[j].w.copy()]() mutable {
+        csp::spawn([wi = chans[i].w.copy(), wj = chans[j].w.copy(),
+                    bw = barrier.w.copy()]() mutable {
             swap(wi, wj);
         });
     }
 
-    // After all swaps settle, write through each writer and read from
-    // each reader. Total should be conserved.
-    for (auto & ch : chans) {
-        csp::spawn([w = std::move(ch.w)] { w << 1; });
-    }
+    // Drop the original barrier writer so death fires when all swap
+    // imps finish.
+    barrier.w = {};
 
+    // Coordinator: wait for all swaps to complete, then spawn writers
+    // and readers. This guarantees the slot permutation has settled
+    // before any writes resolve.
     std::atomic<int> total{0};
-    for (auto & ch : chans) {
-        csp::spawn([r = std::move(ch.r), &total] {
-            int v;
-            if (bool(r >> v)) total.fetch_add(v, std::memory_order_relaxed);
-        });
-    }
+    csp::spawn([br = std::move(barrier.r), &chans, &total] {
+        // Block until all swap imps have finished (writer death).
+        poke_t p;
+        br >> p;
+
+        // After all swaps settle, write through each writer and read
+        // from each reader. Total should be conserved.
+        for (auto & ch : chans) {
+            csp::spawn([w = std::move(ch.w)] { w << 1; });
+        }
+
+        for (auto & ch : chans) {
+            csp::spawn([r = std::move(ch.r), &total] {
+                int v;
+                if (bool(r >> v)) total.fetch_add(v, std::memory_order_relaxed);
+            });
+        }
+    });
 
     csp::schedule();
 
