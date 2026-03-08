@@ -6,19 +6,22 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
 ## Features
 
 - **Lightweight userspace threads (imps)** with M:N scheduling and work stealing
-- **Typed synchronous channels** — unbuffered, blocking send/receive
+- **Typed channels** — synchronous (unbuffered) or buffered (`chan<T>(n)`)
 - **Per-endpoint lifecycle** — either end can close independently; death is
   observable via `alt`/`prialt`
 - **Alt/prialt multiplexing** — select across sends, receives, and endpoint death
 - **Timers** — `sleep`, `after`, `tick`, all composable with `alt`
 - **70+ stream combinators** — `map`, `where`, `scan`, `merge`, `zip`, and more,
   with `operator|` composition
-- **Non-blocking I/O and Unix signals** via kqueue reactor
+- **Non-blocking I/O** via platform-native reactor (kqueue/epoll/WSAEventSelect)
+- **Unix/Windows signals** — signal channels composable with `alt`
 - **TLS** — cancel-aware TLS via mbedTLS (`#ifdef CSP_TLS`)
 - **Cooperative cancellation** — scope-based, with deadlines, composable in `alt`
 - **Dynamic scoping** — inherited variables with scoped bindings and copy-on-write
   isolation
 - **Imp-local storage** — per-imp variables (not inherited)
+- **Imp exit / supervision** — restart policies, worker groups, supervised execution
+- **Cross-platform** — macOS, Linux (x86_64/arm64), Windows (x86_64)
 
 ## Quick start
 
@@ -108,6 +111,11 @@ make dist   # regenerate distribution files from source
 make check  # run TLA+ model checker
 make clean  # remove build artifacts
 ```
+
+## For coding agents
+
+If you use an agentic coding tool, include [`dist/AGENTS-CSP.md`](dist/AGENTS-CSP.md)
+in your project context for a token-efficient API reference.
 
 ## License
 

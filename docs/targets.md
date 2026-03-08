@@ -4,19 +4,23 @@
 
 ## Active
 
+(none)
+
+## Achieved
+
 ### 🎯T1 Windows port PR is merged to master
 - **Weight**: 2 (value 8 / cost 5)
 - **Estimated-cost**: 5
+- **Actual-cost**: 5
 - **Acceptance**:
   - All 11 CI jobs pass (macOS test, Linux test x2, sanitizers x6, Windows, TLA+)
   - `make dist` output matches committed dist/ files
   - Windows test exe runs doctest and reports pass/fail (not silent crash)
   - PR #4 squash-merged to master
-- **Context**: Unlocks Windows as a supported platform — major adoption gate. Architectural work (CMake, platform guards, VirtualAlloc stack pool, reactor, socket I/O) is done. Remaining work is debugging CI failures.
-- **Status**: converging
+- **Context**: PR #4 merged (f432f16). All CI green. Windows 621/621 tests pass.
+- **Status**: achieved
 - **Discovered**: 2026-03-01
-
-## Achieved
+- **Achieved**: 2026-03-08
 
 ### 🎯T1.3 Windows test exe runs and reports results
 - **Weight**: 1 (value 5 / cost 5)
