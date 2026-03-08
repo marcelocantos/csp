@@ -2,6 +2,11 @@
 #include <csp/internal/reactor.h>
 #include <csp/internal/hamt.h>
 
+#ifndef _WIN32
+#include <pthread.h>
+#endif
+
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdarg>
@@ -52,7 +57,7 @@ namespace csp {
         static void vstatus(Imp * imp, char const * msg, va_list args) {
             char * buf = imp->status_;
             int len = sizeof(imp->status_);
-            int n = snprintf(buf, len, "§%lu ", imp->id_);
+            int n = snprintf(buf, len, "§%zu ", imp->id_);
             vsnprintf(buf += n, len -= n, msg, args);
         }
 
@@ -119,7 +124,7 @@ namespace csp {
 
         Imp::Imp(fcontext_t ctx, StackRegion stk) : ctx_(ctx), stk_(stk) {
             prev_ = next_ = nullptr;
-            snprintf(status_, sizeof(status_), "§%lu", id_);
+            snprintf(status_, sizeof(status_), "§%zu", id_);
         }
 
         Imp::Imp() : Imp(nullptr, {}) {
@@ -251,7 +256,7 @@ namespace csp {
                         return;
                     }
                     break;
-                default: __builtin_unreachable();
+                default: CSP_UNREACHABLE();
                 }
 
                 // Inline schedule without re-acquiring run_mu.
@@ -283,7 +288,7 @@ namespace csp {
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
                 StackPool::instance().maybe_shrink(
-                    self->stk_, __builtin_frame_address(0));
+                    self->stk_, CSP_FRAME_ADDRESS());
             }
             Imp* target;
             {
@@ -384,10 +389,10 @@ int spawn(EntryFn start_f, void * data) {
     // Reclaim unused stack pages at this API boundary.
     if (self->stk_) {
         StackPool::instance().maybe_shrink(
-            self->stk_, __builtin_frame_address(0));
+            self->stk_, CSP_FRAME_ADDRESS());
     }
     try {
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
         auto& pool = StackPool::instance();
         auto region = pool.allocate();
         auto page_sz = pool.page_size();
@@ -395,7 +400,35 @@ int spawn(EntryFn start_f, void * data) {
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
         assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
-        auto ctx = make_fcontext(imp, (char*)imp - usable_base, start);
+        auto usable_size = static_cast<size_t>((char*)imp - usable_base);
+#ifdef _WIN32
+        // On Windows, pass only the initially committed stack size to
+        // make_fcontext.  This sets NT_TIB StackLimit (saved in the
+        // fcontext at offset 0xc0) to the bottom of the committed
+        // region instead of the bottom of the full MEM_RESERVE region.
+        // If StackLimit points into uncommitted pages, MSVC's C++
+        // exception dispatch (RtlVirtualUnwind) faults during stack
+        // probing — a nested ACCESS_VIOLATION that terminates the
+        // process without VEH notification.
+        // The committed region is [top - kInitialCommitSize, top].
+        // make_fcontext computes StackLimit as (imp - size), so the size
+        // must be measured from imp (not top) to the committed bottom:
+        //   size = imp - (top - kInitialCommitSize)
+        //        = kInitialCommitSize - sizeof(Imp)
+        auto* committed_bottom = top - std::min(
+            StackPool::kInitialCommitSize,
+            static_cast<size_t>(top - usable_base));
+        auto committed = static_cast<size_t>((char*)imp - committed_bottom);
+        auto ctx = make_fcontext(imp, committed, start);
+        // make_fcontext also sets DeallocationStack (offset 0xb8) to
+        // the same value as StackLimit.  Patch it to the actual bottom
+        // of the reserved region so Windows stack-overflow detection
+        // knows the full extent of the stack.
+        *reinterpret_cast<void**>(
+            static_cast<char*>(ctx) + 0xb8) = usable_base;
+#else
+        auto ctx = make_fcontext(imp, usable_size, start);
+#endif
         new (imp) Imp(ctx, region);
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
@@ -504,6 +537,10 @@ void descr(char const * fmt, ...) {
     va_start(args, fmt);
     vstatus(current_imp(), fmt, args);
     va_end(args);
+
+#ifdef __APPLE__
+    pthread_setname_np(getstatus(current_imp()));
+#endif
 }
 
 char const * get_descr(void * thr) {

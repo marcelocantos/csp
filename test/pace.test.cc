@@ -1,4 +1,5 @@
 #include "testutil.h"
+#include "testscale.h"
 
 #include <vector>
 

@@ -5,10 +5,14 @@
 // counts to keep total test time reasonable while still exercising the
 // same code paths.
 
-#if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer)) \
-    || defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__)
 #define CSP_TEST_SANITIZER 1
-#else
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer) || __has_feature(address_sanitizer)
+#define CSP_TEST_SANITIZER 1
+#endif
+#endif
+#ifndef CSP_TEST_SANITIZER
 #define CSP_TEST_SANITIZER 0
 #endif
 

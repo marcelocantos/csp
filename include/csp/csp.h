@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <climits>
 #include <exception>
+#include <memory>
 #include <stdint.h>
 
 #include <functional>
@@ -51,7 +52,7 @@ struct alignas(16) Slot {
 
 // Extract Slot* from an endpoint ref (mask off low flag bits).
 inline Slot* get_slot(void* ptr) {
-    return reinterpret_cast<Slot*>((uintptr_t)ptr & ~15UL);
+    return reinterpret_cast<Slot*>((uintptr_t)ptr & ~uintptr_t{15});
 }
 
 // Opaque channel endpoint handles.
@@ -476,9 +477,11 @@ public:
     // Read exactly one value and assert the reader produces no more.
     T single() const {
         T t;
-        assert(static_cast<bool>(*this >> t) && "single() called on exhausted reader");
+        [[maybe_unused]] bool ok = static_cast<bool>(*this >> t);
+        assert(ok && "single() called on exhausted reader");
         T discard;
-        assert(!static_cast<bool>(*this >> discard) && "single() reader produced more than one value");
+        [[maybe_unused]] bool extra = static_cast<bool>(*this >> discard);
+        assert(!extra && "single() reader produced more than one value");
         return t;
     }
 
@@ -888,7 +891,8 @@ struct spawn_data {
 
 template <typename F>
 inline void spawn_entry(void * data) {
-    std::unique_ptr<spawn_data<F>> sd{static_cast<spawn_data<F> *>(data)};
+    using SD = spawn_data<F>;
+    std::unique_ptr<SD> sd{static_cast<SD *>(data)};
     std::exception_ptr ex;
     try {
         auto f = std::move(sd->f);
@@ -1194,7 +1198,11 @@ chan<T>::chan(size_t capacity) {
                 return;
             case 1:  buf.pop(); break;
             case ~1: return;
+#ifdef _MSC_VER
+            default: __assume(0);
+#else
             default: __builtin_unreachable();
+#endif
             }
         }
     });

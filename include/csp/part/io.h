@@ -4,15 +4,14 @@
 #include <csp/part/part.h>
 
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 namespace csp::part::io {
 
-// Produce byte chunks from a non-blocking fd. Each message contains
-// as much data as was available from a single read() call. Owns the
-// fd and closes it on exit.
-inline auto byte_reader(int fd, size_t chunk_size = 4096) {
+// Produce byte chunks from a non-blocking fd/socket. Each message
+// contains as much data as was available from a single read() call.
+// Owns the fd and closes it on exit.
+inline auto byte_reader(csp::io::socket_t fd, size_t chunk_size = 4096) {
     return make_producer<bytes>(
         [fd, chunk_size](writer<bytes> out) {
             internal::descr("byte_reader");
@@ -26,13 +25,13 @@ inline auto byte_reader(int fd, size_t chunk_size = 4096) {
                 if (!(out << std::move(buf))) break;
                 buf.resize(chunk_size);
             }
-            ::close(fd);
+            csp::io::close(fd);
         });
 }
 
-// Consume byte chunks and write them to an fd. Owns the fd and
-// closes it on exit.
-inline auto byte_writer(int fd) {
+// Consume byte chunks and write them to an fd/socket. Owns the fd
+// and closes it on exit.
+inline auto byte_writer(csp::io::socket_t fd) {
     return make_consumer<bytes>(
         [fd](reader<bytes> in) {
             internal::descr("byte_writer");
@@ -41,7 +40,7 @@ inline auto byte_writer(int fd) {
             for (bytes chunk; in >> chunk;) {
                 if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
             }
-            ::close(fd);
+            csp::io::close(fd);
         });
 }
 

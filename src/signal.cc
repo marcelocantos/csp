@@ -1,3 +1,5 @@
+#ifndef _WIN32
+
 #include <csp/signal.h>
 #include <csp/io.h>
 
@@ -136,3 +138,5 @@ reader<int> notify(std::initializer_list<int> sigs) {
 }
 
 } // namespace csp::signal
+
+#endif // !_WIN32

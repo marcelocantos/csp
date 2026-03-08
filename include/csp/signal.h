@@ -1,5 +1,7 @@
 #pragma once
 
+#ifndef _WIN32
+
 #include <csp/csp.h>
 
 #include <initializer_list>
@@ -24,3 +26,5 @@ namespace csp::signal {
 reader<int> notify(std::initializer_list<int> sigs);
 
 }
+
+#endif // !_WIN32

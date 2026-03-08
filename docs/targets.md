@@ -1,38 +1,56 @@
-# Convergence Targets
+# Targets
+
+<!-- last-evaluated: 1e8eea3 -->
 
 ## Active
 
-### 🎯T2 Windows port
-- **Priority**: medium
-- **Weight**: 5 (value 5 / cost 8)
+### 🎯T1 Windows port PR is merged to master
+- **Weight**: 2 (value 8 / cost 5)
+- **Estimated-cost**: 5
+- **Acceptance**:
+  - All 11 CI jobs pass (macOS test, Linux test x2, sanitizers x6, Windows, TLA+)
+  - `make dist` output matches committed dist/ files
+  - Windows test exe runs doctest and reports pass/fail (not silent crash)
+  - PR #4 squash-merged to master
+- **Context**: Unlocks Windows as a supported platform — major adoption gate. Architectural work (CMake, platform guards, VirtualAlloc stack pool, reactor, socket I/O) is done. Remaining work is debugging CI failures.
 - **Status**: converging
-- **Acceptance criteria**:
-  - Windows CI job compiles, links, and runs all non-platform-specific tests
-  - Platform-specific tests (signal, kqueue/epoll reactor, unix sockets) are `#ifndef _WIN32` guarded
-  - `make test-dist` passes on Windows (or CMake equivalent)
-- **Blocked by**: startup crash diagnosis (see PR #4)
+- **Discovered**: 2026-03-01
 
 ## Achieved
 
-### 🎯T3 Imp exit / supervision documentation
-- **Priority**: medium
-- **Weight**: 4 (value 4 / cost 2)
+### 🎯T1.3 Windows test exe runs and reports results
+- **Weight**: 1 (value 5 / cost 5)
+- **Estimated-cost**: 5
+- **Actual-cost**: 5
+- **Acceptance**:
+  - `csp_tests.exe` prints doctest summary on Windows CI
+  - Exit code reflects test results (0 = all pass)
+- **Context**: 621/621 tests pass on Windows CI. Bugs fixed: `~15UL` pointer truncation (7d69868), `single()` assert side-effect (e49b032), console signal killing CI (9c68124), demand-commit stack pool (905b839, 89e1f40), .pdata separation (d668bb3), NT_TIB StackLimit (3776b2f, 434c612), maybe_shrink double-fault during MSVC exception dispatch (1e8eea3).
+- **Parent**: 🎯T1
 - **Status**: achieved
-- **Achieved**: 2026-03-07
-- **Acceptance criteria**:
-  - `docs/reference/imp-exit.md` exists with standard reference page structure
-  - `docs/agent-guide.md` Lifecycle section includes imp_exit/supervised entries
-  - `max_restarts_exceeded` disposition: documented as available for custom handlers; built-in policy doesn't throw it
-  - `make` passes (markdown link checker)
+- **Discovered**: 2026-03-04
+- **Achieved**: 2026-03-08
 
-### 🎯T1 Test-dist exercises both TLS modes
-- **Priority**: high
-- **Weight**: 8 (value 8 / cost 1)
+### 🎯T1.2 macOS mn.test MultipleThreads flake is fixed
+- **Weight**: 2 (value 3 / cost 2)
+- **Estimated-cost**: 2
+- **Actual-cost**: 1
+- **Acceptance**: macOS arm64 CI test job passes reliably (no flake on `CHECK(thread_ids.size() > 1)`)
+- **Context**: Replaced busy-loop with `csp::yield()` to force scheduler distribution across Ps and OS threads.
+- **Parent**: 🎯T1
 - **Status**: achieved
-- **Achieved**: 2026-03-06 (PR #6, commit 86ba5e3)
-- **Acceptance criteria**:
-  - `make test-dist` runs tests with `CSP_TLS=1` (636 tests) then `CSP_TLS=0` (628 tests)
-  - `MBEDTLS_CFLAGS` uses `-Iinclude` (not `-I$(CSP_INCLUDE)`) so `mbedtls_config.h` is found in dist mode
-  - `BUILDDIR` differentiates TLS=0 from TLS=1 to prevent stale object reuse
-  - `test/tls.test.cc` compiles against dist header (no `#include <csp/tls.h>` — uses gateway header via testutil.h)
-  - All 18 CI jobs green after merge
+- **Discovered**: 2026-03-04
+- **Achieved**: 2026-03-05
+
+### 🎯T1.1 Dist files are regenerated and committed
+- **Weight**: 8 (value 8 / cost 1)
+- **Estimated-cost**: 1
+- **Actual-cost**: 1
+- **Acceptance**:
+  - `make dist && git diff --exit-code dist/` passes
+  - Sanitizer and TSan jobs can compile test-dist
+- **Context**: dist/ files were stale from master merge, missing count.h, win/signal.h, platform guards, and log→s_log renames. Gated 10/11 CI jobs.
+- **Parent**: 🎯T1
+- **Status**: achieved
+- **Discovered**: 2026-03-04
+- **Achieved**: 2026-03-04

@@ -19,16 +19,16 @@ auto chain(R rr) {
         static Logger scope("chan/chain/scope");
         BRAC_SCOPE(scope, "chain", "%d readers", rr.size());
 
-        static Logger log("chan/chain/log");
+        static Logger s_log("chan/chain/log");
 
         for (auto & r : rr) {
             for (T n; csp::alt(r >> n, ~w) == 0;) {
-                CSP_LOG(log, "loop");
+                CSP_LOG(s_log, "loop");
                 if (!(w << std::move(n))) {
                     break;
                 }
             }
-            CSP_LOG(log, "next in");
+            CSP_LOG(s_log, "next in");
         }
     });
 }

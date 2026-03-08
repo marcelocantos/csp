@@ -98,3 +98,4 @@
 #include "csp/supervisor.h"
 #include "csp/timer.h"
 #include "csp/tls.h"
+#include "csp/win/signal.h"

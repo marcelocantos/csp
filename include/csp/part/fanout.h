@@ -14,10 +14,10 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
     static Logger scope("chan/fanout/scope");
     BRAC_SCOPE(scope, "fanout", "");
 
-    static Logger log("chan/fanout/log");
+    static Logger s_log("chan/fanout/log");
 
     for (writer<T> out; prialt(~new_in, new_out >> out) >= 0;) {
-        CSP_LOG(log, "first new_out");
+        CSP_LOG(s_log, "first new_out");
 
         reader<T> in;
         writer<T> in_val = ++in;  // slot 0 write buffer
@@ -59,44 +59,44 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
 
             switch (m.result) {
             case 0:
-                CSP_LOG(log, "new_in");
+                CSP_LOG(s_log, "new_in");
                 chanops[0] = {{}, nullptr};
                 chanops[1] = {internal::wait(in.internal_reader()), &t, internal::get_slot(in.internal_reader().ptr)};
                 break;
             case ~0:
-                CSP_LOG(log, "~new_in");
+                CSP_LOG(s_log, "~new_in");
                 return;
             case 1:
-                CSP_LOG(log, "in");
+                CSP_LOG(s_log, "in");
                 // Traverse backwards in case of in-situ deletions.
                 for (auto oi = end(outs); oi-- != begin(outs);) {
-                    CSP_LOG(log, "out << t");
+                    CSP_LOG(s_log, "out << t");
                     if (!(*oi << t)) {
-                        CSP_LOG(log, "~out");
+                        CSP_LOG(s_log, "~out");
                         drop(oi - begin(outs));
                     }
                 }
                 break;
             case ~1:
-                CSP_LOG(log, "~in");
+                CSP_LOG(s_log, "~in");
                 in = {};
                 in_val = ++in;
                 chanops[0] = {internal::wait(new_in.internal_writer()), &in_val, internal::get_slot(new_in.internal_writer().ptr)};
                 chanops[1] = {{}, nullptr};
                 break;
             case 2:  // new_out
-                CSP_LOG(log, "new_out");
+                CSP_LOG(s_log, "new_out");
                 chanops.push_back({internal::wait_dead(out_val.internal_writer()), nullptr, internal::get_slot(out_val.internal_writer().ptr)});
                 outs.push_back(std::move(out_val));
                 break;
             case ~2:
-                CSP_LOG(log, "~new_out");
+                CSP_LOG(s_log, "~new_out");
                 // No more new outs.
                 chanops[2] = {{}, nullptr};
                 break;
             default: {  // ~outs
                 auto i = ~m.result - 3;
-                CSP_LOG(log, "~outs[%d]", i);
+                CSP_LOG(s_log, "~outs[%d]", i);
                 drop(i);
             }
             }

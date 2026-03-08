@@ -363,7 +363,7 @@ namespace {
 
     // Extract Channel* from a Waiter/ChanOp pointer (Channel* with flags in low bits).
     Channel * get_chan(void * ptr) {
-        auto p = (uintptr_t)ptr & ~15UL;
+        auto p = (uintptr_t)ptr & ~uintptr_t{15};
         return p ? reinterpret_cast<Channel *>(p) : nullptr;
     }
 
@@ -518,7 +518,7 @@ namespace {
             // Reclaim unused stack pages at this API boundary.
             if (current_imp()->stk_) {
                 StackPool::instance().maybe_shrink(
-                    current_imp()->stk_, __builtin_frame_address(0));
+                    current_imp()->stk_, CSP_FRAME_ADDRESS());
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -561,7 +561,7 @@ namespace {
                 if (slot) {
                     new_ch = static_cast<Channel*>(
                         slot->channel.load(std::memory_order_acquire));
-                    auto flags = (uintptr_t)chanops[i].waiter.ptr & 15UL;
+                    auto flags = (uintptr_t)chanops[i].waiter.ptr & uintptr_t{15};
                     const_cast<ChanOp &>(chanops[i]).waiter.ptr =
                         (void *)((uintptr_t)new_ch | flags);
                 } else {
@@ -796,7 +796,7 @@ namespace {
         using Vultures = detail::RingBuffer<ChanopWaiter>;
 
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
-        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%lu", id_); return std::string(b); }();
+        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%zu", id_); return std::string(b); }();
         std::atomic<int> alive_{2};  // endpoints (2) + sleeping waiters; last to 0 deletes
         std::mutex mu_;
         Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot
@@ -830,7 +830,7 @@ namespace {
     };
 
     char const * describe(void * ptr) {
-        auto p = (uintptr_t)ptr & ~15UL;
+        auto p = (uintptr_t)ptr & ~uintptr_t{15};
         if (p) {
             auto * ch = reinterpret_cast<Channel *>(p);
             return ch->descr_.c_str();
@@ -1107,6 +1107,10 @@ void fake_clock::run_until_idle() {
 
 /* csp.cc */
 
+#ifndef _WIN32
+#include <pthread.h>
+#endif
+
 #include <thread>
 #include <utility>
 
@@ -1152,7 +1156,7 @@ namespace csp {
         static void vstatus(Imp * imp, char const * msg, va_list args) {
             char * buf = imp->status_;
             int len = sizeof(imp->status_);
-            int n = snprintf(buf, len, "§%lu ", imp->id_);
+            int n = snprintf(buf, len, "§%zu ", imp->id_);
             vsnprintf(buf += n, len -= n, msg, args);
         }
 
@@ -1219,7 +1223,7 @@ namespace csp {
 
         Imp::Imp(fcontext_t ctx, StackRegion stk) : ctx_(ctx), stk_(stk) {
             prev_ = next_ = nullptr;
-            snprintf(status_, sizeof(status_), "§%lu", id_);
+            snprintf(status_, sizeof(status_), "§%zu", id_);
         }
 
         Imp::Imp() : Imp(nullptr, {}) {
@@ -1351,7 +1355,7 @@ namespace csp {
                         return;
                     }
                     break;
-                default: __builtin_unreachable();
+                default: CSP_UNREACHABLE();
                 }
 
                 // Inline schedule without re-acquiring run_mu.
@@ -1383,7 +1387,7 @@ namespace csp {
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
                 StackPool::instance().maybe_shrink(
-                    self->stk_, __builtin_frame_address(0));
+                    self->stk_, CSP_FRAME_ADDRESS());
             }
             Imp* target;
             {
@@ -1484,10 +1488,10 @@ int spawn(EntryFn start_f, void * data) {
     // Reclaim unused stack pages at this API boundary.
     if (self->stk_) {
         StackPool::instance().maybe_shrink(
-            self->stk_, __builtin_frame_address(0));
+            self->stk_, CSP_FRAME_ADDRESS());
     }
     try {
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
         auto& pool = StackPool::instance();
         auto region = pool.allocate();
         auto page_sz = pool.page_size();
@@ -1495,7 +1499,35 @@ int spawn(EntryFn start_f, void * data) {
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
         assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
-        auto ctx = make_fcontext(imp, (char*)imp - usable_base, start);
+        auto usable_size = static_cast<size_t>((char*)imp - usable_base);
+#ifdef _WIN32
+        // On Windows, pass only the initially committed stack size to
+        // make_fcontext.  This sets NT_TIB StackLimit (saved in the
+        // fcontext at offset 0xc0) to the bottom of the committed
+        // region instead of the bottom of the full MEM_RESERVE region.
+        // If StackLimit points into uncommitted pages, MSVC's C++
+        // exception dispatch (RtlVirtualUnwind) faults during stack
+        // probing — a nested ACCESS_VIOLATION that terminates the
+        // process without VEH notification.
+        // The committed region is [top - kInitialCommitSize, top].
+        // make_fcontext computes StackLimit as (imp - size), so the size
+        // must be measured from imp (not top) to the committed bottom:
+        //   size = imp - (top - kInitialCommitSize)
+        //        = kInitialCommitSize - sizeof(Imp)
+        auto* committed_bottom = top - std::min(
+            StackPool::kInitialCommitSize,
+            static_cast<size_t>(top - usable_base));
+        auto committed = static_cast<size_t>((char*)imp - committed_bottom);
+        auto ctx = make_fcontext(imp, committed, start);
+        // make_fcontext also sets DeallocationStack (offset 0xb8) to
+        // the same value as StackLimit.  Patch it to the actual bottom
+        // of the reserved region so Windows stack-overflow detection
+        // knows the full extent of the stack.
+        *reinterpret_cast<void**>(
+            static_cast<char*>(ctx) + 0xb8) = usable_base;
+#else
+        auto ctx = make_fcontext(imp, usable_size, start);
+#endif
         new (imp) Imp(ctx, region);
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
@@ -1604,6 +1636,10 @@ void descr(char const * fmt, ...) {
     va_start(args, fmt);
     vstatus(current_imp(), fmt, args);
     va_end(args);
+
+#ifdef __APPLE__
+    pthread_setname_np(getstatus(current_imp()));
+#endif
 }
 
 char const * get_descr(void * thr) {
@@ -1887,10 +1923,52 @@ exit_guard on_exit(restart_policy policy) {
 
 #include <cerrno>
 #include <cstdint>
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 namespace csp::internal {
+
+#ifdef _WIN32
+
+void io_wait_readable(SOCKET sock) {
+    auto signal = detail::create_fd_readable(sock);
+
+    if (!csp::is_cancel_active()) {
+        csp::prialt(~signal);
+        return;
+    }
+
+    switch (csp::prialt(csp::done(), ~signal)) {
+    case ~0: {
+        auto reason = csp::cancel_reason();
+        if (reason) std::rethrow_exception(reason);
+        throw csp::canceled{};
+    }
+    case ~1: return;
+    }
+}
+
+void io_wait_writable(SOCKET sock) {
+    auto signal = detail::create_fd_writable(sock);
+
+    if (!csp::is_cancel_active()) {
+        csp::prialt(~signal);
+        return;
+    }
+
+    switch (csp::prialt(csp::done(), ~signal)) {
+    case ~0: {
+        auto reason = csp::cancel_reason();
+        if (reason) std::rethrow_exception(reason);
+        throw csp::canceled{};
+    }
+    case ~1: return;
+    }
+}
+
+#else // !_WIN32
 
 void io_wait_readable(int fd) {
     auto signal = detail::create_fd_readable(fd);
@@ -1928,9 +2006,13 @@ void io_wait_writable(int fd) {
     }
 }
 
+#endif // _WIN32
+
 } // namespace csp::internal
 
 namespace csp::io {
+
+#ifndef _WIN32
 
 int set_nonblock(int fd) {
     int flags = fcntl(fd, F_GETFL);
@@ -1996,6 +2078,8 @@ int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
     return 0;
 }
 
+#endif // !_WIN32
+
 resolve_result resolve(const std::string& host,
                        const std::string& service,
                        const struct addrinfo* hints) {
@@ -2016,7 +2100,9 @@ resolve_result resolve(const std::string& host,
 
 
 #include <errno.h>
+#ifndef _WIN32
 #include <execinfo.h>
+#endif
 
 #include <cstdio>
 #include <iostream>
@@ -2177,6 +2263,10 @@ namespace csp {
     }
 
     void Logger::dump_stack_(bool truncate) {
+#ifdef _WIN32
+        // Stack trace not yet implemented on Windows.
+        (void)truncate;
+#else
         //constexpr int n_slots = 256;
         //auto bt = std::make_unique<void *[]>(n_slots);
         //int n_frames = backtrace(bt.get(), n_slots);
@@ -2275,6 +2365,7 @@ namespace csp {
             }
             last_bt = std::move(curr_bt);
         }
+#endif // !_WIN32
     }
 
     LogScope::LogScope(Logger & logger, char const * prefix, char const * file, int line, char const * func, char const * fmt, ...)
@@ -2302,6 +2393,230 @@ namespace csp {
 
 /* reactor.cc */
 
+
+#ifdef _WIN32
+
+// --- Windows reactor: CreateThreadpoolTimer + WSAEventSelect ---
+
+#include <winsock2.h>
+
+namespace csp::detail {
+
+Reactor& Reactor::instance() {
+    static Reactor r;
+    return r;
+}
+
+void Reactor::ensure_started() {
+    if (running_.load(std::memory_order_acquire)) return;
+    std::lock_guard<std::mutex> lk(start_mu_);
+    if (running_.load(std::memory_order_relaxed)) return;
+
+    // Initialize Winsock (ref-counted, multiple calls are safe).
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    running_.store(true, std::memory_order_release);
+}
+
+void Reactor::shutdown() {
+    if (!running_.load(std::memory_order_acquire)) return;
+    std::lock_guard<std::mutex> lk(start_mu_);
+    if (!running_.load(std::memory_order_relaxed)) return;
+
+    // Collect timer handles under lock, clear map (writer dtors fire death signals).
+    std::vector<PTP_TIMER> timer_handles;
+    struct FdHandles { HANDLE event; HANDLE wait; SOCKET sock; };
+    std::vector<FdHandles> fd_handles;
+    {
+        std::lock_guard<std::mutex> slk(signal_mu_);
+        timer_handles.reserve(timer_entries_.size());
+        for (auto& [ident, entry] : timer_entries_)
+            timer_handles.push_back(entry.handle);
+        timer_entries_.clear();
+
+        fd_handles.reserve(fd_entries_.size());
+        for (auto& [ident, entry] : fd_entries_)
+            fd_handles.push_back({entry.event, entry.wait_handle, entry.sock});
+        fd_entries_.clear();
+    }
+    pending_signals_.store(0, std::memory_order_release);
+
+    // Outside lock: disarm and close timer handles.
+    for (auto h : timer_handles) {
+        SetThreadpoolTimer(h, NULL, 0, 0);
+        WaitForThreadpoolTimerCallbacks(h, TRUE);
+        CloseThreadpoolTimer(h);
+    }
+
+    // Outside lock: clean up fd event handles.
+    for (auto& fh : fd_handles) {
+        WSAEventSelect(fh.sock, NULL, 0);
+        UnregisterWaitEx(fh.wait, INVALID_HANDLE_VALUE);
+        WSACloseEvent(fh.event);
+    }
+
+    WSACleanup();
+    running_.store(false, std::memory_order_release);
+}
+
+std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
+    chan<> ch;
+    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed);
+
+    PTP_TIMER tp_timer = CreateThreadpoolTimer(
+        timer_callback,
+        reinterpret_cast<PVOID>(static_cast<uintptr_t>(ident)),
+        NULL);
+    assert(tp_timer);
+
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        timer_entries_.emplace(ident,
+                               TimerEntry{std::move(ch.w), tp_timer});
+    }
+    pending_signals_.fetch_add(1, std::memory_order_release);
+
+    // Convert nanoseconds to negative FILETIME ticks (100ns units, relative).
+    LARGE_INTEGER li;
+    li.QuadPart = -(static_cast<LONGLONG>(delay_ns) / 100);
+    if (li.QuadPart == 0 && delay_ns > 0)
+        li.QuadPart = -1;  // minimum 100ns
+    FILETIME due_time;
+    due_time.dwLowDateTime = li.LowPart;
+    due_time.dwHighDateTime = li.HighPart;
+
+    SetThreadpoolTimer(tp_timer, &due_time, 0, 0);  // one-shot
+
+    return {std::move(ch.r), ident};
+}
+
+void Reactor::cancel_timer(uintptr_t ident) {
+    PTP_TIMER handle = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        auto it = timer_entries_.find(ident);
+        if (it == timer_entries_.end()) return;  // already fired
+        handle = it->second.handle;
+        timer_entries_.erase(it);  // writer dtor fires death signal
+        pending_signals_.fetch_sub(1, std::memory_order_release);
+    }
+    // Outside lock: safe to wait for callback completion.
+    SetThreadpoolTimer(handle, NULL, 0, 0);
+    WaitForThreadpoolTimerCallbacks(handle, TRUE);
+    CloseThreadpoolTimer(handle);
+}
+
+VOID CALLBACK Reactor::timer_callback(
+    PTP_CALLBACK_INSTANCE /*instance*/,
+    PVOID context,
+    PTP_TIMER timer)
+{
+    auto ident = reinterpret_cast<uintptr_t>(context);
+    auto& reactor = Reactor::instance();
+
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> lk(reactor.signal_mu_);
+        auto it = reactor.timer_entries_.find(ident);
+        if (it != reactor.timer_entries_.end()) {
+            reactor.timer_entries_.erase(it);  // writer dtor fires death signal
+            erased = true;
+        }
+    }
+    if (erased) {
+        reactor.pending_signals_.fetch_sub(1, std::memory_order_release);
+        CloseThreadpoolTimer(timer);
+    }
+    // If !erased, cancel_timer already handled everything.
+}
+
+// --- fd events (WSAEventSelect + RegisterWaitForSingleObject) ---
+
+std::pair<reader<>, uintptr_t> Reactor::create_fd_event(SOCKET sock, int kind) {
+    chan<> ch;
+    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed);
+
+    HANDLE evt = WSACreateEvent();
+    assert(evt != WSA_INVALID_EVENT);
+
+    long net_events = (kind == 0) ? (FD_READ | FD_CLOSE) : (FD_WRITE | FD_CLOSE);
+    WSAEventSelect(sock, evt, net_events);
+
+    HANDLE wait = nullptr;
+    BOOL ok = RegisterWaitForSingleObject(
+        &wait, evt,
+        fd_callback,
+        reinterpret_cast<PVOID>(ident),
+        INFINITE,
+        WT_EXECUTEONLYONCE);
+    assert(ok);
+
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        fd_entries_.emplace(ident,
+                            FdEntry{std::move(ch.w), evt, wait, sock});
+    }
+    pending_signals_.fetch_add(1, std::memory_order_release);
+
+    return {std::move(ch.r), ident};
+}
+
+VOID CALLBACK Reactor::fd_callback(PVOID context, BOOLEAN /*timed_out*/) {
+    auto ident = reinterpret_cast<uintptr_t>(context);
+    auto& reactor = Reactor::instance();
+
+    HANDLE evt = nullptr;
+    HANDLE wait = nullptr;
+    SOCKET sock = INVALID_SOCKET;
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> lk(reactor.signal_mu_);
+        auto it = reactor.fd_entries_.find(ident);
+        if (it != reactor.fd_entries_.end()) {
+            evt = it->second.event;
+            wait = it->second.wait_handle;
+            sock = it->second.sock;
+            reactor.fd_entries_.erase(it);  // writer dtor fires death signal
+            erased = true;
+        }
+    }
+    if (erased) {
+        reactor.pending_signals_.fetch_sub(1, std::memory_order_release);
+        WSAEventSelect(sock, NULL, 0);
+        // Non-blocking unregister — we are inside the callback.
+        UnregisterWaitEx(wait, NULL);
+        WSACloseEvent(evt);
+    }
+    // If !erased, cancel_fd already handled everything.
+}
+
+void Reactor::cancel_fd(uintptr_t ident) {
+    HANDLE evt = nullptr;
+    HANDLE wait = nullptr;
+    SOCKET sock = INVALID_SOCKET;
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        auto it = fd_entries_.find(ident);
+        if (it == fd_entries_.end()) return;  // already fired
+        evt = it->second.event;
+        wait = it->second.wait_handle;
+        sock = it->second.sock;
+        fd_entries_.erase(it);  // writer dtor fires death signal
+    }
+    pending_signals_.fetch_sub(1, std::memory_order_release);
+    WSAEventSelect(sock, NULL, 0);
+    // Blocking wait for callback completion (safe — called from outside callback).
+    UnregisterWaitEx(wait, INVALID_HANDLE_VALUE);
+    WSACloseEvent(evt);
+}
+
+} // namespace csp::detail
+
+#else // !_WIN32
+
+// --- Unix reactor: macOS (kqueue) / Linux (epoll) ---
+
 #ifdef __APPLE__
 #include <sys/event.h>
 #elif defined(__linux__)
@@ -2312,8 +2627,6 @@ namespace csp {
 
 
 namespace csp::detail {
-
-// --- Reactor singleton ---
 
 Reactor& Reactor::instance() {
     static Reactor r;
@@ -2690,11 +3003,17 @@ void Reactor::loop() {
 
 #endif // __APPLE__ / __linux__
 
+} // namespace csp::detail
+
+#endif // _WIN32
+
 // ============================================================
 // Shared: timer_signal / fd_signal RAII + factory functions
 // ============================================================
 
-// --- timer_signal ---
+namespace csp::detail {
+
+// --- timer_signal (all platforms) ---
 
 timer_signal::timer_signal(reader<> r, uintptr_t ident)
     : r_(std::move(r)), ident_(ident) {}
@@ -2718,7 +3037,54 @@ timer_signal::~timer_signal() {
     if (ident_) Reactor::instance().cancel_timer(ident_);
 }
 
+timer_signal create_timer_signal(int64_t delay_ns) {
+    auto& reactor = Reactor::instance();
+    reactor.ensure_started();
+    auto [r, ident] = reactor.create_timer(delay_ns);
+    return {std::move(r), ident};
+}
+
 // --- fd_signal ---
+
+#ifdef _WIN32
+
+fd_signal::fd_signal(reader<> r, uintptr_t ident)
+    : r_(std::move(r)), ident_(ident) {}
+
+fd_signal::fd_signal(fd_signal&& o) noexcept
+    : r_(std::move(o.r_)), ident_(o.ident_) {
+    o.ident_ = 0;
+}
+
+fd_signal& fd_signal::operator=(fd_signal&& o) noexcept {
+    if (this != &o) {
+        if (ident_) Reactor::instance().cancel_fd(ident_);
+        r_ = std::move(o.r_);
+        ident_ = o.ident_;
+        o.ident_ = 0;
+    }
+    return *this;
+}
+
+fd_signal::~fd_signal() {
+    if (ident_) Reactor::instance().cancel_fd(ident_);
+}
+
+fd_signal create_fd_readable(SOCKET sock) {
+    auto& reactor = Reactor::instance();
+    reactor.ensure_started();
+    auto [r, ident] = reactor.create_fd_event(sock, 0);
+    return {std::move(r), ident};
+}
+
+fd_signal create_fd_writable(SOCKET sock) {
+    auto& reactor = Reactor::instance();
+    reactor.ensure_started();
+    auto [r, ident] = reactor.create_fd_event(sock, 1);
+    return {std::move(r), ident};
+}
+
+#else // !_WIN32
 
 fd_signal::fd_signal(reader<> r, int fd, fd_event event)
     : r_(std::move(r)), fd_(fd), event_(event) {}
@@ -2743,15 +3109,6 @@ fd_signal::~fd_signal() {
     if (fd_ >= 0) Reactor::instance().cancel_fd(fd_, event_);
 }
 
-// --- Factory functions ---
-
-timer_signal create_timer_signal(int64_t delay_ns) {
-    auto& reactor = Reactor::instance();
-    reactor.ensure_started();
-    auto [r, ident] = reactor.create_timer(delay_ns);
-    return {std::move(r), ident};
-}
-
 fd_signal create_fd_readable(int fd) {
     auto& reactor = Reactor::instance();
     reactor.ensure_started();
@@ -2766,11 +3123,16 @@ fd_signal create_fd_writable(int fd) {
     return {std::move(r), fd, fd_event::write};
 }
 
+#endif // _WIN32
+
 } // namespace csp::detail
 
 /* runtime.cpp */
 
-#include <pthread.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#endif
 
 
 namespace csp {
@@ -2780,7 +3142,12 @@ namespace csp {
         static void set_thread_name(int id) {
             char name[16];
             snprintf(name, sizeof(name), "csp-%d", id);
-#ifdef __APPLE__
+#ifdef _WIN32
+            // SetThreadDescription expects wide string
+            wchar_t wname[16];
+            mbstowcs(wname, name, 16);
+            SetThreadDescription(GetCurrentThread(), wname);
+#elif defined(__APPLE__)
             pthread_setname_np(name);
 #else
             pthread_setname_np(pthread_self(), name);
@@ -3107,6 +3474,8 @@ namespace csp {
 }
 
 /* signal.cc */
+#ifndef _WIN32
+
 
 #include <signal.h>
 
@@ -3237,6 +3606,8 @@ reader<int> notify(std::initializer_list<int> sigs) {
 }
 
 } // namespace csp::signal
+
+#endif // !_WIN32
 
 /* stack_analysis_arm64.cc */
 
@@ -4250,8 +4621,14 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
 
 /* stack_pool.cc */
 
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#else
 #include <sys/mman.h>
+#endif
 #endif
 
 #include <new>
@@ -4265,18 +4642,188 @@ StackPool& StackPool::instance() {
 
 StackPool::StackPool()
     : page_size_(
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+#ifdef _WIN32
+        [] {
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            return static_cast<size_t>(si.dwPageSize);
+        }()
+#else
         static_cast<size_t>(getpagesize())
+#endif
 #else
         4096
 #endif
     )
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
     , stack_size_(kDefaultStackSize)
 #endif
 {}
 
-#if CSP_USE_MMAP_STACKS
+#if CSP_USE_VM_STACKS
+
+#ifdef _WIN32
+
+// --- Windows: VirtualAlloc-based stack regions ---
+//
+// Reserve 1MB of virtual address space per stack but only commit a small
+// initial portion at the top (where RSP starts). A Vectored Exception
+// Handler (VEH) commits pages on demand when the stack grows, replicating
+// the demand-paged behavior of mmap on Unix. This keeps the commit charge
+// proportional to actual stack usage, not the number of live imps.
+
+static constexpr size_t kInitialCommit = StackPool::kInitialCommitSize;
+
+static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
+    if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    auto fault_addr = reinterpret_cast<void*>(
+        ep->ExceptionRecord->ExceptionInformation[1]);
+
+    // Only commit pages that are in MEM_RESERVE state (reserved but not
+    // yet committed).  This prevents accidentally changing the protection
+    // of already-committed pages (guard pages, read-only pages, etc.)
+    // which would mask real crashes.
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(fault_addr, &mbi, sizeof(mbi)))
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (mbi.State != MEM_RESERVE)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    auto& pool = StackPool::instance();
+    size_t page = pool.page_size();
+
+    // Align fault address down to page boundary.
+    auto page_base = reinterpret_cast<void*>(
+        reinterpret_cast<uintptr_t>(fault_addr) & ~(page - 1));
+
+    void* result = VirtualAlloc(page_base, page, MEM_COMMIT, PAGE_READWRITE);
+    if (result) {
+        // Keep NT_TIB StackLimit in sync with the committed boundary.
+        // jump_fcontext sets StackLimit from the saved context on each
+        // switch; if a demand-committed page extends below the current
+        // StackLimit, update the TEB so MSVC's C++ exception dispatch
+        // (which probes the stack using StackLimit) doesn't fault on
+        // uncommitted pages — a nested ACCESS_VIOLATION during dispatch
+        // terminates the process without VEH notification.
+        auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        if (page_base < tib->StackLimit) {
+            tib->StackLimit = page_base;
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static std::once_flag g_veh_once;
+
+StackRegion StackPool::mmap_new() {
+    // Install the demand-commit VEH once.  Use priority 0 (end of chain)
+    // so the diagnostic VEH in test/main.cc (registered with priority 1)
+    // always sees exceptions first for logging.
+    std::call_once(g_veh_once, [] {
+        AddVectoredExceptionHandler(0, stack_guard_handler);
+    });
+
+    // Reserve address space without committing physical pages.
+    void* base = VirtualAlloc(nullptr, stack_size_,
+                              MEM_RESERVE,
+                              PAGE_NOACCESS);
+    if (!base) {
+        throw std::bad_alloc();
+    }
+
+    // Commit guard page at the bottom (PAGE_NOACCESS after commit — use
+    // PAGE_READWRITE then protect, since MEM_COMMIT requires valid protection).
+    void* guard = VirtualAlloc(base, page_size_,
+                               MEM_COMMIT, PAGE_READWRITE);
+    if (!guard) {
+        VirtualFree(base, 0, MEM_RELEASE);
+        throw std::bad_alloc();
+    }
+    DWORD old_protect;
+    VirtualProtect(base, page_size_, PAGE_NOACCESS, &old_protect);
+
+    // Commit the initial region at the top of the stack (where RSP starts).
+    char* top = static_cast<char*>(base) + stack_size_;
+    size_t commit = (kInitialCommit < stack_size_ - page_size_)
+                        ? kInitialCommit
+                        : stack_size_ - page_size_;
+    void* committed = VirtualAlloc(top - commit, commit,
+                                   MEM_COMMIT, PAGE_READWRITE);
+    if (!committed) {
+        VirtualFree(base, 0, MEM_RELEASE);
+        throw std::bad_alloc();
+    }
+
+    return {base, stack_size_};
+}
+
+void StackPool::munmap_region(StackRegion region) {
+    VirtualFree(region.base, 0, MEM_RELEASE);
+}
+
+StackRegion StackPool::allocate() {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!free_list_.empty()) {
+            auto region = free_list_.back();
+            free_list_.pop_back();
+            return region;
+        }
+    }
+    return mmap_new();
+}
+
+void StackPool::release(StackRegion region) {
+    // Decommit everything except the guard page to release physical pages.
+    char* usable = static_cast<char*>(region.base) + page_size_;
+    size_t usable_len = region.total_size - page_size_;
+    VirtualFree(usable, usable_len, MEM_DECOMMIT);
+
+    // Re-commit only the initial portion at the top so the stack is
+    // usable when recycled from the pool. The VEH handles further growth.
+    char* top = static_cast<char*>(region.base) + region.total_size;
+    size_t commit = (kInitialCommit < usable_len) ? kInitialCommit : usable_len;
+    VirtualAlloc(top - commit, commit, MEM_COMMIT, PAGE_READWRITE);
+
+    std::lock_guard<std::mutex> lk(mu_);
+    if (free_list_.size() < kMaxPooled) {
+        free_list_.push_back(region);
+    } else {
+        munmap_region(region);
+    }
+}
+
+void StackPool::maybe_shrink(StackRegion const&, void*) {
+    // No-op on Windows.  Decommitting pages (MEM_DECOMMIT) and raising
+    // StackLimit is unsafe because MSVC's C++ exception dispatch
+    // (RtlDispatchException → RtlVirtualUnwind) runs on the current
+    // stack.  If the dispatch needs more stack than the headroom between
+    // RSP and StackLimit, it faults on uncommitted pages.  That nested
+    // ACCESS_VIOLATION during exception dispatch is a double-fault that
+    // terminates the process without VEH notification — our
+    // demand-commit handler never gets a chance to commit the page.
+    //
+    // Pages stay committed until the stack is released to the pool,
+    // where release() decommits everything and re-commits only the
+    // initial region.
+}
+
+void StackPool::drain() {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto& r : free_list_) {
+        munmap_region(r);
+    }
+    free_list_.clear();
+}
+
+#else // !_WIN32
+
+// --- Unix: mmap-based stack regions ---
 
 StackRegion StackPool::mmap_new() {
     int flags = MAP_ANON | MAP_PRIVATE;
@@ -4356,7 +4903,9 @@ void StackPool::drain() {
     free_list_.clear();
 }
 
-#else // !CSP_USE_MMAP_STACKS — sanitizer fallback
+#endif // _WIN32
+
+#else // !CSP_USE_VM_STACKS — sanitizer fallback
 
 struct alignas(16) StackSlotAlloc { char c[16]; };
 
@@ -4390,7 +4939,7 @@ void StackPool::drain() {
     // Nothing pooled under sanitizers.
 }
 
-#endif // CSP_USE_MMAP_STACKS
+#endif // CSP_USE_VM_STACKS
 
 } // namespace csp::detail
 
@@ -4823,6 +5372,164 @@ int conn::fd() const {
 } // namespace csp::tls
 
 #endif // CSP_TLS
+
+/* win_signal.cc */
+#ifdef _WIN32
+
+
+#include <ws2tcpip.h>
+
+
+// Socket-pair trick for console control event delivery.
+//
+// Each notify() call creates a loopback TCP socket pair. The console
+// control handler sends the event type (as a byte) to every socket pair
+// whose mask includes that event. An imp per pair reads bytes and writes
+// them to a CSP channel.
+//
+// The handler runs on a normal OS thread (not an async-signal context),
+// so all APIs are safe. We use the same lock-free atomic-guard pattern
+// as the Unix self-pipe implementation for consistency and minimal
+// overhead.
+
+namespace {
+
+constexpr int MAX_CONSOLE_PIPES = 64;
+constexpr DWORD MAX_EVENT = 6;  // CTRL_SHUTDOWN_EVENT
+
+struct ConsolePipe {
+    SOCKET write_sock;
+    std::atomic<uint32_t> event_mask;  // bit per DWORD event type (0–6)
+};
+
+ConsolePipe g_console_pipes[MAX_CONSOLE_PIPES];
+std::atomic<int> g_console_pipe_count{0};
+
+std::once_flag g_handler_once;
+
+BOOL WINAPI console_handler(DWORD event) {
+    if (event > MAX_EVENT) return FALSE;
+    uint32_t bit = 1u << event;
+    int count = g_console_pipe_count.load(std::memory_order_acquire);
+    bool handled = false;
+    for (int i = 0; i < count; ++i) {
+        if (g_console_pipes[i].event_mask.load(std::memory_order_acquire) &
+            bit) {
+            uint8_t byte = static_cast<uint8_t>(event);
+            ::send(g_console_pipes[i].write_sock,
+                   reinterpret_cast<const char*>(&byte), 1, 0);
+            handled = true;
+        }
+    }
+    return handled ? TRUE : FALSE;
+}
+
+// Create a connected loopback TCP socket pair.
+std::pair<SOCKET, SOCKET> create_socket_pair() {
+    // Ensure Winsock is initialized (ref-counted, multiple calls safe).
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    SOCKET listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    assert(listener != INVALID_SOCKET);
+
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;  // ephemeral port
+    int rc = ::bind(listener, reinterpret_cast<sockaddr*>(&addr),
+                    sizeof(addr));
+    assert(rc == 0);
+    rc = ::listen(listener, 1);
+    assert(rc == 0);
+
+    int addrlen = sizeof(addr);
+    rc = ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &addrlen);
+    assert(rc == 0);
+
+    SOCKET writer_sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    assert(writer_sock != INVALID_SOCKET);
+    rc = ::connect(writer_sock, reinterpret_cast<sockaddr*>(&addr),
+                   sizeof(addr));
+    assert(rc == 0);
+
+    SOCKET reader_sock = ::accept(listener, nullptr, nullptr);
+    assert(reader_sock != INVALID_SOCKET);
+    ::closesocket(listener);
+
+    return {reader_sock, writer_sock};
+}
+
+} // anonymous namespace
+
+namespace csp::win::signal {
+
+reader<DWORD> notify(std::initializer_list<DWORD> events) {
+    auto [read_sock, write_sock] = create_socket_pair();
+    csp::io::set_nonblock(read_sock);
+
+    uint32_t mask = 0;
+    for (DWORD ev : events) {
+        assert(ev <= MAX_EVENT);
+        mask |= 1u << ev;
+    }
+
+    int idx = g_console_pipe_count.load(std::memory_order_relaxed);
+    assert(idx < MAX_CONSOLE_PIPES);
+    g_console_pipes[idx].write_sock = write_sock;
+    // Store mask with relaxed — release on count increment pairs with
+    // handler's acquire on count.
+    g_console_pipes[idx].event_mask.store(mask, std::memory_order_relaxed);
+    // Release count — handler acquires this to see write_sock and mask.
+    g_console_pipe_count.store(idx + 1, std::memory_order_release);
+
+    // Install handler once. call_once is thread-safe.
+    std::call_once(g_handler_once, []() {
+        SetConsoleCtrlHandler(console_handler, TRUE);
+    });
+
+    SOCKET rsock = read_sock;
+    SOCKET wsock = write_sock;
+    return spawn_producer<DWORD>([rsock, wsock, idx](writer<DWORD> out) {
+        internal::descr("win/signal");
+
+        // Sentinel imp: watches for output reader death or producer exit.
+        // Closes the socket write end so the producer's io::read() returns
+        // EOF and the loop terminates.
+        auto out_copy = out.copy();
+        auto [kill_w, kill_r] = chan<>{};
+        csp::spawn([out_copy = std::move(out_copy),
+                     kill_r = std::move(kill_r), wsock, idx] {
+            internal::descr("win/signal/sentinel");
+            prialt(~out_copy, ~kill_r);
+            g_console_pipes[idx].event_mask.store(
+                0, std::memory_order_release);
+            ::closesocket(wsock);
+        });
+
+        uint8_t buf[32];
+        for (;;) {
+            ssize_t n = io::read(rsock, buf, sizeof(buf));
+            if (n <= 0) break;  // EOF (sentinel closed wsock) or error
+            for (ssize_t i = 0; i < n; ++i) {
+                if (!(out << static_cast<DWORD>(buf[i]))) {
+                    ::closesocket(rsock);
+                    return;  // kill_w destroyed → sentinel cleans up wsock
+                }
+            }
+        }
+        ::closesocket(rsock);
+        // kill_w destroyed → sentinel cleans up wsock
+    });
+}
+
+void raise(DWORD event) {
+    console_handler(event);
+}
+
+} // namespace csp::win::signal
+
+#endif // _WIN32
 
 /* fcontext — context-switching primitives (from Boost.Context) */
 #if defined(__aarch64__) || defined(_M_ARM64)

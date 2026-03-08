@@ -2,40 +2,52 @@ name: CI
 
 on:
   push:
+    branches: [master]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # --- macOS + Linux: Makefile-based build + test ---
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+        include:
+          - os: macos-14
+            name: macOS arm64
+          - os: ubuntu-24.04
+            name: Linux x86_64
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+          - os: ubuntu-24.04-arm
+            name: Linux arm64
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          lfs: true
 
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
+      - name: Install dependencies
+        if: matrix.packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev gdb
+          sudo apt-get install -y ${{ matrix.packages }}
           sudo sysctl -w kernel.core_pattern=core.%p
 
       - name: Build and test (source)
         run: |
           ulimit -c unlimited
-          make ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+          make ${{ matrix.make_cxx || '' }}
         env:
-          # Catch heap corruption closer to its source on Linux.
-          # MALLOC_CHECK_=3: abort on any detected corruption
-          # MALLOC_PERTURB_=42: fill freed memory with 0x2a pattern
           MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
           MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
 
@@ -47,7 +59,6 @@ jobs:
             echo "=== Backtrace from $core ==="
             gdb -batch -ex "thread apply all bt full" ./build/normal/csp_tests "$core" 2>&1 || true
           done
-          # If no core dump, re-run the crashing test under GDB
           if ! ls core.* 1>/dev/null 2>&1; then
             echo "=== No core dump found, re-running under GDB ==="
             gdb -batch \
@@ -61,7 +72,7 @@ jobs:
           fi
 
       - name: Generate dist
-        run: make dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+        run: make dist ${{ matrix.make_cxx || '' }}
 
       - name: Check dist is up-to-date
         run: git diff --exit-code dist/
@@ -69,7 +80,7 @@ jobs:
       - name: Build and test (dist)
         run: |
           ulimit -c unlimited
-          make test-dist ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+          make test-dist ${{ matrix.make_cxx || '' }}
         env:
           MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
           MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
@@ -94,31 +105,60 @@ jobs:
               --args ./build/dist/csp_tests 2>&1 || true
           fi
 
+  # --- Sanitizers (macOS + Linux, on dist) ---
   sanitize:
-    name: ${{ matrix.sanitize }} (${{ matrix.os }})
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
-        sanitize: ["address,undefined", thread]
+        include:
+          - os: macos-14
+            name: macOS ASan+UBSan
+            sanitize: address,undefined
+          - os: macos-14
+            name: macOS TSan
+            sanitize: thread
+          - os: ubuntu-24.04
+            name: Linux x86_64 ASan+UBSan
+            sanitize: address,undefined
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+          - os: ubuntu-24.04
+            name: Linux x86_64 TSan
+            sanitize: thread
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+          - os: ubuntu-24.04-arm
+            name: Linux arm64 ASan+UBSan
+            sanitize: address,undefined
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+          - os: ubuntu-24.04-arm
+            name: Linux arm64 TSan
+            sanitize: thread
+            make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
+            packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          lfs: true
 
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
+      - name: Install dependencies
+        if: matrix.packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev gdb
+          sudo apt-get install -y ${{ matrix.packages }}
           sudo sysctl -w kernel.core_pattern=core.%p
 
       - name: Build and test (dist, ${{ matrix.sanitize }})
         run: |
           ulimit -c unlimited
-          make test-dist SANITIZE=${{ matrix.sanitize }} ${{ runner.os == 'Linux' && 'CXX="clang++-18 -std=c++20 -stdlib=libc++"' || '' }}
+          make test-dist SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }}
         env:
+          # mbedTLS triggers false-positive ODR violations under ASan on Linux.
           # libc++abi on Linux frees std::logic_error strings with free()
           # instead of operator delete, triggering false positives under ASan.
           ASAN_OPTIONS: alloc_dealloc_mismatch=0:detect_odr_violation=0
@@ -142,3 +182,55 @@ jobs:
               -ex "thread apply all bt full" \
               --args ./build/dist/csp_tests 2>&1 || true
           fi
+
+  # --- Windows: CMake-based build + test ---
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Configure
+        run: cmake -B build -DCSP_TLS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Check exe
+        run: dir build\Release\csp_tests.exe
+
+      - name: List tests
+        run: |
+          & build\Release\csp_tests.exe --list-test-cases 2>&1 | Write-Host
+
+      - name: Test
+        run: |
+          build\Release\csp_tests.exe -s --duration
+        shell: cmd
+
+
+  # --- TLA+ model checking (macOS only) ---
+  tla:
+    name: TLA+ specs
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download TLA+ tools
+        run: curl -fsSL -o formal/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+
+      - name: Run TLC
+        run: make check

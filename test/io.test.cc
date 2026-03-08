@@ -1,42 +1,113 @@
 #include "testutil.h"
 
 #include <atomic>
-#include <csignal>
 #include <cstring>
 #include <string>
 #include <thread>
-#include <unistd.h>
 #include <vector>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
+#ifndef _WIN32
+#include <csignal>
+#endif
 
 using namespace csp;
 using namespace csp::part;
+
+// --- Platform helpers for tests ---
+
+#ifdef _WIN32
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+// Create a connected loopback TCP socket pair (Windows substitute for pipe()).
+inline std::pair<csp::io::socket_t, csp::io::socket_t> test_pipe() {
+    // Ensure Winsock is initialized.
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    SOCKET listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    REQUIRE(listener != INVALID_SOCKET);
+
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    REQUIRE(::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    REQUIRE(::listen(listener, 1) == 0);
+
+    int addrlen = sizeof(addr);
+    REQUIRE(::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &addrlen) == 0);
+
+    SOCKET writer_sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    REQUIRE(writer_sock != INVALID_SOCKET);
+    REQUIRE(::connect(writer_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+
+    SOCKET reader_sock = ::accept(listener, nullptr, nullptr);
+    REQUIRE(reader_sock != INVALID_SOCKET);
+    closesocket(listener);
+
+    return {reader_sock, writer_sock};
+}
+
+inline void test_close(csp::io::socket_t fd) { closesocket(fd); }
+
+inline ssize_t test_raw_write(csp::io::socket_t fd, const void* buf, size_t len) {
+    return ::send(fd, static_cast<const char*>(buf), static_cast<int>(len), 0);
+}
+
+inline ssize_t test_raw_read(csp::io::socket_t fd, void* buf, size_t len) {
+    return ::recv(fd, static_cast<char*>(buf), static_cast<int>(len), 0);
+}
+
+#else // !_WIN32
+
+inline std::pair<csp::io::socket_t, csp::io::socket_t> test_pipe() {
+    int pipefd[2];
+    REQUIRE_EQ(0, pipe(pipefd));
+    return {pipefd[0], pipefd[1]};
+}
+
+inline void test_close(csp::io::socket_t fd) { ::close(fd); }
+
+inline ssize_t test_raw_write(csp::io::socket_t fd, const void* buf, size_t len) {
+    return ::write(fd, buf, len);
+}
+
+inline ssize_t test_raw_read(csp::io::socket_t fd, void* buf, size_t len) {
+    return ::read(fd, buf, len);
+}
+
+#endif // _WIN32
 
 // --- Layer 1: wait_readable / wait_writable ---
 
 TEST_CASE("IO - WaitReadable") {
     csp::init_runtime(2);
 
-    int pipefd[2];
-    REQUIRE(0 == pipe(pipefd));
-    csp::io::set_nonblock(pipefd[0]);
-    csp::io::set_nonblock(pipefd[1]);
+    auto [rfd, wfd] = test_pipe();
+    csp::io::set_nonblock(rfd);
+    csp::io::set_nonblock(wfd);
 
     std::atomic<bool> got_data{false};
 
-    csp::spawn([&got_data, rfd = pipefd[0]] {
+    csp::spawn([&got_data, rfd] {
         csp::io::wait_readable(rfd);
         char buf[16];
-        ssize_t n = ::read(rfd, buf, sizeof(buf));
+        ssize_t n = test_raw_read(rfd, buf, sizeof(buf));
         CHECK(n > 0);
         CHECK('X' == buf[0]);
         got_data.store(true, std::memory_order_relaxed);
-        ::close(rfd);
+        test_close(rfd);
     });
 
-    csp::spawn([wfd = pipefd[1]] {
+    csp::spawn([wfd] {
         csp::sleep(std::chrono::milliseconds(10));
-        ::write(wfd, "X", 1);
-        ::close(wfd);
+        test_raw_write(wfd, "X", 1);
+        test_close(wfd);
     });
 
     csp::schedule();
@@ -47,29 +118,27 @@ TEST_CASE("IO - WaitReadable") {
 TEST_CASE("IO - WaitWritable") {
     csp::init_runtime(2);
 
-    int pipefd[2];
-    REQUIRE(0 == pipe(pipefd));
-    csp::io::set_nonblock(pipefd[0]);
-    csp::io::set_nonblock(pipefd[1]);
+    auto [rfd, wfd] = test_pipe();
+    csp::io::set_nonblock(rfd);
+    csp::io::set_nonblock(wfd);
 
     std::atomic<bool> write_completed{false};
 
-    // Fill the pipe buffer to force EAGAIN.
-    csp::spawn([&write_completed, wfd = pipefd[1]] {
-        // Write a byte — should succeed immediately.
+    // Write a byte — should succeed immediately.
+    csp::spawn([&write_completed, wfd] {
         char c = 'Y';
         csp::io::wait_writable(wfd);
-        ssize_t n = ::write(wfd, &c, 1);
+        ssize_t n = test_raw_write(wfd, &c, 1);
         CHECK(1 == n);
         write_completed.store(true, std::memory_order_relaxed);
-        ::close(wfd);
+        test_close(wfd);
     });
 
-    csp::spawn([rfd = pipefd[0]] {
+    csp::spawn([rfd] {
         csp::sleep(std::chrono::milliseconds(10));
         char buf[16];
-        ::read(rfd, buf, sizeof(buf));
-        ::close(rfd);
+        test_raw_read(rfd, buf, sizeof(buf));
+        test_close(rfd);
     });
 
     csp::schedule();
@@ -82,23 +151,22 @@ TEST_CASE("IO - WaitWritable") {
 TEST_CASE("IO - ReadWrite roundtrip") {
     csp::init_runtime(2);
 
-    int pipefd[2];
-    REQUIRE(0 == pipe(pipefd));
-    csp::io::set_nonblock(pipefd[0]);
-    csp::io::set_nonblock(pipefd[1]);
+    auto [rfd, wfd] = test_pipe();
+    csp::io::set_nonblock(rfd);
+    csp::io::set_nonblock(wfd);
 
     const char* msg = "Hello, CSP I/O!";
     size_t msglen = strlen(msg);
     std::vector<char> result(msglen);
     std::atomic<bool> done{false};
 
-    csp::spawn([wfd = pipefd[1], msg, msglen] {
+    csp::spawn([wfd, msg, msglen] {
         ssize_t n = csp::io::write(wfd, msg, msglen);
         CHECK(static_cast<ssize_t>(msglen) == n);
-        ::close(wfd);
+        test_close(wfd);
     });
 
-    csp::spawn([&result, &done, rfd = pipefd[0], msglen] {
+    csp::spawn([&result, &done, rfd, msglen] {
         size_t total = 0;
         while (total < msglen) {
             ssize_t n = csp::io::read(rfd, result.data() + total, msglen - total);
@@ -107,7 +175,7 @@ TEST_CASE("IO - ReadWrite roundtrip") {
         }
         CHECK(msglen == total);
         done.store(true, std::memory_order_relaxed);
-        ::close(rfd);
+        test_close(rfd);
     });
 
     csp::schedule();
@@ -121,19 +189,18 @@ TEST_CASE("IO - ReadWrite roundtrip") {
 TEST_CASE("IO - ByteReader") {
     csp::init_runtime(2);
 
-    int pipefd[2];
-    REQUIRE(0 == pipe(pipefd));
+    auto [rfd, wfd] = test_pipe();
 
-    // byte_reader owns pipefd[0] and closes it.
-    auto r = part::io::byte_reader(pipefd[0], 16).spawn();
+    // byte_reader owns rfd and closes it.
+    auto r = part::io::byte_reader(rfd, 16).spawn();
 
     bytes all;
     std::atomic<bool> done{false};
 
-    csp::spawn([wfd = pipefd[1]] {
+    csp::spawn([wfd] {
         const char* msg = "Hello, CSP!";
-        ::write(wfd, msg, strlen(msg));
-        ::close(wfd);
+        test_raw_write(wfd, msg, strlen(msg));
+        test_close(wfd);
     });
 
     csp::spawn([&all, &done, r = std::move(r)] {
@@ -155,11 +222,10 @@ TEST_CASE("IO - ByteReader") {
 TEST_CASE("IO - ByteWriter") {
     csp::init_runtime(2);
 
-    int pipefd[2];
-    REQUIRE(0 == pipe(pipefd));
+    auto [rfd, wfd] = test_pipe();
 
-    // byte_writer owns pipefd[1] and closes it.
-    auto w = part::io::byte_writer(pipefd[1]).spawn();
+    // byte_writer owns wfd and closes it.
+    auto w = part::io::byte_writer(wfd).spawn();
 
     std::atomic<bool> done{false};
     std::vector<char> result;
@@ -170,17 +236,17 @@ TEST_CASE("IO - ByteWriter") {
         w << std::move(chunk);
     });
 
-    csp::spawn([&result, &done, rfd = pipefd[0]] {
+    csp::spawn([&result, &done, rfd] {
         char buf[64];
         ssize_t total = 0;
         for (;;) {
-            ssize_t n = ::read(rfd, buf + total, sizeof(buf) - total);
+            ssize_t n = test_raw_read(rfd, buf + total, sizeof(buf) - total);
             if (n <= 0) break;
             total += n;
         }
         result.assign(buf, buf + total);
         done.store(true, std::memory_order_relaxed);
-        ::close(rfd);
+        test_close(rfd);
     });
 
     csp::schedule();
@@ -385,18 +451,17 @@ TEST_CASE("IO - Fixed multi-chunk") {
 TEST_CASE("IO - Composed lines from pipe") {
     csp::init_runtime(2);
 
-    int pipefd[2];
-    REQUIRE(0 == pipe(pipefd));
+    auto [rfd, wfd] = test_pipe();
 
-    auto lr = part::io::split_lines.spawn(part::io::byte_reader(pipefd[0]).spawn());
+    auto lr = part::io::split_lines.spawn(part::io::byte_reader(rfd).spawn());
 
     std::vector<std::string> result;
     std::atomic<bool> done{false};
 
-    csp::spawn([wfd = pipefd[1]] {
+    csp::spawn([wfd] {
         const char* data = "alpha\nbeta\ngamma\n";
-        ::write(wfd, data, strlen(data));
-        ::close(wfd);
+        test_raw_write(wfd, data, strlen(data));
+        test_close(wfd);
     });
 
     csp::spawn([&result, &done, lr = std::move(lr)] {
@@ -421,31 +486,33 @@ TEST_CASE("IO - Multiple concurrent waiters") {
     csp::init_runtime(4);
 
     constexpr int N = 8;
-    int pipes[N][2];
+    csp::io::socket_t rfds[N], wfds[N];
     for (int i = 0; i < N; ++i) {
-        REQUIRE(0 == pipe(pipes[i]));
-        csp::io::set_nonblock(pipes[i][0]);
-        csp::io::set_nonblock(pipes[i][1]);
+        auto [r, w] = test_pipe();
+        rfds[i] = r;
+        wfds[i] = w;
+        csp::io::set_nonblock(rfds[i]);
+        csp::io::set_nonblock(wfds[i]);
     }
 
     std::atomic<int> count{0};
 
     for (int i = 0; i < N; ++i) {
-        csp::spawn([&count, rfd = pipes[i][0]] {
+        csp::spawn([&count, rfd = rfds[i]] {
             csp::io::wait_readable(rfd);
             char buf[4];
-            ::read(rfd, buf, sizeof(buf));
+            test_raw_read(rfd, buf, sizeof(buf));
             count.fetch_add(1, std::memory_order_relaxed);
-            ::close(rfd);
+            test_close(rfd);
         });
     }
 
     // Delay, then write to all pipes.
-    csp::spawn([&pipes] {
+    csp::spawn([&wfds] {
         csp::sleep(std::chrono::milliseconds(20));
         for (int i = 0; i < N; ++i) {
-            ::write(pipes[i][1], "!", 1);
-            ::close(pipes[i][1]);
+            test_raw_write(wfds[i], "!", 1);
+            test_close(wfds[i]);
         }
     });
 
@@ -578,7 +645,89 @@ TEST_CASE("IO - Multiple concurrent blocking calls") {
     csp::shutdown_runtime();
 }
 
-// --- Signal channels ---
+// --- Console signal channels (Windows only) ---
+
+#ifdef _WIN32
+
+TEST_CASE("IO - Console signal delivery") {
+    csp::init_runtime(2);
+
+    auto sig = csp::win::signal::notify({CTRL_C_EVENT});
+    std::atomic<bool> got_signal{false};
+
+    csp::spawn([&got_signal, sig = std::move(sig)] {
+        DWORD ev;
+        sig >> ev;
+        CHECK_EQ(CTRL_C_EVENT, ev);
+        got_signal.store(true, std::memory_order_relaxed);
+    });
+
+    csp::spawn([] {
+        csp::sleep(std::chrono::milliseconds(10));
+        // Use raise() instead of GenerateConsoleCtrlEvent() — the latter
+        // sends to the entire process group and kills CI runners.
+        csp::win::signal::raise(CTRL_C_EVENT);
+    });
+
+    csp::schedule();
+    CHECK(got_signal.load());
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("IO - Console signal multiple events") {
+    csp::init_runtime(2);
+
+    auto sig =
+        csp::win::signal::notify({CTRL_C_EVENT, CTRL_BREAK_EVENT});
+    std::vector<DWORD> received;
+    std::atomic<bool> done{false};
+
+    csp::spawn([&received, &done, sig = std::move(sig)] {
+        DWORD ev;
+        sig >> ev;
+        received.push_back(ev);
+        sig >> ev;
+        received.push_back(ev);
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::spawn([] {
+        csp::sleep(std::chrono::milliseconds(10));
+        csp::win::signal::raise(CTRL_C_EVENT);
+        csp::sleep(std::chrono::milliseconds(10));
+        csp::win::signal::raise(CTRL_BREAK_EVENT);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    REQUIRE_EQ(2, received.size());
+    CHECK_EQ(CTRL_C_EVENT, received[0]);
+    CHECK_EQ(CTRL_BREAK_EVENT, received[1]);
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("IO - Console signal reader drop cleanup") {
+    csp::init_runtime(2);
+
+    {
+        auto sig = csp::win::signal::notify({CTRL_C_EVENT});
+        // Drop immediately — sentinel closes the socket, imps exit.
+    }
+
+    // Wait for producer + sentinel imps to finish.
+    csp::schedule();
+
+    // Event after cleanup — handler skips (mask cleared).
+    csp::win::signal::raise(CTRL_C_EVENT);
+
+    csp::shutdown_runtime();
+}
+
+#endif // _WIN32
+
+// --- Signal channels (Unix only) ---
+
+#ifndef _WIN32
 
 TEST_CASE("IO - Signal delivery") {
     csp::init_runtime(2);
@@ -651,3 +800,5 @@ TEST_CASE("IO - Signal reader drop cleanup") {
 
     csp::shutdown_runtime();
 }
+
+#endif // !_WIN32

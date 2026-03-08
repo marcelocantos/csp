@@ -99,7 +99,7 @@ TEST_CASE("MN - TimerSleep") {
 
     for (int i = 0; i < N; ++i) {
         csp::spawn([&] {
-            csp::sleep(20ms);
+            csp::sleep(200ms);
             done.fetch_add(1, std::memory_order_relaxed);
         });
     }
@@ -107,10 +107,11 @@ TEST_CASE("MN - TimerSleep") {
     csp::schedule();
 
     CHECK(N == done.load());
-    // All N sleeps ran concurrently across workers, so wall time should be
-    // much less than N * 20ms.
+    // All N sleeps ran concurrently across 4 workers, so wall time
+    // should be well under N * 200ms (sequential time = 1600ms).
+    // Allow 3x the sleep duration for scheduler/CI overhead.
     auto elapsed = std::chrono::steady_clock::now() - start;
-    CHECK(elapsed < N * 20ms);
+    CHECK(elapsed < 600ms);
 
     csp::shutdown_runtime();
 }

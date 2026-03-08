@@ -4,7 +4,9 @@
 #include <csp/internal/on_scope_exit.h>
 
 #include <errno.h>
+#ifndef _WIN32
 #include <execinfo.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -170,6 +172,10 @@ namespace csp {
     }
 
     void Logger::dump_stack_(bool truncate) {
+#ifdef _WIN32
+        // Stack trace not yet implemented on Windows.
+        (void)truncate;
+#else
         //constexpr int n_slots = 256;
         //auto bt = std::make_unique<void *[]>(n_slots);
         //int n_frames = backtrace(bt.get(), n_slots);
@@ -268,6 +274,7 @@ namespace csp {
             }
             last_bt = std::move(curr_bt);
         }
+#endif // !_WIN32
     }
 
     LogScope::LogScope(Logger & logger, char const * prefix, char const * file, int line, char const * func, char const * fmt, ...)

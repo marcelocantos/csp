@@ -9,13 +9,29 @@
 #include <cstddef>
 #include <unordered_map>
 
+// MSVC-compatible replacements for GCC/Clang builtins.
+#ifdef _MSC_VER
+#include <intrin.h>
+#define CSP_UNREACHABLE() __assume(0)
+#define CSP_FRAME_ADDRESS() _AddressOfReturnAddress()
+#else
+#define CSP_UNREACHABLE() __builtin_unreachable()
+#define CSP_FRAME_ADDRESS() __builtin_frame_address(0)
+#endif
+
 // ASan fiber annotations: tell ASan about user-mode context switches
 // so its fake-stack (detect_stack_use_after_return) bookkeeping stays
 // consistent across jump_fcontext.  Without these, ASan can free a
 // suspended fiber's fake-stack frames, causing SEGV when another
 // thread reads stack-resident data (e.g. a waiter's ChanOp).
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#if defined(__SANITIZE_ADDRESS__)
 #define CSP_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define CSP_ASAN 1
+#endif
+#endif
+#ifdef CSP_ASAN
 extern "C" {
     void __sanitizer_start_switch_fiber(void **fake_stack_save,
                                         const void *bottom, size_t size);
@@ -27,8 +43,14 @@ extern "C" {
 
 // TSan fiber annotations: tell TSan about user-mode context switches
 // so it can correctly track happens-before across imp switches.
-#if defined(__SANITIZE_THREAD__) || (defined(__has_feature) && __has_feature(thread_sanitizer))
+#if defined(__SANITIZE_THREAD__)
 #define CSP_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define CSP_TSAN 1
+#endif
+#endif
+#ifdef CSP_TSAN
 extern "C" {
     void *__tsan_get_current_fiber(void);
     void *__tsan_create_fiber(unsigned flags);
@@ -58,9 +80,14 @@ void do_switch(Status status = Status::sleep);
 struct alignas(16) Imp {
     struct alignas(16) StackSlot { char c[16]; };
 
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
     static constexpr size_t stack_size = 128 << 10;  // sanitizers need ~4x headroom
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+    static constexpr size_t stack_size = 128 << 10;
+#else
+    static constexpr size_t stack_size = 32 << 10;
+#endif
 #else
     static constexpr size_t stack_size = 32 << 10;
 #endif

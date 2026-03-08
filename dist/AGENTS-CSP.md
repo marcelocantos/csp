@@ -324,12 +324,20 @@ auto line_reader = lr.spawn();
 ## Signals
 
 ```cpp
-// Returns reader<int> emitting signal numbers. Requires init_runtime().
+// Unix: returns reader<int> emitting signal numbers. Requires init_runtime().
 auto sig = csp::signal::notify({SIGINT, SIGTERM});
 int s;
 switch (prialt(data >> v, sig >> s)) {
     case 0: process(v);  break;
     case 1: shutdown(s);  break;
+}
+
+// Windows: returns reader<DWORD> emitting console control events.
+auto sig = csp::win::signal::notify({CTRL_C_EVENT, CTRL_CLOSE_EVENT});
+DWORD ev;
+switch (prialt(data >> v, sig >> ev)) {
+    case 0: process(v);   break;
+    case 1: shutdown(ev);  break;
 }
 ```
 

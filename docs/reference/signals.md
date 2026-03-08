@@ -156,3 +156,71 @@ int main() {
     csp::shutdown_runtime();
 }
 ```
+
+---
+
+## Windows Console Signals
+
+On Windows, POSIX signals are not available. CSP provides an equivalent API in
+`namespace csp::win::signal` that converts Windows console control events into
+channel reads.
+
+**Header:** `#include "csp/win/signal.h"` (also included via `#include "csp.h"`)
+
+### win::signal::notify
+
+```cpp
+namespace csp::win::signal {
+
+reader<DWORD> notify(std::initializer_list<DWORD> events);
+
+}
+```
+
+Returns a reader that emits the console control event type (as `DWORD`) each
+time one of the specified events is delivered. Installs a handler via
+`SetConsoleCtrlHandler` (once, idempotent). Requires `init_runtime()`.
+
+**Supported events:**
+
+| Constant | Value | Trigger |
+|---|---|---|
+| `CTRL_C_EVENT` | 0 | Ctrl-C |
+| `CTRL_BREAK_EVENT` | 1 | Ctrl-Break |
+| `CTRL_CLOSE_EVENT` | 2 | Console window closed |
+| `CTRL_LOGOFF_EVENT` | 5 | User logs off |
+| `CTRL_SHUTDOWN_EVENT` | 6 | System shutdown |
+
+The handler returns `TRUE` for registered events (suppressing the default
+handler, analogous to Unix `sigaction` replacing the default). For
+`CTRL_CLOSE_EVENT`, `CTRL_LOGOFF_EVENT`, and `CTRL_SHUTDOWN_EVENT`, the process
+receives a limited time window (~5 seconds) to clean up before being
+terminated.
+
+### Example
+
+```cpp
+#include "csp.h"
+
+int main() {
+    csp::init_runtime();
+
+    csp::spawn([] {
+        auto sig = csp::win::signal::notify({CTRL_C_EVENT, CTRL_CLOSE_EVENT});
+
+        DWORD ev = sig.read();
+        // ev == CTRL_C_EVENT or CTRL_CLOSE_EVENT
+        // ... clean up and exit ...
+    });
+    csp::schedule();
+    csp::shutdown_runtime();
+}
+```
+
+### Implementation
+
+Uses a socket-pair trick (analogous to the Unix self-pipe trick). A loopback
+TCP socket pair is created for each `notify()` call. The console handler sends
+the event type as a byte to matching sockets. A producer imp reads via
+`io::read()` and forwards events to the channel. Cleanup follows the same
+sentinel pattern as Unix.

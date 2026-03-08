@@ -79,7 +79,7 @@ namespace {
 
     // Extract Channel* from a Waiter/ChanOp pointer (Channel* with flags in low bits).
     Channel * get_chan(void * ptr) {
-        auto p = (uintptr_t)ptr & ~15UL;
+        auto p = (uintptr_t)ptr & ~uintptr_t{15};
         return p ? reinterpret_cast<Channel *>(p) : nullptr;
     }
 
@@ -234,7 +234,7 @@ namespace {
             // Reclaim unused stack pages at this API boundary.
             if (current_imp()->stk_) {
                 StackPool::instance().maybe_shrink(
-                    current_imp()->stk_, __builtin_frame_address(0));
+                    current_imp()->stk_, CSP_FRAME_ADDRESS());
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -277,7 +277,7 @@ namespace {
                 if (slot) {
                     new_ch = static_cast<Channel*>(
                         slot->channel.load(std::memory_order_acquire));
-                    auto flags = (uintptr_t)chanops[i].waiter.ptr & 15UL;
+                    auto flags = (uintptr_t)chanops[i].waiter.ptr & uintptr_t{15};
                     const_cast<ChanOp &>(chanops[i]).waiter.ptr =
                         (void *)((uintptr_t)new_ch | flags);
                 } else {
@@ -512,7 +512,7 @@ namespace {
         using Vultures = detail::RingBuffer<ChanopWaiter>;
 
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
-        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%lu", id_); return std::string(b); }();
+        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%zu", id_); return std::string(b); }();
         std::atomic<int> alive_{2};  // endpoints (2) + sleeping waiters; last to 0 deletes
         std::mutex mu_;
         Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot
@@ -546,7 +546,7 @@ namespace {
     };
 
     char const * describe(void * ptr) {
-        auto p = (uintptr_t)ptr & ~15UL;
+        auto p = (uintptr_t)ptr & ~uintptr_t{15};
         if (p) {
             auto * ch = reinterpret_cast<Channel *>(p);
             return ch->descr_.c_str();

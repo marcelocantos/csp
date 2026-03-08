@@ -6,11 +6,17 @@
 
 // Sanitizer detection: under ASan/TSan, shadow memory scales with mapped VA,
 // so we fall back to heap allocation (new[]/delete[]).
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || \
-    (defined(__has_feature) && (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer)))
-#define CSP_USE_MMAP_STACKS 0
-#else
-#define CSP_USE_MMAP_STACKS 1
+// Two-level #if avoids MSVC's traditional preprocessor evaluating
+// __has_feature() even when defined(__has_feature) is false.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define CSP_USE_VM_STACKS 0
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define CSP_USE_VM_STACKS 0
+#endif
+#endif
+#ifndef CSP_USE_VM_STACKS
+#define CSP_USE_VM_STACKS 1
 #endif
 
 namespace csp::detail {
@@ -46,8 +52,8 @@ private:
     void munmap_region(StackRegion region);
 
     size_t page_size_;
-#if CSP_USE_MMAP_STACKS
-    size_t stack_size_;     // total mmap size (guard + usable)
+#if CSP_USE_VM_STACKS
+    size_t stack_size_;     // total VM region size (guard + usable)
 #endif
 
     std::mutex mu_;
@@ -55,6 +61,12 @@ private:
 
     static constexpr size_t kDefaultStackSize = 1 << 20;  // 1MB
     static constexpr size_t kMaxPooled = 256;
+public:
+    // Initial committed region per stack on Windows (at the top, where RSP
+    // starts).  The rest of the 1 MB virtual region is MEM_RESERVE, committed
+    // on demand by the VEH handler.  Exposed here so spawn() can pass this
+    // value to make_fcontext, which stores it as NT_TIB StackLimit.
+    static constexpr size_t kInitialCommitSize = 64 * 1024;  // 64 KB
 };
 
 } // namespace csp::detail

@@ -6,10 +6,52 @@
 
 #include <cerrno>
 #include <cstdint>
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 namespace csp::internal {
+
+#ifdef _WIN32
+
+void io_wait_readable(SOCKET sock) {
+    auto signal = detail::create_fd_readable(sock);
+
+    if (!csp::is_cancel_active()) {
+        csp::prialt(~signal);
+        return;
+    }
+
+    switch (csp::prialt(csp::done(), ~signal)) {
+    case ~0: {
+        auto reason = csp::cancel_reason();
+        if (reason) std::rethrow_exception(reason);
+        throw csp::canceled{};
+    }
+    case ~1: return;
+    }
+}
+
+void io_wait_writable(SOCKET sock) {
+    auto signal = detail::create_fd_writable(sock);
+
+    if (!csp::is_cancel_active()) {
+        csp::prialt(~signal);
+        return;
+    }
+
+    switch (csp::prialt(csp::done(), ~signal)) {
+    case ~0: {
+        auto reason = csp::cancel_reason();
+        if (reason) std::rethrow_exception(reason);
+        throw csp::canceled{};
+    }
+    case ~1: return;
+    }
+}
+
+#else // !_WIN32
 
 void io_wait_readable(int fd) {
     auto signal = detail::create_fd_readable(fd);
@@ -47,9 +89,13 @@ void io_wait_writable(int fd) {
     }
 }
 
+#endif // _WIN32
+
 } // namespace csp::internal
 
 namespace csp::io {
+
+#ifndef _WIN32
 
 int set_nonblock(int fd) {
     int flags = fcntl(fd, F_GETFL);
@@ -114,6 +160,8 @@ int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
     if (err != 0) { errno = err; return -1; }
     return 0;
 }
+
+#endif // !_WIN32
 
 resolve_result resolve(const std::string& host,
                        const std::string& service,
