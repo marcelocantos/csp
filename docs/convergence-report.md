@@ -1,54 +1,58 @@
 # Convergence Report
 
-_Generated: 2026-03-08 | SHA: 1e8eea3 (uncommitted changes pending)_
+**Generated**: 2026-03-08
+**Branch**: fix-swap-storm-test-race (PR #8)
 
 ## Standing invariants
 
-- **Tests (local)**: PASSING — 636/636 (source), 628/628 (dist), both stable across 10+ runs
-- **CI**: Last run (22809705933, 1e8eea3): 10/11 pass. macOS arm64 dist flake in swap.test.cc:454 now fixed locally (barrier added). Needs re-run after commit+push.
+- **Tests**: passing (636/636 source, 628/628 dist locally)
+- **CI**: PR #8 — 17/18 pass, macOS TSan pending
 
 ## Movement
 
-- 🎯T1: converging → **close** (dist flake fixed, diagnostic scaffolding removed, all local tests green)
+- 🎯T2: close → close (swap storm + MN thread flake both fixed, PR #8 CI 17/18 green)
 
 ## Gap report
 
-### 🎯T1 Windows port PR is merged to master  [high]
-Gap: **close**
+### 🎯T2 Windows port  [medium]
+**Gap**: close
+Two CI flakes fixed in PR #8 (swap storm barrier, MN MultipleThreads yield). 17/18 CI jobs pass, macOS TSan pending. Once CI is fully green, PR #8 is ready to merge. After merge, rebase Windows port branch and verify its CI.
 
-All sub-targets achieved. Remaining acceptance criteria:
-- [x] Windows test exe runs doctest and reports results (621/621)
-- [x] `make dist` output matches committed dist/ files
-- [ ] All 11 CI jobs pass — fixed dist flake locally, needs CI confirmation
-- [ ] PR #4 squash-merged to master
+**Effective weight**: 0.6 (value 5 / cost 8) — cost exceeds value.
 
-Implied: not yet delivered (PR #4 open, CI re-run needed)
+**Stale field**: "Blocked by: startup crash diagnosis" — resolved.
 
-  [x] 🎯T1.1 Dist files are regenerated — achieved
-  [x] 🎯T1.2 macOS mn.test flake — achieved
-  [x] 🎯T1.3 Windows runtime crash — achieved
+### 🎯T1, 🎯T3: achieved
 
 ## Recommendation
 
-Work on: **🎯T1 Windows port PR is merged to master**
-Reason: Only active target. All code work complete — need to commit, push, verify CI, and merge.
+Work on: **🎯T2 Windows port**
+Reason: Only active target. PR #8 CI nearly green — merge once TSan passes, then rebase Windows branch.
 
 ## Suggested action
 
-Commit the swap test fix + diagnostic cleanup, then run `/push` to push and verify CI.
+Wait for macOS TSan to complete on PR #8. Once green, run `/push` to merge. Then rebase `worktree-windows-port` and verify CI.
+
+Type **go** to execute the suggested action.
 
 <!-- convergence-deps
-evaluated: 2026-03-08T23:55:00Z
-sha: 1e8eea3
+evaluated: 2026-03-08T02:30:00Z
+sha: a00ac0b
+
+🎯T2:
+  gap: close
+  assessment: "Two CI flakes fixed (swap storm barrier, MN yield). PR #8 17/18 green, TSan pending. Merge then rebase Windows branch."
+  read:
+    - test/swap.test.cc
+    - test/mn.test.cc
 
 🎯T1:
-  gap: close
-  assessment: "All sub-targets achieved. Dist flake fixed (swap storm barrier). Diagnostic scaffolding removed. Needs CI confirmation and merge."
-  read:
-    - docs/targets.md
-    - .github/workflows/ci.yml
-    - test/main.cc
-    - test/swap.test.cc
-    - src/csp_globals.cpp
-    - dist/csp_globals.cpp
+  gap: achieved
+  assessment: "Merged to master (PR #6, commit 86ba5e3)."
+  read: []
+
+🎯T3:
+  gap: achieved
+  assessment: "Merged to master (PR #7, commit d13675a)."
+  read: []
 -->

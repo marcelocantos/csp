@@ -423,15 +423,10 @@ TEST_CASE("MN Swap - multi-channel swap storm") {
 
     std::vector<chan<int>> chans(N_CHANS);
 
-    // Gate channel: each swap imp holds a copy of gate.w.  When all
-    // swap imps finish, every copy is destroyed and the write endpoint
-    // dies — the coordinator imp detects this via prialt(~gate_r) and
-    // proceeds to spawn writers and readers.  Without this barrier,
-    // a writer imp can run before its slot's swap imp, send through
-    // the pre-swap channel, and then the swap imp's copy destruction
-    // signals endpoint death on the post-swap channel — losing one
-    // write.
-    chan<poke_t> gate;
+    // Barrier: each swap imp holds a copy of the barrier writer.
+    // When all swap imps finish, the writer endpoint dies, signalling
+    // the coordinator that the permutation has settled.
+    chan<poke_t> barrier;
 
     // Swapper copies — each swapper gets its own copies so there's
     // no data race with other imps or the parent.
@@ -440,21 +435,30 @@ TEST_CASE("MN Swap - multi-channel swap storm") {
         int j = (s * 7 + 3) % N_CHANS;
         if (i == j) j = (j + 1) % N_CHANS;
         csp::spawn([wi = chans[i].w.copy(), wj = chans[j].w.copy(),
-                     gw = gate.w.copy()]() mutable {
+                    bw = barrier.w.copy()]() mutable {
             swap(wi, wj);
         });
     }
 
-    // After all swaps settle, write through each writer and read from
-    // each reader. Total should be conserved.
-    std::atomic<int> total{0};
-    csp::spawn([gate_r = std::move(gate.r), &chans, &total] {
-        // Wait for all swap imps to finish (gate write endpoint dies).
-        csp::prialt(~gate_r);
+    // Drop the original barrier writer so death fires when all swap
+    // imps finish.
+    barrier.w = {};
 
+    // Coordinator: wait for all swaps to complete, then spawn writers
+    // and readers. This guarantees the slot permutation has settled
+    // before any writes resolve.
+    std::atomic<int> total{0};
+    csp::spawn([br = std::move(barrier.r), &chans, &total] {
+        // Block until all swap imps have finished (writer death).
+        poke_t p;
+        br >> p;
+
+        // After all swaps settle, write through each writer and read
+        // from each reader. Total should be conserved.
         for (auto & ch : chans) {
             csp::spawn([w = std::move(ch.w)] { w << 1; });
         }
+
         for (auto & ch : chans) {
             csp::spawn([r = std::move(ch.r), &total] {
                 int v;
@@ -462,7 +466,6 @@ TEST_CASE("MN Swap - multi-channel swap storm") {
             });
         }
     });
-    gate.w = {}; // Release parent's copy so only swap imps hold it.
 
     csp::schedule();
 
