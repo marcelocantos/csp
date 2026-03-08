@@ -5,16 +5,27 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
+Snapshot as of v0.3.0.
+
 ## Interaction surface catalogue
 
 Everything below is in `namespace csp` unless noted otherwise. Internal
 namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
+### Version macros
+
+| Symbol | Value | Stability |
+|--------|-------|-----------|
+| `CSP_VERSION` | `"0.3.0"` | Stable |
+| `CSP_VERSION_MAJOR` | `0` | Stable |
+| `CSP_VERSION_MINOR` | `3` | Stable |
+| `CSP_VERSION_PATCH` | `0` | Stable |
+
 ### Core types
 
 | Symbol | Kind | Stability |
 |--------|------|-----------|
-| `chan<T>` | struct template (`w`, `r`, `release()`) | Stable |
+| `chan<T>` | struct template (`w`, `r`, `release()`, `chan(size_t)` buffered ctor) | Stable |
 | `writer<T>` | class template (move-only endpoint) | Stable |
 | `reader<T>` | class template (move-only endpoint, iterable) | Stable |
 | `weak_writer<T>` | class template | Stable |
@@ -26,6 +37,8 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 | `error` | base exception (`std::runtime_error`) | Stable |
 | `required<T>` | config field wrapper | Stable |
 | `byte` / `bytes` | type aliases (`uint8_t`, `vector<byte>`) | Stable |
+| `ClientSide` / `ServerSide` | protocol markers | Stable |
+| `incoming<Side, T>` / `outgoing<Side, T>` | protocol type aliases | Stable |
 
 ### Type aliases
 
@@ -58,6 +71,15 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 | `fuse(writer<T>&, reader<T>&)` | Needs review |
 | `tap(writer<T>&, reader<T>&)` | Needs review |
 | `splice(writer<T>&, reader<T>&, F&&)` | Needs review |
+| `channel_swap(writer<T>&, writer<T>&)` | Needs review |
+| `channel_swap(reader<T>&, reader<T>&)` | Needs review |
+
+### Buffered channel composition
+
+| Function | Stability |
+|----------|-----------|
+| `reader<T> operator\|(reader<T>, chan<T>)` | Stable |
+| `writer<T> operator\|(chan<T>, writer<T>)` | Stable |
 
 ### Spawning and joining
 
@@ -87,7 +109,7 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Stability |
 |--------|-----------|
-| `global_exception_handler` (`reader<exception_ptr>`) | Needs review |
+| `global_exception_handler` (`writer<exception_ptr>`) | Needs review |
 | `skip` (`reader<> const`) | Stable |
 
 ### Timers (`include/csp/timer.h`)
@@ -119,16 +141,22 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 ### Non-blocking I/O (`csp::io`)
 
-| Function | Stability |
-|----------|-----------|
-| `wait_readable(int fd)` | Stable |
-| `wait_writable(int fd)` | Stable |
-| `set_nonblock(int fd) → int` | Stable |
-| `read(int fd, void*, size_t) → ssize_t` | Stable |
-| `write(int fd, const void*, size_t) → ssize_t` | Stable |
-| `accept(int, sockaddr*, socklen_t*) → int` | Stable |
-| `connect(int, const sockaddr*, socklen_t) → int` | Stable |
-| `resolve(string, string, addrinfo*) → resolve_result` | Stable |
+| Symbol | Kind | Stability |
+|--------|------|-----------|
+| `socket_t` | type alias (`SOCKET` on Windows, `int` on Unix) | Stable |
+| `invalid_socket` | constant | Stable |
+| `wait_readable(socket_t)` | function | Stable |
+| `wait_writable(socket_t)` | function | Stable |
+| `set_nonblock(socket_t) → int` | function | Stable |
+| `close(socket_t)` | function | Stable |
+| `read(socket_t, void*, size_t) → ssize_t` | function | Stable |
+| `write(socket_t, const void*, size_t) → ssize_t` | function | Stable |
+| `accept(socket_t, sockaddr*, socklen_t*) → socket_t` | function | Stable |
+| `connect(socket_t, const sockaddr*, socklen_t) → int` | function | Stable |
+| `addrinfo_deleter` | struct | Stable |
+| `addrinfo_ptr` | unique_ptr alias | Stable |
+| `resolve_result` | struct (`info`, `error`, `operator bool`, `message`) | Stable |
+| `resolve(string, string, addrinfo*) → resolve_result` | function | Stable |
 
 ### Blocking pool (`include/csp/blocking.h`)
 
@@ -141,23 +169,31 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 | Symbol | Kind | Stability |
 |--------|------|-----------|
 | `dynamic<T>` | class template | Stable |
+| `dynamic_binding` | deferred binding | Stable |
 | `local` | RAII binding scope | Stable |
 | `imp_local<T>` | class template | Stable |
 | `context_key` | unique key type | Stable |
 | `context` | HAMT root handle | Stable |
 | `context_scope` | RAII installer | Stable |
 
-### Signals (`csp::signal`)
+### Unix signals (`csp::signal`)
 
 | Function | Stability |
 |----------|-----------|
 | `notify(initializer_list<int>) → reader<int>` | Stable |
 
+### Windows signals (`csp::win::signal`, behind `#ifdef _WIN32`)
+
+| Function | Stability |
+|----------|-----------|
+| `notify(initializer_list<DWORD>) → reader<DWORD>` | Stable |
+| `raise(DWORD)` | Stable |
+
 ### TLS (`csp::tls`, behind `#ifdef CSP_TLS`)
 
 | Symbol | Kind | Stability |
 |--------|------|-----------|
-| `tls::error` | exception type | Stable |
+| `tls::error` | exception type (`int code`) | Stable |
 | `tls::context` | TLS context (pImpl) | Stable |
 | `tls::context::role` | enum (`client`, `server`) | Stable |
 | `tls::conn` | TLS connection (pImpl) | Stable |
@@ -168,13 +204,20 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 |--------|------|-----------|
 | `byte_reader` | class (file-like interface over `reader<bytes>`) | Stable |
 
-### Supervision (`include/csp/supervisor.h`)
+### Imp exit / supervision (`include/csp/imp_exit.h`, `include/csp/supervisor.h`)
 
 | Symbol | Kind | Stability |
 |--------|------|-----------|
-| `restart_policy` | struct | Fluid |
+| `restart_policy` | struct (`max_restarts`, `window`, `backoff`) | Fluid |
 | `max_restarts_exceeded` | exception type | Fluid |
-| `worker_group` | class | Fluid |
+| `imp_event` | struct (`error`, `restart(duration)`) | Fluid |
+| `supervised_fn` | class (retry loop callable) | Fluid |
+| `supervised(F&&) → supervised_fn` | function template | Fluid |
+| `exit_guard` | RAII supervision registration | Fluid |
+| `on_exit(function<void(imp_event)>) → exit_guard` | function | Fluid |
+| `on_exit(restart_policy) → exit_guard` | function | Fluid |
+| `worker_max_restarts_exceeded` | exception type | Fluid |
+| `worker_group` | class (deprecated) | Fluid |
 
 ### Stack analysis (`include/csp/stack_analysis.h`)
 
@@ -246,41 +289,36 @@ Combinator catalogue (all Stable unless noted):
 
 Items that must be addressed before 1.0:
 
-1. **Supervision API redesign** — `worker_group` / `restart_policy` /
-   `max_restarts_exceeded` are being replaced by a dynamic-scope-based imp
-   death interception mechanism (`imp_exit`). The new API (`on_exit`,
-   `supervised`, `exit_guard`, `imp_event`) is implemented but not yet
-   merged. This is the primary blocker for API stability.
+1. **Supervision API stabilisation** — The new imp exit API
+   (`imp_event`, `on_exit`, `exit_guard`, `supervised`) is implemented
+   and merged but marked Fluid. It needs real-world usage before
+   freezing. `worker_group` is deprecated and should be removed or
+   replaced before 1.0.
 
-2. **Version macros** — The library has no `CSP_VERSION` /
-   `CSP_VERSION_MAJOR` / `CSP_VERSION_MINOR` / `CSP_VERSION_PATCH` macros.
-   These should be added before 1.0 so downstream code can feature-detect.
-
-3. **`global_exception_handler`** — Exposed as a bare
-   `reader<exception_ptr>` extern. Consider whether this should be a
+2. **`global_exception_handler`** — Exposed as a bare
+   `writer<exception_ptr>` extern. Consider whether this should be a
    function-based API instead. Current design leaks implementation detail.
 
-4. **`swap`/`fuse`/`tap`/`splice` channel manipulation** — These functions
-   exist but are lightly tested and the 4-arg swap signature is unusual.
-   Review whether these belong in the public API or should be internal-only.
+3. **`swap`/`fuse`/`tap`/`splice`/`channel_swap` channel manipulation** —
+   These functions exist but are lightly tested and the 4-arg swap
+   signature is unusual. Review whether these belong in the public API
+   or should be internal-only. `channel_swap` may be a backwards-compat
+   alias that should be removed.
 
-5. **Stack analysis API** — ARM64-only, exposed publicly but primarily an
+4. **Stack analysis API** — ARM64-only, exposed publicly but primarily an
    internal optimisation. Consider whether this should be public or moved
    behind a feature flag / internal namespace.
 
-6. **Documentation** — Per-part reference pages exist for some combinators
+5. **Documentation** — Per-part reference pages exist for some combinators
    but coverage is incomplete. All public API functions need at minimum a
    brief doc comment in the header.
 
-7. **Distribution packaging** — `dist/` ships three files but no install
+6. **Distribution packaging** — `dist/` ships three files but no install
    target, pkg-config, or CMake find-module. Users must manually integrate.
 
 ## Out of scope for 1.0
 
 - **one_for_all / rest_for_one** supervision strategies — deferred until the
   imp_exit API is stable and proven in use.
-- **Buffered channels** — design exists but not prioritised.
 - **circuit_breaker**, **singleflight**, **bulkhead** resilience combinators.
-- **CMake build system** — Makefile is sufficient for now.
-- **Windows / Linux** platform support — macOS-only for initial release.
 - **C API / FFI** — no stable C interface planned for 1.0.
