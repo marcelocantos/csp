@@ -95,15 +95,11 @@ TEST_CASE("MN - TimerSleep") {
     std::atomic<int> done{0};
     constexpr int N = 8;
 
-    // Under sanitizers, scheduler overhead per imp can be tens of ms,
-    // so use a longer sleep to keep the concurrency signal clear.
-    auto sleep_dur = CSP_TEST_SANITIZER ? 200ms : 20ms;
-
     auto start = std::chrono::steady_clock::now();
 
     for (int i = 0; i < N; ++i) {
-        csp::spawn([&, sleep_dur] {
-            csp::sleep(sleep_dur);
+        csp::spawn([&] {
+            csp::sleep(200ms);
             done.fetch_add(1, std::memory_order_relaxed);
         });
     }
@@ -111,10 +107,11 @@ TEST_CASE("MN - TimerSleep") {
     csp::schedule();
 
     CHECK(N == done.load());
-    // All N sleeps ran concurrently across workers, so wall time should be
-    // much less than N * sleep_dur.
+    // All N sleeps ran concurrently across 4 workers, so wall time
+    // should be well under N * 200ms (sequential time = 1600ms).
+    // Allow 3x the sleep duration for scheduler/CI overhead.
     auto elapsed = std::chrono::steady_clock::now() - start;
-    CHECK(elapsed < N * sleep_dur);
+    CHECK(elapsed < 600ms);
 
     csp::shutdown_runtime();
 }
