@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: 6fa55c0 -->
+<!-- last-evaluated: 9e62cfd -->
 
 ## Active
 
@@ -15,7 +15,7 @@
 - **Discovered**: 2026-03-09
 
 ### 🎯T3 Runtime is production-ready for I/O workloads
-- **Weight**: derived
+- **Weight**: 1 (value 21 / cost 34)
 - **Acceptance**: all sub-targets achieved
 - **Status**: not started
 - **Discovered**: 2026-03-09
@@ -24,6 +24,9 @@
 - **Weight**: 2 (value 8 / cost 5)
 - **Parent**: 🎯T3
 - **Acceptance**:
+  - Opaque `fd_t` type wraps raw file descriptors; no implicit conversion to int
+  - All CSP functions that produce fds (`io::accept`, `net::listen`, `net::dial`) return `fd_t` already set non-blocking
+  - `byte_reader`/`byte_writer` accept `fd_t` and assert (not fix) non-blocking
   - `csp::net::listen`, `csp::net::dial` for TCP
   - `csp::io::lines`, `csp::io::read_all`, `csp::io::write_all` for fd I/O
   - `csp::file::read`, `csp::file::write` via blocking pool
@@ -37,7 +40,7 @@
 - **Acceptance**:
   - `csp::http::serve(port)` returns `reader<request<Req, Resp>>`
   - Typed JSON codecs for request/response bodies
-  - WebSocket upgrade to `chan<ws::message>`
+  - WebSocket upgrade to `reader<ws::message>` + `writer<ws::message>` (separate channels for recv/send)
   - SSE upgrade to `writer<sse::event>`
   - Middleware composable via stream combinators
   - Request context via `csp::dynamic`
@@ -66,7 +69,7 @@
 - **Discovered**: 2026-03-09
 
 ### 🎯T4 API safety gaps are closed
-- **Weight**: derived
+- **Weight**: 1 (value 5 / cost 4)
 - **Acceptance**: all sub-targets achieved
 - **Status**: not started
 - **Discovered**: 2026-03-09
@@ -110,7 +113,7 @@
 - **Discovered**: 2026-03-09
 
 ### 🎯T7 Non-trivial example applications demonstrate CSP
-- **Weight**: derived
+- **Weight**: 2 (value 30 / cost 18)
 - **Acceptance**: at least 3 sub-target examples are complete
 - **Status**: not started
 - **Discovered**: 2026-03-09
@@ -122,7 +125,7 @@
   - Multi-room chat with per-client imps
   - Fan-out to subscribers, join/leave lifecycle, backpressure on slow clients
   - Compiles and runs as a standalone binary in `examples/`
-- **Status**: not started
+- **Status**: converging — multi-room chat works (fanout, subscribe, nick, join/leave, backpressure, clean SIGTERM shutdown). Not yet committed.
 - **Discovered**: 2026-03-09
 
 ### 🎯T7.2 ETL pipeline example
