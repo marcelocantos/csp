@@ -233,14 +233,17 @@ namespace csp {
                 }
             }
 
-            if (idx < 0) {
+            if (idx >= 0) {
+                // Reset in-place to avoid racing with steal_work
+                // on the unique_ptr.
+                procs[idx]->reset();
+            } else {
                 // No reusable slot — allocate a new one.
                 if (n >= max_procs_) return;
                 idx = n;
+                procs[idx] = std::make_unique<Processor>(idx);
                 num_procs_.store(n + 1, std::memory_order_release);
             }
-
-            procs[idx] = std::make_unique<Processor>(idx);
             procs[idx]->worker = std::thread([this, idx] {
                 set_thread_name(idx);
                 bind_processor(procs[idx].get());
