@@ -3,6 +3,7 @@
 #include <csp/internal/csp_internal.h>
 
 #include <mutex>
+#include <thread>
 
 namespace csp::detail {
 
@@ -18,6 +19,8 @@ struct Processor {
 
     std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
+
+    std::thread worker;                   // Worker thread (empty for P0/main)
 
     int id;
 

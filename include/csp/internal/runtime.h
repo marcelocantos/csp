@@ -14,7 +14,6 @@ namespace csp::detail {
 
 struct Runtime {
     std::vector<std::unique_ptr<Processor>> procs;  // P0 = main thread
-    std::vector<std::thread> workers;               // M1..Mn
 
     std::mutex global_mu;
     std::deque<Imp*> global_run_queue;
