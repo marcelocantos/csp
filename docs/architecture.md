@@ -338,7 +338,8 @@ threads, following the GMP model (similar to Go's runtime).
 
 ### Initialisation
 
-`init_runtime(num_procs)` creates:
+`set_maxprocs(num_procs)` configures the runtime (auto-initialized on first
+use) to create:
 
 - **P processors** (`Processor` structs), each with its own local run queue
   and mutex.

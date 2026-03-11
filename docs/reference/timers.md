@@ -380,7 +380,7 @@ Time only advances when you tell it to:
 clock is active. It pushes the current imp onto the fake clock's internal timer
 queue and suspends it.
 
-**Constraints.** Single-threaded only (default scheduler or `init_runtime(1)`).
+**Constraints.** Single-threaded only (`set_maxprocs(1)` or `CSP_MAXPROCS=1`).
 Non-copyable.
 
 ### Example

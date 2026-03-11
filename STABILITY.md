@@ -51,7 +51,7 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Function | Stability |
 |----------|-----------|
-| `void init_runtime(int num_procs = 0)` | Stable |
+| `void set_maxprocs(int num_procs = 0)` | Stable |
 | `void shutdown_runtime()` | Stable |
 | `void schedule()` | Stable |
 | `void set_scheduler(std::function<void()>)` | Stable |

@@ -159,15 +159,17 @@ csp::spawn([w = std::move(w1), r = std::move(r2)] {
 });
 ```
 
-## 4. Forgetting init_runtime() for I/O
+## 4. Single-threaded mode and I/O
 
 I/O operations (`io::wait_readable`, `io::wait_writable`), the blocking pool
 (`csp::blocking()`), and signal handling (`csp::signal::notify`) all require
-the M:N runtime. Without `init_runtime()`, the event reactor is not started
-and these calls will hang or crash:
+the M:N runtime. The runtime auto-initializes with M:N threading by default,
+so this works out of the box. However, if you explicitly set single-threaded
+mode, I/O calls will hang:
 
 ```cpp
-// BUG: io::read() hangs -- no reactor running
+// BUG: io::read() hangs -- single-threaded mode, no reactor
+csp::set_maxprocs(1);
 csp::spawn([fd] {
     char buf[1024];
     csp::io::read(fd, buf, sizeof(buf));   // hangs
@@ -175,12 +177,10 @@ csp::spawn([fd] {
 csp::schedule();
 ```
 
-Call `init_runtime()` before any I/O:
+Ensure M:N mode is active (the default) when using I/O:
 
 ```cpp
-// FIX: enable M:N runtime
-csp::init_runtime(2);   // at least 2 processors for I/O
-
+// FIX: use default M:N mode (or set_maxprocs(n) where n > 1)
 csp::spawn([fd] {
     char buf[1024];
     csp::io::read(fd, buf, sizeof(buf));   // works

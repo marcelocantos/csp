@@ -6,10 +6,11 @@ defined at compile time. The dev build enables it by default (`CSP_TLS=1`).
 
 ## Prerequisites
 
-TLS requires the M:N runtime (same as I/O):
+TLS requires the M:N runtime (same as I/O). The runtime auto-initializes with
+hardware concurrency by default, so no explicit setup is needed. To override:
 
 ```cpp
-csp::init_runtime(4);
+csp::set_maxprocs(4);   // optional: set before first spawn/schedule
 ```
 
 ## Quick example

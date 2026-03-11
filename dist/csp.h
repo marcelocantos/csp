@@ -474,9 +474,16 @@ void schedule();
 // Yield control so other imps can run. Does nothing outside an imp.
 inline void yield() { internal::yield(); }
 
-// Initialize the M:N runtime with the given number of processors (0 = auto).
-// If never called, auto-initializes with 1 processor (single-threaded).
-void init_runtime(int num_procs = 0);
+// Set the target number of processors (OS threads). 0 = auto (hardware
+// concurrency). The system trends toward the target: new P's are added
+// as demand warrants; excess P's wind down after an idle timeout.
+// If never called, reads CSP_MAXPROCS from the environment (default:
+// hardware concurrency).
+void set_maxprocs(int n);
+
+// Shut down the runtime, joining worker threads and draining pools.
+// The next schedule/spawn call will re-initialize the runtime using
+// set_maxprocs or CSP_MAXPROCS.
 void shutdown_runtime();
 
 class error : public std::runtime_error {
@@ -2679,6 +2686,8 @@ struct Processor {
     std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
 
+    std::thread worker;                   // Worker thread (empty for P0/main)
+
     int id;
 
     Processor(int id_)
@@ -2963,7 +2972,6 @@ namespace csp::detail {
 
 struct Runtime {
     std::vector<std::unique_ptr<Processor>> procs;  // P0 = main thread
-    std::vector<std::thread> workers;               // M1..Mn
 
     std::mutex global_mu;
     std::deque<Imp*> global_run_queue;
@@ -6795,8 +6803,8 @@ namespace csp::signal {
 
 // Returns a reader that emits the signal number each time one of the
 // specified signals is delivered to the process. Installs signal
-// handlers via sigaction (idempotent per signal number). Requires
-// init_runtime() since it uses the I/O reactor internally.
+// handlers via sigaction (idempotent per signal number). Uses the I/O
+// reactor internally (auto-initialized on first use).
 //
 // Dropping the returned reader stops delivery and cleans up the
 // underlying pipe. Signal handlers remain installed (harmless no-op
@@ -6970,7 +6978,7 @@ namespace csp::win::signal {
 // Returns a reader that emits the console control event type (DWORD) each
 // time one of the specified events is delivered to the process. Installs a
 // console control handler via SetConsoleCtrlHandler (once, idempotent).
-// Requires init_runtime() since it uses the I/O reactor internally.
+// Uses the I/O reactor internally (auto-initialized on first use).
 //
 // Dropping the returned reader stops delivery and cleans up the underlying
 // socket pair. The handler remains installed but becomes a harmless no-op

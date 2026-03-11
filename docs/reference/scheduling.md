@@ -21,7 +21,7 @@ running -> [*] : f() returns / throws
 1. [csp::spawn](#cspspawn) -- create a new imp
 2. [csp::schedule](#cspschedule) -- run the scheduler to completion
 3. [csp::yield](#cspyield) -- cooperative context switch
-4. [csp::init_runtime](#cspinit_runtime) -- enable M:N multi-threaded mode
+4. [csp::set_maxprocs](#cspset_maxprocs) -- configure M:N processor count
 5. [csp::spawn_producer](#cspspawn_producer) -- spawn an imp with an output channel
 6. [csp::spawn_consumer](#cspspawn_consumer) -- spawn an imp with an input channel
 7. [csp::spawn_filter](#cspspawn_filter) -- spawn an imp with input and output channels
@@ -186,27 +186,35 @@ csp::schedule();
 
 ---
 
-## csp::init_runtime
+## csp::set_maxprocs
 
-Enable M:N multi-threaded mode with multiple worker OS threads.
+Configure the maximum number of processors for M:N threading.
 
 ### Signature
 
 ```cpp
-void init_runtime(int num_procs = 0);
+void set_maxprocs(int num_procs = 0);
 ```
 
 **Header:** `#include "csp.h"`
 
 ### Description
 
-`init_runtime` initializes the M:N runtime with `num_procs` processor
-structures (Ps), each backed by a worker OS thread. If `num_procs` is 0, the
-runtime uses `std::thread::hardware_concurrency()`. If `num_procs` is 1, the
-runtime stays in single-threaded cooperative mode (the default if
-`init_runtime` is never called).
+`set_maxprocs` sets the number of processor structures (Ps) the runtime will
+create, each backed by a worker OS thread. If `num_procs` is 0, the runtime
+uses `std::thread::hardware_concurrency()`. If `num_procs` is 1, the runtime
+runs in single-threaded cooperative mode.
 
-When `num_procs` > 1, the runtime enters M:N mode:
+The runtime auto-initializes on first use (first `spawn()` or `schedule()`
+call). If `set_maxprocs` is never called, the runtime reads the `CSP_MAXPROCS`
+environment variable (like Go's `GOMAXPROCS`). If that is also unset, it
+defaults to hardware concurrency. Programs that don't need to configure
+processor count need not call `set_maxprocs` at all.
+
+`set_maxprocs` must be called before the runtime initializes (i.e., before the
+first `spawn()` or `schedule()` call).
+
+When the processor count is > 1, the runtime enters M:N mode:
 
 - Worker threads run a loop that checks the local run queue, the global run
   queue, and attempts work stealing from other processors, in that order.
@@ -215,16 +223,12 @@ When `num_procs` > 1, the runtime enters M:N mode:
 - A watchdog thread monitors processor heartbeats and can add new processors
   if a worker appears stalled (e.g., blocked in a system call).
 
-`init_runtime` must be called before any `spawn` or `schedule` calls. If
-never called, the runtime auto-initializes with a single processor on first
-use.
-
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-init_runtime(0) ────────────────➤ create hardware_concurrency() Ps + workers
-init_runtime(1) ────────────────➤ single-threaded mode (no workers spawned)
-init_runtime(n) ─┤n > 1├────────➤ create n Ps; spawn n-1 worker threads + watchdog
+set_maxprocs(0) ────────────────➤ use hardware_concurrency() Ps on first use
+set_maxprocs(1) ────────────────➤ single-threaded mode (no workers spawned)
+set_maxprocs(n) ─┤n > 1├────────➤ create n Ps; spawn n-1 worker threads + watchdog
 ```
 
 ### Example
@@ -233,7 +237,7 @@ init_runtime(n) ─┤n > 1├────────➤ create n Ps; spawn n-1
 #include "csp.h"
 
 // Use 4 OS threads for imp execution.
-csp::init_runtime(4);
+csp::set_maxprocs(4);
 
 csp::spawn([] { /* work */ });
 csp::spawn([] { /* work */ });

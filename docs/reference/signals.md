@@ -44,8 +44,8 @@ async-signal-safe -- the design is safe even when signals arrive during channel
 operations.
 
 **Reactor required.** `notify` uses `io::read` internally, so the I/O reactor
-must be running. Call `init_runtime()` before using signal channels, or ensure
-`schedule()` drives the reactor in single-threaded mode.
+must be running. The runtime auto-initializes on first use with M:N threading
+enabled by default, which starts the reactor.
 
 **Handler installation.** Signal handlers are installed via `sigaction` with
 `SA_RESTART`. Installation is idempotent per signal number -- multiple `notify`
@@ -101,8 +101,6 @@ Graceful shutdown on SIGINT or SIGTERM:
 #include <csignal>
 
 int main() {
-    csp::init_runtime();
-
     csp::spawn([] {
         auto sig = csp::signal::notify({SIGINT, SIGTERM});
         auto [w, r] = csp::chan<int>{};
@@ -141,8 +139,6 @@ A simpler pattern that just waits for a signal:
 #include <cstdio>
 
 int main() {
-    csp::init_runtime();
-
     csp::spawn([] {
         auto sig = csp::signal::notify({SIGINT, SIGTERM});
 
@@ -176,7 +172,7 @@ reader<DWORD> notify(std::initializer_list<DWORD> events);
 
 Returns a reader that emits the console control event type (as `DWORD`) each
 time one of the specified events is delivered. Installs a handler via
-`SetConsoleCtrlHandler` (once, idempotent). Requires `init_runtime()`.
+`SetConsoleCtrlHandler` (once, idempotent). Requires the M:N runtime (auto-initialized by default).
 
 **Supported events:**
 
@@ -200,8 +196,6 @@ terminated.
 #include "csp.h"
 
 int main() {
-    csp::init_runtime();
-
     csp::spawn([] {
         auto sig = csp::win::signal::notify({CTRL_C_EVENT, CTRL_CLOSE_EVENT});
 

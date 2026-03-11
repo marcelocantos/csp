@@ -16,7 +16,8 @@
 // (no MT lost or duplicated).
 
 TEST_CASE("Protocol - A1 steal_work contention") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     constexpr int N = 200 / SCALE_LIGHT;
     std::atomic<int> count{0};
@@ -47,7 +48,8 @@ TEST_CASE("Protocol - A1 steal_work contention") {
 // result. No MT hangs.
 
 TEST_CASE("Protocol - A2 concurrent channel close + alt sleep") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 8;
     auto [w, r] = csp::chan<int>{};
@@ -94,7 +96,8 @@ TEST_CASE("Protocol - A2 concurrent channel close + alt sleep") {
 // to baseline) and no double-free (ASan would catch this).
 
 TEST_CASE("Protocol - A3 concurrent endpoint release") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N_WRITERS = 10;
     constexpr int N_READERS = 10;
@@ -138,7 +141,8 @@ TEST_CASE("Protocol - A3 concurrent endpoint release") {
 // path in run(Status::detach). Verify the reader gets the value.
 
 TEST_CASE("Protocol - A4 early wake path") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     constexpr int ROUNDS = 100 / SCALE_LIGHT;
     std::atomic<int> success{0};
@@ -178,7 +182,8 @@ TEST_CASE("Protocol - A4 early wake path") {
 TEST_CASE("Protocol - A5 timer heap boundary") {
     using namespace std::chrono_literals;
 
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     constexpr int N = 65;
     std::atomic<int> count{0};
@@ -200,15 +205,15 @@ TEST_CASE("Protocol - A5 timer heap boundary") {
 }
 
 // ---------------------------------------------------------------------------
-// A6. Implicit re-init
+// A6. Re-init across shutdown
 // ---------------------------------------------------------------------------
-// Call init_runtime(4), spawn and schedule work, then call init_runtime(4)
-// again WITHOUT calling shutdown_runtime(). Runtime::init() should call
-// shutdown() internally. Verify the second init works cleanly.
+// Call set_maxprocs(4), spawn and schedule work, shutdown, then repeat.
+// Verify the second cycle works cleanly.
 
-TEST_CASE("Protocol - A6 implicit re-init") {
-    // First init + work.
-    csp::init_runtime(4);
+TEST_CASE("Protocol - A6 re-init across shutdown") {
+    // First cycle.
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     {
         std::atomic<int> count1{0};
@@ -222,9 +227,10 @@ TEST_CASE("Protocol - A6 implicit re-init") {
         CHECK(N1 == count1.load());
     }
 
-    // Re-init WITHOUT shutdown_runtime() — Runtime::init() calls
-    // shutdown() internally if procs is non-empty.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+
+    // Second cycle — re-init via set_maxprocs + schedule.
+    csp::set_maxprocs(4);
 
     {
         std::atomic<int> count2{0};

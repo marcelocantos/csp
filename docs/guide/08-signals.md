@@ -164,8 +164,8 @@ Linux, `SIGPIPE` for pipes is typically handled at the process level (e.g.,
 
 ## Requirements
 
-- Requires `init_runtime()` since the implementation uses
-  the I/O reactor internally for non-blocking pipe reads.
+- Requires the M:N runtime (auto-initialized by default) since the
+  implementation uses the I/O reactor internally for non-blocking pipe reads.
 - Signal numbers must be in the range 1--63.
 
 ## Windows: console control events
@@ -193,5 +193,5 @@ See the [Signals reference](../reference/signals.md) for full details.
 
 ## Next steps
 
-- [`09-concurrency.md`](09-concurrency.md) -- M:N threading, `init_runtime`,
+- [`09-concurrency.md`](09-concurrency.md) -- M:N threading, `set_maxprocs`,
   and the work-stealing scheduler

@@ -73,7 +73,7 @@ A collector imp buffers out-of-order results and emits in sequence.
 - On input close, all workers drain remaining items and the output closes.
 - On output death, workers detect it (via `alt` death-watch) and exit.
 - The transform function `f` must be safe to call concurrently from multiple
-  imps if M:N threading is enabled (`init_runtime(n)`).
+  imps when M:N threading is enabled (the default).
 
 ## Usage
 

@@ -598,7 +598,8 @@ TEST_CASE("dynamic binding reverts on exception during cancel") {
 TEST_SUITE("cancellation MN") {
 
 TEST_CASE("concurrent cancel detection") {
-    init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
     std::atomic<int> count{0};
     csp::spawn([&]() {
         auto guard = cancellation();
@@ -620,7 +621,8 @@ TEST_CASE("concurrent cancel detection") {
 
 #ifndef _WIN32
 TEST_CASE("cancel during I/O") {
-    init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
     bool threw = false;
     int fds[2];
     REQUIRE(pipe(fds) == 0);

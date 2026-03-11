@@ -318,7 +318,8 @@ TEST_CASE("coin flip - channel leak check") {
 TEST_SUITE("coin flip MN") {
 
 TEST_CASE("MN coin flip - stress") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int TRIALS = 1000 / SCALE_MEDIUM;
     std::atomic<int> completed{0};
@@ -346,7 +347,8 @@ TEST_CASE("MN coin flip - stress") {
 }
 
 TEST_CASE("MN coin flip - value integrity") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int TRIALS = 500 / SCALE_MEDIUM;
     std::atomic<int> correct{0};
@@ -396,7 +398,8 @@ TEST_CASE("MN coin flip - value integrity") {
 TEST_CASE("MN coin flip - many participants") {
     // Multiple imps competing on the same channel under M:N.
     // Even count ensures all can pair up.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int ROUNDS = 100 / SCALE_MEDIUM;
     std::atomic<int> completed{0};

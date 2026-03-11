@@ -61,7 +61,8 @@ static int connect_localhost(uint16_t port) {
 // --- Tests ---
 
 TEST_CASE("TLS - Handshake and data roundtrip") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto ca_pem     = read_file("test/certs/ca.crt");
     auto cert_pem   = read_file("test/certs/server.crt");
@@ -129,7 +130,8 @@ TEST_CASE("TLS - Handshake and data roundtrip") {
 }
 
 TEST_CASE("TLS - Cancel during handshake") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     // Listen but never accept — client handshake will block forever.
     auto listen_pair = listen_localhost();
@@ -169,7 +171,8 @@ TEST_CASE("TLS - Cancel during handshake") {
 }
 
 TEST_CASE("TLS - Cancel during read") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto ca_pem   = read_file("test/certs/ca.crt");
     auto cert_pem = read_file("test/certs/server.crt");
@@ -228,7 +231,8 @@ TEST_CASE("TLS - Cancel during read") {
 }
 
 TEST_CASE("TLS - Invalid cert rejection") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto cert_pem = read_file("test/certs/server.crt");
     auto key_pem  = read_file("test/certs/server.key");
@@ -279,7 +283,8 @@ TEST_CASE("TLS - Invalid cert rejection") {
 }
 
 TEST_CASE("TLS - Hostname mismatch") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto ca_pem   = read_file("test/certs/ca.crt");
     auto cert_pem = read_file("test/certs/server.crt");
@@ -331,7 +336,8 @@ TEST_CASE("TLS - Hostname mismatch") {
 }
 
 TEST_CASE("TLS - Concurrent connections") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto ca_pem     = read_file("test/certs/ca.crt");
     auto cert_pem   = read_file("test/certs/server.crt");
@@ -413,7 +419,8 @@ TEST_CASE("TLS - Concurrent connections") {
 }
 
 TEST_CASE("TLS - Large transfer") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto ca_pem     = read_file("test/certs/ca.crt");
     auto cert_pem   = read_file("test/certs/server.crt");
@@ -483,7 +490,8 @@ TEST_CASE("TLS - Large transfer") {
 }
 
 TEST_CASE("TLS - conn move semantics") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto ca_pem     = read_file("test/certs/ca.crt");
     auto cert_pem   = read_file("test/certs/server.crt");

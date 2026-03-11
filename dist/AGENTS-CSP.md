@@ -60,8 +60,9 @@ void join(reader<std::exception_ptr> const& r);
 // Run the scheduler (blocks until all imps complete).
 void schedule();
 
-// M:N runtime (required for I/O, timers, signals, blocking).
-void init_runtime(int num_procs = 0);  // 0 = hardware_concurrency
+// M:N runtime (auto-initializes on first use with hardware concurrency).
+// Override: set_maxprocs(n), or CSP_MAXPROCS env var. 1 = single-threaded.
+void set_maxprocs(int num_procs = 0);  // 0 = hardware_concurrency
 void shutdown_runtime();
 
 // Cooperative yield (no-op outside an imp).
@@ -220,8 +221,6 @@ range<T> spawn_range(F&& f);
 
 ## Timers
 
-Requires `init_runtime()`.
-
 ```cpp
 using time_point = std::chrono::steady_clock::time_point;
 using duration = std::chrono::steady_clock::duration;
@@ -276,7 +275,7 @@ Single-threaded only. `sleep`, `after`, `tick` all respect the override.
 
 ## I/O
 
-Requires `init_runtime()`. Uses kqueue reactor (macOS).
+Uses kqueue reactor (macOS), epoll (Linux), IOCP (Windows).
 
 ```cpp
 namespace csp::io {
@@ -324,7 +323,7 @@ auto line_reader = lr.spawn();
 ## Signals
 
 ```cpp
-// Unix: returns reader<int> emitting signal numbers. Requires init_runtime().
+// Unix: returns reader<int> emitting signal numbers.
 auto sig = csp::signal::notify({SIGINT, SIGTERM});
 int s;
 switch (prialt(data >> v, sig >> s)) {
@@ -386,8 +385,7 @@ int v = *counter;   // 42
 
 ## Cancellation
 
-Cooperative scope-based cancellation via dynamic scoping. Requires
-`init_runtime()`.
+Cooperative scope-based cancellation via dynamic scoping.
 
 ```cpp
 #include "csp.h"    // includes cancel.h
@@ -426,7 +424,7 @@ scope automatically via dynamic scoping.
 ## TLS
 
 Cancel-aware TLS via mbedTLS. Available when `CSP_TLS` is defined (default
-in dev builds). Requires `init_runtime()`.
+in dev builds).
 
 ```cpp
 #include "csp.h"    // includes tls.h (behind #ifdef CSP_TLS)
@@ -609,8 +607,9 @@ All in `namespace csp::part` (included via `csp.h`).
 6. **Reader range-for copies**: `for (T v : reader)` copies each value.
    Use `for (T& v : reader)` only for const access (iterator stores T).
 
-7. **M:N runtime required**: Timers, I/O, signals, and `blocking()` all
-   require `init_runtime()` before use.
+7. **M:N runtime is the default**: The runtime auto-initializes with
+   hardware concurrency. Use `set_maxprocs(1)` or `CSP_MAXPROCS=1` for
+   single-threaded mode.
 
 8. **Part spawn() consumes endpoints**: `filter.spawn(std::move(r))`
    takes the reader by value. Forgetting `std::move()` won't compile.

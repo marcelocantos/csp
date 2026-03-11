@@ -296,7 +296,8 @@ TEST_CASE("channel leak check") {
 TEST_SUITE("imp_exit MN") {
 
 TEST_CASE("restart under MN") {
-    init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
     std::atomic<int> count{0};
     csp::spawn([&]() {
         auto guard = on_exit(restart_policy{.max_restarts = 3});

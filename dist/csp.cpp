@@ -1417,6 +1417,10 @@ namespace csp {
     }
 
     void schedule() {
+        // Ensure the runtime is initialized (and the correct scheduler
+        // is installed) before dispatching. current_p() auto-inits on
+        // first call based on CSP_MAXPROCS / set_maxprocs().
+        detail::current_p();
         g_scheduler();
     }
 
@@ -3195,7 +3199,7 @@ namespace csp {
             bind_processor(procs[0].get());
 
             for (int i = 1; i < num_procs; ++i) {
-                workers.emplace_back([this, i] {
+                procs[i]->worker = std::thread([this, i] {
                     set_thread_name(i);
                     bind_processor(procs[i].get());
                     worker_loop();
@@ -3221,13 +3225,13 @@ namespace csp {
                 watchdog_.join();
             }
 
-            for (auto& w : workers) {
-                if (w.joinable()) {
-                    w.join();
+            int n = num_procs_.load(std::memory_order_acquire);
+            for (int i = 1; i < n; ++i) {
+                if (procs[i] && procs[i]->worker.joinable()) {
+                    procs[i]->worker.join();
                 }
             }
 
-            workers.clear();
             procs.clear();
             num_procs_.store(0, std::memory_order_release);
             mn_mode_ = false;
@@ -3344,13 +3348,29 @@ namespace csp {
 
         void Runtime::add_processor() {
             std::lock_guard<std::mutex> lk(global_mu);
-            int idx = num_procs_.load(std::memory_order_relaxed);
-            if (idx >= max_procs_) return;
+            int n = num_procs_.load(std::memory_order_relaxed);
+
+            // Try to reuse a dead surplus slot.
+            int idx = -1;
+            for (int i = initial_procs_; i < n; ++i) {
+                if (procs[i] && !procs[i]->alive.load(std::memory_order_acquire)) {
+                    if (procs[i]->worker.joinable()) {
+                        procs[i]->worker.join();
+                    }
+                    idx = i;
+                    break;
+                }
+            }
+
+            if (idx < 0) {
+                // No reusable slot — allocate a new one.
+                if (n >= max_procs_) return;
+                idx = n;
+                num_procs_.store(n + 1, std::memory_order_release);
+            }
 
             procs[idx] = std::make_unique<Processor>(idx);
-            num_procs_.store(idx + 1, std::memory_order_release);
-
-            workers.emplace_back([this, idx] {
+            procs[idx]->worker = std::thread([this, idx] {
                 set_thread_name(idx);
                 bind_processor(procs[idx].get());
                 worker_loop();
