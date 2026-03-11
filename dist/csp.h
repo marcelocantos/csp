@@ -2686,6 +2686,8 @@ struct Processor {
     std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
 
+    std::thread worker;                   // Worker thread (empty for P0/main)
+
     int id;
 
     Processor(int id_)
@@ -2970,7 +2972,6 @@ namespace csp::detail {
 
 struct Runtime {
     std::vector<std::unique_ptr<Processor>> procs;  // P0 = main thread
-    std::vector<std::thread> workers;               // M1..Mn
 
     std::mutex global_mu;
     std::deque<Imp*> global_run_queue;
