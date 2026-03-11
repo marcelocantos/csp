@@ -95,8 +95,9 @@ These are generated from the development sources by `scripts/amalgamate.py`
   refcounts. Either end can be closed independently, and endpoint death is
   observable via `alt`/`prialt`.
 - **M:N threading**: Imps are multiplexed across OS threads via a
-  work-stealing scheduler. `init_runtime(n)` enables multi-threaded mode;
-  defaults to single-threaded cooperative scheduling.
+  work-stealing scheduler. The runtime auto-initializes with hardware
+  concurrency on first use. Override with `set_maxprocs(n)` or
+  `CSP_MAXPROCS` env var. Use `set_maxprocs(1)` for single-threaded mode.
 - **Type-erased compilation firewall**: Templates in the header dispatch
   through `csp::internal` (opaque `WriterRef`/`ReaderRef`/`ChanOp` types
   with `void*` pointers), keeping complex channel/scheduler logic in `.cc`

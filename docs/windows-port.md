@@ -145,7 +145,7 @@ platforms — Winsock provides the [same function][getaddrinfo_win].
 Already runs on the blocking pool, which is portable.
 
 Winsock requires [`WSAStartup`][wsastartup] / [`WSACleanup`][wsacleanup]
-lifecycle management. Natural home: `init_runtime()` / runtime shutdown.
+lifecycle management. Natural home: runtime auto-initialization / shutdown.
 
 [socket_type]: https://learn.microsoft.com/en-us/windows/win32/winsock/socket-data-type-2
 [read]: https://man7.org/linux/man-pages/man2/read.2.html

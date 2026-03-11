@@ -139,7 +139,7 @@ from the final failure.
 using namespace csp;
 
 int main() {
-    init_runtime();
+    set_maxprocs(4);
 
     spawn([]() {
         worker_group root;

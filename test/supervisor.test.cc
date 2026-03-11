@@ -188,7 +188,8 @@ TEST_CASE("channel leak check") {
 TEST_SUITE("worker_group MN") {
 
 TEST_CASE("concurrent workers") {
-    init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
     std::atomic<int> sum{0};
     csp::spawn([&]() {
         worker_group wg;
@@ -206,7 +207,8 @@ TEST_CASE("concurrent workers") {
 }
 
 TEST_CASE("restart under contention") {
-    init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
     std::atomic<int> fail_count{0};
     std::atomic<int> total{0};
     csp::spawn([&]() {

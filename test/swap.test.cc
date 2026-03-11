@@ -233,7 +233,8 @@ TEST_SUITE("swap MN") {
 TEST_CASE("MN Swap - concurrent data flow") {
     // Swap writers while data is actively flowing through both channels.
     // Verify no data is lost or duplicated.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 1000 / SCALE_MEDIUM;
     std::atomic<int64_t> total_a{0};
@@ -283,7 +284,8 @@ TEST_CASE("MN Swap - concurrent data flow") {
 TEST_CASE("MN Swap - swap during blocked alt") {
     // Imps blocked in alt on one channel get woken by swap and retry
     // successfully on the new channel.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 200 / SCALE_MEDIUM;
     std::atomic<int> received{0};
@@ -326,7 +328,8 @@ TEST_CASE("MN Swap - swap during blocked alt") {
 
 TEST_CASE("MN Swap - swap racing with endpoint death") {
     // Swap and endpoint close happen concurrently. Verify no crash or leak.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int CYCLES = 500 / SCALE_MEDIUM;
     std::atomic<int> completed{0};
@@ -373,7 +376,8 @@ TEST_CASE("MN Swap - swap racing with endpoint death") {
 TEST_CASE("MN Swap - rapid repeated swaps") {
     // Rapidly swap writers back and forth many times, then verify
     // data goes to the correct final destination.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int PAIRS = 100 / SCALE_MEDIUM;
     constexpr int SWAPS_PER_PAIR = 100 / SCALE_LIGHT;
@@ -416,7 +420,8 @@ TEST_CASE("MN Swap - rapid repeated swaps") {
 TEST_CASE("MN Swap - multi-channel swap storm") {
     // Many channels swapping concurrently. Exercises lock ordering
     // and the bijection invariant under contention.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N_CHANS = 20 / SCALE_LIGHT;
     constexpr int SWAPS = 200 / SCALE_MEDIUM;
@@ -478,7 +483,8 @@ TEST_CASE("MN Swap - multi-channel swap storm") {
 TEST_CASE("MN Swap - swap with shared copies across threads") {
     // Multiple imps hold copies of the same writer. Swap redirects the
     // slot; all copies (on different OS threads) should see the new channel.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int WRITERS = 20 / SCALE_LIGHT;
     constexpr int MSGS_PER_WRITER = 50 / SCALE_MEDIUM;
@@ -522,7 +528,8 @@ TEST_CASE("MN Swap - swap with shared copies across threads") {
 
 TEST_CASE("MN Stress - swap during pipeline") {
     // A pipeline where the middle link gets swapped to a different channel.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 500 / SCALE_MEDIUM;
     std::atomic<int64_t> total{0};
@@ -582,7 +589,8 @@ TEST_CASE("MN Stress - swap lifecycle") {
     constexpr int PAIRS = 50 / SCALE_LIGHT;
 
     for (int cycle = 0; cycle < CYCLES; ++cycle) {
-        csp::init_runtime(4);
+        csp::shutdown_runtime();
+    csp::set_maxprocs(4);
         std::atomic<int64_t> total{0};
 
         for (int p = 0; p < PAIRS; ++p) {
@@ -791,7 +799,8 @@ TEST_SUITE("fuse MN") {
 
 TEST_CASE("MN Fuse - basic pipeline") {
     // Fuse a.w onto b.r, then send data through the fused path.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 500 / SCALE_MEDIUM;
     std::atomic<int64_t> total{0};
@@ -827,7 +836,8 @@ TEST_CASE("MN Fuse - basic pipeline") {
 
 TEST_CASE("MN Fuse - repeated fuse") {
     // Many concurrent fuse operations under M:N threading.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int CYCLES = 200 / SCALE_MEDIUM;
     std::atomic<int> completed{0};
@@ -860,7 +870,8 @@ TEST_CASE("MN Fuse - repeated fuse") {
 TEST_CASE("MN Fuse - racing with endpoint death") {
     // Fuse and endpoint death happen concurrently.
     // Exercises the alive_ pinning logic.
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int CYCLES = 500 / SCALE_MEDIUM;
     std::atomic<int> completed{0};
@@ -901,7 +912,8 @@ TEST_CASE("MN Fuse - racing with endpoint death") {
 }
 
 TEST_CASE("MN Fuse - fuse while reader is blocked") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 200 / SCALE_MEDIUM;
     std::atomic<int> received{0};
@@ -941,7 +953,8 @@ TEST_CASE("MN Fuse - fuse while reader is blocked") {
 }
 
 TEST_CASE("MN Split - split while reader is blocked") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 200 / SCALE_MEDIUM;
     std::atomic<int> received{0};
@@ -1103,7 +1116,8 @@ TEST_CASE("tap - channel leak check") {
 TEST_SUITE("tap MN") {
 
 TEST_CASE("MN Tap - observe pipeline") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 500 / SCALE_MEDIUM;
     std::atomic<int64_t> tap_total{0};
@@ -1142,7 +1156,8 @@ TEST_CASE("MN Tap - observe pipeline") {
 }
 
 TEST_CASE("MN Tap - auto-fuse restores direct path") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 200 / SCALE_MEDIUM;
     std::atomic<int64_t> total{0};
@@ -1174,7 +1189,8 @@ TEST_CASE("MN Tap - auto-fuse restores direct path") {
 }
 
 TEST_CASE("MN Tap - splice mid-flight") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 500 / SCALE_MEDIUM;
     std::atomic<int64_t> consumer_total{0};
@@ -1233,7 +1249,8 @@ TEST_CASE("MN Tap - splice mid-flight") {
 }
 
 TEST_CASE("MN Tap - remove mid-flight") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 500 / SCALE_MEDIUM;
     std::atomic<int64_t> consumer_total{0};
@@ -1440,7 +1457,8 @@ TEST_CASE("splice - channel leak check") {
 TEST_SUITE("splice MN") {
 
 TEST_CASE("MN Splice - data integrity") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 500 / SCALE_MEDIUM;
     std::atomic<int64_t> total{0};
@@ -1473,7 +1491,8 @@ TEST_CASE("MN Splice - data integrity") {
 }
 
 TEST_CASE("MN Splice - filter exits mid-stream") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 500 / SCALE_MEDIUM;
     constexpr int LIMIT = MSGS / 4;
@@ -1511,7 +1530,8 @@ TEST_CASE("MN Splice - filter exits mid-stream") {
 }
 
 TEST_CASE("MN Splice - splice mid-flight") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int MSGS = 500 / SCALE_MEDIUM;
     std::atomic<int64_t> total{0};

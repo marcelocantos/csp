@@ -11,7 +11,8 @@
 #include <vector>
 
 TEST_CASE("MN - MultipleThreads") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     std::mutex mu;
     std::set<std::thread::id> thread_ids;
@@ -42,7 +43,8 @@ TEST_CASE("MN - MultipleThreads") {
 }
 
 TEST_CASE("MN - CrossThreadChannel") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto [w, r] = csp::chan<int>{};
     std::atomic<std::thread::id> writer_tid{};
@@ -69,7 +71,8 @@ TEST_CASE("MN - CrossThreadChannel") {
 }
 
 TEST_CASE("MN - RapidSpawnExit") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     std::atomic<int> count{0};
     constexpr int N = 500;
@@ -90,7 +93,8 @@ TEST_CASE("MN - RapidSpawnExit") {
 TEST_CASE("MN - TimerSleep") {
     using namespace std::chrono_literals;
 
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     std::atomic<int> done{0};
     constexpr int N = 8;
@@ -119,7 +123,8 @@ TEST_CASE("MN - TimerSleep") {
 TEST_CASE("MN - TimerAfterInAlt") {
     using namespace std::chrono_literals;
 
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<int> timeouts{0};
     constexpr int N = 4;
@@ -148,7 +153,8 @@ TEST_CASE("MN - TimerAfterInAlt") {
 TEST_CASE("MN - TimerTick") {
     using namespace std::chrono_literals;
 
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<int> ticks_received{0};
 
@@ -171,7 +177,8 @@ TEST_CASE("MN - TimerTick") {
 TEST_CASE("MN - ConcurrentTimersAndChannels") {
     using namespace std::chrono_literals;
 
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     auto [w, r] = csp::chan<int>{};
     std::atomic<int> result{0};
@@ -200,7 +207,8 @@ TEST_CASE("MN - ConcurrentTimersAndChannels") {
 }
 
 TEST_CASE("MN - StressChannels") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int NUM_PAIRS = 20;
     constexpr int MSGS_PER_PAIR = 50;
@@ -233,7 +241,8 @@ TEST_CASE("MN - StressChannels") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("MN Volume - SpawnExit 1M") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     std::atomic<int> count{0};
     constexpr int N = 1'000'000 / SCALE_HEAVY;
@@ -251,7 +260,8 @@ TEST_CASE("MN Volume - SpawnExit 1M") {
 }
 
 TEST_CASE("MN Volume - ChannelPairs 10K") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 10'000 / SCALE_MEDIUM;
     std::atomic<int64_t> total{0};
@@ -274,7 +284,8 @@ TEST_CASE("MN Volume - ChannelPairs 10K") {
 }
 
 TEST_CASE("MN Volume - ChannelPipeline") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int STAGES = 100 / SCALE_LIGHT;
     constexpr int MSGS = 1000 / SCALE_MEDIUM;
@@ -316,7 +327,8 @@ TEST_CASE("MN Volume - ChannelPipeline") {
 }
 
 TEST_CASE("MN Volume - FanOutFanIn") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int WORKERS = 50 / SCALE_LIGHT;
     constexpr int MSGS = 10'000 / SCALE_MEDIUM;
@@ -361,7 +373,8 @@ TEST_CASE("MN Volume - FanOutFanIn") {
 }
 
 TEST_CASE("MN Volume - ManyChannelMessages") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 1'000'000 / SCALE_HEAVY;
     auto [w, r] = csp::chan<int>{};
@@ -386,7 +399,8 @@ TEST_CASE("MN Volume - ManyChannelMessages") {
 }
 
 TEST_CASE("MN Volume - SpawnWithYield") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 100'000 / SCALE_HEAVY;
     std::atomic<int> count{0};
@@ -405,7 +419,8 @@ TEST_CASE("MN Volume - SpawnWithYield") {
 }
 
 TEST_CASE("MN Volume - DaisyChain") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int CHAIN_LEN = 1000 / SCALE_MEDIUM;
     constexpr int MSGS = 100 / SCALE_LIGHT;
@@ -444,7 +459,8 @@ TEST_CASE("MN Volume - DaisyChain") {
 }
 
 TEST_CASE("MN Volume - AltSelectStress") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 1000 / SCALE_MEDIUM;
     std::atomic<int> total{0};
@@ -485,7 +501,8 @@ TEST_CASE("MN Volume - AltSelectStress") {
 }
 
 TEST_CASE("MN Volume - ProducerConsumer") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int PRODUCERS = 20 / SCALE_LIGHT;
     constexpr int CONSUMERS = 20 / SCALE_LIGHT;
@@ -529,7 +546,8 @@ TEST_CASE("MN Stress - Lifecycle") {
     constexpr int SPAWNS = 500 / SCALE_LIGHT;
 
     for (int cycle = 0; cycle < CYCLES; ++cycle) {
-        csp::init_runtime(4);
+        csp::shutdown_runtime();
+    csp::set_maxprocs(4);
         std::atomic<int> count{0};
         for (int i = 0; i < SPAWNS; ++i)
             csp::spawn([&] { count.fetch_add(1, std::memory_order_relaxed); });
@@ -546,7 +564,8 @@ TEST_CASE("MN Stress - ChannelPairs") {
     constexpr int PAIRS = 2000 / SCALE_MEDIUM;
 
     for (int cycle = 0; cycle < CYCLES; ++cycle) {
-        csp::init_runtime(4);
+        csp::shutdown_runtime();
+    csp::set_maxprocs(4);
         std::atomic<int64_t> total{0};
         for (int i = 0; i < PAIRS; ++i) {
             auto [w, r] = csp::chan<int>{};
@@ -572,7 +591,8 @@ TEST_CASE("MN Stress - ProducerConsumer") {
     constexpr int MSGS_PER_PRODUCER = 1000 / SCALE_MEDIUM;
 
     for (int cycle = 0; cycle < CYCLES; ++cycle) {
-        csp::init_runtime(4);
+        csp::shutdown_runtime();
+    csp::set_maxprocs(4);
         csp::chan<int> ch;
         for (int p = 0; p < PRODUCERS; ++p) {
             csp::spawn([w = ch.w.copy()] {
@@ -595,7 +615,8 @@ TEST_CASE("MN Stress - ProducerConsumer") {
 }
 
 TEST_CASE("MN Volume - SpawnDuringExecution") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     // Each imp spawns one child before exiting.
     // Starting from 1, this creates a tree of 2^DEPTH - 1 imps.
@@ -626,7 +647,8 @@ TEST_CASE("MN Volume - SpawnDuringExecution") {
 TEST_CASE("MN - Watchdog rescues stalled P") {
     using namespace std::chrono_literals;
 
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     // Stall both Ps with busy-loops. The watchdog should detect the stalls,
     // add new Ps, and work stealing drains the channel writer so it completes.
@@ -671,7 +693,8 @@ TEST_CASE("MN - Watchdog rescues stalled P") {
 TEST_CASE("MN - Watchdog rescues timers from stalled P") {
     using namespace std::chrono_literals;
 
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<bool> timer_fired{false};
     std::atomic<bool> stall_done{false};
@@ -706,7 +729,8 @@ TEST_CASE("MN - Watchdog rescues timers from stalled P") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("MN - SingleWorker") {
-    csp::init_runtime(1);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(1);
 
     auto [w, r] = csp::chan<int>{};
     std::atomic<int> result{0};
@@ -733,7 +757,8 @@ TEST_CASE("MN - SingleWorker") {
 }
 
 TEST_CASE("MN - ExceptionPropagation") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<bool> caught{false};
 
@@ -758,7 +783,8 @@ TEST_CASE("MN - ExceptionPropagation") {
 }
 
 TEST_CASE("MN - DynamicScopingInheritance") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     static csp::dynamic<int> depth{0};
 
@@ -803,7 +829,8 @@ TEST_CASE("MN - DynamicScopingInheritance") {
 }
 
 TEST_CASE("MN - ConcurrentSpawnStress") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int SPAWNERS = 20 / SCALE_LIGHT;
     constexpr int CHILDREN_PER = 50 / SCALE_LIGHT;
@@ -828,7 +855,8 @@ TEST_CASE("MN - ConcurrentSpawnStress") {
 }
 
 TEST_CASE("MN - HighContentionChannel") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int NUM_WRITERS = 50 / SCALE_LIGHT;
     constexpr int NUM_READERS = 50 / SCALE_LIGHT;
@@ -869,7 +897,8 @@ TEST_CASE("MN - HighContentionChannel") {
 }
 
 TEST_CASE("MN - ConcurrentBlocking") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     constexpr int N = 20 / SCALE_LIGHT;
     std::atomic<int> total{0};
@@ -897,7 +926,8 @@ TEST_CASE("MN - ConcurrentBlocking") {
 }
 
 TEST_CASE("MN - HAMTStress") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     static csp::dynamic<int> var1{0};
     static csp::dynamic<int> var2{0};
@@ -940,7 +970,8 @@ TEST_CASE("MN - HAMTStress") {
 }
 
 TEST_CASE("MN - StackPoolExhaustion") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     // Spawn more imps than the 256-stack pool cache to exercise mmap fallback.
     constexpr int N = (CSP_TEST_SANITIZER ? 300 : 500);

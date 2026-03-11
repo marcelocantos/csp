@@ -11,7 +11,8 @@
 // after completion. Catches leaked channels from queue corruption or
 // double-enqueue (which could skip cleanup).
 TEST_CASE("Invariant - ChannelCleanup") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 1000 / SCALE_MEDIUM;
     std::atomic<int> completed{0};
@@ -39,7 +40,8 @@ TEST_CASE("Invariant - ChannelCleanup") {
 // Rapid channel ops across multiple Ps. Any double-enqueue would cause
 // an MT to run twice (inflating count) or be skipped (deflating it).
 TEST_CASE("Invariant - ExactMessageCount") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int PAIRS = 500 / SCALE_MEDIUM;
     constexpr int MSGS = 10;
@@ -99,7 +101,8 @@ TEST_CASE("Invariant - ExactMessageCountSingleP") {
 // immediate-ready peers (fast path through suspending_=true → unlock →
 // wake_pending check → continue).
 TEST_CASE("Invariant - SuspendingWindowStress") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 10000 / SCALE_HEAVY;
     std::atomic<int> completed{0};

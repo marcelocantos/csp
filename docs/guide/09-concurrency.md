@@ -1,42 +1,50 @@
 # Concurrency
 
-By default, CSP runs all imps on a single OS thread using cooperative
-scheduling. This is simple, deterministic, and sufficient for many programs. When
-you need true parallelism -- CPU-bound work across cores, concurrent I/O, or a
-blocking thread pool -- the M:N runtime spreads imps across multiple OS
-threads with no changes to your channel code.
+CSP defaults to M:N threading: on first use, the runtime auto-initializes with
+one processor per hardware thread. Imps are multiplexed across OS threads via a
+work-stealing scheduler, with no changes to your channel code.
 
-## Default mode: single-threaded
+## Default mode: M:N threading
 
-Without calling `init_runtime()`, all imps run cooperatively on the main
-thread:
+Without any configuration, the runtime creates **N processors** (one per
+hardware thread) on first `spawn()` or `schedule()` call:
 
 ```cpp
 csp::spawn([] { /* ... */ });
-csp::schedule();   // runs all imps cooperatively
+csp::schedule();   // runs imps across all cores
+```
+
+Override the processor count with `set_maxprocs(n)` or the `CSP_MAXPROCS`
+environment variable (like Go's `GOMAXPROCS`).
+
+## Single-threaded mode
+
+For simple programs or deterministic testing, restrict to one processor:
+
+```cpp
+csp::set_maxprocs(1);   // or CSP_MAXPROCS=1
+csp::spawn([] { /* ... */ });
+csp::schedule();   // cooperative single-threaded scheduling
 ```
 
 Context switches happen at channel operations, `yield()`, `sleep()`, and other
 blocking points. Between those points, the running imp has exclusive
 access to the thread -- no preemption, no data races with other imps.
 
-This mode is a good default. Use it unless you have a specific reason to go
-multi-threaded.
+## M:N configuration
 
-## M:N mode
-
-`csp::init_runtime(n)` creates **n processors** backed by **n-1 worker threads**
-plus the main thread. Imps are multiplexed across these processors via a
-global run queue and work stealing:
+`csp::set_maxprocs(n)` sets the processor count before the runtime initializes.
+Each processor is backed by an OS thread. With **n processors**, there are
+**n-1 worker threads** plus the main thread:
 
 ```cpp
-csp::init_runtime(4);    // 4 processors on 4 OS threads
+csp::set_maxprocs(4);    // 4 processors on 4 OS threads
 ```
 
-Pass `0` to auto-detect the number of hardware threads:
+Pass `0` (the default) to use hardware concurrency:
 
 ```cpp
-csp::init_runtime(0);    // one processor per hardware thread
+csp::set_maxprocs(0);    // one processor per hardware thread
 ```
 
 ```mermaid
@@ -154,7 +162,7 @@ user-visible locking is needed. The same channel can be shared across any number
 of processors:
 
 ```cpp
-csp::init_runtime(4);
+csp::set_maxprocs(4);
 
 csp::chan<int> ch;
 
@@ -187,17 +195,16 @@ different values before and after a blocking operation.
 
 ## Runtime lifecycle
 
-The M:N runtime is managed with three free functions:
+The M:N runtime lifecycle:
 
 ```cpp
-csp::init_runtime(4);        // create processors and worker threads
+csp::set_maxprocs(4);        // optional: override processor count
 
-csp::spawn([&] { /* ... */ });
+csp::spawn([&] { /* ... */ });  // runtime auto-initializes here
 
 csp::schedule();             // blocks until all imps finish
 
-csp::shutdown_runtime();     // stops workers, joins threads, restores
-                             // single-threaded scheduler
+csp::shutdown_runtime();     // stops workers, joins threads
 ```
 
 `shutdown_runtime()` must be called after `schedule()` returns. It stops the
@@ -210,7 +217,7 @@ A common M:N pattern distributes work across multiple imps and collects
 results:
 
 ```cpp
-csp::init_runtime(4);
+csp::set_maxprocs(4);
 
 csp::chan<int> work;
 csp::chan<int64_t> results;
@@ -251,7 +258,7 @@ collector is ready.
 
 | | Single-threaded | M:N |
 |---|---|---|
-| **Init** | (none needed) | `init_runtime(n)` or `init_runtime(0)` |
+| **Init** | `set_maxprocs(1)` or `CSP_MAXPROCS=1` | (none needed -- auto-initializes) |
 | **OS threads** | 1 (main) | n (main + n-1 workers) |
 | **Scheduling** | Cooperative round-robin | Work stealing across processors |
 | **Channel safety** | Trivially safe (single thread) | Thread-safe (internal locks) |

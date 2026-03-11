@@ -86,7 +86,8 @@ inline ssize_t test_raw_read(csp::io::socket_t fd, void* buf, size_t len) {
 // --- Layer 1: wait_readable / wait_writable ---
 
 TEST_CASE("IO - WaitReadable") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto [rfd, wfd] = test_pipe();
     csp::io::set_nonblock(rfd);
@@ -116,7 +117,8 @@ TEST_CASE("IO - WaitReadable") {
 }
 
 TEST_CASE("IO - WaitWritable") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto [rfd, wfd] = test_pipe();
     csp::io::set_nonblock(rfd);
@@ -149,7 +151,8 @@ TEST_CASE("IO - WaitWritable") {
 // --- Layer 2: io::read / io::write ---
 
 TEST_CASE("IO - ReadWrite roundtrip") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto [rfd, wfd] = test_pipe();
     csp::io::set_nonblock(rfd);
@@ -187,7 +190,8 @@ TEST_CASE("IO - ReadWrite roundtrip") {
 // --- Layer 3: byte_reader ---
 
 TEST_CASE("IO - ByteReader") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto [rfd, wfd] = test_pipe();
 
@@ -220,7 +224,8 @@ TEST_CASE("IO - ByteReader") {
 // --- Layer 3: byte_writer ---
 
 TEST_CASE("IO - ByteWriter") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto [rfd, wfd] = test_pipe();
 
@@ -449,7 +454,8 @@ TEST_CASE("IO - Fixed multi-chunk") {
 // --- Composed pipeline: split_lines(byte_reader(fd)) ---
 
 TEST_CASE("IO - Composed lines from pipe") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto [rfd, wfd] = test_pipe();
 
@@ -483,7 +489,8 @@ TEST_CASE("IO - Composed lines from pipe") {
 // --- Multiple concurrent I/O waiters ---
 
 TEST_CASE("IO - Multiple concurrent waiters") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 8;
     csp::io::socket_t rfds[N], wfds[N];
@@ -524,7 +531,8 @@ TEST_CASE("IO - Multiple concurrent waiters") {
 // --- csp::blocking ---
 
 TEST_CASE("IO - Blocking offload") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<bool> ran{false};
     std::atomic<std::thread::id> pool_tid{};
@@ -549,7 +557,8 @@ TEST_CASE("IO - Blocking offload") {
 // --- DNS resolution ---
 
 TEST_CASE("IO - Resolve unresolvable hostname") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<bool> done{false};
 
@@ -568,7 +577,8 @@ TEST_CASE("IO - Resolve unresolvable hostname") {
 }
 
 TEST_CASE("IO - Resolve localhost") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<bool> resolved{false};
 
@@ -590,7 +600,8 @@ TEST_CASE("IO - Resolve localhost") {
 // --- csp::blocking edge cases ---
 
 TEST_CASE("IO - Blocking void return") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<bool> ran{false};
 
@@ -606,7 +617,8 @@ TEST_CASE("IO - Blocking void return") {
 }
 
 TEST_CASE("IO - Blocking with non-trivial return type") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     std::atomic<bool> done{false};
 
@@ -624,7 +636,8 @@ TEST_CASE("IO - Blocking with non-trivial return type") {
 }
 
 TEST_CASE("IO - Multiple concurrent blocking calls") {
-    csp::init_runtime(4);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
 
     constexpr int N = 5;
     std::atomic<int> completed{0};
@@ -650,7 +663,8 @@ TEST_CASE("IO - Multiple concurrent blocking calls") {
 #ifdef _WIN32
 
 TEST_CASE("IO - Console signal delivery") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto sig = csp::win::signal::notify({CTRL_C_EVENT});
     std::atomic<bool> got_signal{false};
@@ -675,7 +689,8 @@ TEST_CASE("IO - Console signal delivery") {
 }
 
 TEST_CASE("IO - Console signal multiple events") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto sig =
         csp::win::signal::notify({CTRL_C_EVENT, CTRL_BREAK_EVENT});
@@ -707,7 +722,8 @@ TEST_CASE("IO - Console signal multiple events") {
 }
 
 TEST_CASE("IO - Console signal reader drop cleanup") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     {
         auto sig = csp::win::signal::notify({CTRL_C_EVENT});
@@ -730,7 +746,8 @@ TEST_CASE("IO - Console signal reader drop cleanup") {
 #ifndef _WIN32
 
 TEST_CASE("IO - Signal delivery") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto sig = csp::signal::notify({SIGUSR1});
     std::atomic<bool> got_signal{false};
@@ -753,7 +770,8 @@ TEST_CASE("IO - Signal delivery") {
 }
 
 TEST_CASE("IO - Signal multiple signals") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     auto sig = csp::signal::notify({SIGUSR1, SIGUSR2});
     std::vector<int> received;
@@ -785,7 +803,8 @@ TEST_CASE("IO - Signal multiple signals") {
 }
 
 TEST_CASE("IO - Signal reader drop cleanup") {
-    csp::init_runtime(2);
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     {
         auto sig = csp::signal::notify({SIGUSR1});

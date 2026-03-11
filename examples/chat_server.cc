@@ -243,8 +243,6 @@ static void handle_client(int fd, std::shared_ptr<RoomRegistry> registry) {
 int main() {
     constexpr uint16_t PORT = 9000;
 
-    init_runtime();
-
     spawn([]{
         // Watch for SIGINT/SIGTERM. Created BEFORE the cancellation
         // scope so the signal producer imp (which uses io::read
@@ -348,5 +346,4 @@ int main() {
     });
 
     schedule();
-    shutdown_runtime();
 }

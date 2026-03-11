@@ -453,7 +453,7 @@ for deep virtual call chains).
 | Recursive cycle detected | 0 | Cycle doesn't add stack — recursion is bounded by the RT |
 
 **Statistical refinement.** After the initial wave of analysis (during
-`init_runtime`), compute the 95th percentile of exact depths across all
+runtime initialization), compute the 95th percentile of exact depths across all
 analyzed functions. Use this as a data-driven budget for subsequent inexact
 analyses, rather than an arbitrary constant.
 
@@ -470,7 +470,7 @@ analyzed yet, the imp gets the 32 KB conservative default.
 
 ### Design
 
-**Background analysis.** During `init_runtime`, spawn a background thread
+**Background analysis.** During runtime initialization, spawn a background thread
 that walks the program's symbol table (via `dl_iterate_phdr` on Linux or
 the Mach-O load commands on macOS) and pre-analyzes all functions in the
 text segment. Results populate `g_eval_cache` so that subsequent

@@ -13,7 +13,7 @@ namespace csp::win::signal {
 // Returns a reader that emits the console control event type (DWORD) each
 // time one of the specified events is delivered to the process. Installs a
 // console control handler via SetConsoleCtrlHandler (once, idempotent).
-// Requires init_runtime() since it uses the I/O reactor internally.
+// Uses the I/O reactor internally (auto-initialized on first use).
 //
 // Dropping the returned reader stops delivery and cleans up the underlying
 // socket pair. The handler remains installed but becomes a harmless no-op

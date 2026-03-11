@@ -318,6 +318,10 @@ namespace csp {
     }
 
     void schedule() {
+        // Ensure the runtime is initialized (and the correct scheduler
+        // is installed) before dispatching. current_p() auto-inits on
+        // first call based on CSP_MAXPROCS / set_maxprocs().
+        detail::current_p();
         g_scheduler();
     }
 
