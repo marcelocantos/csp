@@ -1,10 +1,191 @@
 # Targets
 
-<!-- last-evaluated: 1e8eea3 -->
+<!-- last-evaluated: 9e62cfd -->
 
 ## Active
 
-(none)
+### 🎯T2 Tier D combinators are implemented
+- **Weight**: 1 (value 3 / cost 5)
+- **Acceptance**:
+  - `amb`, `diff`, `frame`, `repeat`, `reorder`, `compose` exist in `include/csp/part/`
+  - Each has tests in `test/` and a detail page in `docs/reference/parts/`
+  - Catalog table in `docs/reference/parts.md` updated
+  - `dist/AGENTS-CSP.md` combinator table updated
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T3 Runtime is production-ready for I/O workloads
+- **Weight**: 1 (value 21 / cost 34)
+- **Acceptance**: all sub-targets achieved
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T3.1 Ergonomic I/O wrappers exist
+- **Weight**: 2 (value 8 / cost 5)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - Opaque `fd_t` type wraps raw file descriptors; no implicit conversion to int
+  - All CSP functions that produce fds (`io::accept`, `net::listen`, `net::dial`) return `fd_t` already set non-blocking
+  - `byte_reader`/`byte_writer` accept `fd_t` and assert (not fix) non-blocking
+  - `csp::net::listen`, `csp::net::dial` for TCP
+  - `csp::io::lines`, `csp::io::read_all`, `csp::io::write_all` for fd I/O
+  - `csp::file::read`, `csp::file::write` via blocking pool
+  - Tests and reference docs for each
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T3.2 Channel-native HTTP server works
+- **Weight**: 1 (value 8 / cost 13)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - `csp::http::serve(port)` returns `reader<request<Req, Resp>>`
+  - Typed JSON codecs for request/response bodies
+  - WebSocket upgrade to `reader<ws::message>` + `writer<ws::message>` (separate channels for recv/send)
+  - SSE upgrade to `writer<sse::event>`
+  - Middleware composable via stream combinators
+  - Request context via `csp::dynamic`
+  - Graceful shutdown via channel lifecycle
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T3.3 High-density stack scaling supports 100K+ imps
+- **Weight**: 1 (value 3 / cost 8)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - 100K+ concurrent imps without kernel memory pressure or `vm.max_map_count` issues
+  - Software overflow detection at API checkpoints or arena-based allocation
+  - Existing tests still pass (no regression)
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T3.4 Context-aware stack depth analysis is accurate
+- **Weight**: 1 (value 2 / cost 8)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - ARM64 instruction walker resolves nested function pointers, vtables, parameter-driven paths
+  - Interprocedural data flow and profile-guided calibration
+  - Stack allocations are tight without overflows on real workloads
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T4 API safety gaps are closed
+- **Weight**: 1 (value 5 / cost 4)
+- **Acceptance**: all sub-targets achieved
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T4.1 `closer<EP>` enforces vulture-only endpoints
+- **Weight**: 2 (value 3 / cost 2)
+- **Parent**: 🎯T4
+- **Acceptance**:
+  - `closer<EP>` type exists with only `operator~` and `operator bool`
+  - `done()` returns `closer<reader<>>`
+  - `spawn(f)` returns `closer<reader<std::exception_ptr>>`
+  - Bare `done()` in prialt or `handle >> exc` does not compile
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T4.2 main() can perform CSP operations
+- **Weight**: 1 (value 2 / cost 2)
+- **Parent**: 🎯T4
+- **Acceptance**:
+  - `csp::local` in `main()` does not crash
+  - Either a lightweight "main imp" context is established automatically, or the limitation is documented with a clear error message
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T5 Unmodeled concurrent decision points have TLA+ specs
+- **Weight**: 1 (value 3 / cost 3)
+- **Acceptance**:
+  - Blocking pool shutdown, stack pool reclamation, M:N worker join audited
+  - New TLA+ specs in `formal/` for any unmodeled protocols found
+  - Bug variants (`_Bug.tla`) for each new spec
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T6 Local Docker testing covers Linux scenarios
+- **Weight**: 2 (value 3 / cost 2)
+- **Acceptance**:
+  - `make docker-test` runs both ARM64 and x86_64 Linux builds locally
+  - x86 cross-compilation works
+  - Documented in CLAUDE.md or README
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T7 Non-trivial example applications demonstrate CSP
+- **Weight**: 2 (value 30 / cost 18)
+- **Acceptance**: at least 3 sub-target examples are complete
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T7.1 Chat server example
+- **Weight**: 1 (value 5 / cost 3)
+- **Parent**: 🎯T7
+- **Acceptance**:
+  - Multi-room chat with per-client imps
+  - Fan-out to subscribers, join/leave lifecycle, backpressure on slow clients
+  - Compiles and runs as a standalone binary in `examples/`
+- **Status**: converging — multi-room chat works (fanout, subscribe, nick, join/leave, backpressure, clean SIGTERM shutdown). Not yet committed.
+- **Discovered**: 2026-03-09
+
+### 🎯T7.2 ETL pipeline example
+- **Weight**: 1 (value 5 / cost 3)
+- **Parent**: 🎯T7
+- **Acceptance**:
+  - Ingests CSV/JSON, parses, validates, transforms, enriches, deduplicates, batch-writes to SQLite
+  - Demonstrates chain, parallel_map, batch, scan, buffer, backpressure
+  - Compiles and runs in `examples/`
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T7.3 Web crawler example
+- **Weight**: 1 (value 5 / cost 3)
+- **Parent**: 🎯T7
+- **Acceptance**:
+  - Breadth-first crawl with bounded concurrency, URL frontier, dedup
+  - Per-host rate limiting, graceful shutdown
+  - Compiles and runs in `examples/`
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T7.4 Sensor fusion dashboard example
+- **Weight**: 1 (value 5 / cost 3)
+- **Parent**: 🎯T7
+- **Acceptance**:
+  - Multiple simulated sensor streams at different rates
+  - combine_latest fusion, quantize throttling, sliding window anomaly detection
+  - Compiles and runs in `examples/`
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T7.5 Task scheduler example
+- **Weight**: 1 (value 5 / cost 3)
+- **Parent**: 🎯T7
+- **Acceptance**:
+  - Priority queue, worker pool, per-job timeout, dependency DAG
+  - Progress reporting over channels, structured cancellation
+  - Compiles and runs in `examples/`
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T7.6 Log aggregator example
+- **Weight**: 1 (value 5 / cost 3)
+- **Parent**: 🎯T7
+- **Acceptance**:
+  - Tails multiple log files, parses, routes by severity
+  - Time-window aggregation, periodic flush, threshold alerts
+  - Compiles and runs in `examples/`
+- **Status**: not started
+- **Discovered**: 2026-03-09
+
+### 🎯T8 Signal handling is audited for correctness
+- **Weight**: 1 (value 2 / cost 2)
+- **Acceptance**:
+  - Signal handling code reviewed for async-signal-safety
+  - Any violations fixed or documented as acceptable
+  - Audit findings recorded in `docs/audit-log.md`
+- **Status**: not started
+- **Discovered**: 2026-03-09
 
 ## Achieved
 
@@ -29,7 +210,7 @@
 - **Acceptance**:
   - `csp_tests.exe` prints doctest summary on Windows CI
   - Exit code reflects test results (0 = all pass)
-- **Context**: 621/621 tests pass on Windows CI. Bugs fixed: `~15UL` pointer truncation (7d69868), `single()` assert side-effect (e49b032), console signal killing CI (9c68124), demand-commit stack pool (905b839, 89e1f40), .pdata separation (d668bb3), NT_TIB StackLimit (3776b2f, 434c612), maybe_shrink double-fault during MSVC exception dispatch (1e8eea3).
+- **Context**: 621/621 tests pass on Windows CI.
 - **Parent**: 🎯T1
 - **Status**: achieved
 - **Discovered**: 2026-03-04
@@ -40,7 +221,7 @@
 - **Estimated-cost**: 2
 - **Actual-cost**: 1
 - **Acceptance**: macOS arm64 CI test job passes reliably (no flake on `CHECK(thread_ids.size() > 1)`)
-- **Context**: Replaced busy-loop with `csp::yield()` to force scheduler distribution across Ps and OS threads.
+- **Context**: Replaced busy-loop with `csp::yield()` to force scheduler distribution.
 - **Parent**: 🎯T1
 - **Status**: achieved
 - **Discovered**: 2026-03-04
@@ -53,7 +234,7 @@
 - **Acceptance**:
   - `make dist && git diff --exit-code dist/` passes
   - Sanitizer and TSan jobs can compile test-dist
-- **Context**: dist/ files were stale from master merge, missing count.h, win/signal.h, platform guards, and log→s_log renames. Gated 10/11 CI jobs.
+- **Context**: dist/ files were stale from master merge.
 - **Parent**: 🎯T1
 - **Status**: achieved
 - **Discovered**: 2026-03-04
