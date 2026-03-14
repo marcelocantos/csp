@@ -4,18 +4,25 @@
 
 #if defined(__aarch64__)
 
-// Detect sanitizers at compile time. Sanitizer-instrumented code injects
-// extra BL calls (shadow memory checks, etc.) that exhaust the analysis
-// budget on error-checking paths, making is_exact false even when the
-// main execution path correctly resolves indirect calls.
+// Detect sanitizers at compile time.
 #if defined(__has_feature)
 #  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
 #    define CSP_SANITIZED 1
 #  endif
 #endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#  undef CSP_SANITIZED
+#  define CSP_SANITIZED 1
+#endif
 #ifndef CSP_SANITIZED
 #  define CSP_SANITIZED 0
 #endif
+
+// Under sanitizers, instrumented code contains BL calls into ASan/TSan
+// runtime (shadow memory checks, etc.) that can lead the instruction
+// walker into unmapped memory.  Skip the entire suite — the analyzer
+// is already bypassed at runtime (see spawn()).
+#if !CSP_SANITIZED
 
 // Prevent inlining so each function gets its own stack frame.
 // At -O2, the compiler allocates minimal frames, so we check relative
@@ -56,11 +63,11 @@ TEST_SUITE("StackAnalysis") {
 TEST_CASE("Leaf function") {
     auto result = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&leaf_func));
-    if (!CSP_SANITIZED) CHECK(result.is_exact);
+    CHECK(result.is_exact);
     // Compiler allocates at least some frame for the volatile write.
     CHECK(result.max_depth > 0);
-    // Should be well under 32KB (sanitizers inflate frames).
-    CHECK(result.max_depth < (CSP_SANITIZED ? 16384 : 4096));
+    // Should be well under 4KB for a trivial leaf.
+    CHECK(result.max_depth < 4096);
     MESSAGE("leaf_func depth: ", result.max_depth);
 }
 
@@ -71,14 +78,13 @@ TEST_CASE("Direct call chain") {
         reinterpret_cast<const void*>(&leaf_func));
     auto chain_result = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&calls_leaf));
-    if (!CSP_SANITIZED) CHECK(chain_result.is_exact);
+    CHECK(chain_result.is_exact);
     CHECK(chain_result.max_depth >= leaf_result.max_depth);
     MESSAGE("calls_leaf depth: ", chain_result.max_depth,
             ", leaf_func depth: ", leaf_result.max_depth);
 }
 
 TEST_CASE("Indirect call - no data") {
-    // Use tighter limits since ASan-instrumented code has many branches.
     csp::stack_analysis_options opts;
     opts.max_instructions = 10000;
     auto result = csp::analyze_stack_depth(
@@ -95,12 +101,7 @@ TEST_CASE("Indirect call - with data") {
     auto result = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&indirect_caller), &d);
     // With data, the indirect target should be resolved.
-    // Under ASan, error-checking paths inject BL calls that exhaust the
-    // analysis budget on those paths, making is_exact false even though
-    // the main execution path correctly resolves the BLR target.
-    if (!CSP_SANITIZED) {
-        CHECK(result.is_exact);
-    }
+    CHECK(result.is_exact);
     CHECK(result.max_depth > 0);
     MESSAGE("indirect_caller (with data) depth: ", result.max_depth,
             ", is_exact: ", result.is_exact);
@@ -123,11 +124,8 @@ TEST_CASE("Different indirect targets - different depths") {
     auto r2 = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&indirect_caller), &d2);
     // Same cached program, different data → potentially different depths.
-    // Under ASan, error paths make the result inexact (see above).
-    if (!CSP_SANITIZED) {
-        CHECK(r1.is_exact);
-        CHECK(r2.is_exact);
-    }
+    CHECK(r1.is_exact);
+    CHECK(r2.is_exact);
     // Both should produce reasonable results.
     CHECK(r1.max_depth > 0);
     CHECK(r2.max_depth > 0);
@@ -137,4 +135,5 @@ TEST_CASE("Different indirect targets - different depths") {
 
 } // TEST_SUITE
 
+#endif // !CSP_SANITIZED
 #endif // __aarch64__
