@@ -47,3 +47,28 @@ debugging of the CSP imp-based concurrency library.
    before the child imp could retain it, plus an open investigation
    into a related exception-lifetime race in the supervisor restart
    path.
+
+10. **[The Teddy Bear Paper](10-teddy-bear-paper.md)** — Diagnosing
+    a C++ exception ABI race through structured articulation.
+
+11. **[The Channel Re-Resolution Use-After-Free](11-channel-reresolution-uaf.md)**
+    — A use-after-free triggered by channel swap topology changes,
+    endpoint death, and the lock-free re-resolution window in the
+    prialt retry path.
+
+12. **[Verification Architecture for CSP Programs](12-verification-architecture.md)**
+    — A layered verification framework — session types, graph
+    validation, deadlock detection, and model extraction — that
+    exploits CSP's ownership model to make concurrency proofs
+    compositional.
+
+13. **[Formal Foundations of CSP Verification](13-formal-foundations.md)**
+    — Four axioms (linearity, rendezvous atomicity, death
+    propagation, death observability) from which race freedom,
+    orphan-block freedom, and cleanup completeness follow as
+    local, compositional properties.
+
+14. **[The Mutex-to-Channel Transformation](14-mutex-to-channel.md)**
+    — Porting a Go task broker to CSP as a case study: every mutex
+    becomes a channel-owning imp, shutdown reduces from 25 lines to
+    one, and the total line count stays the same.
