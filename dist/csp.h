@@ -2697,6 +2697,19 @@ struct Processor {
         , id(id_)
     { }
 
+    // Reinitialize a dead surplus P for reuse.  Caller must have
+    // joined the old worker thread first.
+    void reset() {
+        busy = &main;
+        save_ctx = nullptr;
+        save_imp = nullptr;
+        running = nullptr;
+        parked.store(false, std::memory_order_relaxed);
+        heartbeat.store(0, std::memory_order_relaxed);
+        // alive must be last — steal_work reads it with acquire.
+        alive.store(true, std::memory_order_release);
+    }
+
     Processor(Processor const &) = delete;
     Processor& operator=(Processor const &) = delete;
 };
