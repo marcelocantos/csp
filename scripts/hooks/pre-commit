@@ -1,0 +1,13 @@
+#!/bin/sh
+# Ensure dist/ files are up to date before committing.
+
+# Only check if source files that affect dist are being committed.
+if git diff --cached --name-only | grep -qE '^(include/|src/|scripts/amalgamate\.py)'; then
+    make dist >/dev/null 2>&1
+    if ! git diff --quiet dist/; then
+        echo "ERROR: dist/ is out of date. Run 'make dist' and stage the changes."
+        echo ""
+        git diff --stat dist/
+        exit 1
+    fi
+fi

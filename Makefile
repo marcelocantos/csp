@@ -311,7 +311,7 @@ docker-clean:
 	-docker rmi csp-test-linux-arm64 csp-test-linux-amd64 2>/dev/null
 
 clean:
-	rm -rf build dist
+	rm -rf build
 
 # Pull in generated dependency files (silently ignored on first build).
 -include $(ALL_DEPS)
