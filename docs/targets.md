@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: 9e62cfd -->
+<!-- last-evaluated: fe73f81 -->
 
 ## Active
 
@@ -103,15 +103,6 @@
 - **Status**: not started
 - **Discovered**: 2026-03-09
 
-### 🎯T6 Local Docker testing covers Linux scenarios
-- **Weight**: 2 (value 3 / cost 2)
-- **Acceptance**:
-  - `make docker-test` runs both ARM64 and x86_64 Linux builds locally
-  - x86 cross-compilation works
-  - Documented in CLAUDE.md or README
-- **Status**: not started
-- **Discovered**: 2026-03-09
-
 ### 🎯T7 Non-trivial example applications demonstrate CSP
 - **Weight**: 2 (value 30 / cost 18)
 - **Acceptance**: at least 3 sub-target examples are complete
@@ -198,6 +189,17 @@
 - **Discovered**: 2026-03-09
 
 ## Achieved
+
+### 🎯T6 Local Docker testing covers Linux scenarios
+- **Weight**: 2 (value 3 / cost 2)
+- **Acceptance**:
+  - `make docker-test` runs both ARM64 and x86_64 Linux builds locally
+  - x86 cross-compilation works
+  - Documented in CLAUDE.md or README
+- **Context**: ARM64 636/636, x86_64 630/630 (no TLS). Documented in CLAUDE.md. Required SIGPIPE fix for Linux (484b5e4).
+- **Status**: achieved
+- **Discovered**: 2026-03-09
+- **Achieved**: 2026-03-15
 
 ### 🎯T1 Windows port PR is merged to master
 - **Weight**: 2 (value 8 / cost 5)
