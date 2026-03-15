@@ -178,6 +178,16 @@
 - **Status**: not started
 - **Discovered**: 2026-03-09
 
+### 🎯T9 TSan is clean on all CI jobs
+- **Weight**: 2 (value 3 / cost 5)
+- **Acceptance**:
+  - Linux arm64 TSan, Linux x86_64 TSan, and macOS TSan CI jobs all pass reliably
+  - mbedTLS TSan false positives resolved (either via annotation gaps, TSan suppressions, or upstream fix)
+  - Cancel-during-I/O flake in `cancel.test.cc:654` resolved
+- **Status**: not started — mbedTLS races show `tid=0` suggesting fiber tracking confusion with `__tsan_switch_to_fiber` annotations; cancel test is a timing flake under TSan on arm64
+- **Discovered**: 2026-03-15
+- **Context**: mbedTLS TSan false positives documented in `docs/todo.md`. Both racing threads show `tid=0`, suggesting TSan's fiber tracking is confused. CSP has `__tsan_switch_to_fiber` annotations but they may not cover all transitions (initial imp entry, worker loop). Cancel flake is separate — timing-dependent under TSan slowdown.
+
 ### 🎯T8 Signal handling is audited for correctness
 - **Weight**: 1 (value 2 / cost 2)
 - **Acceptance**:
