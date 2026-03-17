@@ -3171,7 +3171,7 @@ namespace csp {
             // F_SETNOSIGPIPE handles this, but Linux lacks that fcntl.
             // Writing to a closed pipe/socket must return EPIPE, not
             // kill the process.
-            signal(SIGPIPE, SIG_IGN);
+            ::signal(SIGPIPE, SIG_IGN);
 #endif
 
             // Shut down any previous state.
