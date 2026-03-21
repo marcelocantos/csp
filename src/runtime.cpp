@@ -4,6 +4,7 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <csignal>
 #endif
 
 #include <algorithm>
@@ -36,6 +37,14 @@ namespace csp {
         }
 
         void Runtime::init(int num_procs) {
+#ifndef _WIN32
+            // Ignore SIGPIPE process-wide.  On macOS, per-fd
+            // F_SETNOSIGPIPE handles this, but Linux lacks that fcntl.
+            // Writing to a closed pipe/socket must return EPIPE, not
+            // kill the process.
+            ::signal(SIGPIPE, SIG_IGN);
+#endif
+
             // Shut down any previous state.
             if (!procs.empty()) {
                 shutdown();
