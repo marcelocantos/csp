@@ -19,6 +19,8 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
 - **Cooperative cancellation** — scope-based, with deadlines, composable in `alt`
 - **Dynamic scoping** — inherited variables with scoped bindings and copy-on-write
   isolation
+- **Request/response** — `request<Req, Resp>` type with `call()` for
+  non-blocking RPC and callable writer endpoints
 - **Imp-local storage** — per-imp variables (not inherited)
 - **Imp exit / supervision** — restart policies, worker groups, supervised execution
 - **Cross-platform** — macOS, Linux (x86_64/arm64), Windows (x86_64)

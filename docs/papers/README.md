@@ -72,3 +72,10 @@ debugging of the CSP imp-based concurrency library.
     — Porting a Go task broker to CSP as a case study: every mutex
     becomes a channel-owning imp, shutdown reduces from 25 lines to
     one, and the total line count stays the same.
+
+15. **[Channels as Interfaces](15-channels-as-interfaces.md)**
+    — Bidirectional lifecycle observability as a design principle:
+    how independent endpoint death signals enable a compositional
+    architecture where components are wired via channel topology
+    instead of called via APIs, and fuse/splice/swap become
+    the composition operators.

@@ -17,6 +17,8 @@ All types live in `namespace csp`. Header: `#include "csp.h"`.
 4. [csp::chan_op\<T\>](#cspchan_opt) -- deferred channel operation
 5. [csp::poke_t](#csppoke_t) -- empty signal type
 6. [Rendezvous](#rendezvous) -- how writes and reads meet
+7. [Topology Operations](#topology-operations) -- swap, fuse, tap, splice, pipe
+8. [Request/Response](#requestresponse) -- RPC over channels
 
 ---
 
@@ -555,13 +557,26 @@ reader.suspend ─┤last writer dies├─➤ unblock reader; result = false
 - **Symmetric blocking.** Writers and readers are treated symmetrically. Either
   side may arrive first; the first to arrive suspends until the other is ready.
 
-- **Death notification.** When all endpoints on one side are destroyed, any
-  imps suspended on the opposite side are unblocked with a failure
-  result. This allows loops to terminate naturally:
+- **Death notification (bidirectional lifecycle observability).** When all
+  endpoints on one side are destroyed, any imps suspended on the opposite
+  side are unblocked with a failure result. This allows loops to terminate
+  naturally:
 
   ```cpp
   for (int n : r) { ... }   // exits when all writers close
   ```
+
+  This is a foundational design principle: each endpoint's death is
+  independently observable by the other side. Writers can detect that all
+  readers are gone (via `~w` in `prialt` or a `false` return from `<<`),
+  and readers can detect that all writers are gone (via `~r` or a `false`
+  return from `>>`). This bidirectional observability is what makes cleanup
+  cascade through a channel topology — when one stage terminates, the stages
+  connected to it observe the death and can shut down in turn. It
+  differentiates CSP from Go channels, where a closed channel is observable
+  by readers but a dead reader is invisible to writers (writers panic on a
+  closed channel, and there is no mechanism to detect that no goroutine
+  holds the receive end).
 
 - **No priority.** When multiple peers are waiting, the channel selects one.
   The selection order is not specified. Use `prialt` (not the channel itself)
@@ -714,4 +729,146 @@ csp::splice(ch.w, ch.r, [](csp::reader<int> in, csp::writer<int> out) {
 // Values through ch.w are now doubled before reaching ch.r.
 // When the filter's input exhausts (upstream death), it returns
 // and fuse-back restores the direct ch.w → ch.r path.
+```
+
+### operator| (pipe)
+
+```cpp
+template <typename T> void operator|(writer<T>& w, reader<T>& r);
+```
+
+Syntactic sugar for `fuse(w, r)`. Reads as "data flows from left to
+right."
+
+```cpp
+a.w | b.r;   // equivalent to csp::fuse(a.w, b.r)
+```
+
+---
+
+## Request/Response
+
+CSP channels are unidirectional, but many concurrent systems need
+request/response (RPC) semantics. The `request` struct and associated
+helpers provide this by embedding a one-shot reply channel inside each
+request message.
+
+### csp::request\<Req, Resp\>
+
+```cpp
+template <typename Req, typename Resp>
+struct request {
+    using value_type = Req;
+    using reply_type = Resp;
+    Req value;
+    writer<Resp> reply;
+};
+```
+
+| Field   | Type            | Description |
+|---------|-----------------|-------------|
+| `value` | `Req`           | The request payload. |
+| `reply` | `writer<Resp>`  | Write endpoint of a one-shot channel. The server writes its response here. |
+
+Each request carries its own private reply channel. This means multiple
+callers can send requests concurrently on the same `writer<request<Req, Resp>>`
+without stealing each other's responses — each caller reads from its own
+`reader<Resp>`.
+
+### csp::is_request\<T\>
+
+```cpp
+template <typename T> struct is_request : std::false_type {};
+template <typename Req, typename Resp>
+struct is_request<request<Req, Resp>> : std::true_type {};
+```
+
+Type trait that detects whether `T` is a `request<Req, Resp>` specialization.
+Used internally to enable `writer::operator()` only on request channels.
+
+### csp::call
+
+```cpp
+template <typename Req, typename Resp>
+reader<Resp> call(writer<request<Req, Resp>>& w, Req req);
+```
+
+Send a request and return a `reader<Resp>` for the response. The call is
+**non-blocking** — it sends the request (which blocks only until the server
+reads it) and returns immediately with a reader that can be used to collect
+the response later.
+
+This enables several patterns:
+
+- **Block for response:** `call(w, key).read()`
+- **Multiplex with other work:** `prialt(call(w, key) >> val, ...)`
+- **Fire-and-collect-later (pipelining):**
+  ```cpp
+  auto r1 = call(w, k1);
+  auto r2 = call(w, k2);
+  auto v1 = r1.read();
+  auto v2 = r2.read();
+  ```
+
+### writer::operator() (blocking call)
+
+```cpp
+template <typename T = poke_t>
+class writer {
+    // Only available when T is a request<Req, Resp>:
+    template <typename U = T>
+        requires is_request<U>::value
+    typename U::reply_type operator()(typename U::value_type req);
+};
+```
+
+Convenience for the common case: sends the request and blocks until the
+response arrives. Equivalent to `call(*this, std::move(req)).read()`.
+
+### Design rationale
+
+The reply channel is embedded in the request rather than maintained as a
+separate return channel for a fundamental reason: **concurrent callers must
+not steal each other's responses.** If multiple imps share a
+`writer<request<Req, Resp>>` and responses came back on a shared channel,
+there would be no way to route each response to the correct caller.
+Embedding a private reply channel in each request makes the response
+path point-to-point by construction.
+
+### Example
+
+```cpp
+#include "csp.h"
+
+csp::spawn([] {
+    // Key-value server: maps string keys to int values.
+    using lookup = csp::request<std::string, int>;
+    auto [w, r] = csp::chan<lookup>{};
+
+    // Server loop.
+    csp::spawn([r = std::move(r)] {
+        std::map<std::string, int> store{{"x", 1}, {"y", 2}};
+        for (auto& req : r) {
+            auto it = store.find(req.value);
+            req.reply << (it != store.end() ? it->second : -1);
+        }
+    });
+
+    // Client 1: blocking call via operator().
+    csp::spawn([w = w.copy()] {
+        int val = w("x");   // sends request, blocks for response
+        assert(val == 1);
+    });
+
+    // Client 2: non-blocking call via csp::call.
+    csp::spawn([w = w.copy()] {
+        auto r1 = csp::call(w, std::string("x"));
+        auto r2 = csp::call(w, std::string("y"));
+        assert(r1.read() == 1);
+        assert(r2.read() == 2);
+    });
+
+    w = {};  // close request channel when clients finish
+});
+csp::schedule();
 ```

@@ -238,6 +238,17 @@ for (int i = 1; w << i; ++i) {
 // loop exits: all readers gone
 ```
 
+### Bidirectional lifecycle observability
+
+Each endpoint's death is independently observable by the other side via
+`alt`/`prialt`. This property -- **bidirectional lifecycle observability** --
+is what allows cleanup to cascade through a channel topology: when a writer
+dies, readers detect it and can exit, which kills their own writers on other
+channels, and so on. Contrast this with Go, where only a writer can close a
+channel (`close(ch)`); a dead reader is invisible to the writer, which will
+panic if it sends on a closed channel or silently block forever if no reader
+exists.
+
 ### Death as a first-class event
 
 Channel death is observable in `alt` and `prialt` using the `~` operator on

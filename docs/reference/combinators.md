@@ -374,6 +374,10 @@ and `writer`.
 
 ### Description
 
+> **Note:** A separate `operator|(writer<T>&, reader<T>&)` overload exists
+> outside the parts system. It fuses two channel endpoints, equivalent to
+> `fuse(w, r)`. See [Channels Reference](channels.md) for details.
+
 The pipe operator uses `std::move` on the left operand throughout, enabling
 move-only captures in combinator bodies.
 
