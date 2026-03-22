@@ -213,7 +213,9 @@ switch (prialt(w << 42, r >> v, ~some_reader)) {
 Key: `~endpoint` is a death-watch operation. When it fires, the return
 value is **complemented** (`~k` for the `k`-th operation). All death
 events — both explicit vultures and implicit death on data operations —
-return complemented indices.
+return complemented indices. This **bidirectional lifecycle observability**
+— each endpoint's death independently observable by the other side — is
+CSP's core design principle. See `docs/papers/15-channels-as-interfaces.md`.
 
 **`after()` returns non-negative**: `after(d)` sends a `time_point` then
 dies, so `prialt(ch >> v, after(1s) >> nullptr)` returns `1` on timeout (data

@@ -7,8 +7,9 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
 
 - **Lightweight userspace threads (imps)** with M:N scheduling and work stealing
 - **Typed channels** — synchronous (unbuffered) or buffered (`chan<T>(n)`)
-- **Per-endpoint lifecycle** — either end can close independently; death is
-  observable via `alt`/`prialt`
+- **Per-endpoint lifecycle** — [bidirectional lifecycle
+  observability](docs/papers/15-channels-as-interfaces.md): either end can
+  close independently; death is observable via `alt`/`prialt`
 - **Alt/prialt multiplexing** — select across sends, receives, and endpoint death
 - **Timers** — `sleep`, `after`, `tick`, all composable with `alt`
 - **70+ stream combinators** — `map`, `where`, `scan`, `merge`, `zip`, and more,
