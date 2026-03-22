@@ -374,6 +374,10 @@ template <> struct is_chan_op<none_t> : std::true_type {};
 }
 
 
+// Forward declarations for request/response support.
+template <typename Req, typename Resp> struct request;
+template <typename> struct is_request;
+
 template <typename T = poke_t>
 class writer {
 public:
@@ -407,6 +411,12 @@ public:
     chan_op<T> operator~() const {
         return chan_op<T>(internal::ChanOp{internal::wait_dead(w_), nullptr, internal::get_slot(w_.ptr)});
     }
+
+    // Blocking call for request<Req, Resp> writers.
+    // w(req) sends the request and blocks for the response.
+    template <typename U = T>
+        requires is_request<U>::value
+    typename U::reply_type operator()(typename U::value_type req);
 
     writer copy() const {
         writer c;
@@ -727,6 +737,53 @@ void swap(writer<T>& w1, reader<T> r1, writer<T> w2, reader<T>& r2) {
 template <typename T>
 void fuse(writer<T>& w, reader<T>& r) {
     swap(w, {}, {}, r);
+}
+
+// Pipe operator: fuse w's output into r's input.
+// Equivalent to fuse(w, r) — "data flows from left to right."
+template <typename T>
+void operator|(writer<T>& w, reader<T>& r) {
+    fuse(w, r);
+}
+
+// --- Request/response (RPC over channels) ---
+
+// A request bundled with a reply channel.  The caller creates a one-shot
+// chan<Resp>, sends the writer half with the request, and reads from its
+// private reader.  This allows concurrent callers on the same request
+// channel without stealing each other's responses.
+template <typename Req, typename Resp>
+struct request {
+    using value_type = Req;
+    using reply_type = Resp;
+    Req value;
+    writer<Resp> reply;
+};
+
+// Trait to detect request<Req, Resp>.
+template <typename> struct is_request : std::false_type {};
+template <typename Req, typename Resp>
+struct is_request<request<Req, Resp>> : std::true_type {};
+
+// Send a request and return a reader for the response (non-blocking).
+//   call(w, key).read()              — block for response
+//   prialt(call(w, key) >> val, ...) — multiplex with other work
+//   auto r1 = call(w, k1);           — fire-and-collect-later
+//   auto r2 = call(w, k2);
+//   auto v1 = r1.read(); auto v2 = r2.read();
+template <typename Req, typename Resp>
+reader<Resp> call(writer<request<Req, Resp>>& w, Req req) {
+    chan<Resp> reply;
+    w << request<Req, Resp>{std::move(req), std::move(reply.w)};
+    return std::move(reply.r);
+}
+
+// Out-of-line definition of writer::operator() for request types.
+template <typename T>
+template <typename U>
+    requires is_request<U>::value
+typename U::reply_type writer<T>::operator()(typename U::value_type req) {
+    return call(*this, std::move(req)).read();
 }
 
 // Tap: splice a pass-through observer into the channel between w and r.

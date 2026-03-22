@@ -179,6 +179,17 @@
 - **Discovered**: 2026-03-15
 - **Context**: mbedTLS TSan false positives documented in `docs/todo.md`. Both racing threads show `tid=0`, suggesting TSan's fiber tracking is confused. CSP has `__tsan_switch_to_fiber` annotations but they may not cover all transitions (initial imp entry, worker loop). Cancel flake is separate — timing-dependent under TSan slowdown.
 
+### 🎯T10 Bidirectional lifecycle observability is documented as a design principle
+- **Weight**: 2 (value 5 / cost 3)
+- **Acceptance**:
+  - A document (guide chapter or design paper) names and explains bidirectional lifecycle observability: each channel endpoint's death is independently observable by the other side via prialt
+  - Contrasts with Go channels (closed channel readable, but dead reader invisible to writer)
+  - Explains the compositionality this enables: components as endpoint bundles, cleanup cascading through channel topology, self-managing graphs — the vision that APIs become less relevant when components are accessed via channel endpoints
+  - Referenced from the agent guide and README
+- **Status**: not started
+- **Discovered**: 2026-03-21
+- **Context**: CSP's per-endpoint lifecycle with independent refcounts and death observability via `~endpoint` in prialt is the key differentiator that enables a compositional architecture where traditional APIs are replaced by channel topology. The term "bidirectional lifecycle observability" captures this precisely. This deserves a writeup that names the principle, explains its implications, and shows how it changes the way you design concurrent systems.
+
 ### 🎯T8 Signal handling is audited for correctness
 - **Weight**: 1 (value 2 / cost 2)
 - **Acceptance**:

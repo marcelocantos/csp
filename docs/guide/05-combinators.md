@@ -187,6 +187,11 @@ calling `.spawn()` explicitly. The result type depends on the operands:
 | `filter` | `writer<T>` | `writer<In>` (spawns immediately) |
 | `producer` | `writer<T>` | callable (ready to run) |
 
+The `|` operator also works at the channel level: `w | r` (where `w` is a
+`writer<T>&` and `r` is a `reader<T>&`) fuses the two endpoints, equivalent to
+calling `fuse(w, r)`. See [Channels Reference](../reference/channels.md) for
+details.
+
 ### Composing parts (deferred)
 
 When you pipe two parts together, no imp is spawned yet. The result

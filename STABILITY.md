@@ -39,6 +39,8 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 | `byte` / `bytes` | type aliases (`uint8_t`, `vector<byte>`) | Stable |
 | `ClientSide` / `ServerSide` | protocol markers | Stable |
 | `incoming<Side, T>` / `outgoing<Side, T>` | protocol type aliases | Stable |
+| `request<Req, Resp>` | struct template (request + reply channel) | Fluid |
+| `is_request<T>` | trait (`std::true_type` / `std::false_type`) | Fluid |
 
 ### Type aliases
 
@@ -73,6 +75,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 | `splice(writer<T>&, reader<T>&, F&&)` | Needs review |
 | `channel_swap(writer<T>&, writer<T>&)` | Needs review |
 | `channel_swap(reader<T>&, reader<T>&)` | Needs review |
+| `call(writer<request<Req, Resp>>&, Req) → reader<Resp>` | Fluid |
+| `writer<request<Req, Resp>>::operator()(Req) → Resp` | Fluid |
+| `operator\|(writer<T>&, reader<T>&)` — syntactic sugar for `fuse` | Needs review |
 
 ### Buffered channel composition
 

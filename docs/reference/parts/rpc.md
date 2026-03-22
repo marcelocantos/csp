@@ -1,4 +1,92 @@
-# csp::part::rpc
+# RPC (request-response over channels)
+
+## Recommended: `request<Req, Resp>` primitives
+
+The preferred way to do request-response in CSP is with the `request<Req, Resp>`
+type and its associated helpers, defined in `csp.h` (no extra header needed).
+
+A `request<Req, Resp>` bundles a request value with a one-shot reply channel.
+The caller creates the reply channel automatically — concurrent callers on the
+same request channel never steal each other's responses.
+
+### Core types and functions
+
+```cpp
+// A request bundled with a reply channel.
+template <typename Req, typename Resp>
+struct request {
+    using value_type = Req;
+    using reply_type = Resp;
+    Req value;
+    writer<Resp> reply;
+};
+
+// Trait to detect request<Req, Resp>.
+template <typename T> struct is_request;  // : std::false_type / std::true_type
+
+// Send a request and return a reader for the response (non-blocking).
+template <typename Req, typename Resp>
+reader<Resp> call(writer<request<Req, Resp>>& w, Req req);
+
+// Blocking call: w(req) sends the request and blocks for the response.
+// Available on writer<request<Req, Resp>> only.
+template <typename Req, typename Resp>
+Resp writer<request<Req, Resp>>::operator()(Req req);
+```
+
+### Usage patterns
+
+**Non-blocking `call`** returns a `reader<Resp>`. Use it to fire multiple
+requests concurrently and collect results later, or to multiplex with other
+channel operations via `prialt`:
+
+```cpp
+call(w, key).read();              // block for response
+prialt(call(w, key) >> val, ...); // multiplex with other work
+auto r1 = call(w, k1);           // fire-and-collect-later
+auto r2 = call(w, k2);
+auto v1 = r1.read(); auto v2 = r2.read();
+```
+
+**Blocking `operator()`** is syntactic sugar for `call(w, req).read()`:
+
+```cpp
+Resp result = w(req);  // send request, block for response
+```
+
+### Example
+
+```cpp
+#include "csp.h"
+
+using namespace csp;
+
+// Server: looks up string keys, replies with int values.
+auto ch = chan<request<std::string, int>>{};
+spawn([r = std::move(ch.r)]() mutable {
+    for (auto& req : r) {
+        int result = /* look up req.value */;
+        req.reply << result;
+    }
+});
+
+// Client (blocking):
+auto w = std::move(ch.w);
+int v = w("key");  // sends "key", blocks for int reply
+
+// Client (non-blocking):
+auto r1 = call(w, "key1");
+auto r2 = call(w, "key2");
+int v1 = r1.read();
+int v2 = r2.read();
+```
+
+## `csp::part::rpc` combinators (channel-pair pattern)
+
+For the channel-pair pattern — where request and reply flow on separate
+channels — the `rpc_client` and `rpc_server` combinators in
+`include/csp/part/rpc.h` provide ready-made wrappers. These remain available
+but new code should prefer the `request<Req, Resp>` primitives above.
 
 Request-response communication over CSP channels. Two variants are provided:
 **channel-pair RPC** (separate request and reply channels) and **reply-in-request

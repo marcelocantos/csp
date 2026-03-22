@@ -141,6 +141,53 @@ tr = {};                      // destroying the reader auto-fuses w,r back
 splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
     for (int v; in >> v;) out << v * 2;   // transform, filter, rate-limit, etc.
 });
+
+// Pipe operator: syntactic sugar for fuse(w, r).
+w | r;   // equivalent to fuse(w, r)
+```
+
+## Request / Response
+
+```cpp
+// Typed request with embedded reply channel.
+template <typename Req, typename Resp> struct request {
+    using value_type = Req;
+    using reply_type = Resp;
+    Req value;
+    writer<Resp> reply;
+};
+
+// Trait.
+template <typename T> struct is_request : std::false_type {};
+// is_request<request<Req, Resp>>::value == true
+
+// Non-blocking call: sends request, returns reader for response.
+template <typename Req, typename Resp>
+reader<Resp> call(writer<request<Req, Resp>>& w, Req req);
+
+// Blocking call: writer::operator()(Req) → Resp (requires is_request<T>).
+// Equivalent to call(*this, req).read().
+auto resp = w(req);
+```
+
+Example:
+```cpp
+auto [w, r] = chan<request<std::string, int>>{};
+
+// Server loop.
+spawn([r = std::move(r)] {
+    request<std::string, int> msg;
+    while (r >> msg) msg.reply << (int)msg.value.size();
+});
+
+// Client — blocking.
+int len = w(std::string("hello"));  // 5
+
+// Client — non-blocking / concurrent.
+auto r1 = call(w, std::string("abc"));
+auto r2 = call(w, std::string("defgh"));
+int a = r1.read();  // 3
+int b = r2.read();  // 5
 ```
 
 ## Alt / Prialt
@@ -552,8 +599,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `quantize<T>(f)` | function | Variable-size batching |
 | `reduce<T,A>(init,f)` | filter | Fold to single value |
 | `round_robin<T>(n)` | function | Distribute across N outputs |
-| `rpc_client` | function | Request/reply client (two variants) |
-| `rpc_server` | function | Request/reply server (two variants) |
+| `rpc_client` | function | Request/reply client: channel-pair variant (separate req/rep channels) or embedded-reply variant (uses `request<Req,Resp>` pattern) |
+| `rpc_server` | function | Request/reply server: channel-pair variant or embedded-reply variant (uses `request<Req,Resp>` pattern) |
 | `sample<T,S>(trigger)` | producer | Emit latest value on trigger |
 | `scan<In,Out>(init,f)` | filter | Running accumulator |
 | `share<T>(n)` | producer | Multicast with latch semantics |

@@ -86,3 +86,86 @@ TEST_CASE("Rpc - RepInReq") {
     CHECK(15 == f(7));
     CHECK(-1 == f(-1));
 }
+
+TEST_CASE("request/call - basic") {
+    RunStats stats;
+
+    chan<request<int, int>> ch;
+
+    // Server: reads requests, replies with 2*n+1.
+    spawn([r = std::move(ch.r)] {
+        request<int, int> req;
+        while (r >> req) {
+            req.reply << 2 * req.value + 1;
+        }
+    });
+
+    CHECK(1 == call(ch.w, 0).read());
+    CHECK(21 == call(ch.w, 10).read());
+    CHECK(15 == call(ch.w, 7).read());
+}
+
+TEST_CASE("request/operator() - blocking call") {
+    RunStats stats;
+
+    chan<request<int, int>> ch;
+
+    spawn([r = std::move(ch.r)] {
+        request<int, int> req;
+        while (r >> req) {
+            req.reply << req.value * req.value;
+        }
+    });
+
+    // writer::operator() sends and blocks for response.
+    CHECK(0 == ch.w(0));
+    CHECK(9 == ch.w(3));
+    CHECK(49 == ch.w(7));
+    CHECK(100 == ch.w(10));
+}
+
+TEST_CASE("request/rpc - concurrent callers") {
+    RunStats stats;
+
+    chan<request<int, int>> ch;
+
+    // Server: handles requests concurrently by spawning per-request.
+    spawn([r = std::move(ch.r)] {
+        request<int, int> req;
+        while (r >> req) {
+            spawn([req = std::move(req)] {
+                req.reply << req.value * req.value;
+            });
+        }
+    });
+
+    // Fire off multiple RPCs before reading any responses.
+    auto r1 = call(ch.w, 3);
+    auto r2 = call(ch.w, 7);
+    auto r3 = call(ch.w, 11);
+
+    CHECK(9 == r1.read());
+    CHECK(49 == r2.read());
+    CHECK(121 == r3.read());
+}
+
+TEST_CASE("request/rpc - server death") {
+    RunStats stats;
+
+    chan<request<int, int>> ch;
+
+    // Server that processes one request then dies.
+    spawn([r = std::move(ch.r)] {
+        request<int, int> req;
+        if (r >> req) {
+            req.reply << req.value + 1;
+        }
+    });
+
+    CHECK(6 == call(ch.w, 5).read());
+
+    // Server is dead — next rpc's write fails (chan_op destructor
+    // blocks in prialt, sees dead channel).
+    int v;
+    CHECK_FALSE(bool(ch.w << request<int, int>{99, {}}));
+}

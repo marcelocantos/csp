@@ -628,6 +628,26 @@ TEST_CASE("MN Stress - swap lifecycle") {
 
 TEST_SUITE("fuse") {
 
+TEST_CASE("pipe operator - basic data transfer") {
+    chan<int> a;
+    chan<int> b;
+
+    a.w | b.r;
+
+    spawn([w = std::move(a.w)] { w << 42; });
+
+    CHECK(42 == b.r.read());
+
+    int v;
+    CHECK_FALSE(bool(a.r >> v));
+    CHECK_FALSE(bool(b.w << 99));
+
+    a.r = {};
+    b.r = {};
+    b.w = {};
+    while (csp::internal::run()) { }
+}
+
 TEST_CASE("fuse - basic data transfer") {
     chan<int> a;
     chan<int> b;
