@@ -112,7 +112,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-03-22 — /release v0.4.0
 
-- **Commit**: (pending)
+- **Commit**: `d086cf0`
 - **Outcome**: Released v0.4.0. Request/response primitives (`request<Req, Resp>`,
   `call()`, callable writer endpoints), pipe operator (`w | r` for fuse),
   bidirectional lifecycle observability named as design principle. Linux SIGPIPE

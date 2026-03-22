@@ -8,3 +8,4 @@ formal/tla2tools.jar
 formal/*_TTrace*
 formal/states/
 states/
+sqlite_mcp_server.db
