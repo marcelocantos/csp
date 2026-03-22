@@ -110,6 +110,15 @@ maintenance activities. Append-only — newest entries at the bottom.
   cross-platform matrix (macOS/Linux, clang/gcc). Build artifacts moved under
   `build/`. Non-template implementations moved from headers to `.cc` files.
 
+## 2026-03-22 — /release v0.4.0
+
+- **Commit**: (pending)
+- **Outcome**: Released v0.4.0. Request/response primitives (`request<Req, Resp>`,
+  `call()`, callable writer endpoints), pipe operator (`w | r` for fuse),
+  bidirectional lifecycle observability named as design principle. Linux SIGPIPE
+  fix, TSan race fix, stack analysis sanitizer guard. STABILITY.md updated with
+  5 new Fluid API items. 641/641 tests pass.
+
 ## 2026-03-08 — /release v0.3.0
 
 - **Commit**: `62f732a`

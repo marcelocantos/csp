@@ -5,7 +5,7 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
-Snapshot as of v0.3.0.
+Snapshot as of v0.4.0.
 
 ## Interaction surface catalogue
 
@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.3.0"` | Stable |
+| `CSP_VERSION` | `"0.4.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `3` | Stable |
+| `CSP_VERSION_MINOR` | `4` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
