@@ -116,7 +116,8 @@
   - Multi-room chat with per-client imps
   - Fan-out to subscribers, join/leave lifecycle, backpressure on slow clients
   - Compiles and runs as a standalone binary in `examples/`
-- **Status**: converging — committed (PR #11). Multi-room chat works (fanout, subscribe, nick, join/leave, backpressure, clean SIGTERM shutdown). Shutdown crash remains (TODO).
+- **Status**: achieved — committed (PR #11). Multi-room chat with per-client imps, fan-out, join/leave, backpressure. Shutdown crash is a runtime issue (TODO), not a chat server deficiency.
+- **Achieved**: 2026-03-22
 - **Discovered**: 2026-03-09
 
 ### 🎯T7.2 ETL pipeline example

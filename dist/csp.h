@@ -3041,6 +3041,8 @@ private:
 namespace csp::detail {
 
 struct Runtime {
+    ~Runtime() { shutdown(); }
+
     std::vector<std::unique_ptr<Processor>> procs;  // P0 = main thread
 
     std::mutex global_mu;
