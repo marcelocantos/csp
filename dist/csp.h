@@ -2910,6 +2910,7 @@ public:
 
 private:
     Reactor() = default;
+    ~Reactor() { shutdown(); }
     Reactor(Reactor const&) = delete;
     Reactor& operator=(Reactor const&) = delete;
 
@@ -2986,6 +2987,7 @@ public:
 
 private:
     Reactor() = default;
+    ~Reactor() { shutdown(); }
     Reactor(Reactor const&) = delete;
     Reactor& operator=(Reactor const&) = delete;
 

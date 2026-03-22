@@ -5,11 +5,9 @@ All work items are tracked as convergence targets in
 
 ## Open items
 
-- **Chat server shutdown crash**: `libc++abi: terminating` (SIGABRT) on
-  SIGTERM shutdown. The general joinable-thread-destructor issue was fixed
-  (`Runtime::~Runtime()` calls `shutdown()`), but the chat server still
-  crashes — specific to signal/cancellation/I/O teardown path. Simpler
-  examples (rpc_service, standalone programs) now exit cleanly. See 🎯T7.1.
+- ~~**Chat server shutdown crash**~~: Fixed. Both `Runtime::~Runtime()`
+  and `Reactor::~Reactor()` now call `shutdown()`, joining their threads
+  before static destruction destroys member variables.
 
 - **mbedTLS TSan false positives**: TSan reports hundreds of races in
   mbedTLS (`psa_reserve_free_key_slot`, `mbedtls_ctr_drbg_random_with_add`,
