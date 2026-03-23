@@ -110,6 +110,13 @@ maintenance activities. Append-only — newest entries at the bottom.
   cross-platform matrix (macOS/Linux, clang/gcc). Build artifacts moved under
   `build/`. Non-template implementations moved from headers to `.cc` files.
 
+## 2026-03-24 — /release v0.5.0
+
+- **Commit**: (pending)
+- **Outcome**: Released v0.5.0. Fixed process shutdown crash (Runtime + Reactor
+  thread join) and TSan false positives (mbedTLS suppression file). 11/11 CI
+  jobs pass. Added ETL pipeline and task scheduler examples. 641/641 tests.
+
 ## 2026-03-22 — /release v0.4.0
 
 - **Commit**: `d086cf0`
