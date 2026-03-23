@@ -106,8 +106,9 @@
 ### 🎯T7 Non-trivial example applications demonstrate CSP
 - **Weight**: 2 (value 30 / cost 18)
 - **Acceptance**: at least 3 sub-target examples are complete
-- **Status**: not started
+- **Status**: achieved — 3/6 sub-targets complete (T7.1 chat server, T7.2 ETL pipeline, T7.5 task scheduler)
 - **Discovered**: 2026-03-09
+- **Achieved**: 2026-03-23
 
 ### 🎯T7.1 Chat server example
 - **Weight**: 1 (value 5 / cost 3)
@@ -127,7 +128,8 @@
   - Ingests CSV/JSON, parses, validates, transforms, enriches, deduplicates, batch-writes to SQLite
   - Demonstrates chain, parallel_map, batch, scan, buffer, backpressure
   - Compiles and runs in `examples/`
-- **Status**: not started
+- **Status**: achieved — seven-stage pipeline (parse → validate → normalize → deduplicate → enrich → batch → report). Backpressure via unbuffered channels between stages.
+- **Achieved**: 2026-03-23
 - **Discovered**: 2026-03-09
 
 ### 🎯T7.3 Web crawler example
@@ -157,7 +159,8 @@
   - Priority queue, worker pool, per-job timeout, dependency DAG
   - Progress reporting over channels, structured cancellation
   - Compiles and runs in `examples/`
-- **Status**: not started
+- **Status**: achieved — priority dispatcher, 3-worker pool, request/response with operator(), endpoint bundle pattern, BLO-driven shutdown cascade.
+- **Achieved**: 2026-03-23
 - **Discovered**: 2026-03-09
 
 ### 🎯T7.6 Log aggregator example
