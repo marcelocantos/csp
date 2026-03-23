@@ -79,3 +79,10 @@ debugging of the CSP imp-based concurrency library.
     architecture where components are wired via channel topology
     instead of called via APIs, and fuse/splice/swap become
     the composition operators.
+
+16. **[TSan Cannot Track Mutex Ownership Across Fiber Migrations](16-tsan-fiber-mutex-interaction.md)**
+    — Discovery and diagnosis of a TSan limitation: fiber annotations
+    don't extend to pthread mutex tracking. When M:N-scheduled imps
+    migrate between OS threads while holding mbedTLS mutexes, TSan
+    reports false races. Root cause, investigation timeline, and
+    implications for M:N schedulers.
