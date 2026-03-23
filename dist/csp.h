@@ -2910,6 +2910,7 @@ public:
 
 private:
     Reactor() = default;
+    ~Reactor() { shutdown(); }
     Reactor(Reactor const&) = delete;
     Reactor& operator=(Reactor const&) = delete;
 
@@ -2986,6 +2987,7 @@ public:
 
 private:
     Reactor() = default;
+    ~Reactor() { shutdown(); }
     Reactor(Reactor const&) = delete;
     Reactor& operator=(Reactor const&) = delete;
 
@@ -3041,6 +3043,8 @@ private:
 namespace csp::detail {
 
 struct Runtime {
+    ~Runtime() { shutdown(); }
+
     std::vector<std::unique_ptr<Processor>> procs;  // P0 = main thread
 
     std::mutex global_mu;

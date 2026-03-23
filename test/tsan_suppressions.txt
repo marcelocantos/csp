@@ -1,0 +1,14 @@
+# TSan suppression file for CSP
+#
+# mbedTLS uses pthread mutexes for thread safety, but CSP's M:N scheduler
+# migrates imps across OS threads.  TSan's fiber annotations correctly track
+# happens-before for CSP's own synchronization, but pthread mutex operations
+# are tracked per-OS-thread, not per-fiber.  When an imp acquires a mutex on
+# thread T1 and releases it on T2 (after migration), TSan reports a false
+# race.  These suppressions silence the mbedTLS false positives.
+#
+# See docs/todo.md and 🎯T9 for the full investigation.
+
+race:mbedtls_*
+race:psa_*
+race:mbedtls_threading_mutex_*
