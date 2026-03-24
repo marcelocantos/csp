@@ -173,16 +173,6 @@
 - **Status**: not started
 - **Discovered**: 2026-03-09
 
-### 🎯T9 TSan is clean on all CI jobs
-- **Weight**: 2 (value 3 / cost 5)
-- **Acceptance**:
-  - Linux arm64 TSan, Linux x86_64 TSan, and macOS TSan CI jobs all pass reliably
-  - mbedTLS TSan false positives resolved (either via annotation gaps, TSan suppressions, or upstream fix)
-  - Cancel-during-I/O flake in `cancel.test.cc:654` resolved
-- **Status**: converging — mbedTLS false positives suppressed (TSan limitation: pthread mutex tracking is per-OS-thread, not per-fiber; M:N migration causes false races). 11/11 CI jobs pass. Cancel flake not yet confirmed resolved — needs more CI runs to verify.
-- **Discovered**: 2026-03-15
-- **Context**: Root cause identified: TSan tracks pthread mutex operations per-OS-thread but CSP migrates imps across threads. Fiber annotations are correct but can't make TSan's pthread tracking fiber-aware. Suppression file (`test/tsan_suppressions.txt`) silences `mbedtls_*` and `psa_*` races. PR #17 passed all 11 CI jobs including macOS TSan.
-
 ### 🎯T8 Signal handling is audited for correctness
 - **Weight**: 1 (value 2 / cost 2)
 - **Acceptance**:
@@ -193,6 +183,17 @@
 - **Discovered**: 2026-03-09
 
 ## Achieved
+
+### 🎯T9 TSan is clean on all CI jobs
+- **Weight**: 2 (value 3 / cost 5)
+- **Acceptance**:
+  - Linux arm64 TSan, Linux x86_64 TSan, and macOS TSan CI jobs all pass reliably
+  - mbedTLS TSan false positives resolved (via TSan suppressions)
+  - Cancel-during-I/O flake in `cancel.test.cc:654` resolved
+- **Context**: Root cause: TSan tracks pthread mutex operations per-OS-thread, not per-fiber. M:N migration causes false races in mbedTLS. Suppression file (`test/tsan_suppressions.txt`) resolves. Cancel flake not recurred since suppressions added. Paper 16 documents the investigation.
+- **Status**: achieved
+- **Discovered**: 2026-03-15
+- **Achieved**: 2026-03-24
 
 ### 🎯T10 Bidirectional lifecycle observability is documented as a design principle
 - **Weight**: 2 (value 5 / cost 3)
