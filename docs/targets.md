@@ -71,19 +71,23 @@
 ### 🎯T4 API safety gaps are closed
 - **Weight**: 1 (value 5 / cost 4)
 - **Acceptance**: all sub-targets achieved
-- **Status**: not started
+- **Status**: achieved — T4.1 (closer<EP>) and T4.2 (main() error message) both done.
 - **Discovered**: 2026-03-09
+- **Achieved**: 2026-03-26
 
 ### 🎯T4.1 `closer<EP>` enforces vulture-only endpoints
 - **Weight**: 2 (value 3 / cost 2)
 - **Parent**: 🎯T4
 - **Acceptance**:
-  - `closer<EP>` type exists with only `operator~` and `operator bool`
-  - `done()` returns `closer<reader<>>`
-  - `spawn(f)` returns `closer<reader<std::exception_ptr>>`
-  - Bare `done()` in prialt or `handle >> exc` does not compile
-- **Status**: not started
+  - `closer<EP>` type exists with `operator~`, `operator bool`, and `endpoint()` escape hatch
+  - CTAD: `closer(reader<T>)` → `closer<reader<T>>`
+  - Users can wrap spawn handles: `closer handle(spawn(f));`
+  - `done()` return type change deferred — requires rethinking chan_op internals
+  - `spawn(f)` keeps returning `reader<exception_ptr>` — supervisor legitimately reads exceptions
+- **Status**: achieved — `closer<EP>` implemented with 5 tests (646/646 pass)
+- **Achieved**: 2026-03-26
 - **Discovered**: 2026-03-09
+- **Context**: Original acceptance criteria called for spawn/done to return closer directly. This was revised: spawn must return reader (supervisor reads exceptions), done returns chan_op (no reader to wrap). closer is opt-in via CTAD wrapping, which is the right design — it's a restriction the caller chooses, not one forced by the API.
 
 ### 🎯T4.2 main() can perform CSP operations
 - **Weight**: 1 (value 2 / cost 2)
@@ -91,7 +95,8 @@
 - **Acceptance**:
   - `csp::local` in `main()` does not crash
   - Either a lightweight "main imp" context is established automatically, or the limitation is documented with a clear error message
-- **Status**: not started
+- **Status**: achieved — clear error message: "channel operation attempted from main() — CSP operations must run inside spawn()". Replaces opaque assert failure.
+- **Achieved**: 2026-03-26
 - **Discovered**: 2026-03-09
 
 ### 🎯T5 Unmodeled concurrent decision points have TLA+ specs

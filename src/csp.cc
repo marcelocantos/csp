@@ -217,7 +217,11 @@ namespace csp {
             auto& p = current_p();
             auto& busy = p.busy;
             auto self = current_imp();
-            assert(this != self);
+            if (this == self) {
+                throw error(
+                    "channel operation attempted from main() — "
+                    "CSP operations must run inside spawn()");
+            }
 
             // Manipulate run queue under lock, but release before context switch.
             {

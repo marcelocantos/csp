@@ -919,6 +919,46 @@ private:
     friend class reader<T>;
 };
 
+// Vulture-only endpoint wrapper: allows death-watching and bool check,
+// but not reading or writing.  Used for lifecycle observation endpoints
+// like done() and spawn() handles where data access is meaningless.
+//
+//   auto handle = closer(spawn(f));  // convert reader to closer
+//   prialt(~handle, ...);            // death-watch only
+//   if (handle) { ... }              // still alive?
+//
+// Dropping a closer signals the other side (same as dropping the
+// underlying endpoint).
+template <typename EP>
+class closer {
+public:
+    closer() = default;
+    explicit closer(EP ep) : ep_(std::move(ep)) {}
+    closer(closer&&) = default;
+    closer& operator=(closer&&) = default;
+    closer(closer const&) = delete;
+    closer& operator=(closer const&) = delete;
+
+    explicit operator bool() const { return bool(ep_); }
+    auto operator~() const { return ~ep_; }
+
+    // Reset (drop the endpoint).
+    closer& operator=(std::nullptr_t) { ep_ = {}; return *this; }
+
+    // Access the underlying endpoint.  Use sparingly — the point of
+    // closer is to restrict the interface.
+    EP& endpoint() & { return ep_; }
+    EP const& endpoint() const & { return ep_; }
+    EP&& endpoint() && { return std::move(ep_); }
+
+private:
+    EP ep_;
+};
+
+// Deduction guide: closer(reader<T>) -> closer<reader<T>>.
+template <typename EP>
+closer(EP) -> closer<EP>;
+
 template <typename T = poke_t>
 struct chan {
     writer<T> w;
