@@ -105,7 +105,8 @@
   - Blocking pool shutdown, stack pool reclamation, M:N worker join audited
   - New TLA+ specs in `formal/` for any unmodeled protocols found
   - Bug variants (`_Bug.tla`) for each new spec
-- **Status**: not started
+- **Status**: achieved — 3 new spec pairs: BlockingPoolLifecycle (lazy-init double-check + shutdown), SurplusProcessorReset (in-place reset vs steal_work), SignalPipeLifecycle (async-signal-safe handler registration). All correct specs pass TLC; all bug variants find violations.
+- **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
 
 ### 🎯T7 Non-trivial example applications demonstrate CSP
