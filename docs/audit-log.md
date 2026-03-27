@@ -110,6 +110,42 @@ maintenance activities. Append-only — newest entries at the bottom.
   cross-platform matrix (macOS/Linux, clang/gcc). Build artifacts moved under
   `build/`. Non-template implementations moved from headers to `.cc` files.
 
+## 2026-03-27 — /audit signal handling (🎯T8)
+
+- **Commit**: (this commit)
+- **Outcome**: Signal handling code reviewed for async-signal-safety. No
+  violations found.
+
+### Unix signal handler (`src/signal.cc:42-52`)
+
+The handler calls only async-signal-safe operations:
+- `std::atomic<int>::load(acquire)` — lock-free atomic on integral type
+- `std::atomic<uint64_t>::load(acquire)` — lock-free atomic
+- `::write()` — POSIX async-signal-safe
+
+No mutex, no malloc, no printf, no C++ exceptions.
+
+**Ordering correctness**: `write_fd` is written before `g_sig_pipe_count`
+is incremented with release. Handler loads count with acquire, so
+`write_fd` is visible by the time the handler sees the new count.
+Verified by `formal/SignalPipeLifecycle.tla`.
+
+**Teardown race (benign)**: Between the handler loading `sig_mask` (non-zero)
+and calling `write()`, the sentinel imp can clear the mask and close the fd.
+The `write()` then hits EBADF and the byte is lost. This is benign: the
+signal was being torn down, and the byte would have been ignored anyway.
+On Linux, the closed-pipe `write()` would deliver SIGPIPE, but the runtime
+ignores SIGPIPE process-wide (v0.5.0 fix).
+
+### Windows console handler (`src/win_signal.cc:41-56`)
+
+The handler runs on a normal OS thread (not async-signal context), so all
+APIs are safe. Uses the same atomic-guard pattern as Unix for consistency.
+
+### Deferred
+
+None.
+
 ## 2026-03-24 — /release v0.5.0
 
 - **Commit**: (pending)

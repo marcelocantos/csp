@@ -185,7 +185,8 @@
   - Signal handling code reviewed for async-signal-safety
   - Any violations fixed or documented as acceptable
   - Audit findings recorded in `docs/audit-log.md`
-- **Status**: not started
+- **Status**: achieved — no violations found. Handler uses only atomic loads + write(). Teardown race is benign (EBADF on closed fd, SIGPIPE ignored). Findings in audit-log.md.
+- **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
 
 ## Achieved
