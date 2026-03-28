@@ -18,7 +18,7 @@
 
 ### 🎯T3 Runtime is production-ready for I/O workloads
 - **Weight**: 1 (value 21 / cost 34)
-- **Acceptance**: all sub-targets achieved
+- **Acceptance**: T3.1 (I/O wrappers) + T3.2 (HTTP server) + T3.5 (WebSocket) achieved. T3.3, T3.4, T3.6 are stretch goals.
 - **Status**: not started
 - **Discovered**: 2026-03-09
 
@@ -36,19 +36,48 @@
 - **Status**: not started
 - **Discovered**: 2026-03-09
 
-### 🎯T3.2 Channel-native HTTP server works
-- **Weight**: 1 (value 8 / cost 13)
+### 🎯T3.2 Channel-native HTTP/1.1 server works
+- **Weight**: 2 (value 8 / cost 5)
 - **Parent**: 🎯T3
 - **Acceptance**:
-  - `csp::http::serve(port)` returns `reader<request<Req, Resp>>`
-  - Typed JSON codecs for request/response bodies
-  - WebSocket upgrade to `reader<ws::message>` + `writer<ws::message>` (separate channels for recv/send)
-  - SSE upgrade to `writer<sse::event>`
-  - Middleware composable via stream combinators
-  - Request context via `csp::dynamic`
-  - Graceful shutdown via channel lifecycle
+  - llhttp vendored in `vendor/` for HTTP/1.1 parsing
+  - `csp::http::serve(port)` returns a reader of per-connection endpoint bundles
+  - Each connection exposes `reader<http::request>` + `writer<http::response>`
+  - Request/response types carry headers, method, path, body as channels (streaming body support)
+  - Keep-alive handled automatically
+  - Graceful shutdown via channel lifecycle (drop the listener → connections drain)
+  - Tests and reference docs
 - **Status**: not started
 - **Discovered**: 2026-03-09
+- **Context**: Decomposed from original T3.2 which was overloaded. llhttp (Node.js parser) is parser-only, no I/O — integrates cleanly as a filter between byte_reader and structured output.
+
+### 🎯T3.5 WebSocket support (server and client)
+- **Weight**: 2 (value 8 / cost 5)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - wslay vendored in `vendor/` for WebSocket frame parsing/serialization
+  - Server: `ws::upgrade(http_conn)` returns `reader<ws::message>` + `writer<ws::message>`
+  - Client: `ws::connect(url)` returns the same endpoint pair
+  - Ping/pong handled automatically
+  - Close handshake via endpoint death (BLO: drop writer → close frame sent → reader sees death)
+  - Binary and text message types
+  - Tests and reference docs
+- **Status**: not started
+- **Discovered**: 2026-03-28
+- **Context**: wslay is parser-only (MIT, ~2K lines). No I/O — feed bytes, get frames. Maps to a filter combinator over raw fd I/O. Depends on 🎯T3.2 for HTTP upgrade path.
+
+### 🎯T3.6 HTTP client
+- **Weight**: 1 (value 5 / cost 5)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - `csp::http::get(url)` / `post(url, body)` return `reader<http::response>` (non-blocking)
+  - Connection pooling with per-host channels
+  - TLS support via existing mbedTLS integration
+  - Timeout via cancellation scope
+  - Tests and reference docs
+- **Status**: not started
+- **Discovered**: 2026-03-28
+- **Context**: Reuses llhttp for response parsing. Reuses `net::dial` from 🎯T3.1 for outbound connections. The client is simpler than the server — no connection accept loop, just dial + parse.
 
 ### 🎯T3.3 High-density stack scaling supports 100K+ imps
 - **Weight**: 1 (value 3 / cost 8)
