@@ -11,7 +11,8 @@
   - Each has tests in `test/` and a detail page in `docs/reference/parts/`
   - Catalog table in `docs/reference/parts.md` updated
   - `dist/AGENTS-CSP.md` combinator table updated
-- **Status**: not started
+- **Status**: achieved — diff, frame, reorder, race implemented with 17 tests. 663/663 pass.
+- **Achieved**: 2026-03-28
 - **Discovered**: 2026-03-09
 - **Context**: Revised from original 6 to 4. `repeat` dropped (redundant with `cycle`), `compose` dropped (redundant with `operator|`), `amb` renamed to `race`.
 
