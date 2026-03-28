@@ -118,58 +118,64 @@ listener listen(const std::string& addr, uint16_t port,
             reinterpret_cast<struct sockaddr_in*>(&bound_addr)->sin_port);
     }
 
+    // The accept loop uses cancellation for clean shutdown.
+    // The sentinel watches for reader death and cancels the scope.
+    // The cancel_guard is owned by the producer imp (not shared).
+    // The sentinel signals cancellation through the cancel_guard's
+    // operator() — but to avoid sharing the guard across imps
+    // (which causes csp::local lifecycle issues), we use a channel
+    // to signal the producer, which then cancels itself.
+
     auto conns = spawn_producer<connection>(
         [listen_fd](writer<connection> out) {
             internal::descr("net/listen");
 
-            // Sentinel: watches for reader death.  When the connections
-            // reader dies, the sentinel exits and drops stop_w, which
-            // fires the ~stop_r vulture in the accept loop.
+            // The producer owns the cancel scope.
+            auto guard = cancellation();
+
+            // Sentinel signals stop via a channel.
             chan<> stop_ch;
             auto out_copy = out.copy();
             csp::spawn([out_copy = std::move(out_copy),
                          stop_w = std::move(stop_ch.w)] {
                 internal::descr("net/listen/sentinel");
                 prialt(~out_copy);
+                // stop_w dropped here → stop_r dies.
             });
 
-            // Accept loop: multiplex listen fd readability with stop
-            // signal via the reactor.  This avoids io::accept (which
-            // blocks in wait_readable and can't be composed with a
-            // channel stop signal).
+            // Stopper imp: watches stop channel, triggers cancellation.
+            // Runs inside the same cancel scope but only does a prialt
+            // on stop_r, then cancels the guard.  Because the guard is
+            // on the producer's stack, we pass a raw pointer — safe
+            // because the producer outlives the stopper (producer waits
+            // in the accept loop until cancelled).
             auto stop_r = std::move(stop_ch.r);
-            auto fd_signal = detail::create_fd_readable(listen_fd);
+            auto* guard_ptr = &guard;
+            csp::spawn([stop_r = std::move(stop_r), guard_ptr] {
+                internal::descr("net/listen/stopper");
+                prialt(~stop_r);
+                (*guard_ptr)();
+            });
 
-            for (;;) {
-                // Wait for either: listen fd readable, or stop signal.
-                int k = prialt(~fd_signal, ~stop_r);
-                if (k == ~1) break;  // stop signal — reader died.
+            try {
+                for (;;) {
+                    struct sockaddr_storage client_addr {};
+                    socklen_t client_len = sizeof(client_addr);
+                    io::socket_t client_fd = io::accept(
+                        listen_fd,
+                        reinterpret_cast<struct sockaddr*>(&client_addr),
+                        &client_len);
+                    if (client_fd == io::invalid_socket) continue;
 
-                // fd is readable — try accept (non-blocking).
-                struct sockaddr_storage client_addr {};
-                socklen_t client_len = sizeof(client_addr);
-                io::socket_t client_fd = ::accept(
-                    listen_fd,
-                    reinterpret_cast<struct sockaddr*>(&client_addr),
-                    &client_len);
-                if (client_fd < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        // Re-register for readability and retry.
-                        fd_signal = detail::create_fd_readable(listen_fd);
-                        continue;
-                    }
-                    break;  // real error
+                    auto remote = format_addr(
+                        reinterpret_cast<struct sockaddr*>(&client_addr),
+                        client_len);
+
+                    if (!(out << make_connection(client_fd, std::move(remote))))
+                        break;
                 }
-
-                auto remote = format_addr(
-                    reinterpret_cast<struct sockaddr*>(&client_addr),
-                    client_len);
-
-                if (!(out << make_connection(client_fd, std::move(remote))))
-                    break;
-
-                // Re-register for next connection.
-                fd_signal = detail::create_fd_readable(listen_fd);
+            } catch (canceled const&) {
+                // Stop signal received.
             }
             io::close(listen_fd);
         });
