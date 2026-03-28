@@ -61,6 +61,21 @@ void install_handler(int sig) {
     g_handler_installed[sig] = true;
 }
 
+// Close stale write fds at process exit.  By static destruction time,
+// all imps are dead and no signal handler can race.
+struct SigPipeCleanup {
+    ~SigPipeCleanup() {
+        int count = g_sig_pipe_count.load(std::memory_order_relaxed);
+        for (int i = 0; i < count; ++i) {
+            if (g_sig_pipes[i].write_fd >= 0) {
+                ::close(g_sig_pipes[i].write_fd);
+                g_sig_pipes[i].write_fd = -1;
+            }
+        }
+    }
+};
+static SigPipeCleanup g_sig_pipe_cleanup;
+
 } // anonymous namespace
 
 namespace csp::signal {
@@ -117,8 +132,18 @@ reader<int> notify(std::initializer_list<int> sigs) {
                      kill_r = std::move(kill_r), wfd, idx] {
             internal::descr("signal/sentinel");
             prialt(~out_copy, ~kill_r);
+            // Clear mask so the signal handler stops writing to this pipe.
             g_sig_pipes[idx].sig_mask.store(0, std::memory_order_release);
+            // Redirect wfd to /dev/null before closing, so any in-flight
+            // handler write() hits /dev/null instead of a reused fd.
+            // dup2 is async-signal-safe and atomically replaces the fd.
+            int devnull = ::open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                ::dup2(devnull, wfd);
+                ::close(devnull);
+            }
             ::close(wfd);
+            g_sig_pipes[idx].write_fd = -1;
         });
 
         uint8_t buf[32];
