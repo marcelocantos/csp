@@ -18,7 +18,7 @@
 
 ### 🎯T3 Runtime is production-ready for I/O workloads
 - **Weight**: 1 (value 21 / cost 34)
-- **Acceptance**: T3.1 (I/O wrappers) + T3.2 (HTTP server) + T3.5 (WebSocket) achieved. T3.3, T3.4, T3.6 are stretch goals.
+- **Acceptance**: Core: T3.1 (I/O wrappers) + T3.2 (HTTP/1.1) + T3.5 (WebSocket) + T3.6 (HTTP client). Full stack: + T3.7 (HTTP/2) + T3.8 (QUIC) + T3.9 (HTTP/3). Infrastructure: T3.3 (stack scaling), T3.4 (stack analysis).
 - **Status**: not started
 - **Discovered**: 2026-03-09
 
@@ -78,6 +78,52 @@
 - **Status**: not started
 - **Discovered**: 2026-03-28
 - **Context**: Reuses llhttp for response parsing. Reuses `net::dial` from 🎯T3.1 for outbound connections. The client is simpler than the server — no connection accept loop, just dial + parse.
+
+### 🎯T3.7 HTTP/2 support
+- **Weight**: 1 (value 5 / cost 8)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - nghttp2 vendored in `vendor/` for HTTP/2 session management
+  - Server: `http2::serve(port)` with multiplexed streams as independent channel bundles
+  - Each stream is a `reader<http::request>` + `writer<http::response>` (same types as HTTP/1.1)
+  - Server push via explicit stream creation
+  - HPACK header compression handled by nghttp2
+  - Flow control maps to channel backpressure
+  - ALPN negotiation for TLS (h2 vs http/1.1)
+  - Tests and reference docs
+- **Status**: not started
+- **Discovered**: 2026-03-28
+- **Context**: nghttp2 has a "bring your own I/O" API (nghttp2_session_mem_recv/send). CSP owns the fds, nghttp2 owns the protocol state. HTTP/2 multiplexing maps naturally to CSP — each stream is an imp with its own channel pair. Depends on 🎯T3.2 (shared HTTP types) and 🎯T3.1 (I/O wrappers).
+
+### 🎯T3.8 QUIC transport
+- **Weight**: 1 (value 5 / cost 13)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - ngtcp2 vendored in `vendor/` for QUIC protocol
+  - `csp::quic::listen(port)` returns reader of connection bundles
+  - `csp::quic::dial(addr)` returns a connection bundle
+  - Each QUIC connection exposes stream creation: `conn.open_stream()` returns bidirectional channel pair
+  - 0-RTT connection establishment
+  - Connection migration (IP change) transparent to imp code
+  - Integrates with CSP's reactor (UDP socket events)
+  - Tests and reference docs
+- **Status**: not started
+- **Discovered**: 2026-03-28
+- **Context**: ngtcp2 (by nghttp2's author) is designed for external event loop integration. QUIC uses UDP (not TCP), so reactor needs to handle UDP socket readability. Each QUIC stream maps to a channel pair — multiplexing is native to both QUIC and CSP. This is the largest networking target. Depends on 🎯T3.1 (I/O wrappers).
+
+### 🎯T3.9 HTTP/3 over QUIC
+- **Weight**: 1 (value 5 / cost 5)
+- **Parent**: 🎯T3
+- **Acceptance**:
+  - nghttp3 vendored in `vendor/` for HTTP/3 framing
+  - Server: `http3::serve(port)` with same request/response types as HTTP/1.1 and HTTP/2
+  - Client: `http3::get(url)` / `post(url, body)` with same response type
+  - QPACK header compression handled by nghttp3
+  - Applications can serve HTTP/1.1, HTTP/2, and HTTP/3 from the same handler code (protocol-agnostic request/response types)
+  - Tests and reference docs
+- **Status**: not started
+- **Discovered**: 2026-03-28
+- **Context**: nghttp3 sits on top of ngtcp2 (🎯T3.8) the same way nghttp2 sits on top of TCP. The key design goal is protocol-agnostic handler code: a handler that reads `http::request` and writes `http::response` should work unchanged across HTTP/1.1, HTTP/2, and HTTP/3. The protocol differences are hidden below the channel layer. Depends on ��T3.7 (shared HTTP/2 types) and 🎯T3.8 (QUIC transport).
 
 ### 🎯T3.3 High-density stack scaling supports 100K+ imps
 - **Weight**: 1 (value 3 / cost 8)
