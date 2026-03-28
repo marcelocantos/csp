@@ -2401,7 +2401,6 @@ namespace csp {
 
 /* net.cc */
 
-#include <stdexcept>
 
 #ifndef _WIN32
 #include <arpa/inet.h>
@@ -2414,7 +2413,6 @@ namespace csp::net {
 
 namespace {
 
-// Format a sockaddr as "host:port" or "[host]:port" for IPv6.
 std::string format_addr(const struct sockaddr* sa, socklen_t len) {
     char host[NI_MAXHOST];
     char serv[NI_MAXSERV];
@@ -2426,16 +2424,10 @@ std::string format_addr(const struct sockaddr* sa, socklen_t len) {
     return std::string(host) + ":" + serv;
 }
 
-// Build a connection from an accepted or connected fd.
 connection make_connection(io::socket_t fd, std::string remote) {
     io::set_nonblock(fd);
 
-    // Split into read and write channels.
-    // byte_reader and byte_writer each own a dup'd fd so they can
-    // close independently.
 #ifdef _WIN32
-    // Windows sockets can't be dup'd — use the same fd for both.
-    // byte_reader closes fd on exit; byte_writer must not.
     auto input = part::io::byte_reader(fd).spawn();
     auto output = part::io::byte_writer(fd).spawn();
 #else
@@ -2465,7 +2457,6 @@ listener listen(uint16_t port, listen_options opts) {
 
 listener listen(const std::string& addr, uint16_t port,
                 listen_options opts) {
-    // Resolve the bind address.
     struct addrinfo hints {};
     hints.ai_family = AF_INET6;
     hints.ai_socktype = SOCK_STREAM;
@@ -2508,7 +2499,6 @@ listener listen(const std::string& addr, uint16_t port,
 
     io::set_nonblock(listen_fd);
 
-    // Get the actual bound address/port (useful when port=0).
     struct sockaddr_storage bound_addr {};
     socklen_t bound_len = sizeof(bound_addr);
     getsockname(listen_fd, reinterpret_cast<struct sockaddr*>(&bound_addr),
@@ -2528,34 +2518,54 @@ listener listen(const std::string& addr, uint16_t port,
         [listen_fd](writer<connection> out) {
             internal::descr("net/listen");
 
-            // Sentinel: watches for reader death, cancels the accept loop.
-            auto guard = std::make_shared<cancel_guard>(cancellation());
+            // Sentinel: watches for reader death.  When the connections
+            // reader dies, the sentinel exits and drops stop_w, which
+            // fires the ~stop_r vulture in the accept loop.
+            chan<> stop_ch;
             auto out_copy = out.copy();
-            csp::spawn([guard, out_copy = std::move(out_copy)] {
+            csp::spawn([out_copy = std::move(out_copy),
+                         stop_w = std::move(stop_ch.w)] {
                 internal::descr("net/listen/sentinel");
                 prialt(~out_copy);
-                (*guard)();  // Cancel the accept loop.
             });
 
-            try {
-                for (;;) {
-                    struct sockaddr_storage client_addr {};
-                    socklen_t client_len = sizeof(client_addr);
-                    io::socket_t client_fd = io::accept(
-                        listen_fd,
-                        reinterpret_cast<struct sockaddr*>(&client_addr),
-                        &client_len);
-                    if (client_fd == io::invalid_socket) continue;
+            // Accept loop: multiplex listen fd readability with stop
+            // signal via the reactor.  This avoids io::accept (which
+            // blocks in wait_readable and can't be composed with a
+            // channel stop signal).
+            auto stop_r = std::move(stop_ch.r);
+            auto fd_signal = detail::create_fd_readable(listen_fd);
 
-                    auto remote = format_addr(
-                        reinterpret_cast<struct sockaddr*>(&client_addr),
-                        client_len);
+            for (;;) {
+                // Wait for either: listen fd readable, or stop signal.
+                int k = prialt(~fd_signal, ~stop_r);
+                if (k == ~1) break;  // stop signal — reader died.
 
-                    if (!(out << make_connection(client_fd, std::move(remote))))
-                        break;
+                // fd is readable — try accept (non-blocking).
+                struct sockaddr_storage client_addr {};
+                socklen_t client_len = sizeof(client_addr);
+                io::socket_t client_fd = ::accept(
+                    listen_fd,
+                    reinterpret_cast<struct sockaddr*>(&client_addr),
+                    &client_len);
+                if (client_fd < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        // Re-register for readability and retry.
+                        fd_signal = detail::create_fd_readable(listen_fd);
+                        continue;
+                    }
+                    break;  // real error
                 }
-            } catch (canceled const&) {
-                // Reader died — sentinel cancelled us.
+
+                auto remote = format_addr(
+                    reinterpret_cast<struct sockaddr*>(&client_addr),
+                    client_len);
+
+                if (!(out << make_connection(client_fd, std::move(remote))))
+                    break;
+
+                // Re-register for next connection.
+                fd_signal = detail::create_fd_readable(listen_fd);
             }
             io::close(listen_fd);
         });
