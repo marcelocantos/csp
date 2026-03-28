@@ -4264,6 +4264,28 @@ auto demux(reader<std::variant<Ts...>> in) {
 
 }
 
+/* csp/part/diff.h */
+
+
+namespace csp::part {
+
+// Emit the difference between consecutive values: b-a, c-b, d-c, ...
+// Requires operator- on T.  Input of fewer than 2 elements produces no output.
+template <typename T>
+inline auto const diff = make_filter<T, T>(
+    [](reader<T> in, writer<T> out) {
+        internal::descr("diff");
+        T prev;
+        if (csp::alt(in >> prev, ~out) != 0) return;
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
+            auto d = t - prev;
+            prev = std::move(t);
+            if (!(out << std::move(d))) return;
+        }
+    });
+
+}
+
 /* csp/part/distinct.h */
 
 
@@ -4738,6 +4760,64 @@ auto foreach_emit(S init, Update&& update, Extract&& extract) {
             for (T t; csp::alt(in >> t, ~out) == 0;) {
                 state = update(std::move(state), std::move(t));
                 if (!(out << extract(state))) return;
+            }
+        });
+}
+
+}
+
+/* csp/part/frame.h */
+
+
+
+namespace csp::part {
+
+// Collect values into frames, emitting each frame when either:
+//   - n values have accumulated (batch full), or
+//   - the timeout expires (partial frame flushed).
+// Like batch, but with a time dimension — ensures data flows even
+// when input is slow.  Partial frames on input close are also flushed.
+template <typename T>
+auto frame(size_t n, duration timeout) {
+    return make_filter<T, std::vector<T>>(
+        [n, timeout](reader<T> in, writer<std::vector<T>> out) {
+            internal::descr("frame");
+            std::vector<T> buf;
+            buf.reserve(n);
+            for (;;) {
+                if (buf.empty()) {
+                    // Wait for first value (no timer yet).
+                    T t;
+                    if (csp::alt(in >> t, ~out) != 0) return;
+                    buf.push_back(std::move(t));
+                    if (buf.size() == n) {
+                        if (!(out << std::move(buf))) return;
+                        buf.clear();
+                        buf.reserve(n);
+                    }
+                } else {
+                    // Have partial frame — race input vs timeout.
+                    T t;
+                    auto timer = csp::after(timeout);
+                    switch (csp::prialt(in >> t, timer >> nullptr, ~out)) {
+                    case 0:  // new value
+                        buf.push_back(std::move(t));
+                        if (buf.size() == n) {
+                            if (!(out << std::move(buf))) return;
+                            buf.clear();
+                            buf.reserve(n);
+                        }
+                        break;
+                    case 1:  // timeout — flush partial frame
+                        if (!(out << std::move(buf))) return;
+                        buf.clear();
+                        buf.reserve(n);
+                        break;
+                    default: // input or output died
+                        if (!buf.empty()) out << std::move(buf);
+                        return;
+                    }
+                }
             }
         });
 }
@@ -5818,6 +5898,55 @@ writer<double> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = wri
 
 }
 
+/* csp/part/race.h */
+
+
+
+namespace csp::part {
+
+// Race N input readers: emit values from whichever source produces
+// first.  All sources are multiplexed via dynamic prialt.  When a
+// source dies it's removed from the race.  Output closes when all
+// sources are dead or the output reader dies.
+//
+// Unlike merge (which interleaves all sources fairly), race is
+// biased toward the fastest source — slow sources may starve.
+template <typename T>
+reader<T> race(std::vector<reader<T>> sources) {
+    return spawn_producer<T>(
+        [sources = std::move(sources)](writer<T> out) mutable {
+            internal::descr("race");
+            while (!sources.empty()) {
+                // Build dynamic prialt ops: one read per source + output death.
+                std::vector<chan_op<T>> ops;
+                ops.reserve(sources.size() + 1);
+                T val;
+                for (auto& s : sources) {
+                    ops.push_back(s >> val);
+                }
+                ops.push_back(~out);
+
+                int k = csp::prialt(ops);
+
+                if (k == ~static_cast<int>(sources.size())) {
+                    // Output died.
+                    return;
+                }
+
+                if (k >= 0) {
+                    // Got a value from source k.
+                    if (!(out << std::move(val))) return;
+                } else {
+                    // Source ~k died — remove it.
+                    int dead = ~k;
+                    sources.erase(sources.begin() + dead);
+                }
+            }
+        });
+}
+
+}
+
 /* csp/part/random.h */
 
 
@@ -5963,6 +6092,59 @@ auto reduce(S init, F&& f) {
             for (T t; csp::alt(in >> t, ~out) == 0;)
                 acc = f(std::move(acc), std::move(t));
             out << std::move(acc);
+        });
+}
+
+}
+
+/* csp/part/reorder.h */
+
+
+
+namespace csp::part {
+
+// Reorder an out-of-sequence stream back into key order.
+//
+// key_fn extracts a sortable key from each value. Values are buffered
+// until contiguous keys can be emitted.  Expects keys to form a
+// contiguous ascending sequence starting from initial_key (default 0).
+//
+// Example: parallel_map may produce results out of order.
+//   source | enumerate<T> | parallel_map<...>(f) | reorder<pair<size_t,R>>(first)
+// restores the original ordering.
+//
+// Buffer is bounded by the maximum out-of-order distance. If the
+// source is nearly ordered, memory usage is low.
+template <typename T, typename Key = size_t>
+auto reorder(std::function<Key(T const&)> key_fn, Key initial_key = Key{}) {
+    return make_filter<T, T>(
+        [key_fn = std::move(key_fn), initial_key](reader<T> in, writer<T> out) {
+            internal::descr("reorder");
+            std::map<Key, T> buf;
+            Key next = initial_key;
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
+                Key k = key_fn(t);
+                if (k == next) {
+                    // In order — emit directly.
+                    if (!(out << std::move(t))) return;
+                    ++next;
+                    // Flush any buffered values that are now contiguous.
+                    while (true) {
+                        auto it = buf.find(next);
+                        if (it == buf.end()) break;
+                        if (!(out << std::move(it->second))) return;
+                        buf.erase(it);
+                        ++next;
+                    }
+                } else {
+                    // Out of order — buffer.
+                    buf.emplace(k, std::move(t));
+                }
+            }
+            // Flush remaining buffered values in key order.
+            for (auto& [k, v] : buf) {
+                if (!(out << std::move(v))) return;
+            }
         });
 }
 

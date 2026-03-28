@@ -7,12 +7,13 @@
 ### 🎯T2 Tier D combinators are implemented
 - **Weight**: 1 (value 3 / cost 5)
 - **Acceptance**:
-  - `amb`, `diff`, `frame`, `repeat`, `reorder`, `compose` exist in `include/csp/part/`
+  - `diff`, `frame`, `reorder`, `race` exist in `include/csp/part/`
   - Each has tests in `test/` and a detail page in `docs/reference/parts/`
   - Catalog table in `docs/reference/parts.md` updated
   - `dist/AGENTS-CSP.md` combinator table updated
 - **Status**: not started
 - **Discovered**: 2026-03-09
+- **Context**: Revised from original 6 to 4. `repeat` dropped (redundant with `cycle`), `compose` dropped (redundant with `operator|`), `amb` renamed to `race`.
 
 ### 🎯T3 Runtime is production-ready for I/O workloads
 - **Weight**: 1 (value 21 / cost 34)
