@@ -2438,7 +2438,20 @@ connection make_connection(io::socket_t fd, std::string remote) {
         throw csp::error("dup failed");
     }
     auto input = part::io::byte_reader(rfd).spawn();
-    auto output = part::io::byte_writer(wfd).spawn();
+    // Socket-aware byte_writer: shutdown(SHUT_WR) before close so
+    // the peer's byte_reader sees EOF even though rfd still holds a
+    // reference to the underlying socket.
+    auto output = spawn_consumer<bytes>(
+        [wfd](reader<bytes> in) {
+            internal::descr("byte_writer");
+            io::set_nonblock(wfd);
+            for (bytes chunk; in >> chunk;) {
+                if (csp::io::write(wfd, chunk.data(), chunk.size()) < 0)
+                    break;
+            }
+            ::shutdown(wfd, SHUT_WR);
+            io::close(wfd);
+        });
 #endif
 
     connection c;
