@@ -266,6 +266,22 @@
 - **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
 
+### 🎯T11 Scheduler is always M:N
+- **Weight**: 3 (value 8 / cost 5)
+- **Acceptance**:
+  - `mn_mode_` flag removed; always M:N with min 2 procs
+  - `schedule()` renamed to `await_completion()` (`schedule()` kept as deprecated inline alias)
+  - `run()` removed from public API or reimplemented via quiescence detection (parks until workers finish or deadlock detected)
+  - `use_run` removed from channel matching (always `peer->schedule()`)
+  - Daemon imp concept: `daemon_gs` counter excludes daemon imps from completion check
+  - `RunStats` exception handler spawned as daemon
+  - `fake_clock` reworked to detect quiescence without cooperative `run()` loop
+  - All 665+ tests pass
+  - `default_scheduler_impl` deleted; scheduler always uses `main_loop()`
+- **Status**: in progress — runtime changes designed and partially implemented (stashed). Buffer tests pass with quiescence-based `run()`. Channel/cancel tests need investigation. 17 multi-phase tests identified for restructuring.
+- **Discovered**: 2026-03-29
+- **Context**: Design validated through session. Key insight: `run()` is a cooperative single-threaded primitive incompatible with concurrent workers. `await_completion()` is the M:N entry point. Multi-phase tests need channel synchronization instead of scheduler state inspection. WIP stashed at `git stash` on master.
+
 ## Achieved
 
 ### 🎯T9 TSan is clean on all CI jobs
