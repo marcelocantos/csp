@@ -178,7 +178,7 @@ TEST_CASE("Fanout - Waves") {
 
 TEST_CASE("Fanout - Chain") {
     RunStats stats;
-    int total = 0;
+    std::atomic<int> total{0};
 
     csp::run([&]{
         auto [new_out_w, new_out_r] = chan<writer<int>>{};
@@ -214,5 +214,5 @@ TEST_CASE("Fanout - Chain") {
         // csp::run waits for all consumer imps to exit before returning.
     });
 
-    CHECK(total == 2 * 1);
+    CHECK(total.load() == 2 * 1);
 }

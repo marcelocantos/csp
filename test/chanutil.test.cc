@@ -1801,29 +1801,23 @@ TEST_CASE("ChanUtil - FirstWins") {
     int result = -1;
 
     csp::run([&]{
-        // Three delayed sources; the first to produce wins.
-        chan<int> fast, slow1, slow2;
-        csp::spawn([w = std::move(fast.w)]{
-            w << 42;
-        });
-        csp::spawn([w = std::move(slow1.w)]{
-            csp::yield(); csp::yield();
-            w << 100;
-        });
-        csp::spawn([w = std::move(slow2.w)]{
-            csp::yield(); csp::yield(); csp::yield();
-            w << 200;
-        });
+        // Three sources; first_wins returns whichever produces first.
+        // In M:N, we can't control which runs first, so just check
+        // that the result is one of the three values.
+        chan<int> a, b, c;
+        csp::spawn([w = std::move(a.w)]{ w << 42; });
+        csp::spawn([w = std::move(b.w)]{ w << 100; });
+        csp::spawn([w = std::move(c.w)]{ w << 200; });
 
         std::vector<reader<int>> rs;
-        rs.push_back(std::move(fast.r));
-        rs.push_back(std::move(slow1.r));
-        rs.push_back(std::move(slow2.r));
+        rs.push_back(std::move(a.r));
+        rs.push_back(std::move(b.r));
+        rs.push_back(std::move(c.r));
 
         result = first_wins(std::move(rs));
     });
 
-    CHECK(42 == result);
+    CHECK((42 == result || 100 == result || 200 == result));
 }
 
 TEST_CASE("ChanUtil - FirstWins with dead readers") {
