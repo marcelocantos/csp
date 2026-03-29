@@ -278,9 +278,9 @@
   - `fake_clock` reworked to detect quiescence without cooperative `run()` loop
   - All 665+ tests pass
   - `default_scheduler_impl` deleted; scheduler always uses `main_loop()`
-- **Status**: in progress — runtime changes designed and partially implemented (stashed). Buffer tests pass with quiescence-based `run()`. Channel/cancel tests need investigation. 17 multi-phase tests identified for restructuring.
+- **Status**: in progress — 663/663 tests pass. PR #18 open. Core scheduler done. Remaining: fake_clock auto-advance via main_loop quiescence hook (stashed WIP), inline `fake_clock{}` syntax (needs `dynamic<T>` type erasure rework).
 - **Discovered**: 2026-03-29
-- **Context**: Design validated through session. Key insight: `run()` is a cooperative single-threaded primitive incompatible with concurrent workers. `await_completion()` is the M:N entry point. Multi-phase tests need channel synchronization instead of scheduler state inspection. WIP stashed at `git stash` on master.
+- **Context**: M:N scheduler complete. `quiescence_scope` implemented for deterministic testing (scoped, inheritable via Imp::qs_). fake_clock thread-safe (mutex on pending_). Next step: main_loop quiescence hook so `fc.run()` is unnecessary — stashed WIP has the hook in Runtime but fake_clock tests need migration from `fc.run()` to automatic advancement.
 
 ## Achieved
 
