@@ -79,7 +79,7 @@ TEST_CASE("Volume - ManyImps") {
 
 TEST_CASE("Volume - ManyChannelPairs") {
     constexpr int N = 500 / SCALE_LIGHT;
-    int total = 0;
+    std::atomic<int> total{0};
 
     csp::run([&]{
         for (int i = 0; i < N; ++i) {
@@ -90,7 +90,7 @@ TEST_CASE("Volume - ManyChannelPairs") {
         }
     });
 
-    CHECK(N * (N - 1) / 2 == total);
+    CHECK(N * (N - 1) / 2 == total.load());
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
