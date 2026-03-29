@@ -168,12 +168,22 @@ public:
     dynamic(const dynamic&) = delete;
     dynamic& operator=(const dynamic&) = delete;
 
-    // Read: HAMT lookup + any_cast. Returns by value (safe, no dangling).
+    // Read by value (safe, no dangling).
     T operator*() const {
         if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
             return *std::any_cast<T>(a);
         assert(default_.has_value());
         return *default_;
+    }
+
+    // Read by pointer into the HAMT node. Valid as long as the
+    // csp::local binding is in scope.  Allows mutation and avoids
+    // copying for non-trivial types.
+    T* operator->() const {
+        if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
+            return const_cast<T*>(std::any_cast<T>(a));
+        assert(default_.has_value());
+        return const_cast<T*>(&*default_);
     }
 
     // Bind: returns a deferred binding for use with csp::local.

@@ -24,18 +24,23 @@ fake_clock::fake_clock(time_point start) : current_(start) {}
 
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
-    pending_.push({tp, detail::current_imp()});
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        pending_.push({tp, detail::current_imp()});
+    }
     internal::suspend();
 }
 
 void fake_clock::fire_expired() {
-    while (!pending_.empty() && pending_.top().deadline <= current_) {
-        auto* imp = pending_.top().imp;
-        pending_.pop();
-        // Use schedule() (global queue) rather than schedule_local() so that
-        // workers parked after quiescence detection are woken to process the imp.
-        imp->schedule();
+    std::vector<detail::Imp*> expired;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        while (!pending_.empty() && pending_.top().deadline <= current_) {
+            expired.push_back(pending_.top().imp);
+            pending_.pop();
+        }
     }
+    for (auto* imp : expired) imp->schedule();
 }
 
 void fake_clock::advance(duration d) {
@@ -44,21 +49,34 @@ void fake_clock::advance(duration d) {
 }
 
 bool fake_clock::advance_to_next() {
-    if (pending_.empty()) return false;
-    current_ = pending_.top().deadline;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (pending_.empty()) return false;
+        current_ = pending_.top().deadline;
+    }
     fire_expired();
     return true;
 }
 
 void fake_clock::run() {
+    // If bind_scope() was called, use the scoped quiescence.
+    // Otherwise fall back to global quiescence detection.
+    bool scoped = detail::current_imp()->qs_ == &qs_;
     for (;;) {
-        csp::internal::run();  // drain until quiescent (respects sleeping imps)
+        if (scoped)
+            qs_.wait();
+        else
+            internal::await_quiescent();
         if (!advance_to_next()) break;
     }
 }
 
 void fake_clock::run_until_idle() {
-    csp::internal::run();  // drain until quiescent (respects sleeping imps)
+    bool scoped = detail::current_imp()->qs_ == &qs_;
+    if (scoped)
+        qs_.wait();
+    else
+        internal::await_quiescent();
 }
 
 }

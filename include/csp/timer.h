@@ -35,8 +35,10 @@ class fake_clock : public clock_source {
         detail::Imp* imp;
         bool operator>(Entry const& o) const { return deadline > o.deadline; }
     };
+    std::mutex mu_;
     std::priority_queue<Entry, std::vector<Entry>,
                         std::greater<Entry>> pending_;
+    quiescence_scope qs_;
     void fire_expired();
 
 public:
@@ -46,7 +48,10 @@ public:
     void sleep_until(time_point tp) override;
     bool uses_reactor() const override { return false; }
 
-    bool has_pending() const { return !pending_.empty(); }
+    bool has_pending() const {
+        std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(mu_));
+        return !pending_.empty();
+    }
 
     // Advance time and fire expired timers.
     void advance(duration d);
@@ -54,10 +59,17 @@ public:
     // Jump to next pending deadline. Returns false if no timers pending.
     bool advance_to_next();
 
-    // Run scheduler loop with auto-advance until no work remains.
+    // Bind the fake clock's quiescence scope to the current imp.
+    // Call before spawning timer-using imps so they inherit the scope.
+    void bind_scope() { qs_.bind(); }
+
+    // Run until all timer-blocked imps complete. If bind_scope()
+    // was not called, binds automatically (but imps spawned before
+    // this call won't be tracked). Loops: wait for quiescence →
+    // advance time → repeat.
     void run();
 
-    // Run scheduler until no imps are runnable (don't advance time).
+    // Wait for quiescence (all scope members sleeping), then return.
     void run_until_idle();
 
     fake_clock(fake_clock const&) = delete;
