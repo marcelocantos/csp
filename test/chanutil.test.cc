@@ -340,12 +340,14 @@ TEST_CASE("ChanUtil - Share single subscriber") {
     csp::run([&]{
         auto subs = share(count(1, 4).spawn());
         auto r = subs.read();
-        subs = {};  // Done subscribing.
+        subs = {};
         for (int n; r >> n;) got.push_back(n);
     });
 
-    // Share latch uses latest-value semantics in M:N: slow subscribers
-    // may miss intermediate values.  Check boundaries, not exact sequence.
+    // Share's latch uses latest-value semantics: a fast producer
+    // can overwrite values before the subscriber reads them.
+    // The first and last values are guaranteed; intermediates may
+    // be skipped.
     REQUIRE(!got.empty());
     CHECK(1 == got.front());
     CHECK(3 == got.back());
@@ -1801,9 +1803,8 @@ TEST_CASE("ChanUtil - FirstWins") {
     int result = -1;
 
     csp::run([&]{
-        // Three sources; first_wins returns whichever produces first.
-        // In M:N, we can't control which runs first, so just check
-        // that the result is one of the three values.
+        // first_wins uses alt (fair), so with all writers ready,
+        // any channel can win. Check we get a valid value.
         chan<int> a, b, c;
         csp::spawn([w = std::move(a.w)]{ w << 42; });
         csp::spawn([w = std::move(b.w)]{ w << 100; });

@@ -176,56 +176,50 @@ TEST_CASE("Interleave - MultiWakerAltClaim") {
     csp::shutdown_runtime();
 }
 
-// TODO(T11): prialt determinism requires single-P cooperative scheduling
-// (all writers blocked before reader runs). Not valid in M:N mode.
-#if 0
 TEST_CASE("Interleave - PrialtDeterminism") {
-    // Single-P mode: default maxprocs=1, cooperative scheduling.
     constexpr int ITERS = 200 / SCALE_MEDIUM;
 
     for (int iter = 0; iter < ITERS; ++iter) {
         constexpr int CHANS = 4;
-        std::vector<csp::chan<int>> chans(CHANS);
-
         std::atomic<int> alt_result{-1};
 
-        // Writers send immediately. In single-P mode, each writer runs
-        // to its first blocking point (the send), then yields. By the
-        // time the reader runs, all writers are blocked waiting.
-        for (int c = 0; c < CHANS; ++c) {
-            csp::spawn([w = chans[c].w.copy(), c] {
-                w << (c + 1);
-            });
-        }
+        csp::quiescence_scope qs;
+        csp::run([&]{
+            qs.bind();
+            std::vector<csp::chan<int>> chans(CHANS);
 
-        // Reader: all peers are ready, prialt picks first.
-        csp::spawn([&alt_result,
-                     r0 = chans[0].r.copy(),
-                     r1 = chans[1].r.copy(),
-                     r2 = chans[2].r.copy(),
-                     r3 = chans[3].r.copy()] {
+            // Writers send immediately — they'll block on the channel.
+            for (int c = 0; c < CHANS; ++c) {
+                csp::spawn([w = chans[c].w.copy(), c] {
+                    w << (c + 1);
+                });
+            }
+
+            // Wait for all writers to be blocked.
+            qs.wait();
+
+            // All peers ready; prialt picks first (channel 0).
             int v0 = 0, v1 = 0, v2 = 0, v3 = 0;
-            int which = csp::prialt(r0 >> v0, r1 >> v1, r2 >> v2, r3 >> v3);
+            int which = csp::prialt(
+                chans[0].r.copy() >> v0,
+                chans[1].r.copy() >> v1,
+                chans[2].r.copy() >> v2,
+                chans[3].r.copy() >> v3);
             alt_result.store(which, std::memory_order_relaxed);
+
+            // Drain remaining writers.
+            for (int c = 0; c < CHANS; ++c) {
+                csp::spawn([r = chans[c].r.copy()] {
+                    int v;
+                    r >> v;
+                });
+            }
+            for (auto& ch : chans) ch.release();
         });
 
-        // Drain remaining writers.
-        for (int c = 0; c < CHANS; ++c) {
-            csp::spawn([r = chans[c].r.copy()] {
-                int v;
-                r >> v;
-            });
-        }
-
-        for (auto& ch : chans) ch.release();
-
-        csp::schedule();
-
-        // prialt always picks channel 0 (first in priority order).
         CHECK(0 == alt_result.load());
     }
 }
-#endif
 
 // Stress: repeated drain_suspended under high contention.
 // Many channel pairs with yield between send and receive to maximize

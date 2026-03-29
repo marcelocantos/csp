@@ -615,11 +615,6 @@ TEST_CASE("Channel - Capillaries") {
     //          \       /
     //           O --> O
 
-    // TODO(T11): Capillaries uses spawn_outward/inward_tree which
-    // call stats.spawn from concurrent imps, racing the non-atomic
-    // RunStats counters. Needs RunStats to use atomic counters, or
-    // the tree helpers to use plain spawn.
-#if 0
     RunStats stats;
     constexpr size_t WIDTH = 0x100;
     constexpr size_t MESSAGES = 0x1000;
@@ -646,7 +641,6 @@ TEST_CASE("Channel - Capillaries") {
     });
 
     CHECK(received.all());
-#endif
 }
 
 TEST_CASE("Channel - MoveOnly") {
@@ -814,9 +808,6 @@ TEST_CASE("Channel - PrialtOrder") {
     });
 }
 
-// TODO(T11): NonBlocking test depends on writer being blocked before
-// reader checks — timing-dependent, needs M:N-safe synchronization.
-#if 0
 TEST_CASE("Channel - NonBlocking") {
     RunStats stats;
 
@@ -825,21 +816,23 @@ TEST_CASE("Channel - NonBlocking") {
     int n = -1;
 
     csp::run([&]{
+        // No writer ready; skip (dead channel) fires immediately.
         CHECK(0 > prialt(r >> n, ~skip));
         CHECK(-1 == n);
     });
 
+    csp::quiescence_scope qs;
     csp::run([&]{
+        qs.bind();
         spawn([w = ch.w.copy()]{ w << 42; });
         ch.release();
-        csp::yield();
+        qs.wait();  // writer is now blocked on the channel
         CHECK(0 == prialt(r >> n, ~skip));
         CHECK(42 == n);
     });
 
     r = {};
 }
-#endif
 
 TEST_CASE("Channel - None basic") {
     RunStats stats;
