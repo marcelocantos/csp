@@ -15,7 +15,7 @@ TEST_CASE("Pace - all values pass through") {
     std::vector<int> got;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto p = pace<int>(tick(50ms)).spawn();
 
         csp::spawn([w = std::move(p.w)]{
@@ -36,7 +36,7 @@ TEST_CASE("Pace - enforces minimum interval") {
     csp::time_point last_time;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto p = pace<int>(tick(80ms)).spawn();
 
         csp::spawn([w = std::move(p.w)]{
@@ -65,7 +65,7 @@ TEST_CASE("Pace - first value passes immediately") {
     int got = 0;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto p = pace<int>(tick(200ms)).spawn();
 
         csp::spawn([w = std::move(p.w)]{
@@ -84,7 +84,7 @@ TEST_CASE("Pace - output death stops") {
     fake_clock fc;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto p = pace<int>(tick(50ms)).spawn();
 
         csp::spawn([w = std::move(p.w)]{
@@ -103,7 +103,7 @@ TEST_CASE("Pace - pipe composition") {
     std::vector<int> got;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto r = count(1, 4).spawn() | pace<int>(tick(50ms));
 
         for (int v; r >> v;) got.push_back(v);

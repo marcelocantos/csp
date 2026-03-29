@@ -999,7 +999,7 @@ TEST_CASE("ChanUtil - Throttle budget reset") {
     std::vector<int> got;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
 
         auto th = throttle<int>(tick(100ms), {.n = 2}).spawn();
 

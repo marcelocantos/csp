@@ -8,13 +8,13 @@ using namespace std::chrono_literals;
 
 TEST_SUITE("DeadLetter") {
 
-TEST_CASE("Throttle - excess goes to dead letter" * doctest::skip()) {
+TEST_CASE("Throttle - excess goes to dead letter") {
     fake_clock fc;
 
     std::vector<int> dead;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
 
         auto [dl_w, dl_r] = chan<int>{};
 
@@ -33,11 +33,11 @@ TEST_CASE("Throttle - excess goes to dead letter" * doctest::skip()) {
     CHECK(std::vector<int>({2, 3, 4, 5}) == dead);
 }
 
-TEST_CASE("Throttle - no dead letter, no crash" * doctest::skip()) {
+TEST_CASE("Throttle - no dead letter, no crash") {
     fake_clock fc;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
 
         // Same scenario without dead letter — existing behaviour.
         auto r = throttle<int>(tick(1s)).spawn(count(1, 6).spawn());
@@ -48,13 +48,13 @@ TEST_CASE("Throttle - no dead letter, no crash" * doctest::skip()) {
     });
 }
 
-TEST_CASE("Throttle - budget reset with dead letter" * doctest::skip()) {
+TEST_CASE("Throttle - budget reset with dead letter") {
     fake_clock fc;
 
     std::vector<int> dead;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
 
         auto [dl_w, dl_r] = chan<int>{};
         auto th = throttle<int>(tick(100ms), {.n = 2, .dead_letter = std::move(dl_w)}).spawn();
@@ -87,13 +87,13 @@ TEST_CASE("Throttle - budget reset with dead letter" * doctest::skip()) {
     CHECK(std::vector<int>({3, 6}) == dead);
 }
 
-TEST_CASE("Debounce - superseded values go to dead letter" * doctest::skip()) {
+TEST_CASE("Debounce - superseded values go to dead letter") {
     fake_clock fc;
 
     std::vector<int> dead;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
 
         auto [dl_w, dl_r] = chan<int>{};
 
@@ -117,7 +117,7 @@ TEST_CASE("Debounce - no dead letter, no crash") {
     fake_clock fc;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
 
         auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
 
@@ -127,13 +127,13 @@ TEST_CASE("Debounce - no dead letter, no crash") {
     });
 }
 
-TEST_CASE("Debounce - spaced values, no drops" * doctest::skip()) {
+TEST_CASE("Debounce - spaced values, no drops") {
     fake_clock fc;
 
     std::vector<int> dead;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
 
         auto [dl_w, dl_r] = chan<int>{};
         auto db = debounce<int>(50ms, {.dead_letter = std::move(dl_w)}).spawn();

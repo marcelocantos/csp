@@ -271,7 +271,7 @@ namespace csp {
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
             auto* self = current_imp();
-            if (self->qs_) self->qs_->leave();
+            if (self->qs_entered_) self->qs_->leave();
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
                 StackPool::instance().maybe_shrink(
@@ -292,7 +292,7 @@ namespace csp {
                 target = busy;
             }
             target->run(status);
-            if (current_imp()->qs_) current_imp()->qs_->enter();
+            if (current_imp()->qs_entered_) current_imp()->qs_->enter();
         }
 
     }
@@ -439,7 +439,10 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 
         // Inherit quiescence scope from parent.
         imp->qs_ = self->qs_;
-        if (imp->qs_) imp->qs_->enter();
+        if (imp->qs_) {
+            imp->qs_->enter();
+            imp->qs_entered_ = true;
+        }
 
         auto& rt = Runtime::instance();
         if (daemon) {
@@ -510,7 +513,9 @@ void await_idle() {
 } // namespace csp::internal
 
 void csp::quiescence_scope::bind() {
-    detail::current_imp()->qs_ = this;
+    auto* imp = detail::current_imp();
+    imp->qs_ = this;
+    imp->qs_entered_ = true;
     enter();
 }
 

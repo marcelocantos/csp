@@ -23,6 +23,18 @@ dynamic<clock_source*> clock{&real_clock_instance};
 
 fake_clock::fake_clock(time_point start) : current_(start) {}
 
+time_point fake_clock::now() const {
+    // Auto-enroll the calling imp in this clock's quiescence scope.
+    // Only enroll real imps (with fcontext stacks), not p.main.
+    auto* imp = detail::current_imp();
+    if (imp && imp->stk_.base && imp->qs_ != &qs_ && !imp->qs_entered_) {
+        imp->qs_ = const_cast<quiescence_scope*>(&qs_);
+        const_cast<quiescence_scope*>(&qs_)->enter();
+        imp->qs_entered_ = true;
+    }
+    return current_;
+}
+
 fake_clock::~fake_clock() {
     // Unregister quiescence hook.
     auto& rt = detail::Runtime::instance();
@@ -42,7 +54,11 @@ void fake_clock::sleep_until(time_point tp) {
     {
         std::lock_guard<std::mutex> lk(rt.hook_mu_);
         if (!rt.quiescence_hook_) {
-            rt.quiescence_hook_ = [this]{ return advance_to_next(); };
+            rt.quiescence_hook_ = [this]() -> bool {
+                // Only advance time when ALL scope members are sleeping.
+                if (!qs_.is_quiescent()) return true;  // imps still active
+                return advance_to_next();  // true=advanced, false=no timers
+            };
         }
     }
     internal::suspend();
@@ -73,6 +89,14 @@ bool fake_clock::advance_to_next() {
     }
     fire_expired();
     return true;
+}
+
+dynamic_binding fake_clock::binding() {
+    // Set qs_ for child propagation WITHOUT entering the scope.
+    // The binding imp is the orchestrator, not a participant —
+    // only child imps (spawned after this) enter the scope.
+    detail::current_imp()->qs_ = &qs_;
+    return csp::clock = this;
 }
 
 void fake_clock::run() {

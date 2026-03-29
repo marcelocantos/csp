@@ -270,10 +270,10 @@ TEST_CASE("cancellable sleep throws") {
     fake_clock fc;
     bool threw = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto guard = cancellation();
         spawn([&]() {
-            csp::local l2{csp::clock = &fc};
+            csp::local l2{fc.binding()};
             try {
                 csp::sleep(std::chrono::seconds(60));
             } catch (canceled const&) {
@@ -292,11 +292,11 @@ TEST_CASE("sleep completes normally under cancel scope") {
     fake_clock fc;
     bool completed = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto guard = cancellation();
         chan<> done;
         spawn([&, w = std::move(done.w)]() {
-            csp::local l2{csp::clock = &fc};
+            csp::local l2{fc.binding()};
             csp::sleep(std::chrono::seconds(1));
             completed = true;
         });
@@ -343,10 +343,10 @@ TEST_CASE("deadline fires timed_out" * doctest::skip()) {
     fake_clock fc;
     bool got_timed_out = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto guard = cancellation(std::chrono::seconds(5));
         spawn([&]() {
-            csp::local l2{csp::clock = &fc};
+            csp::local l2{fc.binding()};
             try {
                 csp::sleep(std::chrono::seconds(60));
             } catch (timed_out const&) {
@@ -365,7 +365,7 @@ TEST_CASE("deadline done fires") {
     fake_clock fc;
     bool fired = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto guard = cancellation(std::chrono::seconds(2));
         spawn([&]() {
             prialt(done());
@@ -381,7 +381,7 @@ TEST_CASE("deadline cancel_reason is timed_out") {
     fake_clock fc;
     bool is_timed_out = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto guard = cancellation(std::chrono::seconds(1));
         spawn([&]() {
             prialt(done());
@@ -403,7 +403,7 @@ TEST_CASE("deadline explicit cancel before timeout") {
     bool got_canceled = false;
     bool got_timed_out = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto guard = cancellation(std::chrono::seconds(10));
         spawn([&]() {
             prialt(done());
@@ -428,7 +428,7 @@ TEST_CASE("deadline with time_point overload") {
     fake_clock fc;
     bool fired = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto tp = csp::now() + std::chrono::seconds(3);
         auto guard = cancellation(tp);
         spawn([&]() {
@@ -445,7 +445,7 @@ TEST_CASE("deadline cascades to child") {
     fake_clock fc;
     bool child_fired = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto guard = cancellation(std::chrono::seconds(5));
         spawn([&]() {
             auto child = cancellation();
@@ -534,7 +534,7 @@ TEST_CASE("nested cancel scopes inner fires first" * doctest::skip()) {
     bool inner_fired = false;
     bool outer_fired = false;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto outer = cancellation(std::chrono::seconds(10));
         spawn([&]() {
             // Watch outer scope.

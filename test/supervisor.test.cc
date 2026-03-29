@@ -69,7 +69,7 @@ TEST_CASE("sliding window forgets old restarts") {
     fake_clock fc;
     RunStats stats;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         // max_restarts = 2, window = 10s.
         // Worker advances fake time by 11s before each throw,
         // pushing prior restarts outside the window.
@@ -96,7 +96,7 @@ TEST_CASE("backoff delays restart") {
     std::vector<time_point> times;
     RunStats stats;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         stats.spawn([&]() {
             worker_group wg;
             wg.policy.max_restarts = 3;

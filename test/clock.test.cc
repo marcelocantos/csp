@@ -29,7 +29,7 @@ TEST_CASE("now() returns fake time when overridden") {
 
     fake_clock fc;
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         CHECK(csp::now() == fc.now());
         fc.advance(1s);
         CHECK(csp::now() == fc.now());
@@ -52,7 +52,7 @@ TEST_CASE("sleep with fake clock") {
     bool woke = false;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         csp::spawn([&] {
             csp::sleep(100ms);
             woke = true;
@@ -69,7 +69,7 @@ TEST_CASE("after fires on advance") {
     time_point fired_at{};
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto r = csp::after(1s);
         r >> fired_at;
     });
@@ -84,7 +84,7 @@ TEST_CASE("tick fires periodically") {
     std::vector<time_point> ticks;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto r = csp::tick(100ms);
         for (int i = 0; i < 3; ++i) {
             time_point t;
@@ -107,7 +107,7 @@ TEST_CASE("advance_to_next jumps to exact deadline") {
     bool woke = false;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         csp::spawn([&] {
             csp::sleep(42ms);
             woke = true;
@@ -130,7 +130,7 @@ TEST_CASE("multiple timers fire in order") {
     std::vector<int> order;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         csp::spawn([&] { csp::sleep(300ms); order.push_back(3); });
         csp::spawn([&] { csp::sleep(100ms); order.push_back(1); });
         csp::spawn([&] { csp::sleep(200ms); order.push_back(2); });
@@ -150,7 +150,7 @@ TEST_CASE("auto-advance via run()") {
     std::vector<int> order;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         csp::spawn([&] { csp::sleep(300ms); order.push_back(3); });
         csp::spawn([&] { csp::sleep(100ms); order.push_back(1); });
         csp::spawn([&] { csp::sleep(200ms); order.push_back(2); });
@@ -172,7 +172,7 @@ TEST_CASE("run_until_idle does not advance time") {
     bool woke = false;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         csp::spawn([&] {
             csp::sleep(100ms);
             woke = true;
@@ -189,7 +189,7 @@ TEST_CASE("child inherits fake clock") {
     time_point child_time{};
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         fc.advance(42s);
         csp::spawn([&] {
             // Child should see the fake clock via dynamic scoping.
@@ -208,7 +208,7 @@ TEST_CASE("sleep_until past time returns immediately") {
     bool completed = false;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         // sleep_until a time in the past — should not suspend.
         csp::sleep_until(time_point{} + 500ms);
         completed = true;
@@ -229,7 +229,7 @@ TEST_CASE("fake clock: debounce emits after quiet period") {
     std::vector<int> out;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto ch = chan<int>{};
         auto result = std::move(ch.r) | debounce<int>(200ms);
         csp::spawn([&out, result = std::move(result)] {
@@ -253,7 +253,7 @@ TEST_CASE("fake clock: timeout closes after inactivity") {
     std::vector<int> out;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto ch = chan<int>{};
 
         auto result = std::move(ch.r) | timeout<int>(5s);
@@ -278,7 +278,7 @@ TEST_CASE("fake clock: delay shifts values forward in time") {
     std::vector<int> out;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto ch = chan<int>{};
 
         auto result = std::move(ch.r) | delay<int>(1s);
@@ -302,7 +302,7 @@ TEST_CASE("fake clock: throttle rate-limits with tick trigger") {
     std::vector<int> out;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto ch = chan<int>{};
 
         auto result = std::move(ch.r) | throttle<int>(tick(100ms));
@@ -332,7 +332,7 @@ TEST_CASE("after with zero duration fires promptly") {
     bool fired = false;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto r = csp::after(0ns);
         r >> nullptr;
         fired = true;
@@ -348,7 +348,7 @@ TEST_CASE("sleep with zero duration returns immediately") {
     bool completed = false;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         csp::sleep(0ns);
         completed = true;
     });
@@ -364,7 +364,7 @@ TEST_CASE("sleep_until exact now returns immediately") {
     bool completed = false;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         csp::sleep_until(csp::now());  // deadline == current time
         completed = true;
     });
@@ -393,7 +393,7 @@ TEST_CASE("fake clock: periodic polling with exact timing") {
     std::vector<time_point> poll_times;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto ticker = tick(500ms);
         for (int i = 0; i < 4; ++i) {
             time_point tp;

@@ -12,7 +12,7 @@ TEST_CASE("Timer - Sleep") {
     bool ran = false;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         csp::sleep(10ms);
         ran = true;
     });
@@ -26,7 +26,7 @@ TEST_CASE("Timer - After") {
     duration elapsed{};
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto start = csp::now();
         auto timer = csp::after(10ms);
         timer.read();
@@ -44,7 +44,7 @@ TEST_CASE("Timer - AfterInAlt") {
     int which_result = 0;
 
     csp::run([&, r = --idle_writer] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto timeout = csp::after(5ms);
         int n = 0;
         which_result = alt(r >> n, timeout >> nullptr);
@@ -62,7 +62,7 @@ TEST_CASE("Timer - Tick") {
     std::vector<time_point> times;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto ticker = csp::tick(50ms);
         for (int i = 0; i < 3; ++i) {
             times.push_back(ticker.read());
@@ -80,7 +80,7 @@ TEST_CASE("Timer - TickCancellation") {
     fake_clock fc;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto ticker = csp::tick(5ms);
         ticker.read();
         ticker = {};
@@ -99,7 +99,7 @@ TEST_CASE("Timer - MultipleTimersOrdering" * doctest::skip()) {
     int which_result = 0;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         auto slow = csp::after(20ms);
         auto fast = csp::after(5ms);
         which_result = alt(slow >> nullptr, fast >> nullptr);
@@ -116,7 +116,7 @@ TEST_CASE("Timer - TimeoutPattern") {
     int val = 0;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         chan<int> ch;
 
         csp::spawn([w = ch.w.copy()] {
@@ -142,7 +142,7 @@ TEST_CASE("Timer - Controlled duration") {
     std::vector<duration> intervals;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         chan<duration> ctl;
         auto t = timer(std::move(ctl.r));
 
@@ -169,7 +169,7 @@ TEST_CASE("Timer - Controlled time_point") {
     int fires = 0;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         chan<time_point> ctl;
         auto t = timer(std::move(ctl.r));
 
@@ -190,7 +190,7 @@ TEST_CASE("Timer - Controlled cancellation") {
     fake_clock fc;
 
     csp::run([&] {
-        csp::local l{csp::clock = &fc};
+        csp::local l{fc.binding()};
         chan<duration> ctl;
         auto t = timer(std::move(ctl.r));
 

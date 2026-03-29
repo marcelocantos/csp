@@ -44,7 +44,7 @@ class fake_clock : public clock_source {
 public:
     explicit fake_clock(time_point start = time_point{});
 
-    time_point now() const override { return current_; }
+    time_point now() const override;
     void sleep_until(time_point tp) override;
     bool uses_reactor() const override { return false; }
 
@@ -62,6 +62,12 @@ public:
     // Bind the fake clock's quiescence scope to the current imp.
     // Call before spawning timer-using imps so they inherit the scope.
     void bind_scope() { qs_.bind(); }
+
+    // Convenience: bind clock + quiescence scope in one call.
+    // Returns a dynamic_binding for use with csp::local.
+    // Usage: csp::local l{fc.binding()};
+    //   — equivalent to: csp::local l{csp::clock = &fc}; fc.bind_scope();
+    [[nodiscard]] dynamic_binding binding();
 
     // Run until all timer-blocked imps complete. If bind_scope()
     // was not called, binds automatically (but imps spawned before

@@ -235,6 +235,9 @@ public:
     // from this point inherit the scope.
     void bind();
 
+    // True when all scope members are sleeping (active == 0).
+    bool is_quiescent() const { return active_.load(std::memory_order_acquire) == 0; }
+
     // Called by the runtime on context switch boundaries.
     void enter() { active_.fetch_add(1, std::memory_order_relaxed); }
     void leave() {
