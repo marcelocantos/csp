@@ -346,7 +346,7 @@ TEST_CASE("ChanUtil - Share single subscriber") {
 
     // Share latch uses latest-value semantics in M:N: slow subscribers
     // may miss intermediate values.  Check boundaries, not exact sequence.
-    CHECK(!got.empty());
+    REQUIRE(!got.empty());
     CHECK(1 == got.front());
     CHECK(3 == got.back());
 }
