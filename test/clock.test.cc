@@ -59,18 +59,19 @@ TEST_CASE("sleep with fake clock") {
             woke = true;
         });
     });
-    csp::schedule();
+    // internal::run() returns when quiescent (outer done, inner sleeping).
+    csp::internal::run();
 
     // Imp is now sleeping in the fake clock's queue.
     CHECK(!woke);
     CHECK(fc.has_pending());
 
     fc.advance(50ms);
-    while (csp::internal::run()) {}
+    csp::internal::run();
     CHECK(!woke);
 
     fc.advance(50ms);
-    while (csp::internal::run()) {}
+    csp::internal::run();
     CHECK(woke);
 }
 
@@ -85,17 +86,18 @@ TEST_CASE("after fires on advance") {
         auto r = csp::after(1s);
         r >> fired_at;
     });
-    csp::schedule();
+    // internal::run() returns when quiescent (imp sleeping in fake clock).
+    csp::internal::run();
 
     CHECK(fired_at == time_point{});
     CHECK(fc.has_pending());
 
     fc.advance(999ms);
-    while (csp::internal::run()) {}
+    csp::internal::run();
     CHECK(fired_at == time_point{});
 
     fc.advance(1ms);
-    while (csp::internal::run()) {}
+    csp::internal::run();
     CHECK(fired_at != time_point{});
     CHECK(fired_at == fc.now());
 }
@@ -115,7 +117,8 @@ TEST_CASE("tick fires periodically") {
             ticks.push_back(t);
         }
     });
-    csp::schedule();
+    // internal::run() returns when quiescent (imp sleeping).
+    csp::internal::run();
 
     // Auto-advance fires 3 ticks for the reader, then a 4th wakes the
     // producer which discovers the dead reader and exits cleanly.
@@ -141,12 +144,13 @@ TEST_CASE("advance_to_next jumps to exact deadline") {
             woke = true;
         });
     });
-    csp::schedule();
+    // internal::run() returns when quiescent (inner sleeping).
+    csp::internal::run();
 
     CHECK(!woke);
     CHECK(fc.advance_to_next());
     CHECK(fc.now() == time_point{} + 42ms);
-    while (csp::internal::run()) {}
+    csp::internal::run();
     CHECK(woke);
 }
 
@@ -167,10 +171,11 @@ TEST_CASE("multiple timers fire in order") {
         stats.spawn([&] { csp::sleep(100ms); order.push_back(1); });
         stats.spawn([&] { csp::sleep(200ms); order.push_back(2); });
     });
-    csp::schedule();
+    // internal::run() returns when quiescent (imps sleeping).
+    csp::internal::run();
 
     while (fc.advance_to_next()) {
-        while (csp::internal::run()) {}
+        csp::internal::run();
     }
 
     CHECK(order == std::vector{1, 2, 3});
@@ -188,7 +193,8 @@ TEST_CASE("auto-advance via run()") {
         stats.spawn([&] { csp::sleep(100ms); order.push_back(1); });
         stats.spawn([&] { csp::sleep(200ms); order.push_back(2); });
     });
-    csp::schedule();
+    // internal::run() returns when quiescent (imps sleeping).
+    csp::internal::run();
 
     fc.run();
 
@@ -208,7 +214,8 @@ TEST_CASE("run_until_idle does not advance time") {
             woke = true;
         });
     });
-    csp::schedule();
+    // internal::run() returns when quiescent (inner sleeping).
+    csp::internal::run();
 
     fc.run_until_idle();
     CHECK(!woke);  // Timer hasn't fired — time didn't advance.
@@ -233,7 +240,6 @@ TEST_CASE("child inherits fake clock") {
         });
     });
     csp::schedule();
-    while (csp::internal::run()) {}
 
     CHECK(child_time == time_point{} + 42s);
 }
@@ -280,7 +286,7 @@ TEST_CASE("fake clock: debounce emits after quiet period") {
         ch.w << 2;
         ch.w << 3;  // Only this one should emit (supersedes 1 and 2).
     });
-    csp::schedule();
+    csp::internal::run();
     fc.run();
 
     CHECK(out == std::vector{3});
@@ -305,7 +311,7 @@ TEST_CASE("fake clock: timeout closes after inactivity") {
         // Send a value, then let time expire.
         ch.w << 42;
     });
-    csp::schedule();
+    csp::internal::run();
     fc.run();
 
     CHECK(out == std::vector{42});
@@ -333,7 +339,7 @@ TEST_CASE("fake clock: delay shifts values forward in time") {
         ch.w << 20;
         ch.w << 30;
     });
-    csp::schedule();
+    csp::internal::run();
 
     // All values were written at t=0, so all have deadline t=1s.
     CHECK(out.empty());
@@ -369,7 +375,7 @@ TEST_CASE("fake clock: throttle rate-limits with tick trigger") {
         ch.w << 2;
         ch.w << 3;
     });
-    csp::schedule();
+    csp::internal::run();
 
     // First value passed (initial budget = 1), rest dropped.
     CHECK(out == std::vector{1});
@@ -390,7 +396,7 @@ TEST_CASE("after with zero duration fires promptly") {
         r >> nullptr;
         fired = true;
     });
-    csp::schedule();
+    csp::internal::run();
     fc.run();
 
     CHECK(fired);
@@ -408,9 +414,6 @@ TEST_CASE("sleep with zero duration returns immediately") {
         completed = true;
     });
     csp::schedule();
-    // Zero sleep should complete without needing fc.run().
-    // But drain any residual work just in case.
-    while (csp::internal::run()) {}
 
     CHECK(completed);
 }
@@ -428,7 +431,6 @@ TEST_CASE("sleep_until exact now returns immediately") {
         completed = true;
     });
     csp::schedule();
-    while (csp::internal::run()) {}
 
     CHECK(completed);
     CHECK(!fc.has_pending());
@@ -463,7 +465,7 @@ TEST_CASE("fake clock: periodic polling with exact timing") {
             poll_times.push_back(tp);
         }
     });
-    csp::schedule();
+    csp::internal::run();
     fc.run();
 
     CHECK(poll_count == 4);

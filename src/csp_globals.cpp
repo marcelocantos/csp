@@ -44,13 +44,6 @@ namespace csp {
             auto& rt = Runtime::instance();
             rt.init(num_procs);
             runtime_initialized_ = true;
-
-            if (num_procs != 1) {
-                set_scheduler([&rt] {
-                    rt.main_loop();
-                });
-            }
-
         }
 
         Processor& current_p() {
@@ -90,12 +83,6 @@ namespace csp {
 
         auto& rt = detail::Runtime::instance();
 
-        // Enable M:N scheduler if we just went from 1→N.
-        if (n > 1 && !rt.mn_mode_) {
-            rt.mn_mode_ = true;
-            set_scheduler([&rt] { rt.main_loop(); });
-        }
-
         // Update initial_procs_. The watchdog adds P's when it detects
         // stalls and num_procs_ < max_procs_; surplus P's (id >=
         // initial_procs_) wind down after an idle timeout.
@@ -116,7 +103,6 @@ namespace csp {
         detail::g_maxprocs = -1;
         detail::tl_proc_ = nullptr;
 
-        // Restore default single-threaded scheduler.
         reset_scheduler();
     }
 

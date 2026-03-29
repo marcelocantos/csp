@@ -111,8 +111,9 @@ struct AltMatch {
 using EntryFn = void (*)(void *);
 
 // Imp management.
-int spawn(EntryFn entry, void * data);
+int spawn(EntryFn entry, void * data, bool daemon = false);
 int run();
+void await_idle();
 void yield();
 void descr(char const * fmt, ...);
 
@@ -183,7 +184,8 @@ extern Logger g_descrlog;
 
 void set_scheduler(std::function<void()> f);
 void reset_scheduler();
-void schedule();
+void await_completion();
+inline void schedule() { await_completion(); }  // deprecated alias
 
 // Yield control so other imps can run. Does nothing outside an imp.
 inline void yield() { internal::yield(); }
@@ -1021,13 +1023,31 @@ inline void spawn_entry(void * data) {
 }
 
 template <typename F>
-reader<std::exception_ptr> spawn(F && f) {
+reader<std::exception_ptr> spawn(F && f, bool daemon = false) {
     reader<std::exception_ptr> r;
     auto sd = new detail::spawn_data<F>{std::move(f), ++r};
-    if (!internal::spawn(detail::spawn_entry<F>, sd)) {
+    if (!internal::spawn(detail::spawn_entry<F>, sd, daemon)) {
         throw error("spawn failed");
     }
     return r;
+}
+
+template <typename T, typename F>
+writer<T> spawn_daemon_consumer(F f) {
+    writer<T> w;
+    spawn([f = std::move(f), r = --w]() mutable {
+        f(std::move(r));
+    }, /*daemon=*/true);
+    return w;
+}
+
+// Spawn f as an imp and block until all non-daemon imps complete.
+// This is the standard entry point for CSP programs — the main
+// thread must not perform channel operations directly.
+template <typename F>
+void run(F && f) {
+    spawn(std::forward<F>(f));
+    await_completion();
 }
 
 inline void join(reader<std::exception_ptr> const & r) {

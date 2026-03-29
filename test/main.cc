@@ -14,9 +14,10 @@ int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    // Default tests to single-threaded unless CSP_MAXPROCS is set.
-    // Tests that need M:N call set_maxprocs() explicitly; shutdown_runtime()
-    // resets to this default.
+    // Default tests to CSP_MAXPROCS=1 unless overridden.  The runtime
+    // always runs M:N (min 2 procs), so CSP_MAXPROCS=1 means 1 worker
+    // thread + the main thread.  Tests that need more parallelism call
+    // shutdown_runtime()/set_maxprocs() explicitly.
 #ifdef _WIN32
     if (!std::getenv("CSP_MAXPROCS")) {
         _putenv_s("CSP_MAXPROCS", "1");

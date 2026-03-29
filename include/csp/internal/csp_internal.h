@@ -129,6 +129,7 @@ struct alignas(16) Imp {
     std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
 
     bool in_global_ = false;  // true while in the global run queue
+    bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 

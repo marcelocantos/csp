@@ -19,7 +19,7 @@ TEST_CASE("all workers exit normally") {
         };
         wg.run();
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(a == 1);
     CHECK(b == 2);
     CHECK(c == 3);
@@ -36,7 +36,7 @@ TEST_CASE("worker exception triggers restart") {
         };
         wg.run();
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(count == 2);
 }
 
@@ -59,7 +59,7 @@ TEST_CASE("max restarts exceeded") {
             CHECK(e.cause != nullptr);
         }
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(caught);
     CHECK(count == 3); // initial + 2 restarts
 }
@@ -107,7 +107,8 @@ TEST_CASE("backoff delays restart") {
         };
         wg.run();
     });
-    csp::schedule();
+    // internal::run() returns when quiescent (worker sleeping during backoff).
+    csp::internal::run();
     fc.run();
     CHECK(count == 2);
     REQUIRE(times.size() == 2);
@@ -127,7 +128,7 @@ TEST_CASE("mixed workers") {
         };
         wg.run();
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(stable_count == 1);
     CHECK(flaky_count == 2);
 }
@@ -153,7 +154,7 @@ TEST_CASE("nested groups") {
             CHECK(e.worker_name == "inner_group");
         }
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(caught);
 }
 
@@ -163,7 +164,7 @@ TEST_CASE("empty group") {
         worker_group wg;
         wg.run(); // should return immediately
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
 }
 
 TEST_CASE("channel leak check") {
@@ -179,7 +180,7 @@ TEST_CASE("channel leak check") {
         };
         wg.run();
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(count == 3);
 }
 

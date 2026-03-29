@@ -4543,7 +4543,6 @@ auto cycle(std::initializer_list<T> c) {
 
 /* csp/part/exhaust_all.h */
 
-#include <cstdio>
 
 namespace csp::part {
 
@@ -4557,18 +4556,18 @@ inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> i
 
     reader<B> sub;
     while (csp::alt(in >> sub, ~out) == 0) {
-        fprintf(stderr, "[exhaust_all] accepted sub\n");
         B b;
         reader<B> discard;
         for (;;) {
-            // ~sub (slot 0) fires immediately on sub writer death —
-            // vultures on dead channels short-circuit before dead-data
-            // results are checked, so placing it first guarantees we
-            // detect sub death before any dead-data result fires.
-            int r = csp::prialt(~sub, sub >> b, in >> discard, ~out);
-            fprintf(stderr, "[exhaust_all] prialt => %d\n", r);
-            switch (r) {
-            case ~0:  // Sub died (vulture) — outer loop gets next.
+            // ~sub is at slot 0 so it fires immediately in Phase 1
+            // when sub is already dead. In Phase 2 (sub dies while
+            // sleeping) either ~sub (~0) or sub >> b (~1) may win the
+            // CAS — both indicate sub death. ~in (~2) is impossible here
+            // since only writers can die and trigger dead-data; ~out (~3)
+            // means output died.
+            switch (csp::prialt(~sub, sub >> b, in >> discard, ~out)) {
+            case ~0:  // Sub died (vulture won Phase 1 or Phase 2 CAS).
+            case ~1:  // Sub died (data chanop won Phase 2 CAS).
                 break;
             case 1:  // Sub data — forward.
                 if (!(out << std::move(b))) return;
@@ -4576,21 +4575,16 @@ inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> i
             case 2:  // New sub from input — discard.
                 continue;
             case ~2:  // Input died — drain remaining sub.
-                fprintf(stderr, "[exhaust_all] draining remaining sub\n");
                 for (; csp::alt(sub >> b, ~out) == 0;) {
-                    fprintf(stderr, "[exhaust_all] drain got value\n");
                     if (!(out << std::move(b))) return;
                 }
-                fprintf(stderr, "[exhaust_all] drain done\n");
                 return;
             default:  // Output died.
-                fprintf(stderr, "[exhaust_all] output died\n");
                 return;
             }
-            break;  // Reached only from case ~0 (sub died).
+            break;  // Reached only from case ~0 or ~1 (sub died).
         }
     }
-    fprintf(stderr, "[exhaust_all] outer loop exited\n");
 });
 
 }

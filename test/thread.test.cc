@@ -8,11 +8,11 @@
 
 TEST_CASE("Thread - OneShot") {
     bool ran = false;
-    csp::spawn([&]{
-        ran = true;
+    csp::run([&]{
+        csp::spawn([&]{
+            ran = true;
+        });
     });
-
-    CHECK_FALSE(csp::internal::run());
     CHECK(ran);
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
@@ -20,13 +20,13 @@ TEST_CASE("Thread - OneShot") {
 
 TEST_CASE("Thread - Parallel") {
     char buf[6] = "";
-    for (int i = 0; i < 5; ++i) {
-        csp::spawn([&, i]{
-            buf[i] = 478560413032U >> (8 * i);
-        });
-    }
-
-    CHECK_FALSE(csp::internal::run());
+    csp::run([&]{
+        for (int i = 0; i < 5; ++i) {
+            csp::spawn([&, i]{
+                buf[i] = 478560413032U >> (8 * i);
+            });
+        }
+    });
     CHECK("hello" == std::string(buf));
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
@@ -34,18 +34,17 @@ TEST_CASE("Thread - Parallel") {
 
 TEST_CASE("Thread - SpawnSpawn") {
     int result = 0;
-    for (int i = 0; i < 5; ++i) {
-        csp::spawn([&]{
-            for (int i = 0; i < 5; ++i) {
-                csp::spawn([&]{
-                    result += 1;
-                });
-            }
-        });
-    }
-
-    while (csp::internal::run()) { }
-
+    csp::run([&]{
+        for (int i = 0; i < 5; ++i) {
+            csp::spawn([&]{
+                for (int i = 0; i < 5; ++i) {
+                    csp::spawn([&]{
+                        result += 1;
+                    });
+                }
+            });
+        }
+    });
     CHECK(25 == result);
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
@@ -55,22 +54,27 @@ TEST_CASE("Thread - Throw") {
     struct bork { };
 
     int total = 0;
-    auto ex = csp::spawn([&]{
-        for (int i = 1; i <= 10; ++i) {
-            total += i;
-            if (i == 5) {
-                throw bork{};
+    bool threw = false;
+    csp::run([&]{
+        // The throwing imp blocks on channel send until joined.
+        // Both the thrower and the joiner must live in the same csp::run
+        // so the channel rendezvous can complete within await_completion().
+        auto ex = csp::spawn([&]{
+            for (int i = 1; i <= 10; ++i) {
+                total += i;
+                if (i == 5) {
+                    throw bork{};
+                }
             }
-        }
+        });
+        csp::spawn([ex = std::move(ex), &threw]{
+            CHECK_THROWS_AS(csp::join(ex), bork);
+            threw = true;
+        });
     });
 
-    while (csp::internal::run()) { }
-
-    CHECK(1 == csp::internal::channel_count(0));
-    CHECK(1 == csp::internal::channel_count(1));
-    CHECK_THROWS_AS(csp::join(ex), bork);
-    ex = {};
-    csp::internal::run();
+    CHECK(threw);
+    CHECK(15 == total);  // 1+2+3+4+5
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
@@ -78,37 +82,39 @@ TEST_CASE("Thread - Throw") {
 TEST_CASE("Thread - Yield") {
     std::string trace;
 
-    csp::spawn([&]{
-        trace += 'A';
-        csp::yield();
-        trace += 'A';
+    csp::run([&]{
+        csp::spawn([&]{
+            trace += 'A';
+            csp::yield();
+            trace += 'A';
+        });
+        csp::spawn([&]{
+            trace += 'B';
+            csp::yield();
+            trace += 'B';
+        });
     });
-    csp::spawn([&]{
-        trace += 'B';
-        csp::yield();
-        trace += 'B';
-    });
-
-    while (csp::internal::run()) { }
 
     CHECK(2 == std::count(trace.begin(), trace.end(), 'A'));
     CHECK(2 == std::count(trace.begin(), trace.end(), 'B'));
-    // Yield should cause interleaving, not sequential execution.
-    CHECK(std::string("AABB") != trace);
+    // In M:N mode imps run in parallel, so ordering is non-deterministic.
+    // Just verify both imps completed — all characters must appear.
+    CHECK(4 == trace.size());
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
 
 TEST_CASE("Thread - CustomScheduler") {
+    // Verify that set_scheduler installs a custom scheduler that gets called.
     bool custom_ran = false;
 
     csp::set_scheduler([&]{
         custom_ran = true;
+        // Drain any pending imps so the runtime reaches a clean state.
         while (csp::internal::run()) { }
     });
 
     csp::spawn([]{});
-
     csp::schedule();
 
     CHECK(custom_ran);
@@ -121,11 +127,11 @@ TEST_CASE("Thread - SpawnMany") {
     constexpr int N = 500;
     int completed = 0;
 
-    for (int i = 0; i < N; ++i) {
-        csp::spawn([&]{ ++completed; });
-    }
-
-    while (csp::internal::run()) { }
+    csp::run([&]{
+        for (int i = 0; i < N; ++i) {
+            csp::spawn([&]{ ++completed; });
+        }
+    });
 
     CHECK(N == completed);
     CHECK(0 == csp::internal::channel_count(0));

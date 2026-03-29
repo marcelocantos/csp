@@ -12,7 +12,7 @@ class RunScope;
 class RunStats {
 public:
     RunStats() {
-        csp::global_exception_handler = csp::spawn_consumer<std::exception_ptr>([](auto && r) {
+        csp::global_exception_handler = csp::spawn_daemon_consumer<std::exception_ptr>([](auto && r) {
             for (std::exception_ptr ex; r >> ex;) {
                 CHECK_NOTHROW(std::rethrow_exception(ex));
             }
@@ -25,7 +25,7 @@ public:
 
         csp::global_exception_handler = std::move(csp::chan<std::exception_ptr>().w);
 
-        while (csp::internal::run()) { }
+        csp::internal::await_idle();
 
         if (!running()) {
             for (auto & ex : exs_) {
