@@ -619,30 +619,28 @@ TEST_CASE("Channel - Capillaries") {
     constexpr size_t WIDTH = 0x100;
     constexpr size_t MESSAGES = 0x1000;
 
-    writer<size_t> ww[WIDTH];
-    reader<size_t> rr[WIDTH];
-    for (size_t i = 0; i < WIDTH; ++i) {
-        rr[i] = --ww[i];
-    }
-
-    writer<size_t> in;
-    reader<size_t> out;
-
-    spawn_outward_tree(stats, --in, ww, WIDTH);
-    spawn_inward_tree(stats, rr, WIDTH, ++out);
-
-    stats.spawn(count(size_t{0}, MESSAGES).bind(std::move(in)));
-
     std::bitset<MESSAGES> received;
     csp::run([&]{
+        writer<size_t> ww[WIDTH];
+        reader<size_t> rr[WIDTH];
+        for (size_t i = 0; i < WIDTH; ++i) {
+            rr[i] = --ww[i];
+        }
+
+        writer<size_t> in;
+        reader<size_t> out;
+
+        spawn_outward_tree(stats, --in, ww, WIDTH);
+        spawn_inward_tree(stats, rr, WIDTH, ++out);
+
+        stats.spawn(count(size_t{0}, MESSAGES).bind(std::move(in)));
+
         for (size_t i; out >> i;) {
             received.set(i);
         }
     });
 
     CHECK(received.all());
-
-    out = {};
 }
 
 TEST_CASE("Channel - MoveOnly") {

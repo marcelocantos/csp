@@ -104,7 +104,7 @@ TEST_CASE("coin flip - entropy") {
         csp::run([&] {
             auto [w, r] = chan<int>{};
 
-            stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
+            spawn([w = w.copy(), r = r.copy(), &role_a] {
                 int v = 0;
                 switch (alt(w << 1, r >> v)) {
                 case 0: role_a = 0; break;
@@ -112,7 +112,7 @@ TEST_CASE("coin flip - entropy") {
                 }
             });
 
-            stats.spawn([w = w.copy(), r = r.copy()] {
+            spawn([w = w.copy(), r = r.copy()] {
                 int v = 0;
                 alt(w << 2, r >> v);
             });

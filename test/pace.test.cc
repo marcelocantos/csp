@@ -26,7 +26,6 @@ TEST_CASE("Pace - all values pass through") {
         for (int v; p.r >> v;) got.push_back(v);
     });
 
-    csp::schedule();
     fc.run();
     CHECK(std::vector<int>({1, 2, 3}) == got);
 }
@@ -52,7 +51,6 @@ TEST_CASE("Pace - enforces minimum interval") {
         }
     });
 
-    csp::schedule();
     fc.run();
     REQUIRE(3u == times.size());
     CHECK(times[0] == epoch);
@@ -81,7 +79,6 @@ TEST_CASE("Pace - first value passes immediately") {
         received = csp::now();
     });
 
-    csp::schedule();
     fc.run();
     CHECK(received == epoch);
 }
@@ -103,7 +100,6 @@ TEST_CASE("Pace - output death stops") {
         // Drop reader — output dies.
     });
 
-    csp::schedule();
     fc.run();
 }
 
@@ -120,7 +116,6 @@ TEST_CASE("Pace - pipe composition") {
         for (int v; r >> v;) got.push_back(v);
     });
 
-    csp::schedule();
     fc.run();
     CHECK(std::vector<int>({1, 2, 3}) == got);
 }
