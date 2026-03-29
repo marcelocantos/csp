@@ -264,6 +264,7 @@ namespace csp {
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
             auto* self = current_imp();
+            if (self->qs_) self->qs_->leave();
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
                 StackPool::instance().maybe_shrink(
@@ -284,6 +285,7 @@ namespace csp {
                 target = busy;
             }
             target->run(status);
+            if (current_imp()->qs_) current_imp()->qs_->enter();
         }
 
     }
@@ -428,6 +430,10 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
         set_current_imp(self);
 
+        // Inherit quiescence scope from parent.
+        imp->qs_ = self->qs_;
+        if (imp->qs_) imp->qs_->enter();
+
         auto& rt = Runtime::instance();
         if (daemon) {
             imp->daemon_ = true;
@@ -491,6 +497,35 @@ void await_idle() {
     std::unique_lock<std::mutex> lk(rt.park_mu);
     rt.park_cv.wait(lk, [&rt] {
         return rt.live_gs.load(std::memory_order_acquire) == 0;
+    });
+}
+
+} // namespace csp::internal
+
+void csp::quiescence_scope::bind() {
+    detail::current_imp()->qs_ = this;
+    enter();
+}
+
+namespace csp::internal {
+
+void await_quiescent() {
+    // Wait until all workers are parked (no runnable work anywhere).
+    // At this point every live imp has registered its channel/timer
+    // waiters and yielded — the system is in a deterministic state.
+    auto& rt = Runtime::instance();
+    std::unique_lock<std::mutex> lk(rt.park_mu);
+    rt.park_cv.wait(lk, [&rt] {
+        if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
+        if (csp::detail::Reactor::instance().has_pending_signals()) return false;
+        int np = rt.num_procs_.load(std::memory_order_acquire);
+        for (int i = 1; i < np; ++i) {
+            if (rt.procs[i] && rt.procs[i]->alive.load(std::memory_order_acquire)
+                && !rt.procs[i]->parked.load(std::memory_order_acquire)) {
+                return false;
+            }
+        }
+        return true;
     });
 }
 

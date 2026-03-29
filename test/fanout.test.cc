@@ -180,7 +180,10 @@ TEST_CASE("Fanout - Chain") {
     RunStats stats;
     std::atomic<int> total{0};
 
+    csp::quiescence_scope qs;
     csp::run([&]{
+        qs.bind();
+
         auto [new_out_w, new_out_r] = chan<writer<int>>{};
 
         auto new_in = fanout<int>.spawn(std::move(new_out_r));
@@ -209,13 +212,12 @@ TEST_CASE("Fanout - Chain") {
         new_in >> in;
         new_in = {};
 
+        // Wait for all spawned imps to be sleeping (registered on channels).
+        qs.wait();
+
         in << 1;
         in = {};
-        // csp::run waits for all consumer imps to exit before returning.
     });
 
-    // In M:N, fanout pipeline may not fully drain before imps exit.
-    // At least one consumer should receive the value.
-    CHECK(total.load() >= 1);
-    CHECK(total.load() <= 2);
+    CHECK(total.load() == 2 * 1);
 }

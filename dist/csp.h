@@ -298,9 +298,11 @@ private:
 }
 
 #include <atomic>
+#include <condition_variable>
 #include <climits>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <stdint.h>
 
 #include <functional>
@@ -400,6 +402,7 @@ using EntryFn = void (*)(void *);
 int spawn(EntryFn entry, void * data, bool daemon = false);
 int run();
 void await_idle();
+void await_quiescent();
 void yield();
 void descr(char const * fmt, ...);
 
@@ -487,6 +490,51 @@ void set_maxprocs(int n);
 // The next schedule/spawn call will re-initialize the runtime using
 // set_maxprocs or CSP_MAXPROCS.
 void shutdown_runtime();
+
+// --- quiescence_scope ---
+// Tracks active imp count for a dynamic scope. All imps spawned
+// within a `csp::local` binding of `csp::quiescence` inherit the
+// scope. `wait()` blocks until all scope members are sleeping
+// (blocked on channels/timers) — the system is deterministic at
+// that point.
+//
+// Usage:
+//   quiescence_scope qs;
+//   csp::local l{csp::quiescence = &qs};
+//   spawn(...);  // inherits qs
+//   qs.wait();   // blocks until all spawned imps are sleeping
+//
+// The scope pointer is cached on each Imp at spawn time (one HAMT
+// lookup), so hot-path transitions (sleep/wake) are just atomic ops.
+class quiescence_scope {
+public:
+    // Block until all scope members are sleeping (active == 0).
+    // The calling imp is NOT a member (it's running, not sleeping).
+    void wait() {
+        std::unique_lock<std::mutex> lk(mu_);
+        active_.fetch_sub(1, std::memory_order_release);
+        cv_.wait(lk, [this] { return active_.load(std::memory_order_acquire) == 0; });
+        active_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Bind this scope to the current imp. All child imps spawned
+    // from this point inherit the scope.
+    void bind();
+
+    // Called by the runtime on context switch boundaries.
+    void enter() { active_.fetch_add(1, std::memory_order_relaxed); }
+    void leave() {
+        if (active_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            std::lock_guard<std::mutex> lk(mu_);
+            cv_.notify_all();
+        }
+    }
+
+private:
+    std::atomic<int> active_{0};
+    std::mutex mu_;
+    std::condition_variable cv_;
+};
 
 class error : public std::runtime_error {
 public:
@@ -1720,7 +1768,6 @@ fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 
 /* csp/internal/stack_pool.h */
 
-#include <mutex>
 
 // Sanitizer detection: under ASan/TSan, shadow memory scales with mapped VA,
 // so we fall back to heap allocation (new[]/delete[]).
@@ -1913,6 +1960,7 @@ struct alignas(16) Imp {
 
     bool in_global_ = false;  // true while in the global run queue
     bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
+    class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 
@@ -2450,7 +2498,6 @@ exit_guard on_exit(restart_policy policy);
 
 /* csp/internal/blocking_pool.h */
 
-#include <condition_variable>
 #include <thread>
 
 namespace csp::detail {
