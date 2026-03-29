@@ -65,51 +65,50 @@ TEST_CASE("max restarts exceeded") {
 }
 
 TEST_CASE("sliding window forgets old restarts") {
-    RunStats stats;
     int count = 0;
     fake_clock fc;
-    stats.spawn([&]() {
+    RunStats stats;
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         // max_restarts = 2, window = 10s.
         // Worker advances fake time by 11s before each throw,
         // pushing prior restarts outside the window.
-        worker_group wg;
-        wg.policy.max_restarts = 2;
-        wg.policy.window = std::chrono::seconds(10);
-        wg.workers["timed_fail"] = [&count, &fc]() {
-            ++count;
-            fc.advance(std::chrono::seconds(11));
-            if (count <= 5) throw std::runtime_error("fail");
-        };
-        wg.run();
+        stats.spawn([&]() {
+            worker_group wg;
+            wg.policy.max_restarts = 2;
+            wg.policy.window = std::chrono::seconds(10);
+            wg.workers["timed_fail"] = [&count, &fc]() {
+                ++count;
+                fc.advance(std::chrono::seconds(11));
+                if (count <= 5) throw std::runtime_error("fail");
+            };
+            wg.run();
+        });
     });
-    csp::schedule();
-    fc.run();
     // Without window expiry, max_restarts=2 would escalate at count=3.
     // With expiry, each restart sees an empty window: 5 failures + 1 success.
     CHECK(count == 6);
 }
 
 TEST_CASE("backoff delays restart") {
-    RunStats stats;
     int count = 0;
     fake_clock fc;
     std::vector<time_point> times;
-    stats.spawn([&]() {
+    RunStats stats;
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
-        worker_group wg;
-        wg.policy.max_restarts = 3;
-        wg.policy.backoff = std::chrono::seconds(5);
-        wg.workers["fail_once"] = [&]() {
-            ++count;
-            times.push_back(csp::now());
-            if (count == 1) throw std::runtime_error("fail");
-        };
-        wg.run();
+        stats.spawn([&]() {
+            worker_group wg;
+            wg.policy.max_restarts = 3;
+            wg.policy.backoff = std::chrono::seconds(5);
+            wg.workers["fail_once"] = [&]() {
+                ++count;
+                times.push_back(csp::now());
+                if (count == 1) throw std::runtime_error("fail");
+            };
+            wg.run();
+        });
     });
-    // internal::run() returns when quiescent (worker sleeping during backoff).
-    csp::internal::run();
-    fc.run();
     CHECK(count == 2);
     REQUIRE(times.size() == 2);
     auto delay = times[1] - times[0];

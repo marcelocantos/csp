@@ -107,19 +107,20 @@ TEST_CASE("backoff delay") {
     fake_clock fc;
     std::vector<time_point> times;
     RunStats stats;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
-        auto guard = on_exit(restart_policy{
-            .max_restarts = 3,
-            .backoff = std::chrono::seconds(5),
+        stats.spawn([&]() {
+            auto guard = on_exit(restart_policy{
+                .max_restarts = 3,
+                .backoff = std::chrono::seconds(5),
+            });
+            spawn(supervised([&]() {
+                ++count;
+                times.push_back(csp::now());
+                if (count == 1) throw std::runtime_error("fail");
+            }));
         });
-        spawn(supervised([&]() {
-            ++count;
-            times.push_back(csp::now());
-            if (count == 1) throw std::runtime_error("fail");
-        }));
     });
-    fc.run();
     CHECK(count == 2);
     REQUIRE(times.size() == 2);
     auto delay = times[1] - times[0];
@@ -130,19 +131,20 @@ TEST_CASE("sliding window forgets old restarts") {
     int count = 0;
     fake_clock fc;
     RunStats stats;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
-        auto guard = on_exit(restart_policy{
-            .max_restarts = 2,
-            .window = std::chrono::seconds(10),
+        stats.spawn([&]() {
+            auto guard = on_exit(restart_policy{
+                .max_restarts = 2,
+                .window = std::chrono::seconds(10),
+            });
+            spawn(supervised([&]() {
+                ++count;
+                fc.advance(std::chrono::seconds(11));
+                if (count <= 5) throw std::runtime_error("fail");
+            }));
         });
-        spawn(supervised([&]() {
-            ++count;
-            fc.advance(std::chrono::seconds(11));
-            if (count <= 5) throw std::runtime_error("fail");
-        }));
     });
-    fc.run();
     // Each restart sees an empty window (11s > 10s window), so never hits max.
     CHECK(count == 6);
 }
