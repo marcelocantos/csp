@@ -20,3 +20,11 @@ All work items are tracked as convergence targets in
   pthread mutexes, or if there's a gap in annotation coverage (e.g., initial
   imp entry, worker loop transitions). This causes CI TSan jobs to fail with
   exit code 66 (dist) or SIGABRT (macOS TSan).
+
+- **`push_to_global` assertion with fake_clock + alt + multiple timers**:
+  "Timer - MultipleTimersOrdering" crashes ~50% of the time under `csp::run`
+  with `Assertion failed: (!imp->next_), function push_to_global, file
+  runtime.cpp, line 133`. The test creates two `after` timers and uses `alt`
+  to select the faster one. The quiescence-driven `advance_to_next` appears
+  to trigger a race in imp scheduling. Test is currently skipped with
+  `doctest::skip()` in `test/timer.test.cc`.
