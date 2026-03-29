@@ -263,192 +263,294 @@ TEST_CASE("IO - ByteWriter") {
 // --- byte_reader (channel-backed) ---
 
 TEST_CASE("IO - byte_reader exact chunk") {
-    auto [w, r] = chan<bytes>{};
-    byte_reader br(std::move(r));
+    RunStats rs;
+    bytes result;
+    bool ok = false;
 
-    csp::spawn([w = std::move(w)] {
-        w << bytes{'A', 'B', 'C', 'D'};
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        byte_reader br(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            w << bytes{'A', 'B', 'C', 'D'};
+        });
+
+        bytes buf(4);
+        ok = (4 == br.read(buf));
+        result = buf;
     });
 
-    bytes buf(4);
-    CHECK(4 == br.read(buf));
-    CHECK(bytes({'A', 'B', 'C', 'D'}) == buf);
+    CHECK(ok);
+    CHECK(bytes({'A', 'B', 'C', 'D'}) == result);
 }
 
 TEST_CASE("IO - byte_reader spans chunks") {
-    auto [w, r] = chan<bytes>{};
-    byte_reader br(std::move(r));
+    RunStats rs;
+    bytes result1, result2;
+    bool ok1 = false, ok2 = false;
 
-    csp::spawn([w = std::move(w)] {
-        w << bytes{'A', 'B'};
-        w << bytes{'C', 'D'};
-        w << bytes{'E', 'F'};
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        byte_reader br(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            w << bytes{'A', 'B'};
+            w << bytes{'C', 'D'};
+            w << bytes{'E', 'F'};
+        });
+
+        bytes buf(5);
+        ok1 = (5 == br.read(buf));
+        result1 = buf;
+
+        // Leftover 'F' from previous read.
+        bytes buf2(1);
+        ok2 = (1 == br.read(buf2));
+        result2 = buf2;
     });
 
-    bytes buf(5);
-    CHECK(5 == br.read(buf));
-    CHECK(bytes({'A', 'B', 'C', 'D', 'E'}) == buf);
-
-    // Leftover 'F' from previous read.
-    bytes buf2(1);
-    CHECK(1 == br.read(buf2));
-    CHECK(bytes({'F'}) == buf2);
+    CHECK(ok1);
+    CHECK(bytes({'A', 'B', 'C', 'D', 'E'}) == result1);
+    CHECK(ok2);
+    CHECK(bytes({'F'}) == result2);
 }
 
 TEST_CASE("IO - byte_reader partial on close") {
-    auto [w, r] = chan<bytes>{};
-    byte_reader br(std::move(r));
+    RunStats rs;
+    bytes result;
+    int n = -1;
 
-    csp::spawn([w = std::move(w)] {
-        w << bytes{'X', 'Y'};
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        byte_reader br(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            w << bytes{'X', 'Y'};
+        });
+
+        bytes buf(10);
+        n = br.read(buf);
+        result = buf;
     });
 
-    bytes buf(10);
-    CHECK(2 == br.read(buf));
-    CHECK('X' == buf[0]);
-    CHECK('Y' == buf[1]);
+    CHECK(2 == n);
+    CHECK('X' == result[0]);
+    CHECK('Y' == result[1]);
 }
 
 TEST_CASE("IO - byte_reader empty buffer") {
-    auto [w, r] = chan<bytes>{};
-    byte_reader br(std::move(r));
+    RunStats rs;
+    int n = -1;
 
-    bytes buf;
-    CHECK(0 == br.read(buf));
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        byte_reader br(std::move(r));
+
+        bytes buf;
+        n = br.read(buf);
+    });
+
+    CHECK(0 == n);
 }
 
 TEST_CASE("IO - byte_reader multiple reads with leftover") {
-    auto [w, r] = chan<bytes>{};
-    byte_reader br(std::move(r));
+    RunStats rs;
+    bytes r0, r1, r2, r3;
+    int n0 = -1, n1 = -1, n2 = -1, n3 = -1;
 
-    csp::spawn([w = std::move(w)] {
-        // Send 10 bytes in one chunk.
-        w << bytes{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        byte_reader br(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            // Send 10 bytes in one chunk.
+            w << bytes{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
+        });
+
+        bytes buf(3);
+
+        n0 = br.read(buf); r0 = buf;
+        n1 = br.read(buf); r1 = buf;
+        n2 = br.read(buf); r2 = buf;
+
+        // Only 1 byte left.
+        n3 = br.read(buf); r3 = buf;
     });
 
-    bytes buf(3);
+    CHECK(3 == n0);
+    CHECK(bytes({'0', '1', '2'}) == r0);
 
-    CHECK(3 == br.read(buf));
-    CHECK(bytes({'0', '1', '2'}) == buf);
+    CHECK(3 == n1);
+    CHECK(bytes({'3', '4', '5'}) == r1);
 
-    CHECK(3 == br.read(buf));
-    CHECK(bytes({'3', '4', '5'}) == buf);
+    CHECK(3 == n2);
+    CHECK(bytes({'6', '7', '8'}) == r2);
 
-    CHECK(3 == br.read(buf));
-    CHECK(bytes({'6', '7', '8'}) == buf);
-
-    // Only 1 byte left.
-    CHECK(1 == br.read(buf));
-    CHECK('9' == buf[0]);
+    CHECK(1 == n3);
+    CHECK('9' == r3[0]);
 }
 
 TEST_CASE("IO - byte_reader closed reader returns zero") {
-    auto [w, r] = chan<bytes>{};
-    byte_reader br(std::move(r));
+    RunStats rs;
+    int n = -1;
 
-    // Close the writer immediately.
-    { auto _ = std::move(w); }
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        byte_reader br(std::move(r));
 
-    bytes buf(4);
-    CHECK(0 == br.read(buf));
+        // Close the writer immediately.
+        { auto _ = std::move(w); }
+
+        bytes buf(4);
+        n = br.read(buf);
+    });
+
+    CHECK(0 == n);
 }
 
 // --- Layer 3: split_lines — pure channel test, no I/O ---
 
 TEST_CASE("IO - Lines framing") {
-    auto [w, r] = chan<bytes>{};
-    auto lr = part::io::split_lines.spawn(std::move(r));
+    RunStats rs;
+    std::string l0, l1, l2;
 
-    csp::spawn([w = std::move(w)] {
-        std::string data = "hello\nworld\nfoo\n";
-        bytes v(data.begin(), data.end());
-        w << std::move(v);
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        auto lr = part::io::split_lines.spawn(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            std::string data = "hello\nworld\nfoo\n";
+            bytes v(data.begin(), data.end());
+            w << std::move(v);
+        });
+
+        l0 = lr.read();
+        l1 = lr.read();
+        l2 = lr.read();
     });
 
-    CHECK("hello" == lr.read());
-    CHECK("world" == lr.read());
-    CHECK("foo" == lr.read());
+    CHECK("hello" == l0);
+    CHECK("world" == l1);
+    CHECK("foo" == l2);
 }
 
 TEST_CASE("IO - Lines partial flush") {
-    auto [w, r] = chan<bytes>{};
-    auto lr = part::io::split_lines.spawn(std::move(r));
+    RunStats rs;
+    std::string l0, l1;
+    bool closed = false;
 
-    csp::spawn([w = std::move(w)] {
-        std::string data = "hello\nworld";
-        bytes v(data.begin(), data.end());
-        w << std::move(v);
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        auto lr = part::io::split_lines.spawn(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            std::string data = "hello\nworld";
+            bytes v(data.begin(), data.end());
+            w << std::move(v);
+        });
+
+        l0 = lr.read();
+        l1 = lr.read();  // partial line flushed on input close
+        std::string _;
+        closed = !bool(lr >> _);
     });
 
-    CHECK("hello" == lr.read());
-    CHECK("world" == lr.read());  // partial line flushed on input close
-    std::string _;
-    CHECK_FALSE(bool(lr >> _));
+    CHECK("hello" == l0);
+    CHECK("world" == l1);
+    CHECK(closed);
 }
 
 TEST_CASE("IO - Lines multi-chunk") {
-    auto [w, r] = chan<bytes>{};
-    auto lr = part::io::split_lines.spawn(std::move(r));
+    RunStats rs;
+    std::string l0, l1;
+    bool closed = false;
 
-    csp::spawn([w = std::move(w)] {
-        // Split "hello\nworld\n" across two chunks.
-        std::string c1 = "hel";
-        std::string c2 = "lo\nworld\n";
-        w << bytes(c1.begin(), c1.end());
-        w << bytes(c2.begin(), c2.end());
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        auto lr = part::io::split_lines.spawn(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            // Split "hello\nworld\n" across two chunks.
+            std::string c1 = "hel";
+            std::string c2 = "lo\nworld\n";
+            w << bytes(c1.begin(), c1.end());
+            w << bytes(c2.begin(), c2.end());
+        });
+
+        l0 = lr.read();
+        l1 = lr.read();
+        std::string _;
+        closed = !bool(lr >> _);
     });
 
-    CHECK("hello" == lr.read());
-    CHECK("world" == lr.read());
-    std::string _;
-    CHECK_FALSE(bool(lr >> _));
+    CHECK("hello" == l0);
+    CHECK("world" == l1);
+    CHECK(closed);
 }
 
 // --- Layer 3: fixed_frames() — pure channel test ---
 
 TEST_CASE("IO - Fixed framing") {
-    auto [w, r] = chan<bytes>{};
-    auto fr = part::io::fixed_frames(4).spawn(std::move(r));
+    RunStats rs;
+    bytes f1, f2;
+    bool closed = false;
 
-    csp::spawn([w = std::move(w)] {
-        // 10 bytes → 2 full frames of 4, partial 2 discarded.
-        std::string data = "AABBCCDDEE";
-        w << bytes(data.begin(), data.end());
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        auto fr = part::io::fixed_frames(4).spawn(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            // 10 bytes → 2 full frames of 4, partial 2 discarded.
+            std::string data = "AABBCCDDEE";
+            w << bytes(data.begin(), data.end());
+        });
+
+        f1 = fr.read();
+        f2 = fr.read();
+
+        // Partial "EE" is discarded.
+        bytes _;
+        closed = !bool(fr >> _);
     });
 
-    auto f1 = fr.read();
     CHECK(4 == f1.size());
     CHECK('A' == f1[0]); CHECK('A' == f1[1]);
     CHECK('B' == f1[2]); CHECK('B' == f1[3]);
 
-    auto f2 = fr.read();
     CHECK(4 == f2.size());
     CHECK('C' == f2[0]); CHECK('C' == f2[1]);
     CHECK('D' == f2[2]); CHECK('D' == f2[3]);
 
-    // Partial "EE" is discarded.
-    bytes _;
-    CHECK_FALSE(bool(fr >> _));
+    CHECK(closed);
 }
 
 TEST_CASE("IO - Fixed multi-chunk") {
-    auto [w, r] = chan<bytes>{};
-    auto fr = part::io::fixed_frames(4).spawn(std::move(r));
+    RunStats rs;
+    bytes f1;
+    bool closed = false;
 
-    csp::spawn([w = std::move(w)] {
-        // Frame boundary spans chunks.
-        w << bytes{'A', 'B'};
-        w << bytes{'C', 'D', 'E', 'F'};
+    csp::run([&]{
+        auto [w, r] = chan<bytes>{};
+        auto fr = part::io::fixed_frames(4).spawn(std::move(r));
+
+        rs.spawn([w = std::move(w)] {
+            // Frame boundary spans chunks.
+            w << bytes{'A', 'B'};
+            w << bytes{'C', 'D', 'E', 'F'};
+        });
+
+        f1 = fr.read();
+
+        // Partial "EF" is discarded.
+        bytes _;
+        closed = !bool(fr >> _);
     });
 
-    auto f1 = fr.read();
     CHECK(4 == f1.size());
     CHECK('A' == f1[0]); CHECK('B' == f1[1]);
     CHECK('C' == f1[2]); CHECK('D' == f1[3]);
 
-    // Partial "EF" is discarded.
-    bytes _;
-    CHECK_FALSE(bool(fr >> _));
+    CHECK(closed);
 }
 
 // --- Composed pipeline: split_lines(byte_reader(fd)) ---

@@ -6,41 +6,34 @@ static Logger g_log("ChanMain.Test");
 
 TEST_CASE("ChanMain - Write") {
     RunStats stats;
-
-    auto [w, r] = chan<int>{};
     int result = 0;
 
-    stats.spawn([i = std::move(r), &result]{
-        i >> result;
+    csp::run([&]{
+        auto [w, r] = chan<int>{};
+
+        stats.spawn([i = std::move(r), &result]{
+            i >> result;
+        });
+
+        w << 42;
     });
-
-    auto o = std::move(w);
-
-    csp::internal::run();
-    o << 42;
-    csp::internal::run();
 
     CHECK(42 == result);
 }
 
 TEST_CASE("ChanMain - Read") {
     RunStats stats;
+    int result = 0;
 
-    auto [w, r] = chan<int>{};
+    csp::run([&]{
+        auto [w, r] = chan<int>{};
 
-    stats.spawn([o = std::move(w)]{
-        o << 42;
+        stats.spawn([o = std::move(w)]{
+            o << 42;
+        });
+
+        result = r.read();
     });
-
-    auto i = std::move(r);
-
-    // Give reader a chance to block on output.
-    csp::internal::run();
-
-    int result = i.read();
-
-    // Let reader exit.
-    csp::internal::run();
 
     CHECK(42 == result);
 }
@@ -56,7 +49,6 @@ auto worker = [](auto && o, auto && i) {
         int result = 0;
         int n;
         while (i >> n) {
-            csp::internal::run();
             result += n;
         };
         CHECK(15 == result);
@@ -67,19 +59,19 @@ auto worker = [](auto && o, auto && i) {
 TEST_CASE("ChanMain - WriteReadNormal") {
     RunStats stats;
 
-    auto ch = chan<int>(5);
-    stats.spawn(worker(std::move(ch.w), std::move(ch.r)));
-
-    while (csp::internal::run()) { }
+    csp::run([&]{
+        auto ch = chan<int>(5);
+        stats.spawn(worker(std::move(ch.w), std::move(ch.r)));
+    });
 }
 
-// Now try from main.
+// Now try from main (via csp::run).
 TEST_CASE("ChanMain - WriteReadFromMain") {
     RunStats stats;
 
-    auto ch = chan<int>(5);
-    auto work = worker(std::move(ch.w), std::move(ch.r));
-
-    csp::internal::run();
-    work();
+    csp::run([&]{
+        auto ch = chan<int>(5);
+        auto work = worker(std::move(ch.w), std::move(ch.r));
+        work();
+    });
 }

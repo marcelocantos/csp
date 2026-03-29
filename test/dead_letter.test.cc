@@ -31,7 +31,6 @@ TEST_CASE("Throttle - excess goes to dead letter") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
     fc.run();
     CHECK(std::vector<int>({2, 3, 4, 5}) == dead);
 }
@@ -51,7 +50,6 @@ TEST_CASE("Throttle - no dead letter, no crash") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
     fc.run();
 }
 
@@ -92,7 +90,6 @@ TEST_CASE("Throttle - budget reset with dead letter") {
         CHECK_FALSE(bool(th.r >> _));
     });
 
-    csp::schedule();
     fc.run();
     CHECK(std::vector<int>({3, 6}) == dead);
 }
@@ -121,7 +118,6 @@ TEST_CASE("Debounce - superseded values go to dead letter") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
     fc.run();
     CHECK(std::vector<int>({1, 2, 3, 4}) == dead);
 }
@@ -140,7 +136,6 @@ TEST_CASE("Debounce - no dead letter, no crash") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
     fc.run();
 }
 
@@ -175,7 +170,6 @@ TEST_CASE("Debounce - spaced values, no drops") {
         CHECK_FALSE(bool(db.r >> _));
     });
 
-    csp::schedule();
     fc.run();
     // No drops — dead letter should be empty.
     CHECK(dead.empty());
