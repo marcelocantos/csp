@@ -169,6 +169,10 @@ endif()
 if(CSP_BUILD_TESTS)
     file(GLOB TEST_SRCS test/*.test.cc)
 
+    # Exclude tests for features not in the dist amalgamation.
+    # net.h/net.cc are not yet amalgamated (WIP: T3.1).
+    list(FILTER TEST_SRCS EXCLUDE REGEX "net\\.test\\.cc$")
+
     # On Windows, exclude tests that depend on TLS (mbedTLS not built by default)
     if(WIN32)
         list(FILTER TEST_SRCS EXCLUDE REGEX "tls\\.test\\.cc$")
