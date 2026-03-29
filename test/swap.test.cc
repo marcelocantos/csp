@@ -18,178 +18,186 @@ TEST_CASE("baseline channel count") {
 }
 
 TEST_CASE("swap writers - basic data transfer") {
-    chan<int> a;
-    chan<int> b;
+    int va = 0, vb = 0;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    spawn([w = std::move(a.w)] { w << 42; });
-    spawn([w = std::move(b.w)] { w << 99; });
+        spawn([w = std::move(a.w)] { w << 42; });
+        spawn([w = std::move(b.w)] { w << 99; });
 
-    CHECK(42 == a.r.read());
-    CHECK(99 == b.r.read());
-
-    // Drain scheduled imps so their writers are released.
-    a.r = {};
-    b.r = {};
-    while (csp::internal::run()) { }
+        va = a.r.read();
+        vb = b.r.read();
+    });
+    CHECK(42 == va);
+    CHECK(99 == vb);
 }
 
 TEST_CASE("swap writers - redirects data") {
-    chan<int> a;
-    chan<int> b;
+    int va = 0, vb = 0;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    swap(a.w, b.w);
+        swap(a.w, b.w);
 
-    spawn([w = std::move(a.w)] { w << 42; });
-    spawn([w = std::move(b.w)] { w << 99; });
+        spawn([w = std::move(a.w)] { w << 42; });
+        spawn([w = std::move(b.w)] { w << 99; });
 
-    CHECK(99 == a.r.read());
-    CHECK(42 == b.r.read());
-
-    a.r = {};
-    b.r = {};
-    while (csp::internal::run()) { }
+        va = a.r.read();
+        vb = b.r.read();
+    });
+    CHECK(99 == va);
+    CHECK(42 == vb);
 }
 
 TEST_CASE("swap readers - redirects data") {
-    chan<int> a;
-    chan<int> b;
+    int va = 0, vb = 0;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    swap(a.r, b.r);
+        swap(a.r, b.r);
 
-    spawn([w = std::move(a.w)] { w << 42; });
-    spawn([w = std::move(b.w)] { w << 99; });
+        spawn([w = std::move(a.w)] { w << 42; });
+        spawn([w = std::move(b.w)] { w << 99; });
 
-    CHECK(99 == a.r.read());
-    CHECK(42 == b.r.read());
-
-    a.r = {};
-    b.r = {};
-    while (csp::internal::run()) { }
+        va = a.r.read();
+        vb = b.r.read();
+    });
+    CHECK(99 == va);
+    CHECK(42 == vb);
 }
 
 TEST_CASE("swap with copies - all copies see redirection") {
-    chan<int> a;
-    chan<int> b;
+    int va = 0, vb = 0;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    auto a_w_copy = a.w.copy();
-    auto b_w_copy = b.w.copy();
+        auto a_w_copy = a.w.copy();
+        auto b_w_copy = b.w.copy();
 
-    swap(a.w, b.w);
+        swap(a.w, b.w);
 
-    spawn([w = std::move(a_w_copy)] { w << 10; });
-    spawn([w = std::move(b_w_copy)] { w << 20; });
+        spawn([w = std::move(a_w_copy)] { w << 10; });
+        spawn([w = std::move(b_w_copy)] { w << 20; });
 
-    a.w = {};
-    b.w = {};
+        a.w = {};
+        b.w = {};
 
-    CHECK(20 == a.r.read());
-    CHECK(10 == b.r.read());
-
-    a.r = {};
-    b.r = {};
-    while (csp::internal::run()) { }
+        va = a.r.read();
+        vb = b.r.read();
+    });
+    CHECK(20 == va);
+    CHECK(10 == vb);
 }
 
 TEST_CASE("swap self is no-op") {
-    chan<int> a;
-    swap(a.w, a.w);
+    int v = 0;
+    csp::run([&] {
+        chan<int> a;
+        swap(a.w, a.w);
 
-    spawn([w = std::move(a.w)] { w << 7; });
+        spawn([w = std::move(a.w)] { w << 7; });
 
-    CHECK(7 == a.r.read());
-
-    a.r = {};
-    while (csp::internal::run()) { }
+        v = a.r.read();
+    });
+    CHECK(7 == v);
 }
 
 TEST_CASE("double swap restores original") {
-    chan<int> a;
-    chan<int> b;
+    int va = 0, vb = 0;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    swap(a.w, b.w);
-    swap(a.w, b.w);
+        swap(a.w, b.w);
+        swap(a.w, b.w);
 
-    spawn([w = std::move(a.w)] { w << 42; });
-    spawn([w = std::move(b.w)] { w << 99; });
+        spawn([w = std::move(a.w)] { w << 42; });
+        spawn([w = std::move(b.w)] { w << 99; });
 
-    CHECK(42 == a.r.read());
-    CHECK(99 == b.r.read());
-
-    a.r = {};
-    b.r = {};
-    while (csp::internal::run()) { }
+        va = a.r.read();
+        vb = b.r.read();
+    });
+    CHECK(42 == va);
+    CHECK(99 == vb);
 }
 
 TEST_CASE("swap death detection - writer dies on swapped channel") {
-    chan<int> a;
-    chan<int> b;
+    bool b_r_dead = false;
+    int a_r_val = 0;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    swap(a.w, b.w);
+        swap(a.w, b.w);
 
-    a.w = {};
+        a.w = {};
 
-    int v;
-    CHECK_FALSE(bool(b.r >> v));
+        int v;
+        b_r_dead = !bool(b.r >> v);
 
-    spawn([w = std::move(b.w)] { w << 55; });
-    CHECK(55 == a.r.read());
-
-    a.r = {};
-    b.r = {};
-    while (csp::internal::run()) { }
+        spawn([w = std::move(b.w)] { w << 55; });
+        a_r_val = a.r.read();
+    });
+    CHECK(b_r_dead);
+    CHECK(55 == a_r_val);
 }
 
 TEST_CASE("swap during blocked read - waiter retries") {
-    chan<int> a;
-    chan<int> b;
-
     bool got_value = false;
     int result = 0;
 
-    spawn([r = a.r.copy(), &got_value, &result] {
-        int v;
-        if (bool(r >> v)) {
-            got_value = true;
-            result = v;
-        }
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
+
+        spawn([r = a.r.copy(), &got_value, &result] {
+            int v;
+            if (bool(r >> v)) {
+                got_value = true;
+                result = v;
+            }
+        });
+
+        csp::yield();
+
+        swap(a.w, b.w);
+
+        b.w << 77;
+
+        a.w = {};
+        b.r = {};
+        b.w = {};
     });
-
-    csp::yield();
-
-    swap(a.w, b.w);
-
-    b.w << 77;
-
-    a.w = {};
-    b.r = {};
-    b.w = {};
-
-    while (csp::internal::run()) { }
 
     CHECK(got_value);
     CHECK(77 == result);
 }
 
 TEST_CASE("swap three-way rotation") {
-    chan<int> a;
-    chan<int> b;
-    chan<int> c;
+    int va = 0, vb = 0, vc = 0;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
+        chan<int> c;
 
-    swap(a.w, b.w);
-    swap(b.w, c.w);
+        swap(a.w, b.w);
+        swap(b.w, c.w);
 
-    spawn([w = std::move(a.w)] { w << 1; });
-    spawn([w = std::move(b.w)] { w << 2; });
-    spawn([w = std::move(c.w)] { w << 3; });
+        spawn([w = std::move(a.w)] { w << 1; });
+        spawn([w = std::move(b.w)] { w << 2; });
+        spawn([w = std::move(c.w)] { w << 3; });
 
-    CHECK(3 == a.r.read());
-    CHECK(1 == b.r.read());
-    CHECK(2 == c.r.read());
-
-    a.r = {};
-    b.r = {};
-    c.r = {};
-    while (csp::internal::run()) { }
+        va = a.r.read();
+        vb = b.r.read();
+        vc = c.r.read();
+    });
+    CHECK(3 == va);
+    CHECK(1 == vb);
+    CHECK(2 == vc);
 }
 
 TEST_CASE("swap refcounts preserved") {
@@ -629,180 +637,185 @@ TEST_CASE("MN Stress - swap lifecycle") {
 TEST_SUITE("fuse") {
 
 TEST_CASE("pipe operator - basic data transfer") {
-    chan<int> a;
-    chan<int> b;
+    int val = 0;
+    bool a_r_dead = false, b_w_dead = false;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    a.w | b.r;
+        a.w | b.r;
 
-    spawn([w = std::move(a.w)] { w << 42; });
+        spawn([w = std::move(a.w)] { w << 42; });
 
-    CHECK(42 == b.r.read());
+        val = b.r.read();
 
-    int v;
-    CHECK_FALSE(bool(a.r >> v));
-    CHECK_FALSE(bool(b.w << 99));
-
-    a.r = {};
-    b.r = {};
-    b.w = {};
-    while (csp::internal::run()) { }
+        int v;
+        a_r_dead = !bool(a.r >> v);
+        b_w_dead = !bool(b.w << 99);
+    });
+    CHECK(42 == val);
+    CHECK(a_r_dead);
+    CHECK(b_w_dead);
 }
 
 TEST_CASE("fuse - basic data transfer") {
-    chan<int> a;
-    chan<int> b;
+    int val = 0;
+    bool a_r_dead = false, b_w_dead = false;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    fuse(a.w, b.r);
+        fuse(a.w, b.r);
 
-    // a.w now targets temp channel, b.r now targets temp channel.
-    // Write through a.w, read from b.r.
-    spawn([w = std::move(a.w)] { w << 42; });
+        // a.w now targets temp channel, b.r now targets temp channel.
+        // Write through a.w, read from b.r.
+        spawn([w = std::move(a.w)] { w << 42; });
 
-    CHECK(42 == b.r.read());
+        val = b.r.read();
 
-    // a.r sees writer-side death (no writers left on a's channel).
-    int v;
-    CHECK_FALSE(bool(a.r >> v));
+        // a.r sees writer-side death (no writers left on a's channel).
+        int v;
+        a_r_dead = !bool(a.r >> v);
 
-    // b.w sees reader-side death (no readers left on b's channel).
-    CHECK_FALSE(bool(b.w << 99));
-
-    a.r = {};
-    b.r = {};
-    b.w = {};
-    while (csp::internal::run()) { }
+        // b.w sees reader-side death (no readers left on b's channel).
+        b_w_dead = !bool(b.w << 99);
+    });
+    CHECK(42 == val);
+    CHECK(a_r_dead);
+    CHECK(b_w_dead);
 }
 
 TEST_CASE("fuse - death propagation") {
-    chan<int> a;
-    chan<int> b;
+    bool a_r_dead = false, b_w_dead = false;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    fuse(a.w, b.r);
+        fuse(a.w, b.r);
 
-    // a.r should see write-side death (a's channel has no writers).
-    int v;
-    CHECK_FALSE(bool(a.r >> v));
+        // a.r should see write-side death (a's channel has no writers).
+        int v;
+        a_r_dead = !bool(a.r >> v);
 
-    // b.w should see read-side death (b's channel has no readers).
-    CHECK_FALSE(bool(b.w << 1));
-
-    a.r = {};
-    b.w = {};
-    a.w = {};
-    b.r = {};
-    while (csp::internal::run()) { }
+        // b.w should see read-side death (b's channel has no readers).
+        b_w_dead = !bool(b.w << 1);
+    });
+    CHECK(a_r_dead);
+    CHECK(b_w_dead);
 }
 
 TEST_CASE("fuse - copies follow redirection") {
-    chan<int> a;
-    chan<int> b;
+    int val = 0;
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
 
-    auto aw_copy = a.w.copy();
-    auto br_copy = b.r.copy();
+        auto aw_copy = a.w.copy();
+        auto br_copy = b.r.copy();
 
-    fuse(a.w, b.r);
+        fuse(a.w, b.r);
 
-    // Copies share the same slot, so they follow the redirection.
-    spawn([w = std::move(aw_copy)] { w << 77; });
+        // Copies share the same slot, so they follow the redirection.
+        spawn([w = std::move(aw_copy)] { w << 77; });
 
-    CHECK(77 == br_copy.read());
-
-    a.w = {};
-    b.r = {};
-    a.r = {};
-    b.w = {};
-    br_copy = {};
-    while (csp::internal::run()) { }
+        val = br_copy.read();
+    });
+    CHECK(77 == val);
 }
 
 TEST_CASE("4-arg swap - split") {
     // Split: swap(w, move(a.r), move(b.w), r) breaks one channel into two.
     // After: orig.w → b's channel, orig.r → a's channel.
     // The consumed a.r and b.w die on return, killing orig's channel.
-    chan<int> orig;
-    chan<int> a;
-    chan<int> b;
+    int b_val = 0, orig_val = 0;
+    csp::run([&] {
+        chan<int> orig;
+        chan<int> a;
+        chan<int> b;
 
-    swap(orig.w, std::move(a.r), std::move(b.w), orig.r);
+        swap(orig.w, std::move(a.r), std::move(b.w), orig.r);
 
-    // orig.w → b's channel. Write through orig.w, read from b.r.
-    spawn([w = orig.w.copy()] { w << 42; });
-    CHECK(42 == b.r.read());
+        // orig.w → b's channel. Write through orig.w, read from b.r.
+        spawn([w = orig.w.copy()] { w << 42; });
+        b_val = b.r.read();
 
-    // orig.r → a's channel. Write through a.w, read from orig.r.
-    spawn([w = std::move(a.w)] { w << 99; });
-    CHECK(99 == orig.r.read());
+        // orig.r → a's channel. Write through a.w, read from orig.r.
+        spawn([w = std::move(a.w)] { w << 99; });
+        orig_val = orig.r.read();
 
-    orig.w = {};
-    orig.r = {};
-    b.r = {};
-    while (csp::internal::run()) { }
+        orig.w = {};
+        orig.r = {};
+    });
+    CHECK(42 == b_val);
+    CHECK(99 == orig_val);
 }
 
 TEST_CASE("fuse while reader is blocked") {
-    chan<int> a;
-    chan<int> b;
-
     bool got_value = false;
     int result = 0;
 
-    // Reader blocks on b.r.
-    spawn([r = b.r.copy(), &got_value, &result] {
-        int v;
-        if (bool(r >> v)) {
-            got_value = true;
-            result = v;
-        }
+    csp::run([&] {
+        chan<int> a;
+        chan<int> b;
+
+        // Reader blocks on b.r.
+        spawn([r = b.r.copy(), &got_value, &result] {
+            int v;
+            if (bool(r >> v)) {
+                got_value = true;
+                result = v;
+            }
+        });
+
+        csp::yield();  // let reader block
+
+        // Fuse a.w onto b.r — b.r's slot redirects to temp channel.
+        fuse(a.w, b.r);
+
+        // Write through a.w (now targets temp channel, same as b.r).
+        a.w << 77;
+
+        a.w = {};
+        a.r = {};
+        b.w = {};
+        b.r = {};
     });
-
-    csp::yield();  // let reader block
-
-    // Fuse a.w onto b.r — b.r's slot redirects to temp channel.
-    fuse(a.w, b.r);
-
-    // Write through a.w (now targets temp channel, same as b.r).
-    a.w << 77;
-
-    a.w = {};
-    a.r = {};
-    b.w = {};
-    b.r = {};
-    while (csp::internal::run()) { }
 
     CHECK(got_value);
     CHECK(77 == result);
 }
 
 TEST_CASE("split while reader is blocked") {
-    chan<int> orig;
-    chan<int> a;
-    chan<int> b;
-
     bool got_value = false;
     int result = 0;
 
-    // Reader blocks on orig.r.
-    spawn([r = orig.r.copy(), &got_value, &result] {
-        int v;
-        if (bool(r >> v)) {
-            got_value = true;
-            result = v;
-        }
+    csp::run([&] {
+        chan<int> orig;
+        chan<int> a;
+        chan<int> b;
+
+        // Reader blocks on orig.r.
+        spawn([r = orig.r.copy(), &got_value, &result] {
+            int v;
+            if (bool(r >> v)) {
+                got_value = true;
+                result = v;
+            }
+        });
+
+        csp::yield();  // let reader block
+
+        // Split: orig.w → b's channel, orig.r → a's channel.
+        swap(orig.w, std::move(a.r), std::move(b.w), orig.r);
+
+        // Write through a.w — orig.r now targets a's channel.
+        a.w << 88;
+
+        orig.w = {};
+        orig.r = {};
+        a.w = {};
+        b.r = {};
     });
-
-    csp::yield();  // let reader block
-
-    // Split: orig.w → b's channel, orig.r → a's channel.
-    swap(orig.w, std::move(a.r), std::move(b.w), orig.r);
-
-    // Write through a.w — orig.r now targets a's channel.
-    a.w << 88;
-
-    orig.w = {};
-    orig.r = {};
-    a.w = {};
-    b.r = {};
-    while (csp::internal::run()) { }
 
     CHECK(got_value);
     CHECK(88 == result);
@@ -1023,107 +1036,108 @@ TEST_CASE("MN Split - split while reader is blocked") {
 TEST_SUITE("tap") {
 
 TEST_CASE("tap - basic observation") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    auto tr = tap(ch.w, ch.r);
+        auto tr = tap(ch.w, ch.r);
 
-    spawn([w = ch.w.copy()] {
-        w << 1;
-        w << 2;
-        w << 3;
+        spawn([w = ch.w.copy()] {
+            w << 1;
+            w << 2;
+            w << 3;
+        });
+
+        // Both tap and original reader must be consumed — the forwarder
+        // writes to tap first, then forwards to the original reader.
+        for (int i = 1; i <= 3; ++i) {
+            CHECK(i == tr.read());
+            CHECK(i == ch.r.read());
+        }
+
+        ch.w = {};
+        ch.r = {};
+        tr = {};
     });
-
-    // Both tap and original reader must be consumed — the forwarder
-    // writes to tap first, then forwards to the original reader.
-    for (int i = 1; i <= 3; ++i) {
-        CHECK(i == tr.read());
-        CHECK(i == ch.r.read());
-    }
-
-    ch.w = {};
-    ch.r = {};
-    tr = {};
-    while (csp::internal::run()) { }
 }
 
 TEST_CASE("tap - data reaches original reader") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    auto tr = tap(ch.w, ch.r);
+        auto tr = tap(ch.w, ch.r);
 
-    spawn([w = ch.w.copy()] { w << 42; });
+        spawn([w = ch.w.copy()] { w << 42; });
 
-    // Read from tap first (forwarder writes tap before forwarding).
-    CHECK(42 == tr.read());
+        // Read from tap first (forwarder writes tap before forwarding).
+        CHECK(42 == tr.read());
 
-    // Then the original reader gets the value.
-    CHECK(42 == ch.r.read());
+        // Then the original reader gets the value.
+        CHECK(42 == ch.r.read());
 
-    ch.w = {};
-    ch.r = {};
-    tr = {};
-    while (csp::internal::run()) { }
+        ch.w = {};
+        ch.r = {};
+        tr = {};
+    });
 }
 
 TEST_CASE("tap - auto-fuse on reader destruction") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    {
-        auto tr = tap(ch.w, ch.r);
-        // Dropping the tap reader triggers fuse-back inside the forwarder.
-    }
+        {
+            auto tr = tap(ch.w, ch.r);
+            // Dropping the tap reader triggers fuse-back inside the forwarder.
+        }
 
-    // Run scheduler to let the forwarder detect death and fuse back.
-    while (csp::internal::run()) { }
+        // After untap, w and r should communicate directly.
+        spawn([w = ch.w.copy()] { w << 99; });
+        CHECK(99 == ch.r.read());
 
-    // After untap, w and r should communicate directly.
-    spawn([w = ch.w.copy()] { w << 99; });
-    CHECK(99 == ch.r.read());
-
-    ch.w = {};
-    ch.r = {};
-    while (csp::internal::run()) { }
+        ch.w = {};
+        ch.r = {};
+    });
 }
 
 TEST_CASE("tap - copies follow redirection") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    auto w_copy = ch.w.copy();
-    auto r_copy = ch.r.copy();
+        auto w_copy = ch.w.copy();
+        auto r_copy = ch.r.copy();
 
-    auto tr = tap(ch.w, ch.r);
+        auto tr = tap(ch.w, ch.r);
 
-    // Copies share the same slots, so they also go through the tap.
-    spawn([w = std::move(w_copy)] { w << 55; });
+        // Copies share the same slots, so they also go through the tap.
+        spawn([w = std::move(w_copy)] { w << 55; });
 
-    CHECK(55 == tr.read());
-    CHECK(55 == r_copy.read());
+        CHECK(55 == tr.read());
+        CHECK(55 == r_copy.read());
 
-    ch.w = {};
-    ch.r = {};
-    r_copy = {};
-    tr = {};
-    while (csp::internal::run()) { }
+        ch.w = {};
+        ch.r = {};
+        r_copy = {};
+        tr = {};
+    });
 }
 
 TEST_CASE("tap - death propagation after untap") {
-    chan<int> ch;
+    bool ch_r_dead = false;
+    csp::run([&] {
+        chan<int> ch;
 
-    {
-        auto tr = tap(ch.w, ch.r);
-    }
+        {
+            auto tr = tap(ch.w, ch.r);
+        }
 
-    // Run scheduler to let forwarder detect tap reader death and fuse back.
-    while (csp::internal::run()) { }
+        // Drop writer — reader should see death.
+        ch.w = {};
 
-    // Drop writer — reader should see death.
-    ch.w = {};
+        int v;
+        ch_r_dead = !bool(ch.r >> v);
 
-    int v;
-    CHECK_FALSE(bool(ch.r >> v));
-
-    ch.r = {};
-    while (csp::internal::run()) { }
+        ch.r = {};
+    });
+    CHECK(ch_r_dead);
 }
 
 TEST_CASE("tap - channel leak check") {
@@ -1320,147 +1334,152 @@ TEST_CASE("MN Tap - remove mid-flight") {
 TEST_SUITE("splice") {
 
 TEST_CASE("splice - basic forwarding") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
-        for (int v; in >> v;) out << v;
+        splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+            for (int v; in >> v;) out << v;
+        });
+
+        spawn([w = ch.w.copy()] {
+            w << 1;
+            w << 2;
+            w << 3;
+        });
+
+        CHECK(1 == ch.r.read());
+        CHECK(2 == ch.r.read());
+        CHECK(3 == ch.r.read());
+
+        ch.w = {};
+        ch.r = {};
     });
-
-    spawn([w = ch.w.copy()] {
-        w << 1;
-        w << 2;
-        w << 3;
-    });
-
-    CHECK(1 == ch.r.read());
-    CHECK(2 == ch.r.read());
-    CHECK(3 == ch.r.read());
-
-    ch.w = {};
-    ch.r = {};
-    while (csp::internal::run()) { }
 }
 
 TEST_CASE("splice - filter transforms values") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
-        for (int v; in >> v;) out << v * 2;
+        splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+            for (int v; in >> v;) out << v * 2;
+        });
+
+        spawn([w = ch.w.copy()] {
+            w << 1;
+            w << 2;
+            w << 3;
+        });
+
+        CHECK(2 == ch.r.read());
+        CHECK(4 == ch.r.read());
+        CHECK(6 == ch.r.read());
+
+        ch.w = {};
+        ch.r = {};
     });
-
-    spawn([w = ch.w.copy()] {
-        w << 1;
-        w << 2;
-        w << 3;
-    });
-
-    CHECK(2 == ch.r.read());
-    CHECK(4 == ch.r.read());
-    CHECK(6 == ch.r.read());
-
-    ch.w = {};
-    ch.r = {};
-    while (csp::internal::run()) { }
 }
 
 TEST_CASE("splice - filter drops values") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
-        for (int v; in >> v;) {
-            if (v % 2 == 0) out << v;
-        }
+        splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+            for (int v; in >> v;) {
+                if (v % 2 == 0) out << v;
+            }
+        });
+
+        spawn([w = ch.w.copy()] {
+            for (int i = 1; i <= 6; ++i) w << i;
+        });
+
+        CHECK(2 == ch.r.read());
+        CHECK(4 == ch.r.read());
+        CHECK(6 == ch.r.read());
+
+        ch.w = {};
+        ch.r = {};
     });
-
-    spawn([w = ch.w.copy()] {
-        for (int i = 1; i <= 6; ++i) w << i;
-    });
-
-    CHECK(2 == ch.r.read());
-    CHECK(4 == ch.r.read());
-    CHECK(6 == ch.r.read());
-
-    ch.w = {};
-    ch.r = {};
-    while (csp::internal::run()) { }
 }
 
 TEST_CASE("splice - auto-fuse on filter return") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
-        // Forward exactly 2 values then return.
-        for (int i = 0; i < 2; ++i) {
-            int v;
-            if (!(in >> v)) return;
-            out << v;
-        }
+        splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+            // Forward exactly 2 values then return.
+            for (int i = 0; i < 2; ++i) {
+                int v;
+                if (!(in >> v)) return;
+                out << v;
+            }
+        });
+
+        spawn([w = ch.w.copy()] {
+            w << 10;
+            w << 20;
+            w << 30;
+            w << 40;
+        });
+
+        // First 2 values go through the filter.
+        CHECK(10 == ch.r.read());
+        CHECK(20 == ch.r.read());
+
+        // After fuse-back, values flow directly.
+        CHECK(30 == ch.r.read());
+        CHECK(40 == ch.r.read());
+
+        ch.w = {};
+        ch.r = {};
     });
-
-    spawn([w = ch.w.copy()] {
-        w << 10;
-        w << 20;
-        w << 30;
-        w << 40;
-    });
-
-    // First 2 values go through the filter.
-    CHECK(10 == ch.r.read());
-    CHECK(20 == ch.r.read());
-
-    // Run scheduler to let filter return and fuse back.
-    while (csp::internal::run()) { }
-
-    // After fuse-back, values flow directly.
-    CHECK(30 == ch.r.read());
-    CHECK(40 == ch.r.read());
-
-    ch.w = {};
-    ch.r = {};
-    while (csp::internal::run()) { }
 }
 
 TEST_CASE("splice - auto-fuse on upstream death") {
-    chan<int> ch;
+    bool dead = false;
+    csp::run([&] {
+        chan<int> ch;
 
-    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
-        for (int v; in >> v;) out << v;
+        splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+            for (int v; in >> v;) out << v;
+        });
+
+        spawn([w = ch.w.copy()] {
+            w << 42;
+            // Writer destroyed on scope exit — upstream dies.
+        });
+
+        CHECK(42 == ch.r.read());
+
+        ch.w = {};
+
+        // Reader should see death after filter returns and fuses back.
+        int v;
+        dead = !bool(ch.r >> v);
+
+        ch.r = {};
     });
-
-    spawn([w = ch.w.copy()] {
-        w << 42;
-        // Writer destroyed on scope exit — upstream dies.
-    });
-
-    CHECK(42 == ch.r.read());
-
-    ch.w = {};
-
-    // Reader should see death after filter returns and fuses back.
-    int v;
-    CHECK_FALSE(bool(ch.r >> v));
-
-    ch.r = {};
-    while (csp::internal::run()) { }
+    CHECK(dead);
 }
 
 TEST_CASE("splice - auto-fuse on downstream death") {
-    chan<int> ch;
+    csp::run([&] {
+        chan<int> ch;
 
-    splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
-        for (int v; in >> v;) {
-            if (!(out << v)) return;
-        }
+        splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
+            for (int v; in >> v;) {
+                if (!(out << v)) return;
+            }
+        });
+
+        // Drop the reader — downstream dies.
+        ch.r = {};
+
+        // Send a value — the filter's write should fail, filter returns.
+        spawn([w = ch.w.copy()] { w << 1; });
+
+        ch.w = {};
     });
-
-    // Drop the reader — downstream dies.
-    ch.r = {};
-
-    // Send a value — the filter's write should fail, filter returns.
-    spawn([w = ch.w.copy()] { w << 1; });
-
-    ch.w = {};
-    while (csp::internal::run()) { }
 }
 
 TEST_CASE("splice - channel leak check") {

@@ -16,21 +16,23 @@ TEST_CASE("Mux - basic two types") {
 
     chan<int> ci;
     chan<std::string> cs;
-
-    auto mr = mux(ci.r.copy(), cs.r.copy()).spawn();
-
-    stats.spawn([w = ci.w.copy()] { w << 42; });
-    ci.release();
-
-    stats.spawn([w = cs.w.copy()] { w << std::string("hello"); });
-    cs.release();
-
-    // Read two values — order is non-deterministic.
     V v1, v2;
-    mr >> v1;
-    mr >> v2;
-
     bool got_int = false, got_str = false;
+
+    csp::run([&] {
+        auto mr = mux(ci.r.copy(), cs.r.copy()).spawn();
+
+        stats.spawn([w = ci.w.copy()] { w << 42; });
+        ci.release();
+
+        stats.spawn([w = cs.w.copy()] { w << std::string("hello"); });
+        cs.release();
+
+        // Read two values — order is non-deterministic.
+        mr >> v1;
+        mr >> v2;
+    });
+
     for (auto* v : {&v1, &v2}) {
         std::visit([&](auto&& val) {
             using T = std::decay_t<decltype(val)>;
@@ -45,9 +47,6 @@ TEST_CASE("Mux - basic two types") {
     }
     CHECK(got_int);
     CHECK(got_str);
-
-    mr = {};
-    while (csp::internal::run()) { }
 }
 
 TEST_CASE("Mux - input death continues") {
@@ -57,69 +56,65 @@ TEST_CASE("Mux - input death continues") {
 
     chan<int> ci;
     chan<std::string> cs;
-
-    auto mr = mux(ci.r.copy(), cs.r.copy()).spawn();
-
-    // Send one int, then kill int channel.
-    stats.spawn([w = ci.w.copy()] { w << 10; });
-    ci.release();
-    while (csp::internal::run()) { }
-
     V v;
-    mr >> v;
-    CHECK(std::holds_alternative<int>(v));
-    CHECK(10 == std::get<int>(v));
 
-    // Int channel is dead. Send a string — should still work.
-    stats.spawn([w = cs.w.copy()] { w << std::string("world"); });
-    cs.release();
-    while (csp::internal::run()) { }
+    csp::run([&] {
+        auto mr = mux(ci.r.copy(), cs.r.copy()).spawn();
 
-    mr >> v;
-    CHECK(std::holds_alternative<std::string>(v));
-    CHECK("world" == std::get<std::string>(v));
+        // Send one int, then kill int channel.
+        stats.spawn([w = ci.w.copy()] { w << 10; });
+        ci.release();
 
-    mr = {};
-    while (csp::internal::run()) { }
+        // Send a string too.
+        stats.spawn([w = cs.w.copy()] { w << std::string("world"); });
+        cs.release();
+
+        // Read int value.
+        mr >> v;
+        CHECK(std::holds_alternative<int>(v));
+        CHECK(10 == std::get<int>(v));
+
+        // Read string value.
+        mr >> v;
+        CHECK(std::holds_alternative<std::string>(v));
+        CHECK("world" == std::get<std::string>(v));
+    });
 }
 
 TEST_CASE("Mux - all inputs dead closes output") {
-    RunStats stats;
-
     using V = std::variant<int, double>;
 
-    chan<int> ci;
-    chan<double> cd;
-    auto r_i = ci.r.copy();
-    auto r_d = cd.r.copy();
-    ci.release();
-    cd.release();
+    csp::run([&] {
+        chan<int> ci;
+        chan<double> cd;
+        auto r_i = ci.r.copy();
+        auto r_d = cd.r.copy();
+        ci.release();
+        cd.release();
 
-    auto mr = mux(std::move(r_i), std::move(r_d)).spawn();
+        auto mr = mux(std::move(r_i), std::move(r_d)).spawn();
 
-    // Both inputs are already dead. Output should close.
-    V v;
-    CHECK_FALSE(bool(mr >> v));
-
-    while (csp::internal::run()) { }
+        // Both inputs are already dead. Output should close.
+        V v;
+        CHECK_FALSE(bool(mr >> v));
+    });
 }
 
 TEST_CASE("Mux - output death stops mux") {
-    RunStats stats;
+    csp::run([&] {
+        chan<int> ci;
+        chan<std::string> cs;
 
-    chan<int> ci;
-    chan<std::string> cs;
+        {
+            auto mr = mux(ci.r.copy(), cs.r.copy()).spawn();
+            // Drop mr immediately.
+        }
 
-    {
-        auto mr = mux(ci.r.copy(), cs.r.copy()).spawn();
-        // Drop mr immediately.
-    }
-
-    // Writers should fail (mux stopped, readers released).
-    // Just ensure clean shutdown.
-    ci.release();
-    cs.release();
-    while (csp::internal::run()) { }
+        // Writers should fail (mux stopped, readers released).
+        // Just ensure clean shutdown.
+        ci.release();
+        cs.release();
+    });
 }
 
 // --- demux ---
@@ -127,60 +122,66 @@ TEST_CASE("Mux - output death stops mux") {
 TEST_CASE("Demux - basic two types") {
     using V = std::variant<int, std::string>;
 
-    auto [w, r] = chan<V>{};
+    csp::run([&] {
+        auto [w, r] = chan<V>{};
 
-    auto [ri, rs] = demux(std::move(r));
+        auto [ri, rs] = demux(std::move(r));
 
-    csp::spawn([w = std::move(w)] {
-        w << V{42};
-        w << V{std::string("hello")};
-        w << V{7};
+        csp::spawn([w = std::move(w)] {
+            w << V{42};
+            w << V{std::string("hello")};
+            w << V{7};
+        });
+
+        int n;
+        ri >> n;
+        CHECK(42 == n);
+
+        std::string s;
+        rs >> s;
+        CHECK("hello" == s);
+
+        ri >> n;
+        CHECK(7 == n);
     });
-
-    int n;
-    ri >> n;
-    CHECK(42 == n);
-
-    std::string s;
-    rs >> s;
-    CHECK("hello" == s);
-
-    ri >> n;
-    CHECK(7 == n);
 }
 
 TEST_CASE("Demux - input closes all outputs") {
     using V = std::variant<int, double>;
 
-    auto [w, r] = chan<V>{};
-    auto [ri, rd] = demux(std::move(r));
+    csp::run([&] {
+        auto [w, r] = chan<V>{};
+        auto [ri, rd] = demux(std::move(r));
 
-    // Close input immediately.
-    w = {};
+        // Close input immediately.
+        w = {};
 
-    int n;
-    CHECK_FALSE(bool(ri >> n));
-    double d;
-    CHECK_FALSE(bool(rd >> d));
+        int n;
+        CHECK_FALSE(bool(ri >> n));
+        double d;
+        CHECK_FALSE(bool(rd >> d));
+    });
 }
 
 TEST_CASE("Demux - output reader drop stops demux") {
     using V = std::variant<int, std::string>;
 
-    auto [w, r] = chan<V>{};
-    auto [ri, rs] = demux(std::move(r));
+    csp::run([&] {
+        auto [w, r] = chan<V>{};
+        auto [ri, rs] = demux(std::move(r));
 
-    // Drop one output reader.
-    rs = {};
+        // Drop one output reader.
+        rs = {};
 
-    // Write a string — demux should stop because string output is dead.
-    // The int reader should also close.
-    csp::spawn([w = std::move(w)] {
-        w << V{std::string("boom")};
+        // Write a string — demux should stop because string output is dead.
+        // The int reader should also close.
+        csp::spawn([w = std::move(w)] {
+            w << V{std::string("boom")};
+        });
+
+        int n;
+        CHECK_FALSE(bool(ri >> n));
     });
-
-    int n;
-    CHECK_FALSE(bool(ri >> n));
 }
 
 // --- roundtrip ---
@@ -188,37 +189,36 @@ TEST_CASE("Demux - output reader drop stops demux") {
 TEST_CASE("Mux/Demux - roundtrip") {
     RunStats stats;
 
-    chan<int> ci;
-    chan<std::string> cs;
-
-    auto mr = mux(ci.r.copy(), cs.r.copy()).spawn();
-    auto [ri, rs] = demux(std::move(mr));
-
-    stats.spawn([w = ci.w.copy()] {
-        w << 1;
-        w << 2;
-    });
-    ci.release();
-
-    stats.spawn([w = cs.w.copy()] {
-        w << std::string("a");
-        w << std::string("b");
-    });
-    cs.release();
-
-    // Collect all values.
     std::vector<int> ints;
     std::vector<std::string> strs;
 
-    csp::spawn([&ints, ri = std::move(ri)] {
-        for (int n : ri) ints.push_back(n);
-    });
+    csp::run([&] {
+        chan<int> ci;
+        chan<std::string> cs;
 
-    csp::spawn([&strs, rs = std::move(rs)] {
-        for (std::string s : rs) strs.push_back(std::move(s));
-    });
+        auto mr = mux(ci.r.copy(), cs.r.copy()).spawn();
+        auto [ri, rs] = demux(std::move(mr));
 
-    while (csp::internal::run()) { }
+        stats.spawn([w = ci.w.copy()] {
+            w << 1;
+            w << 2;
+        });
+        ci.release();
+
+        stats.spawn([w = cs.w.copy()] {
+            w << std::string("a");
+            w << std::string("b");
+        });
+        cs.release();
+
+        csp::spawn([&ints, ri = std::move(ri)] {
+            for (int n : ri) ints.push_back(n);
+        });
+
+        csp::spawn([&strs, rs = std::move(rs)] {
+            for (std::string s : rs) strs.push_back(std::move(s));
+        });
+    });
 
     CHECK(2 == ints.size());
     CHECK(1 == ints[0]);
