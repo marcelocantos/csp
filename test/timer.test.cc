@@ -17,7 +17,6 @@ TEST_CASE("Timer - Sleep") {
         ran = true;
     });
 
-    csp::schedule();
     fc.run();
     CHECK(ran);
 }
@@ -35,7 +34,6 @@ TEST_CASE("Timer - After") {
         elapsed = csp::now() - start;
     });
 
-    csp::schedule();
     fc.run();
     CHECK(elapsed == 10ms);
 }
@@ -54,7 +52,6 @@ TEST_CASE("Timer - AfterInAlt") {
         which_result = alt(r >> n, timeout >> nullptr);
     });
 
-    csp::schedule();
     fc.run();
     idle_writer = {};
     CHECK(1 == which_result);
@@ -75,7 +72,6 @@ TEST_CASE("Timer - Tick") {
         }
     });
 
-    csp::schedule();
     fc.run();
     REQUIRE(3u == times.size());
     CHECK(times[0] == epoch + 50ms);
@@ -94,7 +90,6 @@ TEST_CASE("Timer - TickCancellation") {
         ticker = {};
     });
 
-    csp::schedule();
     fc.run();
     // If the tick imp didn't exit, schedule() would hang.
 }
@@ -112,7 +107,6 @@ TEST_CASE("Timer - MultipleTimersOrdering") {
         which_result = alt(slow >> nullptr, fast >> nullptr);
     });
 
-    csp::schedule();
     fc.run();
     CHECK(1 == which_result);
 }
@@ -141,7 +135,6 @@ TEST_CASE("Timer - TimeoutPattern") {
         ch.release();
     });
 
-    csp::schedule();
     fc.run();
     CHECK(0 == which_result);
     CHECK(42 == val);
@@ -168,7 +161,6 @@ TEST_CASE("Timer - Controlled duration") {
         }
     });
 
-    csp::schedule();
     fc.run();
     REQUIRE(3 == intervals.size());
     CHECK(intervals[0] == 10ms);
@@ -195,7 +187,6 @@ TEST_CASE("Timer - Controlled time_point") {
         for (; t >> nullptr;) fires++;
     });
 
-    csp::schedule();
     fc.run();
     CHECK(2 == fires);
 }
@@ -217,6 +208,5 @@ TEST_CASE("Timer - Controlled cancellation") {
         t = {};
     });
 
-    csp::schedule();
     fc.run();
 }
