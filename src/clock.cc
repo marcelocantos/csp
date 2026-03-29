@@ -1,5 +1,6 @@
 #include <csp/timer.h>
 #include <csp/internal/csp_internal.h>
+#include <csp/internal/runtime.h>
 
 namespace csp {
 
@@ -22,11 +23,27 @@ dynamic<clock_source*> clock{&real_clock_instance};
 
 fake_clock::fake_clock(time_point start) : current_(start) {}
 
+fake_clock::~fake_clock() {
+    // Unregister quiescence hook.
+    auto& rt = detail::Runtime::instance();
+    std::lock_guard<std::mutex> lk(rt.hook_mu_);
+    rt.quiescence_hook_ = nullptr;
+}
+
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
     {
         std::lock_guard<std::mutex> lk(mu_);
         pending_.push({tp, detail::current_imp()});
+    }
+    // Register quiescence hook on first use (lazy — avoids needing
+    // the runtime to be initialized at fake_clock construction time).
+    auto& rt = detail::Runtime::instance();
+    {
+        std::lock_guard<std::mutex> lk(rt.hook_mu_);
+        if (!rt.quiescence_hook_) {
+            rt.quiescence_hook_ = [this]{ return advance_to_next(); };
+        }
     }
     internal::suspend();
 }
@@ -59,24 +76,16 @@ bool fake_clock::advance_to_next() {
 }
 
 void fake_clock::run() {
-    // If bind_scope() was called, use the scoped quiescence.
-    // Otherwise fall back to global quiescence detection.
-    bool scoped = detail::current_imp()->qs_ == &qs_;
+    qs_.bind();
     for (;;) {
-        if (scoped)
-            qs_.wait();
-        else
-            internal::await_quiescent();
+        qs_.wait();
         if (!advance_to_next()) break;
     }
 }
 
 void fake_clock::run_until_idle() {
-    bool scoped = detail::current_imp()->qs_ == &qs_;
-    if (scoped)
-        qs_.wait();
-    else
-        internal::await_quiescent();
+    qs_.bind();
+    qs_.wait();
 }
 
 }

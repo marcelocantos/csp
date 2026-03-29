@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -27,6 +28,12 @@ struct Runtime {
     std::atomic<bool> has_global_work_{false};  // Set by push_to_global, cleared by drain
     std::atomic<int> live_gs{0};
     std::atomic<int> daemon_gs{0};  // daemon imps (excluded from completion check)
+
+    // Quiescence hook: called by main_loop when all workers are parked
+    // but imps are still alive.  Returns true to keep going (e.g.,
+    // fake_clock advanced time), false to stop (real deadlock).
+    std::function<bool()> quiescence_hook_;
+    std::mutex hook_mu_;
 
     // Dynamic processor pool management.
     std::atomic<int> num_procs_{0};     // Current live P count

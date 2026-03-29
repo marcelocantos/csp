@@ -269,7 +269,7 @@ TEST_CASE("cancellable sleep throws") {
     RunStats stats;
     fake_clock fc;
     bool threw = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation();
         spawn([&]() {
@@ -284,7 +284,6 @@ TEST_CASE("cancellable sleep throws") {
         guard();
         csp::yield();
     });
-    fc.run();
     CHECK(threw);
 }
 
@@ -292,7 +291,7 @@ TEST_CASE("sleep completes normally under cancel scope") {
     RunStats stats;
     fake_clock fc;
     bool completed = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation();
         chan<> done;
@@ -304,7 +303,6 @@ TEST_CASE("sleep completes normally under cancel scope") {
         // Wait for child to finish before guard destructs
         prialt(~done.r);
     });
-    fc.run();
     CHECK(completed);
 }
 
@@ -344,7 +342,7 @@ TEST_CASE("deadline fires timed_out") {
     RunStats stats;
     fake_clock fc;
     bool got_timed_out = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation(std::chrono::seconds(5));
         spawn([&]() {
@@ -359,7 +357,6 @@ TEST_CASE("deadline fires timed_out") {
         });
         prialt(done());  // wait for deadline to fire
     });
-    fc.run();
     CHECK(got_timed_out);
 }
 
@@ -367,7 +364,7 @@ TEST_CASE("deadline done fires") {
     RunStats stats;
     fake_clock fc;
     bool fired = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation(std::chrono::seconds(2));
         spawn([&]() {
@@ -376,7 +373,6 @@ TEST_CASE("deadline done fires") {
         });
         prialt(done());  // wait for deadline
     });
-    fc.run();
     CHECK(fired);
 }
 
@@ -384,7 +380,7 @@ TEST_CASE("deadline cancel_reason is timed_out") {
     RunStats stats;
     fake_clock fc;
     bool is_timed_out = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation(std::chrono::seconds(1));
         spawn([&]() {
@@ -398,7 +394,6 @@ TEST_CASE("deadline cancel_reason is timed_out") {
         });
         prialt(done());  // wait for deadline to fire
     });
-    fc.run();
     CHECK(is_timed_out);
 }
 
@@ -407,7 +402,7 @@ TEST_CASE("deadline explicit cancel before timeout") {
     fake_clock fc;
     bool got_canceled = false;
     bool got_timed_out = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation(std::chrono::seconds(10));
         spawn([&]() {
@@ -424,7 +419,6 @@ TEST_CASE("deadline explicit cancel before timeout") {
         csp::yield();
         guard();  // cancel before the 10s deadline
     });
-    fc.run();
     CHECK(got_canceled);
     CHECK_FALSE(got_timed_out);
 }
@@ -433,7 +427,7 @@ TEST_CASE("deadline with time_point overload") {
     RunStats stats;
     fake_clock fc;
     bool fired = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto tp = csp::now() + std::chrono::seconds(3);
         auto guard = cancellation(tp);
@@ -443,7 +437,6 @@ TEST_CASE("deadline with time_point overload") {
         });
         prialt(done());  // wait for deadline
     });
-    fc.run();
     CHECK(fired);
 }
 
@@ -451,7 +444,7 @@ TEST_CASE("deadline cascades to child") {
     RunStats stats;
     fake_clock fc;
     bool child_fired = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto guard = cancellation(std::chrono::seconds(5));
         spawn([&]() {
@@ -465,7 +458,6 @@ TEST_CASE("deadline cascades to child") {
         });
         prialt(done());  // wait for deadline
     });
-    fc.run();
     CHECK(child_fired);
 }
 
@@ -541,7 +533,7 @@ TEST_CASE("nested cancel scopes inner fires first") {
     fake_clock fc;
     bool inner_fired = false;
     bool outer_fired = false;
-    stats.spawn([&]() {
+    csp::run([&] {
         csp::local l{csp::clock = &fc};
         auto outer = cancellation(std::chrono::seconds(10));
         spawn([&]() {
@@ -559,7 +551,6 @@ TEST_CASE("nested cancel scopes inner fires first") {
         csp::yield();
         prialt(done()); // blocks until inner deadline fires
     });
-    fc.run();
     CHECK(inner_fired);
     // Outer may or may not have fired depending on cascade; the key
     // assertion is that inner fires first (inner_fired == true by the

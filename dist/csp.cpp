@@ -1057,11 +1057,27 @@ dynamic<clock_source*> clock{&real_clock_instance};
 
 fake_clock::fake_clock(time_point start) : current_(start) {}
 
+fake_clock::~fake_clock() {
+    // Unregister quiescence hook.
+    auto& rt = detail::Runtime::instance();
+    std::lock_guard<std::mutex> lk(rt.hook_mu_);
+    rt.quiescence_hook_ = nullptr;
+}
+
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
     {
         std::lock_guard<std::mutex> lk(mu_);
         pending_.push({tp, detail::current_imp()});
+    }
+    // Register quiescence hook on first use (lazy — avoids needing
+    // the runtime to be initialized at fake_clock construction time).
+    auto& rt = detail::Runtime::instance();
+    {
+        std::lock_guard<std::mutex> lk(rt.hook_mu_);
+        if (!rt.quiescence_hook_) {
+            rt.quiescence_hook_ = [this]{ return advance_to_next(); };
+        }
     }
     internal::suspend();
 }
@@ -1094,24 +1110,16 @@ bool fake_clock::advance_to_next() {
 }
 
 void fake_clock::run() {
-    // If bind_scope() was called, use the scoped quiescence.
-    // Otherwise fall back to global quiescence detection.
-    bool scoped = detail::current_imp()->qs_ == &qs_;
+    qs_.bind();
     for (;;) {
-        if (scoped)
-            qs_.wait();
-        else
-            internal::await_quiescent();
+        qs_.wait();
         if (!advance_to_next()) break;
     }
 }
 
 void fake_clock::run_until_idle() {
-    bool scoped = detail::current_imp()->qs_ == &qs_;
-    if (scoped)
-        qs_.wait();
-    else
-        internal::await_quiescent();
+    qs_.bind();
+    qs_.wait();
 }
 
 }
@@ -1229,6 +1237,12 @@ namespace csp {
                 return;
             }
             auto& busy = current_p().busy;
+            if (busy == &current_p().main) {
+                // Adding to proc 0 (or any proc whose queue only has sentinel)
+                // This is where an imp gets next_=sentinel
+                fprintf(stderr, "schedule_local: imp %p added to proc %d (sentinel %p), caller=%p\n",
+                    (void*)this, current_p().id, (void*)&current_p().main, (void*)current_imp());
+            }
             if (busy) {
                 next_ = busy;
                 prev_ = busy->prev_;
@@ -1260,6 +1274,13 @@ namespace csp {
                 if (suspending_.load(std::memory_order_acquire)) {
                     wake_pending_.store(true, std::memory_order_release);
                     return;
+                }
+                if (next_) {
+                    fprintf(stderr, "schedule: imp %p has next_=%p (in_global_=%d, suspending_=%d, caller=%p)\n",
+                        (void*)this, (void*)next_,
+                        (int)in_global_,
+                        (int)suspending_.load(std::memory_order_relaxed),
+                        (void*)current_imp());
                 }
                 rt.push_to_global(this); // TLA:StealWork.WPush
             }
@@ -1351,6 +1372,10 @@ namespace csp {
                 // Inline schedule without re-acquiring run_mu.
                 if (!next_) {
                     if (busy) {
+                        if (busy == &current_p().main) {
+                            fprintf(stderr, "run inline schedule: imp %p added to proc %d (sentinel %p), status=%d, self=%p\n",
+                                (void*)this, current_p().id, (void*)&current_p().main, (int)status, (void*)self);
+                        }
                         next_ = busy;
                         prev_ = busy->prev_;
                         next_->prev_ = prev_->next_ = this;
@@ -3497,6 +3522,12 @@ namespace csp {
 
         void Runtime::push_to_global(Imp* imp) {
             // Caller must hold global_mu.
+            if (imp->next_) {
+                fprintf(stderr, "push_to_global: imp %p has next_=%p (in_global_=%d, suspending_=%d)\n",
+                    (void*)imp, (void*)imp->next_,
+                    (int)imp->in_global_,
+                    (int)imp->suspending_.load(std::memory_order_relaxed));
+            }
             assert(!imp->next_);
             assert(!imp->in_global_);
             imp->in_global_ = true;
@@ -3565,13 +3596,49 @@ namespace csp {
         }
 
         void Runtime::main_loop() {
-            // Workers handle all execution; main thread just waits
-            // until all non-daemon imps have exited.
-            std::unique_lock<std::mutex> lk(park_mu);
-            park_cv.wait(lk, [this] {
+            auto user_done = [this] {
                 return live_gs.load(std::memory_order_acquire)
                     <= daemon_gs.load(std::memory_order_acquire);
-            });
+            };
+            auto all_parked = [this] {
+                int np = num_procs_.load(std::memory_order_acquire);
+                for (int i = 1; i < np; ++i) {
+                    if (procs[i] && procs[i]->alive.load(std::memory_order_acquire)
+                        && !procs[i]->parked.load(std::memory_order_acquire))
+                        return false;
+                }
+                return true;
+            };
+
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lk(park_mu);
+                    park_cv.wait(lk, [&] {
+                        if (user_done()) return true;
+                        if (has_global_work_.load(std::memory_order_acquire)) return true;
+                        return all_parked();  // quiescent — check hook
+                    });
+                }
+                if (user_done()) break;
+                if (has_global_work_.load(std::memory_order_acquire)) continue;
+                // Quiescent: all workers parked. Call hook if registered.
+                {
+                    std::lock_guard<std::mutex> hlk(hook_mu_);
+                    if (quiescence_hook_) {
+                        if (!quiescence_hook_()) {
+                            // Hook has no more fake-clock work. Live imps
+                            // woken by the last timer fire may not have run
+                            // to completion yet — only exit if truly done.
+                            if (user_done()) break;
+                            // Re-park; workers will drain remaining imps.
+                        }
+                        continue;
+                    }
+                }
+                // No hook — genuine deadlock or waiting for external event.
+                // Park again; we'll wake on global work or user_done.
+                continue;
+            }
         }
 
         void Runtime::quiescent_loop() {

@@ -124,6 +124,12 @@ namespace csp {
 
         void Runtime::push_to_global(Imp* imp) {
             // Caller must hold global_mu.
+            if (imp->next_) {
+                fprintf(stderr, "push_to_global: imp %p has next_=%p (in_global_=%d, suspending_=%d)\n",
+                    (void*)imp, (void*)imp->next_,
+                    (int)imp->in_global_,
+                    (int)imp->suspending_.load(std::memory_order_relaxed));
+            }
             assert(!imp->next_);
             assert(!imp->in_global_);
             imp->in_global_ = true;
@@ -192,13 +198,49 @@ namespace csp {
         }
 
         void Runtime::main_loop() {
-            // Workers handle all execution; main thread just waits
-            // until all non-daemon imps have exited.
-            std::unique_lock<std::mutex> lk(park_mu);
-            park_cv.wait(lk, [this] {
+            auto user_done = [this] {
                 return live_gs.load(std::memory_order_acquire)
                     <= daemon_gs.load(std::memory_order_acquire);
-            });
+            };
+            auto all_parked = [this] {
+                int np = num_procs_.load(std::memory_order_acquire);
+                for (int i = 1; i < np; ++i) {
+                    if (procs[i] && procs[i]->alive.load(std::memory_order_acquire)
+                        && !procs[i]->parked.load(std::memory_order_acquire))
+                        return false;
+                }
+                return true;
+            };
+
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lk(park_mu);
+                    park_cv.wait(lk, [&] {
+                        if (user_done()) return true;
+                        if (has_global_work_.load(std::memory_order_acquire)) return true;
+                        return all_parked();  // quiescent — check hook
+                    });
+                }
+                if (user_done()) break;
+                if (has_global_work_.load(std::memory_order_acquire)) continue;
+                // Quiescent: all workers parked. Call hook if registered.
+                {
+                    std::lock_guard<std::mutex> hlk(hook_mu_);
+                    if (quiescence_hook_) {
+                        if (!quiescence_hook_()) {
+                            // Hook has no more fake-clock work. Live imps
+                            // woken by the last timer fire may not have run
+                            // to completion yet — only exit if truly done.
+                            if (user_done()) break;
+                            // Re-park; workers will drain remaining imps.
+                        }
+                        continue;
+                    }
+                }
+                // No hook — genuine deadlock or waiting for external event.
+                // Park again; we'll wake on global work or user_done.
+                continue;
+            }
         }
 
         void Runtime::quiescent_loop() {

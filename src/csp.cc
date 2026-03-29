@@ -119,6 +119,12 @@ namespace csp {
                 return;
             }
             auto& busy = current_p().busy;
+            if (busy == &current_p().main) {
+                // Adding to proc 0 (or any proc whose queue only has sentinel)
+                // This is where an imp gets next_=sentinel
+                fprintf(stderr, "schedule_local: imp %p added to proc %d (sentinel %p), caller=%p\n",
+                    (void*)this, current_p().id, (void*)&current_p().main, (void*)current_imp());
+            }
             if (busy) {
                 next_ = busy;
                 prev_ = busy->prev_;
@@ -150,6 +156,13 @@ namespace csp {
                 if (suspending_.load(std::memory_order_acquire)) {
                     wake_pending_.store(true, std::memory_order_release);
                     return;
+                }
+                if (next_) {
+                    fprintf(stderr, "schedule: imp %p has next_=%p (in_global_=%d, suspending_=%d, caller=%p)\n",
+                        (void*)this, (void*)next_,
+                        (int)in_global_,
+                        (int)suspending_.load(std::memory_order_relaxed),
+                        (void*)current_imp());
                 }
                 rt.push_to_global(this); // TLA:StealWork.WPush
             }
@@ -241,6 +254,10 @@ namespace csp {
                 // Inline schedule without re-acquiring run_mu.
                 if (!next_) {
                     if (busy) {
+                        if (busy == &current_p().main) {
+                            fprintf(stderr, "run inline schedule: imp %p added to proc %d (sentinel %p), status=%d, self=%p\n",
+                                (void*)this, current_p().id, (void*)&current_p().main, (int)status, (void*)self);
+                        }
                         next_ = busy;
                         prev_ = busy->prev_;
                         next_->prev_ = prev_->next_ = this;

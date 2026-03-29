@@ -72,6 +72,8 @@ public:
     // Wait for quiescence (all scope members sleeping), then return.
     void run_until_idle();
 
+    ~fake_clock();
+
     fake_clock(fake_clock const&) = delete;
     fake_clock& operator=(fake_clock const&) = delete;
 };
