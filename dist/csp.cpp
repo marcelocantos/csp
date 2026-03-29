@@ -3522,12 +3522,6 @@ namespace csp {
 
         void Runtime::push_to_global(Imp* imp) {
             // Caller must hold global_mu.
-            if (imp->next_) {
-                fprintf(stderr, "push_to_global: imp %p has next_=%p (in_global_=%d, suspending_=%d)\n",
-                    (void*)imp, (void*)imp->next_,
-                    (int)imp->in_global_,
-                    (int)imp->suspending_.load(std::memory_order_relaxed));
-            }
             assert(!imp->next_);
             assert(!imp->in_global_);
             imp->in_global_ = true;

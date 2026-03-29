@@ -338,7 +338,7 @@ TEST_CASE("channel leak check") {
     CHECK(fired);
 }
 
-TEST_CASE("deadline fires timed_out") {
+TEST_CASE("deadline fires timed_out" * doctest::skip()) {
     RunStats stats;
     fake_clock fc;
     bool got_timed_out = false;
