@@ -1,6 +1,8 @@
 #include "testutil.h"
 #include "testscale.h"
 
+#include <atomic>
+
 using namespace csp;
 
 static Logger g_log("Channel.Test");
@@ -62,7 +64,7 @@ TEST_CASE("Volume - RapidChannelLifecycle") {
 
 TEST_CASE("Volume - ManyImps") {
     constexpr int N = 2000 / SCALE_LIGHT;
-    int completed = 0;
+    std::atomic<int> completed{0};
 
     csp::run([&]{
         for (int i = 0; i < N; ++i) {
@@ -70,7 +72,7 @@ TEST_CASE("Volume - ManyImps") {
         }
     });
 
-    CHECK(N == completed);
+    CHECK(N == completed.load());
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
