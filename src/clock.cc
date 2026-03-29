@@ -32,7 +32,9 @@ void fake_clock::fire_expired() {
     while (!pending_.empty() && pending_.top().deadline <= current_) {
         auto* imp = pending_.top().imp;
         pending_.pop();
-        imp->schedule_local();
+        // Use schedule() (global queue) rather than schedule_local() so that
+        // workers parked after quiescence detection are woken to process the imp.
+        imp->schedule();
     }
 }
 
@@ -50,13 +52,13 @@ bool fake_clock::advance_to_next() {
 
 void fake_clock::run() {
     for (;;) {
-        while (internal::run()) {}
+        csp::internal::run();  // drain until quiescent (respects sleeping imps)
         if (!advance_to_next()) break;
     }
 }
 
 void fake_clock::run_until_idle() {
-    while (internal::run()) {}
+    csp::internal::run();  // drain until quiescent (respects sleeping imps)
 }
 
 }

@@ -397,8 +397,9 @@ struct AltMatch {
 using EntryFn = void (*)(void *);
 
 // Imp management.
-int spawn(EntryFn entry, void * data);
+int spawn(EntryFn entry, void * data, bool daemon = false);
 int run();
+void await_idle();
 void yield();
 void descr(char const * fmt, ...);
 
@@ -469,7 +470,8 @@ extern Logger g_descrlog;
 
 void set_scheduler(std::function<void()> f);
 void reset_scheduler();
-void schedule();
+void await_completion();
+inline void schedule() { await_completion(); }  // deprecated alias
 
 // Yield control so other imps can run. Does nothing outside an imp.
 inline void yield() { internal::yield(); }
@@ -1307,13 +1309,31 @@ inline void spawn_entry(void * data) {
 }
 
 template <typename F>
-reader<std::exception_ptr> spawn(F && f) {
+reader<std::exception_ptr> spawn(F && f, bool daemon = false) {
     reader<std::exception_ptr> r;
     auto sd = new detail::spawn_data<F>{std::move(f), ++r};
-    if (!internal::spawn(detail::spawn_entry<F>, sd)) {
+    if (!internal::spawn(detail::spawn_entry<F>, sd, daemon)) {
         throw error("spawn failed");
     }
     return r;
+}
+
+template <typename T, typename F>
+writer<T> spawn_daemon_consumer(F f) {
+    writer<T> w;
+    spawn([f = std::move(f), r = --w]() mutable {
+        f(std::move(r));
+    }, /*daemon=*/true);
+    return w;
+}
+
+// Spawn f as an imp and block until all non-daemon imps complete.
+// This is the standard entry point for CSP programs — the main
+// thread must not perform channel operations directly.
+template <typename F>
+void run(F && f) {
+    spawn(std::forward<F>(f));
+    await_completion();
 }
 
 inline void join(reader<std::exception_ptr> const & r) {
@@ -1892,6 +1912,7 @@ struct alignas(16) Imp {
     std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
 
     bool in_global_ = false;  // true while in the global run queue
+    bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 
@@ -3096,9 +3117,9 @@ struct Runtime {
     std::atomic<bool> stopping{false};
     std::atomic<bool> has_global_work_{false};  // Set by push_to_global, cleared by drain
     std::atomic<int> live_gs{0};
+    std::atomic<int> daemon_gs{0};  // daemon imps (excluded from completion check)
 
     // Dynamic processor pool management.
-    bool mn_mode_ = false;              // True when num_procs > 1; set once
     std::atomic<int> num_procs_{0};     // Current live P count
     int initial_procs_ = 0;            // P count at init time
     int max_procs_ = 0;                // Upper bound on total Ps
@@ -3118,6 +3139,7 @@ struct Runtime {
 
     void worker_loop();
     void main_loop();
+    void quiescent_loop();
     void watchdog_loop();
     void add_processor();
     Imp* local_next(Processor& p);
@@ -4521,6 +4543,7 @@ auto cycle(std::initializer_list<T> c) {
 
 /* csp/part/exhaust_all.h */
 
+#include <cstdio>
 
 namespace csp::part {
 
@@ -4534,31 +4557,40 @@ inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> i
 
     reader<B> sub;
     while (csp::alt(in >> sub, ~out) == 0) {
+        fprintf(stderr, "[exhaust_all] accepted sub\n");
         B b;
         reader<B> discard;
         for (;;) {
-            // ~sub vulture fires immediately on sub death (as ~1),
-            // ensuring we detect it before the alt matches a ready
-            // peer on input (data chanops defer dead-channel).
-            switch (csp::prialt(sub >> b, ~sub, in >> discard, ~out)) {
-            case 0:  // Sub data — forward.
+            // ~sub (slot 0) fires immediately on sub writer death —
+            // vultures on dead channels short-circuit before dead-data
+            // results are checked, so placing it first guarantees we
+            // detect sub death before any dead-data result fires.
+            int r = csp::prialt(~sub, sub >> b, in >> discard, ~out);
+            fprintf(stderr, "[exhaust_all] prialt => %d\n", r);
+            switch (r) {
+            case ~0:  // Sub died (vulture) — outer loop gets next.
+                break;
+            case 1:  // Sub data — forward.
                 if (!(out << std::move(b))) return;
                 continue;
-            case ~1:  // Sub died (vulture) — outer loop gets next.
-                break;
             case 2:  // New sub from input — discard.
                 continue;
             case ~2:  // Input died — drain remaining sub.
+                fprintf(stderr, "[exhaust_all] draining remaining sub\n");
                 for (; csp::alt(sub >> b, ~out) == 0;) {
+                    fprintf(stderr, "[exhaust_all] drain got value\n");
                     if (!(out << std::move(b))) return;
                 }
+                fprintf(stderr, "[exhaust_all] drain done\n");
                 return;
             default:  // Output died.
+                fprintf(stderr, "[exhaust_all] output died\n");
                 return;
             }
-            break;  // Reached only from case ~1 (sub died).
+            break;  // Reached only from case ~0 (sub died).
         }
     }
+    fprintf(stderr, "[exhaust_all] outer loop exited\n");
 });
 
 }

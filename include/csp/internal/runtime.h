@@ -26,9 +26,9 @@ struct Runtime {
     std::atomic<bool> stopping{false};
     std::atomic<bool> has_global_work_{false};  // Set by push_to_global, cleared by drain
     std::atomic<int> live_gs{0};
+    std::atomic<int> daemon_gs{0};  // daemon imps (excluded from completion check)
 
     // Dynamic processor pool management.
-    bool mn_mode_ = false;              // True when num_procs > 1; set once
     std::atomic<int> num_procs_{0};     // Current live P count
     int initial_procs_ = 0;            // P count at init time
     int max_procs_ = 0;                // Upper bound on total Ps
@@ -48,6 +48,7 @@ struct Runtime {
 
     void worker_loop();
     void main_loop();
+    void quiescent_loop();
     void watchdog_loop();
     void add_processor();
     Imp* local_next(Processor& p);

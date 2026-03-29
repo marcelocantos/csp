@@ -499,7 +499,7 @@ namespace {
             int n_sorted;
             Imp* peer;
             bool needs_unlock;
-            bool use_run;           // single-P writer: unlock then run
+            // (removed: use_run field was for single-P cooperative path)
             bool has_pins;          // re-resolution alive_ pins active
         };
         static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
@@ -536,7 +536,6 @@ namespace {
 
             mi->peer = nullptr;
             mi->needs_unlock = false;
-            mi->use_run = false;
             out->src = nullptr;
             out->dst = nullptr;
             out->result = 0;
@@ -678,7 +677,6 @@ namespace {
                                 if (endpt == wr) {
                                     out->src = chop.message;
                                     out->dst = const_cast<void *>(cw.chanop->message);
-                                    mi->use_run = !Runtime::instance().mn_mode_;
                                 } else {
                                     out->src = cw.chanop->message;
                                     out->dst = const_cast<void *>(chop.message);
@@ -774,15 +772,8 @@ namespace {
         static void alt_end_impl(AltMatch * m) {
             auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
             if (mi->needs_unlock) {
-                if (mi->use_run) {
-                    // Single-P writer path: unlock first, then context-switch
-                    // to peer (runs until it yields, then returns here).
-                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
-                    mi->peer->run(Status::run);
-                } else {
-                    if (mi->peer) mi->peer->schedule();
-                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
-                }
+                if (mi->peer) mi->peer->schedule();
+                for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
             }
             if (mi->has_pins) {
                 for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
@@ -1076,7 +1067,9 @@ void fake_clock::fire_expired() {
     while (!pending_.empty() && pending_.top().deadline <= current_) {
         auto* imp = pending_.top().imp;
         pending_.pop();
-        imp->schedule_local();
+        // Use schedule() (global queue) rather than schedule_local() so that
+        // workers parked after quiescence detection are woken to process the imp.
+        imp->schedule();
     }
 }
 
@@ -1094,13 +1087,13 @@ bool fake_clock::advance_to_next() {
 
 void fake_clock::run() {
     for (;;) {
-        while (internal::run()) {}
+        csp::internal::run();  // drain until quiescent (respects sleeping imps)
         if (!advance_to_next()) break;
     }
 }
 
 void fake_clock::run_until_idle() {
-    while (internal::run()) {}
+    csp::internal::run();  // drain until quiescent (respects sleeping imps)
 }
 
 }
@@ -1118,27 +1111,7 @@ void fake_clock::run_until_idle() {
 
 static void default_scheduler_impl() {
     auto& rt = csp::detail::Runtime::instance();
-    while (true) {
-        if (csp::internal::run()) continue;
-        if (rt.live_gs.load(std::memory_order_acquire) == 0) break;
-        // In single-P mode, if no reactor signals are pending and no
-        // global work is queued, no external event can wake blocked
-        // imps — exit (deadlock or done).  Both conditions must hold:
-        // the reactor decrements pending_signals *after* scheduling
-        // the woken imp (which sets has_global_work_), so checking
-        // both avoids a race where pending_signals is already zero
-        // but the woken imp hasn't been run yet.
-        if (!rt.mn_mode_
-            && !csp::detail::Reactor::instance().has_pending_signals()
-            && !rt.has_global_work_.load(std::memory_order_acquire)) break;
-        // Park until work arrives or all imps have exited.
-        std::unique_lock<std::mutex> lk(rt.park_mu);
-        rt.park_cv.wait(lk, [&rt] {
-            return rt.live_gs.load(std::memory_order_acquire) == 0
-                || rt.has_global_work_.load(std::memory_order_acquire);
-        });
-    }
-    // Shut down the reactor so its thread doesn't outlive the scheduler.
+    rt.main_loop();
     csp::detail::Reactor::instance().shutdown();
 }
 
@@ -1170,24 +1143,20 @@ namespace csp {
         // wake_pending_ in between (seeing false both times).
         static void drain_suspended(Imp* suspended) {
             auto& rt = Runtime::instance();
-            if (rt.mn_mode_) {
-                bool need_unpark = false;
-                {
-                    std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
-                    // TLA:DrainSuspended.Drain
-                    suspended->suspending_.store(false, std::memory_order_release);
-                    if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
-                        if (!suspended->in_global_) {
-                            rt.push_to_global(suspended);
-                            need_unpark = true;
-                        }
+            bool need_unpark = false;
+            {
+                std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
+                // TLA:DrainSuspended.Drain
+                suspended->suspending_.store(false, std::memory_order_release);
+                if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                    if (!suspended->in_global_) {
+                        rt.push_to_global(suspended);
+                        need_unpark = true;
                     }
                 }
-                if (need_unpark) {
-                    rt.unpark_one();
-                }
-            } else {
-                suspended->suspending_.store(false, std::memory_order_release);
+            }
+            if (need_unpark) {
+                rt.unpark_one();
             }
         }
 
@@ -1257,32 +1226,26 @@ namespace csp {
         void Imp::schedule(bool make_current) {
             auto& rt = Runtime::instance();
 
-            // In M:N mode or when called from a thread without a
-            // Processor (e.g. reactor thread), push to the global
-            // run queue so any worker can pick it up.
+            // Push to the global run queue so any worker can pick
+            // it up.
             // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
-            if (rt.mn_mode_ || !has_processor()) {
-                {
-                    std::lock_guard<std::mutex> lk(rt.global_mu);
-                    if (in_global_) {
-                        return;
-                    }
-                    // TLA:DrainSuspended.DoSchedule
-                    // If the imp is in the unlock_all→do_switch
-                    // window, it's still running and can't be safely
-                    // pushed to the global queue.  Set wake_pending_
-                    // so the detach path will re-add it to a queue.
-                    if (suspending_.load(std::memory_order_acquire)) {
-                        wake_pending_.store(true, std::memory_order_release);
-                        return;
-                    }
-                    rt.push_to_global(this); // TLA:StealWork.WPush
+            {
+                std::lock_guard<std::mutex> lk(rt.global_mu);
+                if (in_global_) {
+                    return;
                 }
-                rt.unpark_one();
-                return;
+                // TLA:DrainSuspended.DoSchedule
+                // If the imp is in the unlock_all→do_switch
+                // window, it's still running and can't be safely
+                // pushed to the global queue.  Set wake_pending_
+                // so the detach path will re-add it to a queue.
+                if (suspending_.load(std::memory_order_acquire)) {
+                    wake_pending_.store(true, std::memory_order_release);
+                    return;
+                }
+                rt.push_to_global(this); // TLA:StealWork.WPush
             }
-
-            schedule_local(make_current);
+            rt.unpark_one();
         }
 
         void Imp::deschedule() {
@@ -1302,11 +1265,16 @@ namespace csp {
 #if CSP_TSAN
             if (imp->tsan_fiber_) __tsan_destroy_fiber(imp->tsan_fiber_);
 #endif
+            bool was_daemon = imp->daemon_;
             auto region = imp->stk_;
             imp->~Imp();
             StackPool::instance().release(region);
             auto& rt = Runtime::instance();
-            if (rt.live_gs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (was_daemon) rt.daemon_gs.fetch_sub(1, std::memory_order_relaxed);
+            auto live = rt.live_gs.fetch_sub(1, std::memory_order_acq_rel);
+            auto daemon = rt.daemon_gs.load(std::memory_order_acquire);
+            if (live - 1 <= daemon) {
+                // All non-daemon imps are done.
                 { std::lock_guard<std::mutex> lk(rt.park_mu); }
                 rt.park_cv.notify_all();
             }
@@ -1420,10 +1388,7 @@ namespace csp {
         g_scheduler = default_scheduler_impl;
     }
 
-    void schedule() {
-        // Ensure the runtime is initialized (and the correct scheduler
-        // is installed) before dispatching. current_p() auto-inits on
-        // first call based on CSP_MAXPROCS / set_maxprocs().
+    void await_completion() {
         detail::current_p();
         g_scheduler();
     }
@@ -1490,7 +1455,7 @@ static void start(transfer_t t) {
 
 namespace csp::internal {
 
-int spawn(EntryFn start_f, void * data) {
+int spawn(EntryFn start_f, void * data, bool daemon) {
     (void)current_p(); // Ensure current_imp() is bound before use.
     auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
@@ -1556,23 +1521,18 @@ int spawn(EntryFn start_f, void * data) {
         set_current_imp(self);
 
         auto& rt = Runtime::instance();
+        if (daemon) {
+            imp->daemon_ = true;
+            rt.daemon_gs.fetch_add(1, std::memory_order_relaxed);
+        }
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
 
-        if (rt.mn_mode_) {
-            // M:N mode: after the handshake switch_to, imp is initialized
-            // and suspended but NOT on any run queue. Push it to the
-            // global queue for workers to pick up and run.
-            {
-                std::lock_guard<std::mutex> lk(rt.global_mu);
-                rt.push_to_global(imp);
-            }
-            rt.park_cv.notify_all();
-        } else {
-            // Single-P mode: run the imp on the main thread
-            // (original behavior — run until it yields).
-            imp->run(Status::run);
-            rt.unpark_one();
+        // Push to the global queue for workers to pick up and run.
+        {
+            std::lock_guard<std::mutex> lk(rt.global_mu);
+            rt.push_to_global(imp);
         }
+        rt.park_cv.notify_all();
 
         return 1;
     } catch (std::exception const & e) {
@@ -1589,42 +1549,41 @@ void suspend() {
 }
 
 int run() {
-    auto& p = current_p();
     auto& rt = Runtime::instance();
-
-    // Drain global run queue (reactor events post here in single-P mode).
-    {
-        std::lock_guard<std::mutex> lk(rt.global_mu);
-        while (!rt.global_run_queue.empty()) {
-            auto* imp = rt.global_run_queue.front();
-            rt.global_run_queue.pop_front();
-            imp->in_global_ = false;
-            imp->schedule_local();
+    auto user_done = [&] {
+        return rt.live_gs.load(std::memory_order_acquire)
+            <= rt.daemon_gs.load(std::memory_order_acquire);
+    };
+    if (user_done()) return 0;
+    // Wait for either completion or quiescence (all workers parked +
+    // no global work + no pending signals = deadlock or external
+    // action needed).
+    std::unique_lock<std::mutex> lk(rt.park_mu);
+    rt.park_cv.wait(lk, [&] {
+        if (user_done()) return true;
+        // Check quiescence: all workers parked, no global work, no signals.
+        if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
+        if (csp::detail::Reactor::instance().has_pending_signals()) return false;
+        int np = rt.num_procs_.load(std::memory_order_acquire);
+        for (int i = 1; i < np; ++i) {
+            if (rt.procs[i] && rt.procs[i]->alive.load(std::memory_order_acquire)
+                && !rt.procs[i]->parked.load(std::memory_order_acquire)) {
+                return false;  // a worker is still active
+            }
         }
-        rt.has_global_work_.store(false, std::memory_order_release);
-    }
+        return true;  // quiescent — deadlock or done
+    });
+    return 0;
+}
 
-    Imp* target = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(p.run_mu);
-        auto& busy = p.busy;
-        auto* ci = current_imp();
-        if (busy == ci) {
-            busy = busy->next_;
-        }
-        if (busy != ci) {
-            target = busy;
-        }
-    }
-
-    if (target) {
-        target->run();
-    }
-
-    {
-        std::lock_guard<std::mutex> lk(p.run_mu);
-        return p.busy->next_ != p.busy;
-    }
+void await_idle() {
+    // Wait for ALL imps (including daemons) to exit.
+    // Used by test cleanup after killing daemon handlers.
+    auto& rt = Runtime::instance();
+    std::unique_lock<std::mutex> lk(rt.park_mu);
+    rt.park_cv.wait(lk, [&rt] {
+        return rt.live_gs.load(std::memory_order_acquire) == 0;
+    });
 }
 
 void yield() {
@@ -3421,10 +3380,12 @@ namespace csp {
             }
 
             if (num_procs <= 0) {
-                num_procs = std::max(1, (int)std::thread::hardware_concurrency());
+                num_procs = std::max(2, (int)std::thread::hardware_concurrency());
             }
+            // Always M:N: at least 2 procs so workers can process
+            // imps while the main thread parks in main_loop().
+            if (num_procs < 2) num_procs = 2;
 
-            mn_mode_ = num_procs > 1;
             initial_procs_ = num_procs;
             max_procs_ = std::max(num_procs, (int)std::thread::hardware_concurrency() * 4);
 
@@ -3447,7 +3408,7 @@ namespace csp {
                 });
             }
 
-            if (mn_mode_) {
+            if (num_procs > 1) {
                 watchdog_ = std::thread([this] { watchdog_loop(); });
             }
         }
@@ -3475,7 +3436,6 @@ namespace csp {
 
             procs.clear();
             num_procs_.store(0, std::memory_order_release);
-            mn_mode_ = false;
         }
 
         void Runtime::unpark_one() {
@@ -3518,6 +3478,7 @@ namespace csp {
                 {
                     std::unique_lock<std::mutex> lk(park_mu); // TLA:WorkerParking.WorkerAcquirePark
                     p.parked.store(true, std::memory_order_release);
+                    park_cv.notify_all();  // wake run() quiescence check
 
                     // Surplus Ps wind down after 5s idle.
                     using namespace std::chrono;
@@ -3551,11 +3512,32 @@ namespace csp {
         }
 
         void Runtime::main_loop() {
-            // Main thread waits for all imps to complete.
-            // Workers do all the actual execution.
+            // Workers handle all execution; main thread just waits
+            // until all non-daemon imps have exited.
             std::unique_lock<std::mutex> lk(park_mu);
             park_cv.wait(lk, [this] {
-                return live_gs.load(std::memory_order_acquire) == 0;
+                return live_gs.load(std::memory_order_acquire)
+                    <= daemon_gs.load(std::memory_order_acquire);
+            });
+        }
+
+        void Runtime::quiescent_loop() {
+            // Wait until no runnable work remains (all workers parked and
+            // global queue empty).  Unlike main_loop(), suspended imps that
+            // are waiting for external events (e.g. fake_clock timers) do NOT
+            // prevent this from returning — they are not in any run queue.
+            std::unique_lock<std::mutex> lk(park_mu);
+            park_cv.wait(lk, [this] {
+                if (has_global_work_.load(std::memory_order_acquire)) {
+                    return false;
+                }
+                int n = num_procs_.load(std::memory_order_acquire);
+                for (int i = 0; i < n; ++i) {
+                    auto& p = *procs[i];
+                    if (!p.alive.load(std::memory_order_acquire)) continue;
+                    if (!p.parked.load(std::memory_order_acquire)) return false;
+                }
+                return true;
             });
         }
 
@@ -3652,6 +3634,7 @@ namespace csp {
         bool Runtime::take_from_global(Processor& p) {
             std::lock_guard<std::mutex> lk(global_mu);
             if (global_run_queue.empty()) {
+                has_global_work_.store(false, std::memory_order_release);
                 return false;
             }
 
@@ -3664,6 +3647,9 @@ namespace csp {
                 global_run_queue.pop_front();
                 imp->in_global_ = false;
                 imp->schedule_local();
+            }
+            if (global_run_queue.empty()) {
+                has_global_work_.store(false, std::memory_order_release);
             }
             return true;
         }
