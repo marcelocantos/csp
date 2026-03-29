@@ -125,7 +125,7 @@ TEST_CASE("Thread - CustomScheduler") {
 
 TEST_CASE("Thread - SpawnMany") {
     constexpr int N = 500;
-    int completed = 0;
+    std::atomic<int> completed{0};
 
     csp::run([&]{
         for (int i = 0; i < N; ++i) {
@@ -133,7 +133,7 @@ TEST_CASE("Thread - SpawnMany") {
         }
     });
 
-    CHECK(N == completed);
+    CHECK(N == completed.load());
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
