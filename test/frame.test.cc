@@ -9,38 +9,42 @@ TEST_SUITE("frame") {
 TEST_CASE("batch fills before timeout") {
     RunStats stats;
 
-    chan<int> in;
-    auto out = frame<int>(3, 1s).spawn(std::move(in.r));
+    csp::run([&] {
+        chan<int> in;
+        auto out = frame<int>(3, 1s).spawn(std::move(in.r));
 
-    spawn([w = std::move(in.w)] {
-        for (int i = 0; i < 6; ++i) w << i;
+        spawn([w = std::move(in.w)] {
+            for (int i = 0; i < 6; ++i) w << i;
+        });
+
+        std::vector<std::vector<int>> frames;
+        std::vector<int> f;
+        while (out >> f) frames.push_back(std::move(f));
+
+        REQUIRE(frames.size() == 2);
+        CHECK(frames[0] == std::vector<int>{0, 1, 2});
+        CHECK(frames[1] == std::vector<int>{3, 4, 5});
     });
-
-    std::vector<std::vector<int>> frames;
-    std::vector<int> f;
-    while (out >> f) frames.push_back(std::move(f));
-
-    REQUIRE(frames.size() == 2);
-    CHECK(frames[0] == std::vector<int>{0, 1, 2});
-    CHECK(frames[1] == std::vector<int>{3, 4, 5});
 }
 
 TEST_CASE("partial frame flushed on input close") {
     RunStats stats;
 
-    chan<int> in;
-    auto out = frame<int>(5, 1s).spawn(std::move(in.r));
+    csp::run([&] {
+        chan<int> in;
+        auto out = frame<int>(5, 1s).spawn(std::move(in.r));
 
-    spawn([w = std::move(in.w)] {
-        for (int i = 0; i < 3; ++i) w << i;
+        spawn([w = std::move(in.w)] {
+            for (int i = 0; i < 3; ++i) w << i;
+        });
+
+        std::vector<std::vector<int>> frames;
+        std::vector<int> f;
+        while (out >> f) frames.push_back(std::move(f));
+
+        REQUIRE(frames.size() == 1);
+        CHECK(frames[0] == std::vector<int>{0, 1, 2});
     });
-
-    std::vector<std::vector<int>> frames;
-    std::vector<int> f;
-    while (out >> f) frames.push_back(std::move(f));
-
-    REQUIRE(frames.size() == 1);
-    CHECK(frames[0] == std::vector<int>{0, 1, 2});
 }
 
 TEST_CASE("timeout flushes partial frame") {
@@ -75,10 +79,12 @@ TEST_CASE("timeout flushes partial frame") {
 TEST_CASE("empty input") {
     RunStats stats;
 
-    auto out = frame<int>(3, 1s).spawn(reader<int>::dead());
+    csp::run([&] {
+        auto out = frame<int>(3, 1s).spawn(reader<int>::dead());
 
-    std::vector<int> f;
-    CHECK_FALSE(bool(out >> f));
+        std::vector<int> f;
+        CHECK_FALSE(bool(out >> f));
+    });
 }
 
 } // TEST_SUITE

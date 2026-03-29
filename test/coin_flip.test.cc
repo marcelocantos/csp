@@ -16,30 +16,27 @@ TEST_SUITE("coin flip") {
 TEST_CASE("basic coin flip") {
     RunStats stats;
 
-    auto [w, r] = chan<int>{};
-
     int role_a = -1, role_b = -1;
 
-    stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
-        int v = 0;
-        switch (alt(w << 1, r >> v)) {
-        case 0: role_a = 0; break; // writer
-        case 1: role_a = 1; break; // reader
-        }
+    csp::run([&] {
+        auto [w, r] = chan<int>{};
+
+        stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
+            int v = 0;
+            switch (alt(w << 1, r >> v)) {
+            case 0: role_a = 0; break; // writer
+            case 1: role_a = 1; break; // reader
+            }
+        });
+
+        stats.spawn([w = w.copy(), r = r.copy(), &role_b] {
+            int v = 0;
+            switch (alt(w << 2, r >> v)) {
+            case 0: role_b = 0; break; // writer
+            case 1: role_b = 1; break; // reader
+            }
+        });
     });
-
-    stats.spawn([w = w.copy(), r = r.copy(), &role_b] {
-        int v = 0;
-        switch (alt(w << 2, r >> v)) {
-        case 0: role_b = 0; break; // writer
-        case 1: role_b = 1; break; // reader
-        }
-    });
-
-    w = {};
-    r = {};
-
-    csp::schedule();
 
     // One must be the writer, the other the reader.
     CHECK(role_a >= 0);
@@ -50,30 +47,27 @@ TEST_CASE("basic coin flip") {
 TEST_CASE("coin flip - value transfer") {
     RunStats stats;
 
-    auto [w, r] = chan<int>{};
-
     int sent = -1, received = -1;
 
-    stats.spawn([w = w.copy(), r = r.copy(), &sent, &received] {
-        int v = 0;
-        switch (alt(w << 42, r >> v)) {
-        case 0: sent = 42; break;
-        case 1: received = v; break;
-        }
+    csp::run([&] {
+        auto [w, r] = chan<int>{};
+
+        stats.spawn([w = w.copy(), r = r.copy(), &sent, &received] {
+            int v = 0;
+            switch (alt(w << 42, r >> v)) {
+            case 0: sent = 42; break;
+            case 1: received = v; break;
+            }
+        });
+
+        stats.spawn([w = w.copy(), r = r.copy(), &sent, &received] {
+            int v = 0;
+            switch (alt(w << 99, r >> v)) {
+            case 0: sent = 99; break;
+            case 1: received = v; break;
+            }
+        });
     });
-
-    stats.spawn([w = w.copy(), r = r.copy(), &sent, &received] {
-        int v = 0;
-        switch (alt(w << 99, r >> v)) {
-        case 0: sent = 99; break;
-        case 1: received = v; break;
-        }
-    });
-
-    w = {};
-    r = {};
-
-    csp::schedule();
 
     // Exactly one wrote, one read. The reader got the writer's value.
     CHECK(sent >= 0);
@@ -105,27 +99,24 @@ TEST_CASE("coin flip - entropy") {
     outcomes.reserve(TRIALS);
 
     for (int i = 0; i < TRIALS; ++i) {
-        auto [w, r] = chan<int>{};
-
         int role_a = -1;
 
-        stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
-            int v = 0;
-            switch (alt(w << 1, r >> v)) {
-            case 0: role_a = 0; break;
-            case 1: role_a = 1; break;
-            }
+        csp::run([&] {
+            auto [w, r] = chan<int>{};
+
+            stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
+                int v = 0;
+                switch (alt(w << 1, r >> v)) {
+                case 0: role_a = 0; break;
+                case 1: role_a = 1; break;
+                }
+            });
+
+            stats.spawn([w = w.copy(), r = r.copy()] {
+                int v = 0;
+                alt(w << 2, r >> v);
+            });
         });
-
-        stats.spawn([w = w.copy(), r = r.copy()] {
-            int v = 0;
-            alt(w << 2, r >> v);
-        });
-
-        w = {};
-        r = {};
-
-        csp::schedule();
 
         CHECK(role_a >= 0);
         outcomes.push_back(role_a);
@@ -164,30 +155,27 @@ TEST_CASE("coin flip - prialt determinism") {
     constexpr int TRIALS = 50;
 
     for (int i = 0; i < TRIALS; ++i) {
-        auto [w, r] = chan<int>{};
-
         int role_a = -1, role_b = -1;
 
-        stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
-            int v = 0;
-            switch (prialt(w << 1, r >> v)) {
-            case 0: role_a = 0; break;
-            case 1: role_a = 1; break;
-            }
+        csp::run([&] {
+            auto [w, r] = chan<int>{};
+
+            stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
+                int v = 0;
+                switch (prialt(w << 1, r >> v)) {
+                case 0: role_a = 0; break;
+                case 1: role_a = 1; break;
+                }
+            });
+
+            stats.spawn([w = w.copy(), r = r.copy(), &role_b] {
+                int v = 0;
+                switch (prialt(w << 2, r >> v)) {
+                case 0: role_b = 0; break;
+                case 1: role_b = 1; break;
+                }
+            });
         });
-
-        stats.spawn([w = w.copy(), r = r.copy(), &role_b] {
-            int v = 0;
-            switch (prialt(w << 2, r >> v)) {
-            case 0: role_b = 0; break;
-            case 1: role_b = 1; break;
-            }
-        });
-
-        w = {};
-        r = {};
-
-        csp::schedule();
 
         CHECK(role_a != role_b);
     }
@@ -196,31 +184,28 @@ TEST_CASE("coin flip - prialt determinism") {
 TEST_CASE("coin flip - move-only type") {
     RunStats stats;
 
-    auto [w, r] = chan<std::unique_ptr<int>>{};
-
     bool a_wrote = false, b_wrote = false;
     std::unique_ptr<int> a_got, b_got;
 
-    stats.spawn([w = w.copy(), r = r.copy(), &a_wrote, &a_got] {
-        std::unique_ptr<int> v;
-        switch (alt(w << std::make_unique<int>(42), r >> v)) {
-        case 0: a_wrote = true; break;
-        case 1: a_got = std::move(v); break;
-        }
+    csp::run([&] {
+        auto [w, r] = chan<std::unique_ptr<int>>{};
+
+        stats.spawn([w = w.copy(), r = r.copy(), &a_wrote, &a_got] {
+            std::unique_ptr<int> v;
+            switch (alt(w << std::make_unique<int>(42), r >> v)) {
+            case 0: a_wrote = true; break;
+            case 1: a_got = std::move(v); break;
+            }
+        });
+
+        stats.spawn([w = w.copy(), r = r.copy(), &b_wrote, &b_got] {
+            std::unique_ptr<int> v;
+            switch (alt(w << std::make_unique<int>(99), r >> v)) {
+            case 0: b_wrote = true; break;
+            case 1: b_got = std::move(v); break;
+            }
+        });
     });
-
-    stats.spawn([w = w.copy(), r = r.copy(), &b_wrote, &b_got] {
-        std::unique_ptr<int> v;
-        switch (alt(w << std::make_unique<int>(99), r >> v)) {
-        case 0: b_wrote = true; break;
-        case 1: b_got = std::move(v); break;
-        }
-    });
-
-    w = {};
-    r = {};
-
-    csp::schedule();
 
     CHECK(a_wrote != b_wrote);
     if (a_wrote) {
@@ -235,30 +220,27 @@ TEST_CASE("coin flip - move-only type") {
 TEST_CASE("coin flip - vector form") {
     RunStats stats;
 
-    auto [w, r] = chan<int>{};
-
     int role_a = -1, role_b = -1;
 
-    stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
-        int v = 0;
-        std::vector<chan_op<int>> ops;
-        ops.push_back(w << 1);
-        ops.push_back(r >> v);
-        role_a = alt(ops);
+    csp::run([&] {
+        auto [w, r] = chan<int>{};
+
+        stats.spawn([w = w.copy(), r = r.copy(), &role_a] {
+            int v = 0;
+            std::vector<chan_op<int>> ops;
+            ops.push_back(w << 1);
+            ops.push_back(r >> v);
+            role_a = alt(ops);
+        });
+
+        stats.spawn([w = w.copy(), r = r.copy(), &role_b] {
+            int v = 0;
+            std::vector<chan_op<int>> ops;
+            ops.push_back(w << 2);
+            ops.push_back(r >> v);
+            role_b = alt(ops);
+        });
     });
-
-    stats.spawn([w = w.copy(), r = r.copy(), &role_b] {
-        int v = 0;
-        std::vector<chan_op<int>> ops;
-        ops.push_back(w << 2);
-        ops.push_back(r >> v);
-        role_b = alt(ops);
-    });
-
-    w = {};
-    r = {};
-
-    csp::schedule();
 
     CHECK(role_a >= 0);
     CHECK(role_b >= 0);
@@ -270,36 +252,33 @@ TEST_CASE("coin flip - with extra peer") {
     // external writer waiting. Both outcomes are valid.
     RunStats stats;
 
-    auto [w, r] = chan<int>{};
-
     int role = -1;
 
-    // External writer waiting on the channel.
-    stats.spawn([w = w.copy()] {
-        w << 99;
+    csp::run([&] {
+        auto [w, r] = chan<int>{};
+
+        // External writer waiting on the channel.
+        stats.spawn([w = w.copy()] {
+            w << 99;
+        });
+
+        // Coin flipper: could match as writer (if it tries write first
+        // and the external writer is the reader peer) or as reader
+        // (if it finds the external writer).
+        stats.spawn([w = w.copy(), r = r.copy(), &role] {
+            int v = 0;
+            switch (alt(w << 42, r >> v)) {
+            case 0: role = 0; break;
+            case 1: role = 1; break;
+            }
+        });
+
+        // Need a reader to absorb the value if coin flipper chose write.
+        stats.spawn([r = r.copy()] {
+            int v = 0;
+            r >> v;
+        });
     });
-
-    // Coin flipper: could match as writer (if it tries write first
-    // and the external writer is the reader peer) or as reader
-    // (if it finds the external writer).
-    stats.spawn([w = w.copy(), r = r.copy(), &role] {
-        int v = 0;
-        switch (alt(w << 42, r >> v)) {
-        case 0: role = 0; break;
-        case 1: role = 1; break;
-        }
-    });
-
-    // Need a reader to absorb the value if coin flipper chose write.
-    stats.spawn([r = r.copy()] {
-        int v = 0;
-        r >> v;
-    });
-
-    w = {};
-    r = {};
-
-    csp::schedule();
 
     CHECK(role >= 0);
 }
