@@ -57,6 +57,11 @@ void fake_clock::sleep_until(time_point tp) {
             rt.quiescence_hook_ = [this]() -> bool {
                 // Only advance time when ALL scope members are sleeping.
                 if (!qs_.is_quiescent()) return true;  // imps still active
+                // Recheck after a brief pause to confirm stable quiescence
+                // (not a momentary gap between leave and re-enter during
+                // a channel transfer).
+                std::this_thread::yield();
+                if (!qs_.is_quiescent()) return true;
                 return advance_to_next();  // true=advanced, false=no timers
             };
         }
