@@ -1,4 +1,5 @@
 #include <csp/internal/runtime.h>
+#include <csp/csp.h>
 
 #ifdef _WIN32
 #include <windows.h>

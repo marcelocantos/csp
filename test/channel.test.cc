@@ -788,21 +788,21 @@ TEST_CASE("Channel - AltFairness") {
 
 TEST_CASE("Channel - PrialtOrder") {
     RunStats stats;
-
-    chan<int> a, b;
-
-    // Only channel a has a writer; channel b is writer-dead.
-    stats.spawn([w = a.w.copy()]{ for (;;) { if (!(w << 42)) return; } });
-    auto ra = a.r.copy(), rb = b.r.copy();
-    a.release();
-    b.release();
-
     int n = -1;
+
+    csp::quiescence_scope qs;
     csp::run([&]{
-        // prialt scans in order: channel a (with pending writer) is found first.
+        qs.bind();
+        chan<int> a, b;
+        spawn([w = a.w.copy()]{ for (;;) { if (!(w << 42)) return; } });
+        auto ra = a.r.copy(), rb = b.r.copy();
+        a.release();
+        b.release();
+
+        qs.wait();  // writer blocked on channel a
+
         CHECK(0 == prialt(ra >> n, rb >> n));
         CHECK(42 == n);
-        // Release readers so the writer imp sees no readers and exits.
         ra = {};
         rb = {};
     });
@@ -853,22 +853,21 @@ TEST_CASE("Channel - None basic") {
 
 TEST_CASE("Channel - None ready channel wins") {
     RunStats stats;
-
-    chan<int> ch;
-    auto r = ch.r.copy();
-
-    // Make a writer ready, then read it inside csp::run so the writer can complete.
-    stats.spawn([w = ch.w.copy()]{ w << 42; });
-    ch.release();
-
-    // Writer is waiting; read should succeed over none.
     int n = -1;
+
+    csp::quiescence_scope qs;
     csp::run([&]{
+        qs.bind();
+        chan<int> ch;
+        auto r = ch.r.copy();
+        spawn([w = ch.w.copy()]{ w << 42; });
+        ch.release();
+
+        qs.wait();  // writer blocked
+
         CHECK(0 == prialt(r >> n, csp::none));
         CHECK(42 == n);
     });
-
-    r = {};
 }
 
 TEST_CASE("Channel - None dead channel") {
@@ -1098,26 +1097,21 @@ TEST_CASE("Channel - Nested prialt") {
 }
 
 TEST_CASE("Channel - Many imps on one channel") {
-    RunStats stats;
-
     constexpr int N = 128;
-    auto [w, r] = chan<int>{};
-
-    // Spawn N writers, each sending their index.
-    for (int i = 0; i < N; ++i) {
-        stats.spawn([out = w.copy(), i]{ out << i; });
-    }
-    w = {};
-
-    // Single consumer reads all N values.
     std::vector<int> received;
-    stats.spawn([in = std::move(r), &received]{
-        for (auto n : in) {
+
+    csp::run([&]{
+        auto [w, r] = chan<int>{};
+
+        for (int i = 0; i < N; ++i) {
+            spawn([out = w.copy(), i]{ out << i; });
+        }
+        w = {};
+
+        for (auto n : r) {
             received.push_back(n);
         }
     });
-
-    csp::schedule();
 
     // All messages arrive; sort to verify completeness.
     CHECK(static_cast<size_t>(N) == received.size());

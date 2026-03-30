@@ -338,7 +338,7 @@ TEST_CASE("channel leak check") {
     CHECK(fired);
 }
 
-TEST_CASE("deadline fires timed_out" * doctest::skip()) {
+TEST_CASE("deadline fires timed_out") {
     RunStats stats;
     fake_clock fc;
     bool got_timed_out = false;
@@ -528,7 +528,7 @@ TEST_CASE("cancel_guard move assignment") {
     CHECK(fired);
 }
 
-TEST_CASE("nested cancel scopes inner fires first" * doctest::skip()) {
+TEST_CASE("nested cancel scopes inner fires first") {
     RunStats stats;
     fake_clock fc;
     bool inner_fired = false;
