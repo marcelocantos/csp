@@ -517,6 +517,14 @@ public:
         active_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    quiescence_scope() = default;
+    // Movable (for storage in std::any). Only safe to move a
+    // freshly constructed scope with no active members.
+    quiescence_scope(quiescence_scope&&) noexcept {}
+    quiescence_scope& operator=(quiescence_scope&&) = delete;
+    quiescence_scope(const quiescence_scope&) = delete;
+    quiescence_scope& operator=(const quiescence_scope&) = delete;
+
     // Bind this scope to the current imp. All child imps spawned
     // from this point inherit the scope.
     void bind();
@@ -2380,11 +2388,20 @@ public:
 
     ~fake_clock();
 
+    // Movable (for storage in shared_ptr via csp::clock = fake_clock{}).
+    fake_clock(fake_clock&& o) noexcept : current_(o.current_) {}
+    fake_clock& operator=(fake_clock&&) = delete;
     fake_clock(fake_clock const&) = delete;
     fake_clock& operator=(fake_clock const&) = delete;
+
+    // Convert to shared_ptr for use with csp::clock dynamic variable.
+    // Enables: csp::local l{csp::clock = fake_clock{}};
+    operator std::shared_ptr<clock_source>() && {
+        return std::make_shared<fake_clock>(std::move(*this));
+    }
 };
 
-extern dynamic<clock_source*> clock;
+extern dynamic<std::shared_ptr<clock_source>> clock;
 
 // Current time.
 inline time_point now() {

@@ -1053,7 +1053,9 @@ real_clock real_clock_instance;
 
 } // namespace
 
-dynamic<clock_source*> clock{&real_clock_instance};
+dynamic<std::shared_ptr<clock_source>> clock{
+    std::shared_ptr<clock_source>(&real_clock_instance, [](auto*){})
+};
 
 fake_clock::fake_clock(time_point start) : current_(start) {}
 
@@ -1135,7 +1137,7 @@ dynamic_binding fake_clock::binding() {
     // The binding imp is the orchestrator, not a participant —
     // only child imps (spawned after this) enter the scope.
     detail::current_imp()->qs_ = &qs_;
-    return csp::clock = this;
+    return csp::clock = std::shared_ptr<clock_source>(this, [](auto*){});
 }
 
 void fake_clock::run() {
