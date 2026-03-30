@@ -2341,6 +2341,7 @@ class fake_clock : public clock_source {
     struct Entry {
         time_point deadline;
         detail::Imp* imp;
+        std::shared_ptr<std::atomic<bool>> cancelled;
         bool operator>(Entry const& o) const { return deadline > o.deadline; }
     };
     std::mutex mu_;

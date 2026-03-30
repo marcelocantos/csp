@@ -1080,9 +1080,10 @@ fake_clock::~fake_clock() {
 
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
+    auto token = std::make_shared<std::atomic<bool>>(false);
     {
         std::lock_guard<std::mutex> lk(mu_);
-        pending_.push({tp, detail::current_imp()});
+        pending_.push({tp, detail::current_imp(), token});
     }
     // Register quiescence hook on first use (lazy — avoids needing
     // the runtime to be initialized at fake_clock construction time).
@@ -1093,9 +1094,8 @@ void fake_clock::sleep_until(time_point tp) {
             rt.quiescence_hook_ = [this]() -> bool {
                 // Only advance time when ALL scope members are sleeping.
                 if (!qs_.is_quiescent()) return true;  // imps still active
-                // Recheck after a brief pause to confirm stable quiescence
-                // (not a momentary gap between leave and re-enter during
-                // a channel transfer).
+                // Recheck after yield to confirm stable quiescence
+                // (not a momentary gap during channel transfer).
                 std::this_thread::yield();
                 if (!qs_.is_quiescent()) return true;
                 return advance_to_next();  // true=advanced, false=no timers
@@ -1103,6 +1103,9 @@ void fake_clock::sleep_until(time_point tp) {
         }
     }
     internal::suspend();
+    // Imp woke (timer fired or cancelled). Mark the timer entry
+    // so fire_expired skips it if it's still in pending_.
+    token->store(true, std::memory_order_release);
 }
 
 void fake_clock::fire_expired() {
@@ -1110,7 +1113,10 @@ void fake_clock::fire_expired() {
     {
         std::lock_guard<std::mutex> lk(mu_);
         while (!pending_.empty() && pending_.top().deadline <= current_) {
-            expired.push_back(pending_.top().imp);
+            auto& e = pending_.top();
+            if (!e.cancelled->load(std::memory_order_acquire)) {
+                expired.push_back(e.imp);
+            }
             pending_.pop();
         }
     }
