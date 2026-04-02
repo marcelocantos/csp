@@ -123,14 +123,14 @@ namespace {
                 uint32_t expected = Imp::ALT_WAITING;
                 if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                     cw.thread->signal_ = INT_MIN;
-                    cw.thread->schedule();
+                    cw.thread->make_runnable();
                 }
             }
             for (auto const & cv : ep.vultures) {
                 uint32_t expected = Imp::ALT_WAITING;
                 if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                     cv.thread->signal_ = INT_MIN;
-                    cv.thread->schedule();
+                    cv.thread->make_runnable();
                 }
             }
         }
@@ -153,7 +153,7 @@ namespace {
                     if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cw.chanop - cw.thread->chanops_);
                         cw.thread->signal_ = ~idx;
-                        cw.thread->schedule();
+                        cw.thread->make_runnable();
                     }
                 }
                 for (auto const & cv : ep.vultures) {
@@ -161,7 +161,7 @@ namespace {
                     if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cv.chanop - cv.thread->chanops_);
                         cv.thread->signal_ = ~idx;
-                        cv.thread->schedule();
+                        cv.thread->make_runnable();
                     }
                 }
             }
@@ -488,7 +488,7 @@ namespace {
         static void alt_end_impl(AltMatch * m) {
             auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
             if (mi->needs_unlock) {
-                if (mi->peer) mi->peer->schedule();
+                if (mi->peer) mi->peer->make_runnable();
                 for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
             }
             if (mi->has_pins) {

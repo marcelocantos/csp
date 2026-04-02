@@ -58,6 +58,10 @@ namespace csp {
                 suspended->suspending_.store(false, std::memory_order_release);
                 if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                     if (!suspended->in_global_) {
+                        if (suspended->qs_entered_
+                            && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                            suspended->qs_->enter();
+                        }
                         rt.push_to_global(suspended);
                         need_unpark = true;
                     }
@@ -159,6 +163,16 @@ namespace csp {
                 rt.push_to_global(this); // TLA:StealWork.WPush
             }
             rt.unpark_one();
+        }
+
+        void Imp::make_runnable() {
+            // Enter quiescence scope at schedule time (closes the gap
+            // between leave and resume). Atomic exchange prevents
+            // double-enter if multiple threads schedule the same imp.
+            if (qs_entered_ && qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                qs_->enter();
+            }
+            schedule();
         }
 
         void Imp::deschedule() {
@@ -271,7 +285,10 @@ namespace csp {
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
             auto* self = current_imp();
-            if (self->qs_entered_) self->qs_->leave();
+            if (self->qs_entered_) {
+                self->qs_sleeping_.store(true, std::memory_order_release);
+                self->qs_->leave();
+            }
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
                 StackPool::instance().maybe_shrink(
@@ -292,7 +309,12 @@ namespace csp {
                 target = busy;
             }
             target->run(status);
-            if (current_imp()->qs_entered_) current_imp()->qs_->enter();
+            // Re-enter scope if we left it (yield path). For scheduled
+            // imps, make_runnable already entered — exchange returns false.
+            if (current_imp()->qs_entered_
+                && current_imp()->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                current_imp()->qs_->enter();
+            }
         }
 
     }

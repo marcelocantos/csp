@@ -1959,6 +1959,7 @@ struct alignas(16) Imp {
 
     void schedule(bool make_current = false);
     void schedule_local(bool make_current = false);
+    void make_runnable();
     void deschedule();
 
     void run(Status status = Status::sleep);
@@ -1973,6 +1974,7 @@ struct alignas(16) Imp {
     bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
     class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
     bool qs_entered_ = false;               // true if enter() was called (vs propagate-only)
+    std::atomic<bool> qs_sleeping_{false};   // true after leave(), cleared by enter at schedule or resume
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 

@@ -60,8 +60,6 @@ void fake_clock::sleep_until(time_point tp) {
             rt.quiescence_hook_ = [this]() -> bool {
                 // Only advance time when ALL scope members are sleeping.
                 if (!qs_.is_quiescent()) return true;  // imps still active
-                std::this_thread::yield();
-                if (!qs_.is_quiescent()) return true;
                 return advance_to_next();  // true=advanced, false=no timers
             };
         }
@@ -84,7 +82,7 @@ void fake_clock::fire_expired() {
             pending_.pop();
         }
     }
-    for (auto* imp : expired) imp->schedule();
+    for (auto* imp : expired) imp->make_runnable();
 }
 
 void fake_clock::advance(duration d) {

@@ -72,7 +72,7 @@ void BlockingPool::worker() {
             queue_.pop_back();
         }
         w.fn();
-        w.imp->schedule();
+        w.imp->make_runnable();
     }
 }
 
@@ -407,14 +407,14 @@ namespace {
                 uint32_t expected = Imp::ALT_WAITING;
                 if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                     cw.thread->signal_ = INT_MIN;
-                    cw.thread->schedule();
+                    cw.thread->make_runnable();
                 }
             }
             for (auto const & cv : ep.vultures) {
                 uint32_t expected = Imp::ALT_WAITING;
                 if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                     cv.thread->signal_ = INT_MIN;
-                    cv.thread->schedule();
+                    cv.thread->make_runnable();
                 }
             }
         }
@@ -437,7 +437,7 @@ namespace {
                     if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cw.chanop - cw.thread->chanops_);
                         cw.thread->signal_ = ~idx;
-                        cw.thread->schedule();
+                        cw.thread->make_runnable();
                     }
                 }
                 for (auto const & cv : ep.vultures) {
@@ -445,7 +445,7 @@ namespace {
                     if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cv.chanop - cv.thread->chanops_);
                         cv.thread->signal_ = ~idx;
-                        cv.thread->schedule();
+                        cv.thread->make_runnable();
                     }
                 }
             }
@@ -772,7 +772,7 @@ namespace {
         static void alt_end_impl(AltMatch * m) {
             auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
             if (mi->needs_unlock) {
-                if (mi->peer) mi->peer->schedule();
+                if (mi->peer) mi->peer->make_runnable();
                 for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
             }
             if (mi->has_pins) {
@@ -1094,8 +1094,6 @@ void fake_clock::sleep_until(time_point tp) {
             rt.quiescence_hook_ = [this]() -> bool {
                 // Only advance time when ALL scope members are sleeping.
                 if (!qs_.is_quiescent()) return true;  // imps still active
-                std::this_thread::yield();
-                if (!qs_.is_quiescent()) return true;
                 return advance_to_next();  // true=advanced, false=no timers
             };
         }
@@ -1118,7 +1116,7 @@ void fake_clock::fire_expired() {
             pending_.pop();
         }
     }
-    for (auto* imp : expired) imp->schedule();
+    for (auto* imp : expired) imp->make_runnable();
 }
 
 void fake_clock::advance(duration d) {
@@ -1211,6 +1209,10 @@ namespace csp {
                 suspended->suspending_.store(false, std::memory_order_release);
                 if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
                     if (!suspended->in_global_) {
+                        if (suspended->qs_entered_
+                            && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                            suspended->qs_->enter();
+                        }
                         rt.push_to_global(suspended);
                         need_unpark = true;
                     }
@@ -1312,6 +1314,16 @@ namespace csp {
                 rt.push_to_global(this); // TLA:StealWork.WPush
             }
             rt.unpark_one();
+        }
+
+        void Imp::make_runnable() {
+            // Enter quiescence scope at schedule time (closes the gap
+            // between leave and resume). Atomic exchange prevents
+            // double-enter if multiple threads schedule the same imp.
+            if (qs_entered_ && qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                qs_->enter();
+            }
+            schedule();
         }
 
         void Imp::deschedule() {
@@ -1424,7 +1436,10 @@ namespace csp {
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
             auto* self = current_imp();
-            if (self->qs_entered_) self->qs_->leave();
+            if (self->qs_entered_) {
+                self->qs_sleeping_.store(true, std::memory_order_release);
+                self->qs_->leave();
+            }
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
                 StackPool::instance().maybe_shrink(
@@ -1445,7 +1460,12 @@ namespace csp {
                 target = busy;
             }
             target->run(status);
-            if (current_imp()->qs_entered_) current_imp()->qs_->enter();
+            // Re-enter scope if we left it (yield path). For scheduled
+            // imps, make_runnable already entered — exchange returns false.
+            if (current_imp()->qs_entered_
+                && current_imp()->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                current_imp()->qs_->enter();
+            }
         }
 
     }
