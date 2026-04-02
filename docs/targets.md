@@ -266,6 +266,17 @@
 - **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
 
+### 🎯T13 Per-worker wake eliminates thundering herd
+- **Weight**: 1 (value 3 / cost 8)
+- **Acceptance**:
+  - `unpark_one()` wakes exactly one sleeping worker, not all
+  - No `notify_all` on shared condvar in the imp scheduling hot path
+  - main_loop quiescence detection still works (fake_clock tests pass)
+  - 665/665 tests pass, no performance regression
+- **Status**: not started
+- **Discovered**: 2026-04-02
+- **Context**: Current `unpark_one()` does `park_cv.notify_all()` on a shared condvar, waking all parked workers (thundering herd). Investigation found three approaches and their failure modes: (1) per-P condvar deadlocks with `has_work()` predicate holding `global_mu`; (2) `atomic::wait` avoids deadlock but main_loop quiescence ping-pongs on every park cycle; (3) split worker/main condvar has lost-wakeup race. The proper fix requires either platform-specific futex primitives (`__ulock_wait`/`futex`), Go-style `note` (single-word futex per M), or decoupling main_loop quiescence from the worker parking condvar. See Go runtime (`gopark`/`goready`/`notesleep`) and Tokio's per-worker deque + atomic searching counter for reference designs.
+
 ### 🎯T12 Test names contain no spaces
 - **Weight**: 1 (value 2 / cost 1)
 - **Acceptance**:
