@@ -488,13 +488,14 @@ namespace {
         static void alt_end_impl(AltMatch * m) {
             auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
             if (mi->needs_unlock) {
-                if (mi->peer) mi->peer->make_runnable();
                 for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
             }
             if (mi->has_pins) {
                 for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
             }
+            auto* peer = mi->peer;
             delete[] mi->heap_alloc;
+            if (peer) peer->make_runnable();
         }
 
 
