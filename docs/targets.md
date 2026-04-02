@@ -266,6 +266,16 @@
 - **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
 
+### 🎯T12 Test names contain no spaces
+- **Weight**: 1 (value 2 / cost 1)
+- **Acceptance**:
+  - All TEST_CASE names use hyphens or underscores instead of spaces
+  - `./build/normal/csp_tests -ltc` shows no names with spaces
+  - `-tc=` filters work without quoting gymnastics
+- **Status**: not started
+- **Discovered**: 2026-04-02
+- **Context**: Spaces in test names cause shell quoting issues with doctest's `-tc=` filter, especially inside lldb, scripts, and CI. Replace `"Foo - Bar Baz"` with `"Foo-BarBaz"` or similar.
+
 ### 🎯T11 Scheduler is always M:N
 - **Weight**: 3 (value 8 / cost 5)
 - **Acceptance**:
