@@ -142,9 +142,9 @@ jobs:
           - os: macos-14
             name: macOS ASan+UBSan
             sanitize: address,undefined
-          - os: macos-14
-            name: macOS TSan
-            sanitize: thread
+          # macOS TSan removed: 50-130x slower than Linux TSan (2-4 hours
+          # vs 2 minutes), gets cancelled 80% of the time, and has never
+          # caught anything that Linux arm64/x86_64 TSan didn't also find.
           - os: ubuntu-24.04
             name: Linux x86_64 ASan+UBSan
             sanitize: address,undefined
