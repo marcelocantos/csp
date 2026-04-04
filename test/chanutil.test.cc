@@ -954,13 +954,13 @@ TEST_CASE("ChanUtil - Debounce spaced") {
         csp::spawn([w = std::move(db.w)]{
             using namespace std::chrono_literals;
             w << 1;
-            csp::sleep(100ms);
+            csp::sleep(200ms);
             w << 2;
-            csp::sleep(100ms);
+            csp::sleep(200ms);
             w << 3;
         });
 
-        // Each value has 100ms quiet (> 50ms debounce), so all emitted.
+        // Each value has 200ms quiet (>> 50ms debounce), so all emitted.
         csp::spawn([r = std::move(db.r)]{
             using namespace std::chrono_literals;
             CHECK(1 == r.read());
