@@ -1,6 +1,7 @@
 #include "testutil.h"
 
 #include <atomic>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -275,8 +276,9 @@ TEST_CASE("regular spawn unaffected") {
 // outlives exit_guard scope in M:N mode. Needs supervisor M:N safety fix.
 TEST_CASE("exit_guard RAII cleanup") {
     RunStats stats;
+    auto count = std::make_shared<std::atomic<int>>(0);
     csp::run([&] {
-        stats.spawn([&]() {
+        stats.spawn([count]() {
             {
                 auto guard = on_exit([](imp_event ev) {
                     ev.restart();
@@ -285,8 +287,7 @@ TEST_CASE("exit_guard RAII cleanup") {
             }
             // After guard is gone, supervised spawn should fall through
             // (no interceptor active).
-            int count = 0;
-            spawn(supervised([&]() { ++count; }));
+            spawn(supervised([count]() { ++*count; }));
         });
     });
 }

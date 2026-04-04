@@ -346,10 +346,12 @@ TEST_CASE("ChanUtil - Share single subscriber") {
 
     // Share's latch uses latest-value semantics: a fast producer
     // can overwrite values before the subscriber reads them.
-    // The first and last values are guaranteed; intermediates may
-    // be skipped.
+    // In M:N mode, the producer may run ahead and overwrite early
+    // values before the subscriber reads.  Only the last value
+    // (before producer closes) is guaranteed.
     REQUIRE(!got.empty());
-    CHECK(1 == got.front());
+    CHECK(got.front() >= 1);
+    CHECK(got.front() <= 3);
     CHECK(3 == got.back());
 }
 
