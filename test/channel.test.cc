@@ -1062,34 +1062,34 @@ TEST_CASE("Channel - Zero-case prialt") {
 TEST_CASE("Channel - Nested prialt") {
     RunStats stats;
 
-    auto [w1, r1] = chan<int>{};
-    auto [w2, r2] = chan<int>{};
-    auto [w3, r3] = chan<int>{};
-
     int result = 0;
 
-    // One imp writes to ch1 and ch3.
-    stats.spawn([o1 = std::move(w1), o3 = std::move(w3)]{
-        o1 << 10;
-        o3 << 30;
-    });
+    csp::run([&]{
+        auto [w1, r1] = chan<int>{};
+        auto [w2, r2] = chan<int>{};
+        auto [w3, r3] = chan<int>{};
 
-    // Another imp writes to ch2.
-    stats.spawn([o2 = std::move(w2)]{
-        o2 << 20;
-    });
+        // One imp writes to ch1 and ch3.
+        stats.spawn([o1 = std::move(w1), o3 = std::move(w3)]{
+            o1 << 10;
+            o3 << 30;
+        });
 
-    // Consumer uses nested prialts.
-    stats.spawn([i1 = std::move(r1), i2 = std::move(r2), i3 = std::move(r3), &result]{
-        int a = 0, b = 0;
-        // Outer prialt: read from ch1 or ch2.
-        prialt(i1 >> a, i2 >> a);
-        // Inner prialt on different channels.
-        prialt(i2 >> b, i3 >> b);
-        result = a + b;
-    });
+        // Another imp writes to ch2.
+        stats.spawn([o2 = std::move(w2)]{
+            o2 << 20;
+        });
 
-    csp::schedule();
+        // Consumer uses nested prialts.
+        stats.spawn([i1 = std::move(r1), i2 = std::move(r2), i3 = std::move(r3), &result]{
+            int a = 0, b = 0;
+            // Outer prialt: read from ch1 or ch2.
+            prialt(i1 >> a, i2 >> a);
+            // Inner prialt on different channels.
+            prialt(i2 >> b, i3 >> b);
+            result = a + b;
+        });
+    });
 
     // a is 10 or 20, b is 20 or 30. Total should be one of: 30, 40, 50.
     CHECK(result >= 30);

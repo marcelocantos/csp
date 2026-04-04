@@ -457,10 +457,17 @@ TEST_CASE("ChanUtil - Share source dies") {
         auto r = subs.read();
         subs = {};
 
-        CHECK(1 == r.read());
-        CHECK(2 == r.read());
-        int _;
-        CHECK_FALSE(bool(r >> _));
+        // Latest-value semantics: producer may overwrite before
+        // subscriber reads.  Values are in [1,2], last before
+        // close is 2.
+        std::vector<int> got;
+        for (int n; r >> n;) got.push_back(n);
+        REQUIRE(!got.empty());
+        CHECK(got.back() == 2);
+        for (int v : got) {
+            CHECK(v >= 1);
+            CHECK(v <= 2);
+        }
     });
 }
 

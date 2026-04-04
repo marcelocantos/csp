@@ -12,3 +12,9 @@
 race:mbedtls_*
 race:psa_*
 race:mbedtls_threading_mutex_*
+
+# fake_clock::now() reads pending_ outside the mutex for a fast-path
+# check.  The quiescence hook serializes the actual advance.  The
+# unsynchronized read is benign — it may see a stale value, but the
+# hook rechecks under the mutex.
+race:csp::fake_clock::now

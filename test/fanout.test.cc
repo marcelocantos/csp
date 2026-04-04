@@ -195,7 +195,7 @@ TEST_CASE("Fanout - Chain") {
             stats.spawn(fanout<int>.bind(std::move(new_out2_r), new_out_w.copy()));
 
             for (int j = 0; j < n; ++j) {
-                new_out2_w << spawn_consumer<int>([&](auto r) {
+                new_out2_w << spawn_consumer<int>([&total, i, j](auto r) {
                     csp::internal::descr("fanout");
                     BRAC_SCOPE(g_log, "FanoutChain::λ", "%d, %d", i, j);
 
