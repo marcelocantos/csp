@@ -3,13 +3,10 @@
 #include <csp/tls.h>
 #include <csp/io.h>
 
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/error.h>
-#include <mbedtls/net_sockets.h>
-#include <mbedtls/pk.h>
-#include <mbedtls/ssl.h>
-#include <mbedtls/x509_crt.h>
+extern "C" {
+#include <picotls.h>
+#include <picotls/minicrypto.h>
+}
 
 #include <cerrno>
 #include <cstring>
@@ -21,175 +18,176 @@ namespace csp::tls {
 // --- error ---
 
 static std::string format_error(int code) {
-    char buf[256];
-    mbedtls_strerror(code, buf, sizeof(buf));
-    return std::string("tls: ") + buf;
+    if (PTLS_ERROR_GET_CLASS(code) == PTLS_ERROR_CLASS_PEER_ALERT) {
+        return "tls: peer alert " + std::to_string(PTLS_ERROR_TO_ALERT(code));
+    }
+    if (PTLS_ERROR_GET_CLASS(code) == PTLS_ERROR_CLASS_SELF_ALERT) {
+        return "tls: self alert " + std::to_string(PTLS_ERROR_TO_ALERT(code));
+    }
+    switch (code) {
+    case PTLS_ERROR_NO_MEMORY:         return "tls: out of memory";
+    case PTLS_ERROR_IN_PROGRESS:       return "tls: handshake in progress";
+    case PTLS_ERROR_LIBRARY:           return "tls: library error";
+    case PTLS_ERROR_INCOMPATIBLE_KEY:  return "tls: incompatible key";
+    case PTLS_ERROR_PEM_LABEL_NOT_FOUND: return "tls: PEM label not found";
+    default: return "tls: error " + std::to_string(code);
+    }
 }
 
 error::error(int code) : csp::error(format_error(code)), code(code) {}
 
-// --- BIO callbacks (non-blocking, never throw) ---
+// --- verify_certificate bridge ---
 
-static int csp_tls_recv(void* ctx, unsigned char* buf, size_t len) {
-    int fd = *static_cast<int*>(ctx);
-    ssize_t n = ::read(fd, buf, len);
-    if (n > 0) return static_cast<int>(n);
-    if (n == 0) return 0;
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return MBEDTLS_ERR_SSL_WANT_READ;
-    return MBEDTLS_ERR_NET_RECV_FAILED;
-}
+struct verify_bridge_t {
+    ptls_verify_certificate_t super;
+    verify_fn fn;
+};
 
-static int csp_tls_send(void* ctx, const unsigned char* buf, size_t len) {
-    int fd = *static_cast<int*>(ctx);
-    ssize_t n = ::write(fd, buf, len);
-    if (n >= 0) return static_cast<int>(n);
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return MBEDTLS_ERR_SSL_WANT_WRITE;
-    return MBEDTLS_ERR_NET_SEND_FAILED;
-}
+static int verify_cb(ptls_verify_certificate_t* self, ptls_t* tls,
+                     const char* server_name,
+                     int (**verify_sign)(void*, uint16_t, ptls_iovec_t, ptls_iovec_t),
+                     void** verify_data,
+                     ptls_iovec_t* certs, size_t num_certs) {
+    auto* bridge = reinterpret_cast<verify_bridge_t*>(self);
 
-// --- Retry helper ---
-// Loops mbedTLS operations, calling wait_readable/wait_writable on
-// WANT_READ/WANT_WRITE. Both cases checked in every call to handle
-// TLS renegotiation (read needing write and vice versa).
-
-template <typename Fn>
-static int retry_tls_io(int fd, Fn&& fn) {
-    for (;;) {
-        int ret = fn();
-        if (ret >= 0) return ret;
-        if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
-            csp::io::wait_readable(fd);
-            continue;
-        }
-        if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            csp::io::wait_writable(fd);
-            continue;
-        }
-        return ret;
+    // Build cert vector for the callback.
+    std::vector<std::vector<uint8_t>> cert_chain;
+    cert_chain.reserve(num_certs);
+    for (size_t i = 0; i < num_certs; ++i) {
+        cert_chain.emplace_back(certs[i].base, certs[i].base + certs[i].len);
     }
+
+    // No signature verification with minicrypto — set to null.
+    *verify_sign = nullptr;
+    *verify_data = nullptr;
+
+    if (!bridge->fn(server_name ? server_name : "", cert_chain)) {
+        return PTLS_ALERT_TO_SELF_ERROR(PTLS_ALERT_BAD_CERTIFICATE);
+    }
+    return 0;
 }
 
 // --- context ---
 
 struct context::impl {
-    mbedtls_ssl_config conf;
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_x509_crt ca_chain;
-    mbedtls_x509_crt own_cert;
-    mbedtls_pk_context own_key;
+    ptls_context_t ctx{};
+    ptls_minicrypto_secp256r1sha256_sign_certificate_t sign_cert{};
+    bool has_sign_cert = false;
+    std::unique_ptr<verify_bridge_t> verifier;
 };
 
 context::context(role r) : impl_(std::make_unique<impl>()) {
-    mbedtls_ssl_config_init(&impl_->conf);
-    mbedtls_entropy_init(&impl_->entropy);
-    mbedtls_ctr_drbg_init(&impl_->ctr_drbg);
-    mbedtls_x509_crt_init(&impl_->ca_chain);
-    mbedtls_x509_crt_init(&impl_->own_cert);
-    mbedtls_pk_init(&impl_->own_key);
+    auto& ctx = impl_->ctx;
+    ctx.random_bytes = ptls_minicrypto_random_bytes;
+    ctx.get_time = &ptls_get_time;
+    ctx.key_exchanges = ptls_minicrypto_key_exchanges;
+    ctx.cipher_suites = ptls_minicrypto_cipher_suites;
 
-    int ret = mbedtls_ctr_drbg_seed(&impl_->ctr_drbg,
-                                     mbedtls_entropy_func,
-                                     &impl_->entropy,
-                                     nullptr, 0);
-    if (ret != 0) throw error(ret);
-
-    int endpoint = (r == server) ? MBEDTLS_SSL_IS_SERVER
-                                 : MBEDTLS_SSL_IS_CLIENT;
-    ret = mbedtls_ssl_config_defaults(&impl_->conf,
-                                       endpoint,
-                                       MBEDTLS_SSL_TRANSPORT_STREAM,
-                                       MBEDTLS_SSL_PRESET_DEFAULT);
-    if (ret != 0) throw error(ret);
-
-    mbedtls_ssl_conf_rng(&impl_->conf,
-                          mbedtls_ctr_drbg_random,
-                          &impl_->ctr_drbg);
-
-    // Default: verify peer for clients, none for servers.
-    mbedtls_ssl_conf_authmode(&impl_->conf,
-        (r == client) ? MBEDTLS_SSL_VERIFY_REQUIRED
-                      : MBEDTLS_SSL_VERIFY_NONE);
+    // Server mode doesn't request client certs by default.
+    // Client mode: no built-in verification (user can set_verify).
+    if (r == server) {
+        ctx.require_client_authentication = 0;
+    }
 }
 
 context::~context() {
-    if (!impl_) return;
-    mbedtls_pk_free(&impl_->own_key);
-    mbedtls_x509_crt_free(&impl_->own_cert);
-    mbedtls_x509_crt_free(&impl_->ca_chain);
-    mbedtls_ctr_drbg_free(&impl_->ctr_drbg);
-    mbedtls_entropy_free(&impl_->entropy);
-    mbedtls_ssl_config_free(&impl_->conf);
+    auto& ctx = impl_->ctx;
+    // Free certificate chain if loaded.
+    for (size_t i = 0; i < ctx.certificates.count; ++i) {
+        free(ctx.certificates.list[i].base);
+    }
+    free(ctx.certificates.list);
 }
 
 context::context(context&&) noexcept = default;
 context& context::operator=(context&&) noexcept = default;
 
-void context::load_ca(const void* pem, size_t len) {
-    int ret = mbedtls_x509_crt_parse(&impl_->ca_chain,
-                                      static_cast<const unsigned char*>(pem),
-                                      len);
+void context::load_cert(const char* cert_pem_path) {
+    int ret = ptls_load_certificates(&impl_->ctx, cert_pem_path);
     if (ret != 0) throw error(ret);
-    mbedtls_ssl_conf_ca_chain(&impl_->conf, &impl_->ca_chain, nullptr);
 }
 
-void context::load_cert(const void* cert_pem, size_t cert_len,
-                        const void* key_pem, size_t key_len) {
-    int ret = mbedtls_x509_crt_parse(&impl_->own_cert,
-                                      static_cast<const unsigned char*>(cert_pem),
-                                      cert_len);
+void context::load_key(const char* key_pem_path) {
+    int ret = ptls_minicrypto_load_private_key(&impl_->ctx, key_pem_path);
     if (ret != 0) throw error(ret);
+}
 
-    ret = mbedtls_pk_parse_key(&impl_->own_key,
-                                static_cast<const unsigned char*>(key_pem),
-                                key_len,
-                                nullptr, 0,
-                                mbedtls_ctr_drbg_random,
-                                &impl_->ctr_drbg);
-    if (ret != 0) throw error(ret);
+void context::set_verify(verify_fn fn) {
+    static const uint16_t algos[] = {
+        PTLS_SIGNATURE_ECDSA_SECP256R1_SHA256,
+        PTLS_SIGNATURE_RSA_PSS_RSAE_SHA256,
+        UINT16_MAX,
+    };
+    impl_->verifier = std::make_unique<verify_bridge_t>();
+    impl_->verifier->super.cb = verify_cb;
+    impl_->verifier->super.algos = algos;
+    impl_->verifier->fn = std::move(fn);
+    impl_->ctx.verify_certificate = &impl_->verifier->super;
+}
 
-    ret = mbedtls_ssl_conf_own_cert(&impl_->conf,
-                                     &impl_->own_cert,
-                                     &impl_->own_key);
-    if (ret != 0) throw error(ret);
+// --- socket I/O helpers ---
+
+// Flush a PicoTLS output buffer to the socket, using csp::io for
+// non-blocking writes. Returns bytes written.
+static void flush_to_socket(int fd, ptls_buffer_t& buf) {
+    size_t off = 0;
+    while (off < buf.off) {
+        csp::io::wait_writable(fd);
+        ssize_t n = ::write(fd, buf.base + off, buf.off - off);
+        if (n > 0) {
+            off += static_cast<size_t>(n);
+        } else if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                continue;
+            throw csp::error("tls: socket write failed");
+        }
+    }
+}
+
+// Read raw bytes from the socket into a buffer, using csp::io for
+// non-blocking reads. Returns bytes read, 0 on EOF.
+static ssize_t read_from_socket(int fd, uint8_t* buf, size_t len) {
+    for (;;) {
+        csp::io::wait_readable(fd);
+        ssize_t n = ::read(fd, buf, len);
+        if (n >= 0) return n;
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            continue;
+        throw csp::error("tls: socket read failed");
+    }
 }
 
 // --- conn ---
 
 struct conn::impl {
-    mbedtls_ssl_context ssl;
+    ptls_t* tls = nullptr;
     int fd;
+    // Receive buffer for partially consumed TLS records (ciphertext).
+    std::vector<uint8_t> recvbuf;
+    size_t recvbuf_off = 0;
+    // Decrypted plaintext buffer for data that was decrypted but not
+    // yet returned to the caller.
+    std::vector<uint8_t> plainbuf;
+    size_t plainbuf_off = 0;
 };
 
 conn::conn(context& ctx, int fd) : impl_(std::make_unique<impl>()) {
     impl_->fd = fd;
 
-    // Suppress SIGPIPE on this fd — TLS connections handle write
-    // errors via return codes, not signals.
+    // Suppress SIGPIPE on this fd.
 #ifdef F_SETNOSIGPIPE
     fcntl(fd, F_SETNOSIGPIPE, 1);
 #endif
 
-    mbedtls_ssl_init(&impl_->ssl);
-
-    int ret = mbedtls_ssl_setup(&impl_->ssl, &ctx.impl_->conf);
-    if (ret != 0) {
-        mbedtls_ssl_free(&impl_->ssl);
-        throw error(ret);
-    }
-
-    mbedtls_ssl_set_bio(&impl_->ssl,
-                         &impl_->fd,
-                         csp_tls_send,
-                         csp_tls_recv,
-                         nullptr);
+    // Determine if server by checking if sign_certificate is set (servers load keys).
+    bool is_server = (ctx.impl_->ctx.sign_certificate != nullptr);
+    impl_->tls = ptls_new(&ctx.impl_->ctx, is_server ? 1 : 0);
+    if (!impl_->tls) throw error(PTLS_ERROR_NO_MEMORY);
 }
 
 conn::~conn() {
-    if (impl_) {
-        mbedtls_ssl_free(&impl_->ssl);
+    if (impl_ && impl_->tls) {
+        ptls_free(impl_->tls);
     }
 }
 
@@ -197,48 +195,178 @@ conn::conn(conn&&) noexcept = default;
 conn& conn::operator=(conn&&) noexcept = default;
 
 void conn::set_hostname(const std::string& hostname) {
-    int ret = mbedtls_ssl_set_hostname(&impl_->ssl, hostname.c_str());
+    int ret = ptls_set_server_name(impl_->tls, hostname.c_str(), 0);
     if (ret != 0) throw error(ret);
 }
 
 void conn::handshake() {
-    int ret = retry_tls_io(impl_->fd, [&] {
-        return mbedtls_ssl_handshake(&impl_->ssl);
-    });
-    if (ret != 0) throw error(ret);
+    ptls_buffer_t sendbuf;
+    uint8_t sendbuf_small[256];
+    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+
+    uint8_t readbuf[4096];
+    const uint8_t* input = nullptr;
+    size_t inlen = 0;
+
+    for (;;) {
+        int ret = ptls_handshake(impl_->tls, &sendbuf, input, &inlen, nullptr);
+
+        // Always flush any output (even on error, per PicoTLS docs).
+        if (sendbuf.off > 0) {
+            flush_to_socket(impl_->fd, sendbuf);
+            sendbuf.off = 0;
+        }
+
+        if (ret == 0) {
+            // Handshake complete. If there's leftover input, save it
+            // for subsequent reads.
+            // Note: inlen is updated to bytes consumed; we may have
+            // read more than was consumed.
+            break;
+        }
+        if (ret != PTLS_ERROR_IN_PROGRESS) {
+            ptls_buffer_dispose(&sendbuf);
+            throw error(ret);
+        }
+
+        // Need more input from peer.
+        ssize_t n = read_from_socket(impl_->fd, readbuf, sizeof(readbuf));
+        if (n == 0) {
+            ptls_buffer_dispose(&sendbuf);
+            throw csp::error("tls: peer closed during handshake");
+        }
+        input = readbuf;
+        inlen = static_cast<size_t>(n);
+    }
+
+    ptls_buffer_dispose(&sendbuf);
 }
 
 ssize_t conn::read(void* buf, size_t len) {
-    int ret = retry_tls_io(impl_->fd, [&] {
-        return mbedtls_ssl_read(&impl_->ssl,
-                                 static_cast<unsigned char*>(buf),
-                                 len);
-    });
-    if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
-    if (ret < 0) throw error(ret);
-    return ret;
+    // Return any previously buffered plaintext first.
+    if (impl_->plainbuf_off < impl_->plainbuf.size()) {
+        size_t avail = impl_->plainbuf.size() - impl_->plainbuf_off;
+        size_t copy = std::min(len, avail);
+        std::memcpy(buf, impl_->plainbuf.data() + impl_->plainbuf_off, copy);
+        impl_->plainbuf_off += copy;
+        if (impl_->plainbuf_off == impl_->plainbuf.size()) {
+            impl_->plainbuf.clear();
+            impl_->plainbuf_off = 0;
+        }
+        return static_cast<ssize_t>(copy);
+    }
+
+    ptls_buffer_t decbuf;
+    uint8_t decbuf_small[256];
+    ptls_buffer_init(&decbuf, decbuf_small, sizeof(decbuf_small));
+
+    uint8_t readbuf[4096];
+
+    auto return_plaintext = [&](size_t len) -> ssize_t {
+        size_t copy = std::min(len, decbuf.off);
+        std::memcpy(buf, decbuf.base, copy);
+        // Buffer any excess for the next read call.
+        if (copy < decbuf.off) {
+            impl_->plainbuf.assign(decbuf.base + copy,
+                                   decbuf.base + decbuf.off);
+            impl_->plainbuf_off = 0;
+        }
+        ptls_buffer_dispose(&decbuf);
+        return static_cast<ssize_t>(copy);
+    };
+
+    for (;;) {
+        // Try to decrypt from already-buffered ciphertext.
+        if (impl_->recvbuf_off < impl_->recvbuf.size()) {
+            size_t avail = impl_->recvbuf.size() - impl_->recvbuf_off;
+            size_t consumed = avail;
+            int ret = ptls_receive(impl_->tls, &decbuf,
+                                   impl_->recvbuf.data() + impl_->recvbuf_off,
+                                   &consumed);
+            impl_->recvbuf_off += consumed;
+
+            // Compact buffer if fully consumed.
+            if (impl_->recvbuf_off == impl_->recvbuf.size()) {
+                impl_->recvbuf.clear();
+                impl_->recvbuf_off = 0;
+            }
+
+            if (ret == PTLS_ALERT_TO_PEER_ERROR(PTLS_ALERT_CLOSE_NOTIFY)) {
+                ptls_buffer_dispose(&decbuf);
+                return 0;
+            }
+            if (ret != 0 && ret != PTLS_ERROR_IN_PROGRESS) {
+                ptls_buffer_dispose(&decbuf);
+                throw error(ret);
+            }
+            if (decbuf.off > 0) return return_plaintext(len);
+            // Need more data — fall through to socket read.
+        }
+
+        // Read from socket.
+        ssize_t n = read_from_socket(impl_->fd, readbuf, sizeof(readbuf));
+        if (n == 0) {
+            ptls_buffer_dispose(&decbuf);
+            return 0; // EOF
+        }
+
+        // Feed to PicoTLS.
+        size_t consumed = static_cast<size_t>(n);
+        int ret = ptls_receive(impl_->tls, &decbuf, readbuf, &consumed);
+
+        // Buffer any unconsumed ciphertext.
+        if (consumed < static_cast<size_t>(n)) {
+            impl_->recvbuf.insert(impl_->recvbuf.end(),
+                                  readbuf + consumed,
+                                  readbuf + n);
+        }
+
+        if (ret == PTLS_ALERT_TO_PEER_ERROR(PTLS_ALERT_CLOSE_NOTIFY)) {
+            ptls_buffer_dispose(&decbuf);
+            return 0;
+        }
+        if (ret != 0 && ret != PTLS_ERROR_IN_PROGRESS) {
+            ptls_buffer_dispose(&decbuf);
+            throw error(ret);
+        }
+        if (decbuf.off > 0) return return_plaintext(len);
+        // No plaintext yet — loop to read more.
+    }
 }
 
 ssize_t conn::write(const void* buf, size_t len) {
-    auto p = static_cast<const unsigned char*>(buf);
-    size_t written = 0;
-    while (written < len) {
-        int ret = retry_tls_io(impl_->fd, [&] {
-            return mbedtls_ssl_write(&impl_->ssl,
-                                      p + written,
-                                      len - written);
-        });
-        if (ret < 0) throw error(ret);
-        written += static_cast<size_t>(ret);
+    ptls_buffer_t sendbuf;
+    uint8_t sendbuf_small[256];
+    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+
+    int ret = ptls_send(impl_->tls, &sendbuf,
+                        static_cast<const uint8_t*>(buf), len);
+    if (ret != 0) {
+        ptls_buffer_dispose(&sendbuf);
+        throw error(ret);
     }
-    return static_cast<ssize_t>(written);
+
+    flush_to_socket(impl_->fd, sendbuf);
+    ptls_buffer_dispose(&sendbuf);
+    return static_cast<ssize_t>(len);
 }
 
 void conn::shutdown() {
+    ptls_buffer_t sendbuf;
+    uint8_t sendbuf_small[64];
+    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+
     // Ignore errors on close_notify — peer may have already closed.
-    retry_tls_io(impl_->fd, [&] {
-        return mbedtls_ssl_close_notify(&impl_->ssl);
-    });
+    ptls_send_alert(impl_->tls, &sendbuf,
+                    PTLS_ALERT_LEVEL_WARNING, PTLS_ALERT_CLOSE_NOTIFY);
+    if (sendbuf.off > 0) {
+        try {
+            flush_to_socket(impl_->fd, sendbuf);
+        } catch (...) {
+            // Best-effort — peer may have closed.
+        }
+    }
+    ptls_buffer_dispose(&sendbuf);
 }
 
 int conn::fd() const {

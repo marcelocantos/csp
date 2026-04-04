@@ -61,20 +61,56 @@ DEPFLAGS = -MMD -MP
 INCLUDES := -I$(CSP_INCLUDE) \
             -Ivendor/include
 
-# --- TLS support (via mbedTLS) ---
+# --- TLS support (via PicoTLS + minicrypto) ---
 
 CSP_TLS ?= 1
 
 ifeq ($(CSP_TLS),1)
 CXXFLAGS += -DCSP_TLS
-INCLUDES += -Ivendor/github.com/Mbed-TLS/mbedtls/include
-MBEDTLS_DIR    := vendor/github.com/Mbed-TLS/mbedtls/library
-MBEDTLS_SRCS   := $(wildcard $(MBEDTLS_DIR)/*.c)
-MBEDTLS_OBJS   := $(patsubst $(MBEDTLS_DIR)/%.c,$(BUILDDIR)/mbedtls/%.o,$(MBEDTLS_SRCS))
-MBEDTLS_CFLAGS := -O2 -DMBEDTLS_CONFIG_FILE='"mbedtls_config.h"' \
-                  -Iinclude -Ivendor/github.com/Mbed-TLS/mbedtls/include
+
+PICOTLS_DIR  := vendor/github.com/h2o/picotls
+CIFRA_DIR    := $(PICOTLS_DIR)/deps/cifra/src
+UECC_DIR     := $(PICOTLS_DIR)/deps/micro-ecc
+
+INCLUDES += -I$(PICOTLS_DIR)/include \
+            -I$(CIFRA_DIR) \
+            -I$(CIFRA_DIR)/ext \
+            -I$(UECC_DIR)
+
+PICOTLS_SRCS := $(PICOTLS_DIR)/lib/picotls.c \
+                $(PICOTLS_DIR)/lib/hpke.c \
+                $(PICOTLS_DIR)/lib/pembase64.c \
+                $(PICOTLS_DIR)/lib/cifra.c \
+                $(PICOTLS_DIR)/lib/cifra/x25519.c \
+                $(PICOTLS_DIR)/lib/cifra/chacha20.c \
+                $(PICOTLS_DIR)/lib/cifra/aes128.c \
+                $(PICOTLS_DIR)/lib/cifra/aes256.c \
+                $(PICOTLS_DIR)/lib/cifra/random.c \
+                $(PICOTLS_DIR)/lib/uecc.c \
+                $(PICOTLS_DIR)/lib/minicrypto-pem.c \
+                $(PICOTLS_DIR)/lib/asn1.c \
+                $(PICOTLS_DIR)/lib/ffx.c \
+                $(UECC_DIR)/uECC.c \
+                $(CIFRA_DIR)/aes.c \
+                $(CIFRA_DIR)/blockwise.c \
+                $(CIFRA_DIR)/chacha20.c \
+                $(CIFRA_DIR)/chash.c \
+                $(CIFRA_DIR)/curve25519.c \
+                $(CIFRA_DIR)/drbg.c \
+                $(CIFRA_DIR)/hmac.c \
+                $(CIFRA_DIR)/gcm.c \
+                $(CIFRA_DIR)/gf128.c \
+                $(CIFRA_DIR)/modes.c \
+                $(CIFRA_DIR)/poly1305.c \
+                $(CIFRA_DIR)/sha256.c \
+                $(CIFRA_DIR)/sha512.c
+
+PICOTLS_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(PICOTLS_SRCS))
+
+PICOTLS_CFLAGS := -O2 -I$(PICOTLS_DIR)/include \
+                  -I$(CIFRA_DIR) -I$(CIFRA_DIR)/ext -I$(UECC_DIR)
 ifneq ($(SANITIZE),)
-MBEDTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+PICOTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
 endif
 
@@ -148,7 +184,7 @@ ifneq ($(CSP_INCLUDE),dist)
 LIB_OBJS   += $(FCONTEXT_OBJS)
 endif
 ifeq ($(CSP_TLS),1)
-LIB_OBJS   += $(MBEDTLS_OBJS)
+LIB_OBJS   += $(PICOTLS_OBJS)
 endif
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
@@ -202,11 +238,19 @@ $(BUILDDIR)/fcontext/%.o: $(FCONTEXT_DIR)/%.S
 	@mkdir -p $(dir $@)
 	$(CXX) -c -o $@ $<
 
-# mbedTLS C sources
+# PicoTLS + minicrypto C sources
 ifeq ($(CSP_TLS),1)
-$(BUILDDIR)/mbedtls/%.o: $(MBEDTLS_DIR)/%.c
+$(BUILDDIR)/$(PICOTLS_DIR)/%.o: $(PICOTLS_DIR)/%.c
 	@mkdir -p $(dir $@)
-	$(CC) -c $(MBEDTLS_CFLAGS) -o $@ $<
+	$(CC) -c $(PICOTLS_CFLAGS) -o $@ $<
+
+$(BUILDDIR)/$(CIFRA_DIR)/%.o: $(CIFRA_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(PICOTLS_CFLAGS) -o $@ $<
+
+$(BUILDDIR)/$(UECC_DIR)/%.o: $(UECC_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(PICOTLS_CFLAGS) -o $@ $<
 endif
 
 # Distribution sources

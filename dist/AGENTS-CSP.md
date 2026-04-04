@@ -472,27 +472,30 @@ scope automatically via dynamic scoping.
 
 ## TLS
 
-Cancel-aware TLS via mbedTLS. Available when `CSP_TLS` is defined (default
-in dev builds).
+Cancel-aware TLS 1.3 via PicoTLS (minicrypto backend). Available when
+`CSP_TLS` is defined (default in dev builds).
 
 ```cpp
 #include "csp.h"    // includes tls.h (behind #ifdef CSP_TLS)
 
 namespace csp::tls {
 
-struct error : csp::error { int code; };  // wraps mbedTLS error
+struct error : csp::error { int code; };  // wraps PicoTLS error
+
+using verify_fn = std::function<bool(const char* server_name,
+    const std::vector<std::vector<uint8_t>>& certs)>;
 
 class context {
     enum role { client, server };
     explicit context(role r = client);
-    void load_ca(const void* pem, size_t len);        // PEM, NUL-terminated
-    void load_cert(const void* cert, size_t cert_len,
-                   const void* key, size_t key_len);   // PEM, NUL-terminated
+    void load_cert(const char* cert_pem_path);   // PEM file
+    void load_key(const char* key_pem_path);     // PKCS#8 PEM, secp256r1
+    void set_verify(verify_fn fn);               // custom cert verification
 };
 
 class conn {
     conn(context& ctx, int fd);  // fd must be non-blocking, connected
-    void set_hostname(const std::string& h);  // SNI + verification
+    void set_hostname(const std::string& h);  // SNI
     void handshake();              // cancel-aware
     ssize_t read(void* buf, size_t len);   // 0 = clean shutdown
     ssize_t write(const void* buf, size_t len);  // writes all
@@ -504,10 +507,11 @@ class conn {
 ```
 
 `conn` does not own the fd. All blocking methods are cancel-aware via
-`wait_readable`/`wait_writable`. No stream parts — `ssl_context` is not
-thread-safe for concurrent read+write.
+`wait_readable`/`wait_writable`. No built-in X.509 chain verification —
+use `set_verify()` for custom validation. No stream parts — TLS conn is
+not safe for concurrent read+write.
 
-Dist users: `#define CSP_TLS` before `#include "csp.h"`, link own mbedTLS.
+Dist users: `#define CSP_TLS` before `#include "csp.h"`, link own PicoTLS.
 
 ## Parts System
 

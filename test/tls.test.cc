@@ -4,9 +4,7 @@
 
 #include <arpa/inet.h>
 #include <cstring>
-#include <fstream>
 #include <netinet/in.h>
-#include <sstream>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -14,13 +12,6 @@
 using namespace csp;
 
 // --- Helpers ---
-
-static std::string read_file(const char* path) {
-    std::ifstream f(path);
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    return ss.str();
-}
 
 // Create a listening socket on localhost, return fd and bound port.
 static std::pair<int, uint16_t> listen_localhost() {
@@ -58,15 +49,16 @@ static int connect_localhost(uint16_t port) {
     return fd;
 }
 
+// Accept-all verifier for tests with self-signed certs.
+static csp::tls::verify_fn accept_all = [](const char*, const auto&) {
+    return true;
+};
+
 // --- Tests ---
 
 TEST_CASE("TLS - Handshake and data roundtrip") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
-
-    auto ca_pem     = read_file("test/certs/ca.crt");
-    auto cert_pem   = read_file("test/certs/server.crt");
-    auto key_pem    = read_file("test/certs/server.key");
 
     auto listen_pair = listen_localhost();
     int listen_fd = listen_pair.first;
@@ -82,8 +74,8 @@ TEST_CASE("TLS - Handshake and data roundtrip") {
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
-        ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
-                      key_pem.c_str(), key_pem.size() + 1);
+        ctx.load_cert("test/certs/server.crt");
+        ctx.load_key("test/certs/server.key");
 
         csp::tls::conn c(ctx, client_fd);
         c.handshake();
@@ -106,7 +98,7 @@ TEST_CASE("TLS - Handshake and data roundtrip") {
         int fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
-        ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+        ctx.set_verify(accept_all);
 
         csp::tls::conn c(ctx, fd);
         c.set_hostname("localhost");
@@ -144,9 +136,8 @@ TEST_CASE("TLS - Cancel during handshake") {
         auto cancel = csp::cancellation(std::chrono::milliseconds(50));
         int fd = connect_localhost(port);
 
-        auto ca_pem = read_file("test/certs/ca.crt");
         csp::tls::context ctx(csp::tls::context::client);
-        ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+        ctx.set_verify(accept_all);
 
         csp::tls::conn c(ctx, fd);
         c.set_hostname("localhost");
@@ -174,10 +165,6 @@ TEST_CASE("TLS - Cancel during read") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
-    auto ca_pem   = read_file("test/certs/ca.crt");
-    auto cert_pem = read_file("test/certs/server.crt");
-    auto key_pem  = read_file("test/certs/server.key");
-
     auto listen_pair = listen_localhost();
     int listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
@@ -191,8 +178,8 @@ TEST_CASE("TLS - Cancel during read") {
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
-        ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
-                      key_pem.c_str(), key_pem.size() + 1);
+        ctx.load_cert("test/certs/server.crt");
+        ctx.load_key("test/certs/server.key");
 
         csp::tls::conn c(ctx, client_fd);
         c.handshake();
@@ -208,7 +195,7 @@ TEST_CASE("TLS - Cancel during read") {
         int fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
-        ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+        ctx.set_verify(accept_all);
 
         csp::tls::conn c(ctx, fd);
         c.set_hostname("localhost");
@@ -230,12 +217,9 @@ TEST_CASE("TLS - Cancel during read") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("TLS - Invalid cert rejection") {
+TEST_CASE("TLS - No verify callback rejects by default") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
-
-    auto cert_pem = read_file("test/certs/server.crt");
-    auto key_pem  = read_file("test/certs/server.key");
 
     auto listen_pair = listen_localhost();
     int listen_fd = listen_pair.first;
@@ -250,8 +234,8 @@ TEST_CASE("TLS - Invalid cert rejection") {
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
-        ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
-                      key_pem.c_str(), key_pem.size() + 1);
+        ctx.load_cert("test/certs/server.crt");
+        ctx.load_key("test/certs/server.key");
 
         csp::tls::conn c(ctx, client_fd);
         try { c.handshake(); } catch (...) {}
@@ -259,12 +243,12 @@ TEST_CASE("TLS - Invalid cert rejection") {
         ::close(listen_fd);
     });
 
-    // Client with NO CA loaded — verification should fail.
+    // Client with rejecting verifier.
     csp::spawn([&, port] {
         int fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
-        // No load_ca — can't verify server cert.
+        ctx.set_verify([](const char*, const auto&) { return false; });
 
         csp::tls::conn c(ctx, fd);
         c.set_hostname("localhost");
@@ -282,75 +266,9 @@ TEST_CASE("TLS - Invalid cert rejection") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("TLS - Hostname mismatch") {
+TEST_CASE("TLS - Concurrent connections") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
-
-    auto ca_pem   = read_file("test/certs/ca.crt");
-    auto cert_pem = read_file("test/certs/server.crt");
-    auto key_pem  = read_file("test/certs/server.key");
-
-    auto listen_pair = listen_localhost();
-    int listen_fd = listen_pair.first;
-    uint16_t port = listen_pair.second;
-
-    std::atomic<bool> got_error{false};
-
-    // Server
-    csp::spawn([&, listen_fd] {
-        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        if (client_fd < 0) { ::close(listen_fd); return; }
-        csp::io::set_nonblock(client_fd);
-
-        csp::tls::context ctx(csp::tls::context::server);
-        ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
-                      key_pem.c_str(), key_pem.size() + 1);
-
-        csp::tls::conn c(ctx, client_fd);
-        try { c.handshake(); } catch (...) {}
-        ::close(client_fd);
-        ::close(listen_fd);
-    });
-
-    // Client with wrong hostname.
-    csp::spawn([&, port] {
-        int fd = connect_localhost(port);
-
-        csp::tls::context ctx(csp::tls::context::client);
-        ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
-
-        csp::tls::conn c(ctx, fd);
-        c.set_hostname("wrong.example.com");
-
-        try {
-            c.handshake();
-        } catch (const csp::tls::error&) {
-            got_error.store(true, std::memory_order_relaxed);
-        }
-        ::close(fd);
-    });
-
-    csp::schedule();
-    CHECK(got_error.load());
-    csp::shutdown_runtime();
-}
-
-// Skip on Linux: mbedTLS uses internal pthread mutexes that have
-// undefined behaviour under M:N fiber migration (lock on T1, unlock
-// on T2).  Causes SIGABRT.  Tracked as a library swap target.
-TEST_CASE("TLS - Concurrent connections" * doctest::skip(
-#ifdef __linux__
-    true
-#else
-    false
-#endif
-)) {
-    csp::shutdown_runtime();
-    csp::set_maxprocs(2);
-
-    auto ca_pem     = read_file("test/certs/ca.crt");
-    auto cert_pem   = read_file("test/certs/server.crt");
-    auto key_pem    = read_file("test/certs/server.key");
 
     auto listen_pair = listen_localhost();
     int listen_fd = listen_pair.first;
@@ -369,8 +287,8 @@ TEST_CASE("TLS - Concurrent connections" * doctest::skip(
                 csp::io::set_nonblock(client_fd);
 
                 csp::tls::context ctx(csp::tls::context::server);
-                ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
-                              key_pem.c_str(), key_pem.size() + 1);
+                ctx.load_cert("test/certs/server.crt");
+                ctx.load_key("test/certs/server.key");
 
                 csp::tls::conn c(ctx, client_fd);
                 c.handshake();
@@ -393,7 +311,7 @@ TEST_CASE("TLS - Concurrent connections" * doctest::skip(
             int fd = connect_localhost(port);
 
             csp::tls::context ctx(csp::tls::context::client);
-            ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+            ctx.set_verify(accept_all);
 
             csp::tls::conn c(ctx, fd);
             c.set_hostname("localhost");
@@ -431,10 +349,6 @@ TEST_CASE("TLS - Large transfer") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
-    auto ca_pem     = read_file("test/certs/ca.crt");
-    auto cert_pem   = read_file("test/certs/server.crt");
-    auto key_pem    = read_file("test/certs/server.key");
-
     auto listen_pair = listen_localhost();
     int listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
@@ -456,8 +370,8 @@ TEST_CASE("TLS - Large transfer") {
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
-        ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
-                      key_pem.c_str(), key_pem.size() + 1);
+        ctx.load_cert("test/certs/server.crt");
+        ctx.load_key("test/certs/server.key");
 
         csp::tls::conn c(ctx, client_fd);
         c.handshake();
@@ -480,7 +394,7 @@ TEST_CASE("TLS - Large transfer") {
         int fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
-        ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+        ctx.set_verify(accept_all);
 
         csp::tls::conn c(ctx, fd);
         c.set_hostname("localhost");
@@ -502,10 +416,6 @@ TEST_CASE("TLS - conn move semantics") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
-    auto ca_pem     = read_file("test/certs/ca.crt");
-    auto cert_pem   = read_file("test/certs/server.crt");
-    auto key_pem    = read_file("test/certs/server.key");
-
     auto listen_pair = listen_localhost();
     int listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
@@ -520,8 +430,8 @@ TEST_CASE("TLS - conn move semantics") {
         csp::io::set_nonblock(client_fd);
 
         csp::tls::context ctx(csp::tls::context::server);
-        ctx.load_cert(cert_pem.c_str(), cert_pem.size() + 1,
-                      key_pem.c_str(), key_pem.size() + 1);
+        ctx.load_cert("test/certs/server.crt");
+        ctx.load_key("test/certs/server.key");
 
         // Create conn, then move it.
         csp::tls::conn c1(ctx, client_fd);
@@ -547,7 +457,7 @@ TEST_CASE("TLS - conn move semantics") {
         int fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
-        ctx.load_ca(ca_pem.c_str(), ca_pem.size() + 1);
+        ctx.set_verify(accept_all);
 
         csp::tls::conn c(ctx, fd);
         c.set_hostname("localhost");

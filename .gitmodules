@@ -1,6 +1,6 @@
 [submodule "vendor/github.com/boostorg/context"]
 	path = vendor/github.com/boostorg/context
 	url = https://github.com/boostorg/context.git
-[submodule "vendor/github.com/Mbed-TLS/mbedtls"]
-	path = vendor/github.com/Mbed-TLS/mbedtls
-	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "vendor/github.com/h2o/picotls"]
+	path = vendor/github.com/h2o/picotls
+	url = https://github.com/h2o/picotls.git

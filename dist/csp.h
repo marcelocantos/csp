@@ -7391,6 +7391,13 @@ struct error : csp::error {
 
 class conn;
 
+/// Callback for custom certificate verification.
+/// Receives the server name and DER-encoded certificate chain.
+/// Return true to accept, false to reject.
+using verify_fn =
+    std::function<bool(const char* server_name,
+                       const std::vector<std::vector<uint8_t>>& certs)>;
+
 class context {
 public:
     enum role { client, server };
@@ -7399,12 +7406,16 @@ public:
     context(context&&) noexcept;
     context& operator=(context&&) noexcept;
 
-    // Load CA certificate(s) for verification. PEM, NUL-terminated.
-    void load_ca(const void* pem, size_t len);
+    /// Load certificate chain from a PEM file.
+    void load_cert(const char* cert_pem_path);
 
-    // Load own certificate + private key (server required, client optional).
-    void load_cert(const void* cert_pem, size_t cert_len,
-                   const void* key_pem, size_t key_len);
+    /// Load private key from a PEM file (PKCS#8 format, secp256r1).
+    void load_key(const char* key_pem_path);
+
+    /// Set a custom certificate verification callback. Without this,
+    /// no certificate verification is performed (TLS 1.3 only,
+    /// minicrypto backend has no built-in X.509 chain validator).
+    void set_verify(verify_fn fn);
 
     context(const context&) = delete;
     context& operator=(const context&) = delete;

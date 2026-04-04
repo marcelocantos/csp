@@ -72,7 +72,7 @@
 - **Acceptance**:
   - `csp::http::get(url)` / `post(url, body)` return `reader<http::response>` (non-blocking)
   - Connection pooling with per-host channels
-  - TLS support via existing mbedTLS integration
+  - TLS support via PicoTLS integration
   - Timeout via cancellation scope
   - Tests and reference docs
 - **Status**: not started
@@ -317,6 +317,22 @@
 - **Status**: in progress — 663/663 tests pass. PR #18 open. Core scheduler done. Remaining: fake_clock auto-advance via main_loop quiescence hook (stashed WIP), inline `fake_clock{}` syntax (needs `dynamic<T>` type erasure rework).
 - **Discovered**: 2026-03-29
 - **Context**: M:N scheduler complete. `quiescence_scope` implemented for deterministic testing (scoped, inheritable via Imp::qs_). fake_clock thread-safe (mutex on pending_). Next step: main_loop quiescence hook so `fc.run()` is unnecessary — stashed WIP has the hook in Runtime but fake_clock tests need migration from `fc.run()` to automatic advancement.
+
+### 🎯T15 TLS uses PicoTLS instead of mbedTLS
+- **Weight**: 3 (value 5 / cost 3)
+- **Acceptance**:
+  - mbedTLS submodule removed, PicoTLS vendored at `vendor/github.com/h2o/picotls/`
+  - minicrypto backend (no OpenSSL dependency)
+  - TLS 1.3 only (documented limitation)
+  - No built-in X.509 chain verification; `context::set_verify_callback()` hook for user-supplied verification
+  - Test certs regenerated as ECDSA secp256r1 (minicrypto requirement)
+  - Linux concurrent connections test unskipped (no more pthread mutex issue)
+  - TSan suppressions for mbedTLS removed
+  - All TLS tests pass on macOS and Linux
+  - CLAUDE.md, AGENTS-CSP.md, dist/ updated
+- **Status**: in progress
+- **Discovered**: 2026-04-04
+- **Context**: mbedTLS uses internal pthread mutexes that cause SIGABRT under M:N fiber migration on Linux (lock on thread T1, unlock on T2). TSan also reports false races. PicoTLS has zero internal locking — thread-local PRNG only, harmless under migration. Buffer-in/buffer-out API integrates cleanly with CSP's reactor. minicrypto backend is self-contained (cifra + micro-ecc, ~13.5K lines C). Limitation: minicrypto only supports secp256r1 keys and has no X.509 verifier. TLS 1.2 fallback can be added later via a second backend if needed.
 
 ## Achieved
 
