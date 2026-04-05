@@ -222,18 +222,17 @@ TEST_CASE("map | switch_all - cancel previous") {
 
         stats.spawn([in_w = std::move(in_w)] {
             in_w << 1;  // sub1: 10, 11, 12, ...
-            csp::yield();
-            csp::yield();
+            for (int i = 0; i < 10; ++i) csp::yield();
             in_w << 2;  // sub2 cancels sub1: 20, 21, 22, ...
         });
 
-        // Read a few values — should see switch from sub1 to sub2.
+        // Read enough values to see the switch from sub1 to sub2.
         std::vector<int> got;
-        for (int i = 0; i < 5; ++i) got.push_back(out.read());
+        for (int i = 0; i < 15; ++i) got.push_back(out.read());
         out = {};
         // csp::run waits for all imps to exit.
 
-        // First few from sub1, then switch to sub2.
+        // First values from sub1, then switch to sub2.
         // The exact transition point depends on scheduling, but
         // the last values must be from sub2 (>= 20).
         CHECK(got.back() >= 20);

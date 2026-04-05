@@ -91,7 +91,10 @@ context::context(role r) : impl_(std::make_unique<impl>()) {
 }
 
 context::~context() {
+    if (!impl_) return;
     auto& ctx = impl_->ctx;
+    // Free sign_certificate allocated by ptls_minicrypto_load_private_key.
+    free(ctx.sign_certificate);
     // Free certificate chain if loaded.
     for (size_t i = 0; i < ctx.certificates.count; ++i) {
         free(ctx.certificates.list[i].base);
