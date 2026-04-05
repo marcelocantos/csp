@@ -5,7 +5,7 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
-Snapshot as of v0.5.0.
+Snapshot as of v0.6.0.
 
 ## Interaction surface catalogue
 
@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.5.0"` | Stable |
+| `CSP_VERSION` | `"0.6.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `5` | Stable |
+| `CSP_VERSION_MINOR` | `6` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
@@ -196,11 +196,17 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 ### TLS (`csp::tls`, behind `#ifdef CSP_TLS`)
 
+TLS 1.3 only via PicoTLS minicrypto backend. No built-in X.509 verification.
+
 | Symbol | Kind | Stability |
 |--------|------|-----------|
 | `tls::error` | exception type (`int code`) | Stable |
+| `tls::verify_fn` | `std::function<bool(const char*, const vector<vector<uint8_t>>&)>` | Stable |
 | `tls::context` | TLS context (pImpl) | Stable |
 | `tls::context::role` | enum (`client`, `server`) | Stable |
+| `tls::context::load_cert(const char*)` | load cert chain from PEM file | Stable |
+| `tls::context::load_key(const char*)` | load PKCS#8 key from PEM file (secp256r1) | Stable |
+| `tls::context::set_verify(verify_fn)` | set custom cert verification callback | Stable |
 | `tls::conn` | TLS connection (pImpl) | Stable |
 
 ### Byte reader (`include/csp/byte_reader.h`)

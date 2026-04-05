@@ -177,3 +177,13 @@ None.
   pool) and Phase 2 (CreateThreadpoolTimer-based reactor) completed. Linux epoll
   reactor backend added. 20 demo programs added. Worker threads labelled
   `csp-1`, `csp-2`, etc. for clearer diagnostics.
+
+## 2026-04-05 — /release v0.6.0
+
+- **Commit**: `c0b4c2f` (PR #18)
+- **Outcome**: Released v0.6.0. Major changes: M:N-only scheduler (single-P mode
+  removed), PicoTLS swap (mbedTLS → PicoTLS minicrypto, TLS 1.3 only, fiber-safe),
+  net::listen TCP half-close fix, all tracked bugs closed (supervisor SIGSEGV,
+  push_to_global assertion, mbedTLS TSan false races, cancel/timer flakes).
+  664/664 tests, 0 skipped. All 10 CI jobs green. New targets: 🎯T12–T15.
+  STABILITY.md updated for v0.6.0 (TLS API surface changes).
