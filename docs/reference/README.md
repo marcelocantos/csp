@@ -31,7 +31,7 @@ state.operation(args) ─┤guard├──➤ effects; result
 
 | Document | Header | Contents |
 |---|---|---|
-| [TLS](tls.md) | `csp.h` | `tls::context`, `tls::conn`, `tls::error` (cancel-aware TLS via mbedTLS, `#ifdef CSP_TLS`) |
+| [TLS](tls.md) | `csp.h` | `tls::context`, `tls::conn`, `tls::error` (cancel-aware TLS 1.3 via PicoTLS, `#ifdef CSP_TLS`) |
 
 ## Supervision
 

@@ -4,6 +4,7 @@
 #include <csp/dynamic.h>
 
 #include <chrono>
+#include <memory>
 #include <queue>
 #include <vector>
 
@@ -33,20 +34,26 @@ class fake_clock : public clock_source {
     struct Entry {
         time_point deadline;
         detail::Imp* imp;
+        std::shared_ptr<std::atomic<bool>> cancelled;
         bool operator>(Entry const& o) const { return deadline > o.deadline; }
     };
+    std::mutex mu_;
     std::priority_queue<Entry, std::vector<Entry>,
                         std::greater<Entry>> pending_;
+    quiescence_scope qs_;
     void fire_expired();
 
 public:
     explicit fake_clock(time_point start = time_point{});
 
-    time_point now() const override { return current_; }
+    time_point now() const override;
     void sleep_until(time_point tp) override;
     bool uses_reactor() const override { return false; }
 
-    bool has_pending() const { return !pending_.empty(); }
+    bool has_pending() const {
+        std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(mu_));
+        return !pending_.empty();
+    }
 
     // Advance time and fire expired timers.
     void advance(duration d);
@@ -54,17 +61,41 @@ public:
     // Jump to next pending deadline. Returns false if no timers pending.
     bool advance_to_next();
 
-    // Run scheduler loop with auto-advance until no work remains.
+    // Bind the fake clock's quiescence scope to the current imp.
+    // Call before spawning timer-using imps so they inherit the scope.
+    void bind_scope() { qs_.bind(); }
+
+    // Convenience: bind clock + quiescence scope in one call.
+    // Returns a dynamic_binding for use with csp::local.
+    // Usage: csp::local l{fc.binding()};
+    //   — equivalent to: csp::local l{csp::clock = &fc}; fc.bind_scope();
+    [[nodiscard]] dynamic_binding binding();
+
+    // Run until all timer-blocked imps complete. If bind_scope()
+    // was not called, binds automatically (but imps spawned before
+    // this call won't be tracked). Loops: wait for quiescence →
+    // advance time → repeat.
     void run();
 
-    // Run scheduler until no imps are runnable (don't advance time).
+    // Wait for quiescence (all scope members sleeping), then return.
     void run_until_idle();
 
+    ~fake_clock();
+
+    // Movable (for storage in shared_ptr via csp::clock = fake_clock{}).
+    fake_clock(fake_clock&& o) noexcept : current_(o.current_) {}
+    fake_clock& operator=(fake_clock&&) = delete;
     fake_clock(fake_clock const&) = delete;
     fake_clock& operator=(fake_clock const&) = delete;
+
+    // Convert to shared_ptr for use with csp::clock dynamic variable.
+    // Enables: csp::local l{csp::clock = fake_clock{}};
+    operator std::shared_ptr<clock_source>() && {
+        return std::make_shared<fake_clock>(std::move(*this));
+    }
 };
 
-extern dynamic<clock_source*> clock;
+extern dynamic<std::shared_ptr<clock_source>> clock;
 
 // Current time.
 inline time_point now() {

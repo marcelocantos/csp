@@ -72,7 +72,7 @@ void BlockingPool::worker() {
             queue_.pop_back();
         }
         w.fn();
-        w.imp->schedule();
+        w.imp->make_runnable();
     }
 }
 
@@ -407,14 +407,14 @@ namespace {
                 uint32_t expected = Imp::ALT_WAITING;
                 if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                     cw.thread->signal_ = INT_MIN;
-                    cw.thread->schedule();
+                    cw.thread->make_runnable();
                 }
             }
             for (auto const & cv : ep.vultures) {
                 uint32_t expected = Imp::ALT_WAITING;
                 if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                     cv.thread->signal_ = INT_MIN;
-                    cv.thread->schedule();
+                    cv.thread->make_runnable();
                 }
             }
         }
@@ -437,7 +437,7 @@ namespace {
                     if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cw.chanop - cw.thread->chanops_);
                         cw.thread->signal_ = ~idx;
-                        cw.thread->schedule();
+                        cw.thread->make_runnable();
                     }
                 }
                 for (auto const & cv : ep.vultures) {
@@ -445,7 +445,7 @@ namespace {
                     if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cv.chanop - cv.thread->chanops_);
                         cv.thread->signal_ = ~idx;
-                        cv.thread->schedule();
+                        cv.thread->make_runnable();
                     }
                 }
             }
@@ -499,7 +499,7 @@ namespace {
             int n_sorted;
             Imp* peer;
             bool needs_unlock;
-            bool use_run;           // single-P writer: unlock then run
+            // (removed: use_run field was for single-P cooperative path)
             bool has_pins;          // re-resolution alive_ pins active
         };
         static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
@@ -536,7 +536,6 @@ namespace {
 
             mi->peer = nullptr;
             mi->needs_unlock = false;
-            mi->use_run = false;
             out->src = nullptr;
             out->dst = nullptr;
             out->result = 0;
@@ -678,7 +677,6 @@ namespace {
                                 if (endpt == wr) {
                                     out->src = chop.message;
                                     out->dst = const_cast<void *>(cw.chanop->message);
-                                    mi->use_run = !Runtime::instance().mn_mode_;
                                 } else {
                                     out->src = cw.chanop->message;
                                     out->dst = const_cast<void *>(chop.message);
@@ -774,20 +772,14 @@ namespace {
         static void alt_end_impl(AltMatch * m) {
             auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
             if (mi->needs_unlock) {
-                if (mi->use_run) {
-                    // Single-P writer path: unlock first, then context-switch
-                    // to peer (runs until it yields, then returns here).
-                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
-                    mi->peer->run(Status::run);
-                } else {
-                    if (mi->peer) mi->peer->schedule();
-                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
-                }
+                for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
             }
             if (mi->has_pins) {
                 for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
             }
+            auto* peer = mi->peer;
             delete[] mi->heap_alloc;
+            if (peer) peer->make_runnable();
         }
 
 
@@ -1062,22 +1054,70 @@ real_clock real_clock_instance;
 
 } // namespace
 
-dynamic<clock_source*> clock{&real_clock_instance};
+dynamic<std::shared_ptr<clock_source>> clock{
+    std::shared_ptr<clock_source>(&real_clock_instance, [](auto*){})
+};
 
 fake_clock::fake_clock(time_point start) : current_(start) {}
 
+time_point fake_clock::now() const {
+    // Auto-enroll the calling imp in this clock's quiescence scope.
+    // Only enroll real imps (with fcontext stacks), not p.main.
+    auto* imp = detail::current_imp();
+    if (imp && imp->stk_.base && imp->qs_ != &qs_ && !imp->qs_entered_) {
+        imp->qs_ = const_cast<quiescence_scope*>(&qs_);
+        const_cast<quiescence_scope*>(&qs_)->enter();
+        imp->qs_entered_ = true;
+    }
+    return current_;
+}
+
+fake_clock::~fake_clock() {
+    // Unregister quiescence hook.
+    auto& rt = detail::Runtime::instance();
+    std::lock_guard<std::mutex> lk(rt.hook_mu_);
+    rt.quiescence_hook_ = nullptr;
+}
+
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
-    pending_.push({tp, detail::current_imp()});
+    auto token = std::make_shared<std::atomic<bool>>(false);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        pending_.push({tp, detail::current_imp(), token});
+    }
+    // Register quiescence hook on first use (lazy — avoids needing
+    // the runtime to be initialized at fake_clock construction time).
+    auto& rt = detail::Runtime::instance();
+    {
+        std::lock_guard<std::mutex> lk(rt.hook_mu_);
+        if (!rt.quiescence_hook_) {
+            rt.quiescence_hook_ = [this]() -> bool {
+                // Only advance time when ALL scope members are sleeping.
+                if (!qs_.is_quiescent()) return true;  // imps still active
+                return advance_to_next();  // true=advanced, false=no timers
+            };
+        }
+    }
     internal::suspend();
+    // Imp woke (timer fired or cancelled). Mark the timer entry
+    // so fire_expired skips it if it's still in pending_.
+    token->store(true, std::memory_order_release);
 }
 
 void fake_clock::fire_expired() {
-    while (!pending_.empty() && pending_.top().deadline <= current_) {
-        auto* imp = pending_.top().imp;
-        pending_.pop();
-        imp->schedule_local();
+    std::vector<detail::Imp*> expired;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        while (!pending_.empty() && pending_.top().deadline <= current_) {
+            auto& e = pending_.top();
+            if (!e.cancelled->load(std::memory_order_acquire)) {
+                expired.push_back(e.imp);
+            }
+            pending_.pop();
+        }
     }
+    for (auto* imp : expired) imp->make_runnable();
 }
 
 void fake_clock::advance(duration d) {
@@ -1086,21 +1126,34 @@ void fake_clock::advance(duration d) {
 }
 
 bool fake_clock::advance_to_next() {
-    if (pending_.empty()) return false;
-    current_ = pending_.top().deadline;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (pending_.empty()) return false;
+        current_ = pending_.top().deadline;
+    }
     fire_expired();
     return true;
 }
 
+dynamic_binding fake_clock::binding() {
+    // Set qs_ for child propagation WITHOUT entering the scope.
+    // The binding imp is the orchestrator, not a participant —
+    // only child imps (spawned after this) enter the scope.
+    detail::current_imp()->qs_ = &qs_;
+    return csp::clock = std::shared_ptr<clock_source>(this, [](auto*){});
+}
+
 void fake_clock::run() {
+    qs_.bind();
     for (;;) {
-        while (internal::run()) {}
+        qs_.wait();
         if (!advance_to_next()) break;
     }
 }
 
 void fake_clock::run_until_idle() {
-    while (internal::run()) {}
+    qs_.bind();
+    qs_.wait();
 }
 
 }
@@ -1118,27 +1171,7 @@ void fake_clock::run_until_idle() {
 
 static void default_scheduler_impl() {
     auto& rt = csp::detail::Runtime::instance();
-    while (true) {
-        if (csp::internal::run()) continue;
-        if (rt.live_gs.load(std::memory_order_acquire) == 0) break;
-        // In single-P mode, if no reactor signals are pending and no
-        // global work is queued, no external event can wake blocked
-        // imps — exit (deadlock or done).  Both conditions must hold:
-        // the reactor decrements pending_signals *after* scheduling
-        // the woken imp (which sets has_global_work_), so checking
-        // both avoids a race where pending_signals is already zero
-        // but the woken imp hasn't been run yet.
-        if (!rt.mn_mode_
-            && !csp::detail::Reactor::instance().has_pending_signals()
-            && !rt.has_global_work_.load(std::memory_order_acquire)) break;
-        // Park until work arrives or all imps have exited.
-        std::unique_lock<std::mutex> lk(rt.park_mu);
-        rt.park_cv.wait(lk, [&rt] {
-            return rt.live_gs.load(std::memory_order_acquire) == 0
-                || rt.has_global_work_.load(std::memory_order_acquire);
-        });
-    }
-    // Shut down the reactor so its thread doesn't outlive the scheduler.
+    rt.main_loop();
     csp::detail::Reactor::instance().shutdown();
 }
 
@@ -1170,24 +1203,24 @@ namespace csp {
         // wake_pending_ in between (seeing false both times).
         static void drain_suspended(Imp* suspended) {
             auto& rt = Runtime::instance();
-            if (rt.mn_mode_) {
-                bool need_unpark = false;
-                {
-                    std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
-                    // TLA:DrainSuspended.Drain
-                    suspended->suspending_.store(false, std::memory_order_release);
-                    if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
-                        if (!suspended->in_global_) {
-                            rt.push_to_global(suspended);
-                            need_unpark = true;
+            bool need_unpark = false;
+            {
+                std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
+                // TLA:DrainSuspended.Drain
+                suspended->suspending_.store(false, std::memory_order_release);
+                if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                    if (!suspended->in_global_) {
+                        if (suspended->qs_entered_
+                            && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                            suspended->qs_->enter();
                         }
+                        rt.push_to_global(suspended);
+                        need_unpark = true;
                     }
                 }
-                if (need_unpark) {
-                    rt.unpark_one();
-                }
-            } else {
-                suspended->suspending_.store(false, std::memory_order_release);
+            }
+            if (need_unpark) {
+                rt.unpark_one();
             }
         }
 
@@ -1242,6 +1275,8 @@ namespace csp {
                 return;
             }
             auto& busy = current_p().busy;
+            if (busy == &current_p().main) {
+            }
             if (busy) {
                 next_ = busy;
                 prev_ = busy->prev_;
@@ -1257,32 +1292,39 @@ namespace csp {
         void Imp::schedule(bool make_current) {
             auto& rt = Runtime::instance();
 
-            // In M:N mode or when called from a thread without a
-            // Processor (e.g. reactor thread), push to the global
-            // run queue so any worker can pick it up.
+            // Push to the global run queue so any worker can pick
+            // it up.
             // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
-            if (rt.mn_mode_ || !has_processor()) {
-                {
-                    std::lock_guard<std::mutex> lk(rt.global_mu);
-                    if (in_global_) {
-                        return;
-                    }
-                    // TLA:DrainSuspended.DoSchedule
-                    // If the imp is in the unlock_all→do_switch
-                    // window, it's still running and can't be safely
-                    // pushed to the global queue.  Set wake_pending_
-                    // so the detach path will re-add it to a queue.
-                    if (suspending_.load(std::memory_order_acquire)) {
-                        wake_pending_.store(true, std::memory_order_release);
-                        return;
-                    }
-                    rt.push_to_global(this); // TLA:StealWork.WPush
+            {
+                std::lock_guard<std::mutex> lk(rt.global_mu);
+                if (in_global_) {
+                    return;
                 }
-                rt.unpark_one();
-                return;
+                // TLA:DrainSuspended.DoSchedule
+                // If the imp is in the unlock_all→do_switch
+                // window, it's still running and can't be safely
+                // pushed to the global queue.  Set wake_pending_
+                // so the detach path will re-add it to a queue.
+                if (suspending_.load(std::memory_order_acquire)) {
+                    wake_pending_.store(true, std::memory_order_release);
+                    return;
+                }
+                // If the imp is already in a local run queue (next_ set),
+                // a worker will run it — no need to push to global.
+                if (next_) return;
+                rt.push_to_global(this); // TLA:StealWork.WPush
             }
+            rt.unpark_one();
+        }
 
-            schedule_local(make_current);
+        void Imp::make_runnable() {
+            // Enter quiescence scope at schedule time (closes the gap
+            // between leave and resume). Atomic exchange prevents
+            // double-enter if multiple threads schedule the same imp.
+            if (qs_entered_ && qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                qs_->enter();
+            }
+            schedule();
         }
 
         void Imp::deschedule() {
@@ -1302,11 +1344,16 @@ namespace csp {
 #if CSP_TSAN
             if (imp->tsan_fiber_) __tsan_destroy_fiber(imp->tsan_fiber_);
 #endif
+            bool was_daemon = imp->daemon_;
             auto region = imp->stk_;
             imp->~Imp();
             StackPool::instance().release(region);
             auto& rt = Runtime::instance();
-            if (rt.live_gs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (was_daemon) rt.daemon_gs.fetch_sub(1, std::memory_order_relaxed);
+            auto live = rt.live_gs.fetch_sub(1, std::memory_order_acq_rel);
+            auto daemon = rt.daemon_gs.load(std::memory_order_acquire);
+            if (live - 1 <= daemon) {
+                // All non-daemon imps are done.
                 { std::lock_guard<std::mutex> lk(rt.park_mu); }
                 rt.park_cv.notify_all();
             }
@@ -1365,6 +1412,8 @@ namespace csp {
                 // Inline schedule without re-acquiring run_mu.
                 if (!next_) {
                     if (busy) {
+                        if (busy == &current_p().main) {
+                        }
                         next_ = busy;
                         prev_ = busy->prev_;
                         next_->prev_ = prev_->next_ = this;
@@ -1388,6 +1437,10 @@ namespace csp {
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
             auto* self = current_imp();
+            if (self->qs_entered_) {
+                self->qs_sleeping_.store(true, std::memory_order_release);
+                self->qs_->leave();
+            }
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
                 StackPool::instance().maybe_shrink(
@@ -1408,6 +1461,12 @@ namespace csp {
                 target = busy;
             }
             target->run(status);
+            // Re-enter scope if we left it (yield path). For scheduled
+            // imps, make_runnable already entered — exchange returns false.
+            if (current_imp()->qs_entered_
+                && current_imp()->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                current_imp()->qs_->enter();
+            }
         }
 
     }
@@ -1420,10 +1479,7 @@ namespace csp {
         g_scheduler = default_scheduler_impl;
     }
 
-    void schedule() {
-        // Ensure the runtime is initialized (and the correct scheduler
-        // is installed) before dispatching. current_p() auto-inits on
-        // first call based on CSP_MAXPROCS / set_maxprocs().
+    void await_completion() {
         detail::current_p();
         g_scheduler();
     }
@@ -1490,7 +1546,7 @@ static void start(transfer_t t) {
 
 namespace csp::internal {
 
-int spawn(EntryFn start_f, void * data) {
+int spawn(EntryFn start_f, void * data, bool daemon) {
     (void)current_p(); // Ensure current_imp() is bound before use.
     auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
@@ -1555,24 +1611,26 @@ int spawn(EntryFn start_f, void * data) {
         switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
         set_current_imp(self);
 
+        // Inherit quiescence scope from parent.
+        imp->qs_ = self->qs_;
+        if (imp->qs_) {
+            imp->qs_->enter();
+            imp->qs_entered_ = true;
+        }
+
         auto& rt = Runtime::instance();
+        if (daemon) {
+            imp->daemon_ = true;
+            rt.daemon_gs.fetch_add(1, std::memory_order_relaxed);
+        }
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
 
-        if (rt.mn_mode_) {
-            // M:N mode: after the handshake switch_to, imp is initialized
-            // and suspended but NOT on any run queue. Push it to the
-            // global queue for workers to pick up and run.
-            {
-                std::lock_guard<std::mutex> lk(rt.global_mu);
-                rt.push_to_global(imp);
-            }
-            rt.park_cv.notify_all();
-        } else {
-            // Single-P mode: run the imp on the main thread
-            // (original behavior — run until it yields).
-            imp->run(Status::run);
-            rt.unpark_one();
+        // Push to the global queue for workers to pick up and run.
+        {
+            std::lock_guard<std::mutex> lk(rt.global_mu);
+            rt.push_to_global(imp);
         }
+        rt.park_cv.notify_all();
 
         return 1;
     } catch (std::exception const & e) {
@@ -1589,42 +1647,72 @@ void suspend() {
 }
 
 int run() {
-    auto& p = current_p();
     auto& rt = Runtime::instance();
-
-    // Drain global run queue (reactor events post here in single-P mode).
-    {
-        std::lock_guard<std::mutex> lk(rt.global_mu);
-        while (!rt.global_run_queue.empty()) {
-            auto* imp = rt.global_run_queue.front();
-            rt.global_run_queue.pop_front();
-            imp->in_global_ = false;
-            imp->schedule_local();
+    auto user_done = [&] {
+        return rt.live_gs.load(std::memory_order_acquire)
+            <= rt.daemon_gs.load(std::memory_order_acquire);
+    };
+    if (user_done()) return 0;
+    // Wait for either completion or quiescence (all workers parked +
+    // no global work + no pending signals = deadlock or external
+    // action needed).
+    std::unique_lock<std::mutex> lk(rt.park_mu);
+    rt.park_cv.wait(lk, [&] {
+        if (user_done()) return true;
+        // Check quiescence: all workers parked, no global work, no signals.
+        if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
+        if (csp::detail::Reactor::instance().has_pending_signals()) return false;
+        int np = rt.num_procs_.load(std::memory_order_acquire);
+        for (int i = 1; i < np; ++i) {
+            if (rt.procs[i] && rt.procs[i]->alive.load(std::memory_order_acquire)
+                && !rt.procs[i]->parked.load(std::memory_order_acquire)) {
+                return false;  // a worker is still active
+            }
         }
-        rt.has_global_work_.store(false, std::memory_order_release);
-    }
+        return true;  // quiescent — deadlock or done
+    });
+    return 0;
+}
 
-    Imp* target = nullptr;
-    {
-        std::lock_guard<std::mutex> lk(p.run_mu);
-        auto& busy = p.busy;
-        auto* ci = current_imp();
-        if (busy == ci) {
-            busy = busy->next_;
+void await_idle() {
+    // Wait for ALL imps (including daemons) to exit.
+    // Used by test cleanup after killing daemon handlers.
+    auto& rt = Runtime::instance();
+    std::unique_lock<std::mutex> lk(rt.park_mu);
+    rt.park_cv.wait(lk, [&rt] {
+        return rt.live_gs.load(std::memory_order_acquire) == 0;
+    });
+}
+
+} // namespace csp::internal
+
+void csp::quiescence_scope::bind() {
+    auto* imp = detail::current_imp();
+    imp->qs_ = this;
+    imp->qs_entered_ = true;
+    enter();
+}
+
+namespace csp::internal {
+
+void await_quiescent() {
+    // Wait until all workers are parked (no runnable work anywhere).
+    // At this point every live imp has registered its channel/timer
+    // waiters and yielded — the system is in a deterministic state.
+    auto& rt = Runtime::instance();
+    std::unique_lock<std::mutex> lk(rt.park_mu);
+    rt.park_cv.wait(lk, [&rt] {
+        if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
+        if (csp::detail::Reactor::instance().has_pending_signals()) return false;
+        int np = rt.num_procs_.load(std::memory_order_acquire);
+        for (int i = 1; i < np; ++i) {
+            if (rt.procs[i] && rt.procs[i]->alive.load(std::memory_order_acquire)
+                && !rt.procs[i]->parked.load(std::memory_order_acquire)) {
+                return false;
+            }
         }
-        if (busy != ci) {
-            target = busy;
-        }
-    }
-
-    if (target) {
-        target->run();
-    }
-
-    {
-        std::lock_guard<std::mutex> lk(p.run_mu);
-        return p.busy->next_ != p.busy;
-    }
+        return true;
+    });
 }
 
 void yield() {
@@ -2438,7 +2526,20 @@ connection make_connection(io::socket_t fd, std::string remote) {
         throw csp::error("dup failed");
     }
     auto input = part::io::byte_reader(rfd).spawn();
-    auto output = part::io::byte_writer(wfd).spawn();
+    // Socket-aware byte_writer: shutdown(SHUT_WR) before close so
+    // the peer's byte_reader sees EOF even though rfd still holds a
+    // reference to the underlying socket.
+    auto output = spawn_consumer<bytes>(
+        [wfd](reader<bytes> in) {
+            internal::descr("byte_writer");
+            io::set_nonblock(wfd);
+            for (bytes chunk; in >> chunk;) {
+                if (csp::io::write(wfd, chunk.data(), chunk.size()) < 0)
+                    break;
+            }
+            ::shutdown(wfd, SHUT_WR);
+            io::close(wfd);
+        });
 #endif
 
     connection c;
@@ -3408,10 +3509,12 @@ namespace csp {
             }
 
             if (num_procs <= 0) {
-                num_procs = std::max(1, (int)std::thread::hardware_concurrency());
+                num_procs = std::max(2, (int)std::thread::hardware_concurrency());
             }
+            // Always M:N: at least 2 procs so workers can process
+            // imps while the main thread parks in main_loop().
+            if (num_procs < 2) num_procs = 2;
 
-            mn_mode_ = num_procs > 1;
             initial_procs_ = num_procs;
             max_procs_ = std::max(num_procs, (int)std::thread::hardware_concurrency() * 4);
 
@@ -3434,7 +3537,7 @@ namespace csp {
                 });
             }
 
-            if (mn_mode_) {
+            if (num_procs > 1) {
                 watchdog_ = std::thread([this] { watchdog_loop(); });
             }
         }
@@ -3462,7 +3565,6 @@ namespace csp {
 
             procs.clear();
             num_procs_.store(0, std::memory_order_release);
-            mn_mode_ = false;
         }
 
         void Runtime::unpark_one() {
@@ -3505,6 +3607,7 @@ namespace csp {
                 {
                     std::unique_lock<std::mutex> lk(park_mu); // TLA:WorkerParking.WorkerAcquirePark
                     p.parked.store(true, std::memory_order_release);
+                    park_cv.notify_all();  // wake run() quiescence check
 
                     // Surplus Ps wind down after 5s idle.
                     using namespace std::chrono;
@@ -3538,11 +3641,68 @@ namespace csp {
         }
 
         void Runtime::main_loop() {
-            // Main thread waits for all imps to complete.
-            // Workers do all the actual execution.
+            auto user_done = [this] {
+                return live_gs.load(std::memory_order_acquire)
+                    <= daemon_gs.load(std::memory_order_acquire);
+            };
+            auto all_parked = [this] {
+                int np = num_procs_.load(std::memory_order_acquire);
+                for (int i = 1; i < np; ++i) {
+                    if (procs[i] && procs[i]->alive.load(std::memory_order_acquire)
+                        && !procs[i]->parked.load(std::memory_order_acquire))
+                        return false;
+                }
+                return true;
+            };
+
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lk(park_mu);
+                    park_cv.wait(lk, [&] {
+                        if (user_done()) return true;
+                        if (has_global_work_.load(std::memory_order_acquire)) return true;
+                        return all_parked();  // quiescent — check hook
+                    });
+                }
+                if (user_done()) break;
+                if (has_global_work_.load(std::memory_order_acquire)) continue;
+                // Quiescent: all workers parked. Call hook if registered.
+                {
+                    std::lock_guard<std::mutex> hlk(hook_mu_);
+                    if (quiescence_hook_) {
+                        if (!quiescence_hook_()) {
+                            // Hook has no more fake-clock work. Live imps
+                            // woken by the last timer fire may not have run
+                            // to completion yet — only exit if truly done.
+                            if (user_done()) break;
+                            // Re-park; workers will drain remaining imps.
+                        }
+                        continue;
+                    }
+                }
+                // No hook — genuine deadlock or waiting for external event.
+                // Park again; we'll wake on global work or user_done.
+                continue;
+            }
+        }
+
+        void Runtime::quiescent_loop() {
+            // Wait until no runnable work remains (all workers parked and
+            // global queue empty).  Unlike main_loop(), suspended imps that
+            // are waiting for external events (e.g. fake_clock timers) do NOT
+            // prevent this from returning — they are not in any run queue.
             std::unique_lock<std::mutex> lk(park_mu);
             park_cv.wait(lk, [this] {
-                return live_gs.load(std::memory_order_acquire) == 0;
+                if (has_global_work_.load(std::memory_order_acquire)) {
+                    return false;
+                }
+                int n = num_procs_.load(std::memory_order_acquire);
+                for (int i = 0; i < n; ++i) {
+                    auto& p = *procs[i];
+                    if (!p.alive.load(std::memory_order_acquire)) continue;
+                    if (!p.parked.load(std::memory_order_acquire)) return false;
+                }
+                return true;
             });
         }
 
@@ -3639,6 +3799,7 @@ namespace csp {
         bool Runtime::take_from_global(Processor& p) {
             std::lock_guard<std::mutex> lk(global_mu);
             if (global_run_queue.empty()) {
+                has_global_work_.store(false, std::memory_order_release);
                 return false;
             }
 
@@ -3651,6 +3812,9 @@ namespace csp {
                 global_run_queue.pop_front();
                 imp->in_global_ = false;
                 imp->schedule_local();
+            }
+            if (global_run_queue.empty()) {
+                has_global_work_.store(false, std::memory_order_release);
             }
             return true;
         }
@@ -5407,13 +5571,10 @@ reader<time_point> tick(duration interval) {
 #ifdef CSP_TLS
 
 
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/entropy.h>
-#include <mbedtls/error.h>
-#include <mbedtls/net_sockets.h>
-#include <mbedtls/pk.h>
-#include <mbedtls/ssl.h>
-#include <mbedtls/x509_crt.h>
+extern "C" {
+#include <picotls.h>
+#include <picotls/minicrypto.h>
+}
 
 
 namespace csp::tls {
@@ -5421,175 +5582,179 @@ namespace csp::tls {
 // --- error ---
 
 static std::string format_error(int code) {
-    char buf[256];
-    mbedtls_strerror(code, buf, sizeof(buf));
-    return std::string("tls: ") + buf;
+    if (PTLS_ERROR_GET_CLASS(code) == PTLS_ERROR_CLASS_PEER_ALERT) {
+        return "tls: peer alert " + std::to_string(PTLS_ERROR_TO_ALERT(code));
+    }
+    if (PTLS_ERROR_GET_CLASS(code) == PTLS_ERROR_CLASS_SELF_ALERT) {
+        return "tls: self alert " + std::to_string(PTLS_ERROR_TO_ALERT(code));
+    }
+    switch (code) {
+    case PTLS_ERROR_NO_MEMORY:         return "tls: out of memory";
+    case PTLS_ERROR_IN_PROGRESS:       return "tls: handshake in progress";
+    case PTLS_ERROR_LIBRARY:           return "tls: library error";
+    case PTLS_ERROR_INCOMPATIBLE_KEY:  return "tls: incompatible key";
+    case PTLS_ERROR_PEM_LABEL_NOT_FOUND: return "tls: PEM label not found";
+    default: return "tls: error " + std::to_string(code);
+    }
 }
 
 error::error(int code) : csp::error(format_error(code)), code(code) {}
 
-// --- BIO callbacks (non-blocking, never throw) ---
+// --- verify_certificate bridge ---
 
-static int csp_tls_recv(void* ctx, unsigned char* buf, size_t len) {
-    int fd = *static_cast<int*>(ctx);
-    ssize_t n = ::read(fd, buf, len);
-    if (n > 0) return static_cast<int>(n);
-    if (n == 0) return 0;
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return MBEDTLS_ERR_SSL_WANT_READ;
-    return MBEDTLS_ERR_NET_RECV_FAILED;
-}
+struct verify_bridge_t {
+    ptls_verify_certificate_t super;
+    verify_fn fn;
+};
 
-static int csp_tls_send(void* ctx, const unsigned char* buf, size_t len) {
-    int fd = *static_cast<int*>(ctx);
-    ssize_t n = ::write(fd, buf, len);
-    if (n >= 0) return static_cast<int>(n);
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return MBEDTLS_ERR_SSL_WANT_WRITE;
-    return MBEDTLS_ERR_NET_SEND_FAILED;
-}
+static int verify_cb(ptls_verify_certificate_t* self, ptls_t* tls,
+                     const char* server_name,
+                     int (**verify_sign)(void*, uint16_t, ptls_iovec_t, ptls_iovec_t),
+                     void** verify_data,
+                     ptls_iovec_t* certs, size_t num_certs) {
+    auto* bridge = reinterpret_cast<verify_bridge_t*>(self);
 
-// --- Retry helper ---
-// Loops mbedTLS operations, calling wait_readable/wait_writable on
-// WANT_READ/WANT_WRITE. Both cases checked in every call to handle
-// TLS renegotiation (read needing write and vice versa).
-
-template <typename Fn>
-static int retry_tls_io(int fd, Fn&& fn) {
-    for (;;) {
-        int ret = fn();
-        if (ret >= 0) return ret;
-        if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
-            csp::io::wait_readable(fd);
-            continue;
-        }
-        if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            csp::io::wait_writable(fd);
-            continue;
-        }
-        return ret;
+    // Build cert vector for the callback.
+    std::vector<std::vector<uint8_t>> cert_chain;
+    cert_chain.reserve(num_certs);
+    for (size_t i = 0; i < num_certs; ++i) {
+        cert_chain.emplace_back(certs[i].base, certs[i].base + certs[i].len);
     }
+
+    // No signature verification with minicrypto — set to null.
+    *verify_sign = nullptr;
+    *verify_data = nullptr;
+
+    if (!bridge->fn(server_name ? server_name : "", cert_chain)) {
+        return PTLS_ALERT_TO_SELF_ERROR(PTLS_ALERT_BAD_CERTIFICATE);
+    }
+    return 0;
 }
 
 // --- context ---
 
 struct context::impl {
-    mbedtls_ssl_config conf;
-    mbedtls_entropy_context entropy;
-    mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_x509_crt ca_chain;
-    mbedtls_x509_crt own_cert;
-    mbedtls_pk_context own_key;
+    ptls_context_t ctx{};
+    ptls_minicrypto_secp256r1sha256_sign_certificate_t sign_cert{};
+    bool has_sign_cert = false;
+    std::unique_ptr<verify_bridge_t> verifier;
 };
 
 context::context(role r) : impl_(std::make_unique<impl>()) {
-    mbedtls_ssl_config_init(&impl_->conf);
-    mbedtls_entropy_init(&impl_->entropy);
-    mbedtls_ctr_drbg_init(&impl_->ctr_drbg);
-    mbedtls_x509_crt_init(&impl_->ca_chain);
-    mbedtls_x509_crt_init(&impl_->own_cert);
-    mbedtls_pk_init(&impl_->own_key);
+    auto& ctx = impl_->ctx;
+    ctx.random_bytes = ptls_minicrypto_random_bytes;
+    ctx.get_time = &ptls_get_time;
+    ctx.key_exchanges = ptls_minicrypto_key_exchanges;
+    ctx.cipher_suites = ptls_minicrypto_cipher_suites;
 
-    int ret = mbedtls_ctr_drbg_seed(&impl_->ctr_drbg,
-                                     mbedtls_entropy_func,
-                                     &impl_->entropy,
-                                     nullptr, 0);
-    if (ret != 0) throw error(ret);
-
-    int endpoint = (r == server) ? MBEDTLS_SSL_IS_SERVER
-                                 : MBEDTLS_SSL_IS_CLIENT;
-    ret = mbedtls_ssl_config_defaults(&impl_->conf,
-                                       endpoint,
-                                       MBEDTLS_SSL_TRANSPORT_STREAM,
-                                       MBEDTLS_SSL_PRESET_DEFAULT);
-    if (ret != 0) throw error(ret);
-
-    mbedtls_ssl_conf_rng(&impl_->conf,
-                          mbedtls_ctr_drbg_random,
-                          &impl_->ctr_drbg);
-
-    // Default: verify peer for clients, none for servers.
-    mbedtls_ssl_conf_authmode(&impl_->conf,
-        (r == client) ? MBEDTLS_SSL_VERIFY_REQUIRED
-                      : MBEDTLS_SSL_VERIFY_NONE);
+    // Server mode doesn't request client certs by default.
+    // Client mode: no built-in verification (user can set_verify).
+    if (r == server) {
+        ctx.require_client_authentication = 0;
+    }
 }
 
 context::~context() {
     if (!impl_) return;
-    mbedtls_pk_free(&impl_->own_key);
-    mbedtls_x509_crt_free(&impl_->own_cert);
-    mbedtls_x509_crt_free(&impl_->ca_chain);
-    mbedtls_ctr_drbg_free(&impl_->ctr_drbg);
-    mbedtls_entropy_free(&impl_->entropy);
-    mbedtls_ssl_config_free(&impl_->conf);
+    auto& ctx = impl_->ctx;
+    // Free sign_certificate allocated by ptls_minicrypto_load_private_key.
+    free(ctx.sign_certificate);
+    // Free certificate chain if loaded.
+    for (size_t i = 0; i < ctx.certificates.count; ++i) {
+        free(ctx.certificates.list[i].base);
+    }
+    free(ctx.certificates.list);
 }
 
 context::context(context&&) noexcept = default;
 context& context::operator=(context&&) noexcept = default;
 
-void context::load_ca(const void* pem, size_t len) {
-    int ret = mbedtls_x509_crt_parse(&impl_->ca_chain,
-                                      static_cast<const unsigned char*>(pem),
-                                      len);
+void context::load_cert(const char* cert_pem_path) {
+    int ret = ptls_load_certificates(&impl_->ctx, cert_pem_path);
     if (ret != 0) throw error(ret);
-    mbedtls_ssl_conf_ca_chain(&impl_->conf, &impl_->ca_chain, nullptr);
 }
 
-void context::load_cert(const void* cert_pem, size_t cert_len,
-                        const void* key_pem, size_t key_len) {
-    int ret = mbedtls_x509_crt_parse(&impl_->own_cert,
-                                      static_cast<const unsigned char*>(cert_pem),
-                                      cert_len);
+void context::load_key(const char* key_pem_path) {
+    int ret = ptls_minicrypto_load_private_key(&impl_->ctx, key_pem_path);
     if (ret != 0) throw error(ret);
+}
 
-    ret = mbedtls_pk_parse_key(&impl_->own_key,
-                                static_cast<const unsigned char*>(key_pem),
-                                key_len,
-                                nullptr, 0,
-                                mbedtls_ctr_drbg_random,
-                                &impl_->ctr_drbg);
-    if (ret != 0) throw error(ret);
+void context::set_verify(verify_fn fn) {
+    static const uint16_t algos[] = {
+        PTLS_SIGNATURE_ECDSA_SECP256R1_SHA256,
+        PTLS_SIGNATURE_RSA_PSS_RSAE_SHA256,
+        UINT16_MAX,
+    };
+    impl_->verifier = std::make_unique<verify_bridge_t>();
+    impl_->verifier->super.cb = verify_cb;
+    impl_->verifier->super.algos = algos;
+    impl_->verifier->fn = std::move(fn);
+    impl_->ctx.verify_certificate = &impl_->verifier->super;
+}
 
-    ret = mbedtls_ssl_conf_own_cert(&impl_->conf,
-                                     &impl_->own_cert,
-                                     &impl_->own_key);
-    if (ret != 0) throw error(ret);
+// --- socket I/O helpers ---
+
+// Flush a PicoTLS output buffer to the socket, using csp::io for
+// non-blocking writes. Returns bytes written.
+static void flush_to_socket(int fd, ptls_buffer_t& buf) {
+    size_t off = 0;
+    while (off < buf.off) {
+        csp::io::wait_writable(fd);
+        ssize_t n = ::write(fd, buf.base + off, buf.off - off);
+        if (n > 0) {
+            off += static_cast<size_t>(n);
+        } else if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                continue;
+            throw csp::error("tls: socket write failed");
+        }
+    }
+}
+
+// Read raw bytes from the socket into a buffer, using csp::io for
+// non-blocking reads. Returns bytes read, 0 on EOF.
+static ssize_t read_from_socket(int fd, uint8_t* buf, size_t len) {
+    for (;;) {
+        csp::io::wait_readable(fd);
+        ssize_t n = ::read(fd, buf, len);
+        if (n >= 0) return n;
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            continue;
+        throw csp::error("tls: socket read failed");
+    }
 }
 
 // --- conn ---
 
 struct conn::impl {
-    mbedtls_ssl_context ssl;
+    ptls_t* tls = nullptr;
     int fd;
+    // Receive buffer for partially consumed TLS records (ciphertext).
+    std::vector<uint8_t> recvbuf;
+    size_t recvbuf_off = 0;
+    // Decrypted plaintext buffer for data that was decrypted but not
+    // yet returned to the caller.
+    std::vector<uint8_t> plainbuf;
+    size_t plainbuf_off = 0;
 };
 
 conn::conn(context& ctx, int fd) : impl_(std::make_unique<impl>()) {
     impl_->fd = fd;
 
-    // Suppress SIGPIPE on this fd — TLS connections handle write
-    // errors via return codes, not signals.
+    // Suppress SIGPIPE on this fd.
 #ifdef F_SETNOSIGPIPE
     fcntl(fd, F_SETNOSIGPIPE, 1);
 #endif
 
-    mbedtls_ssl_init(&impl_->ssl);
-
-    int ret = mbedtls_ssl_setup(&impl_->ssl, &ctx.impl_->conf);
-    if (ret != 0) {
-        mbedtls_ssl_free(&impl_->ssl);
-        throw error(ret);
-    }
-
-    mbedtls_ssl_set_bio(&impl_->ssl,
-                         &impl_->fd,
-                         csp_tls_send,
-                         csp_tls_recv,
-                         nullptr);
+    // Determine if server by checking if sign_certificate is set (servers load keys).
+    bool is_server = (ctx.impl_->ctx.sign_certificate != nullptr);
+    impl_->tls = ptls_new(&ctx.impl_->ctx, is_server ? 1 : 0);
+    if (!impl_->tls) throw error(PTLS_ERROR_NO_MEMORY);
 }
 
 conn::~conn() {
-    if (impl_) {
-        mbedtls_ssl_free(&impl_->ssl);
+    if (impl_ && impl_->tls) {
+        ptls_free(impl_->tls);
     }
 }
 
@@ -5597,48 +5762,178 @@ conn::conn(conn&&) noexcept = default;
 conn& conn::operator=(conn&&) noexcept = default;
 
 void conn::set_hostname(const std::string& hostname) {
-    int ret = mbedtls_ssl_set_hostname(&impl_->ssl, hostname.c_str());
+    int ret = ptls_set_server_name(impl_->tls, hostname.c_str(), 0);
     if (ret != 0) throw error(ret);
 }
 
 void conn::handshake() {
-    int ret = retry_tls_io(impl_->fd, [&] {
-        return mbedtls_ssl_handshake(&impl_->ssl);
-    });
-    if (ret != 0) throw error(ret);
+    ptls_buffer_t sendbuf;
+    uint8_t sendbuf_small[256];
+    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+
+    uint8_t readbuf[4096];
+    const uint8_t* input = nullptr;
+    size_t inlen = 0;
+
+    for (;;) {
+        int ret = ptls_handshake(impl_->tls, &sendbuf, input, &inlen, nullptr);
+
+        // Always flush any output (even on error, per PicoTLS docs).
+        if (sendbuf.off > 0) {
+            flush_to_socket(impl_->fd, sendbuf);
+            sendbuf.off = 0;
+        }
+
+        if (ret == 0) {
+            // Handshake complete. If there's leftover input, save it
+            // for subsequent reads.
+            // Note: inlen is updated to bytes consumed; we may have
+            // read more than was consumed.
+            break;
+        }
+        if (ret != PTLS_ERROR_IN_PROGRESS) {
+            ptls_buffer_dispose(&sendbuf);
+            throw error(ret);
+        }
+
+        // Need more input from peer.
+        ssize_t n = read_from_socket(impl_->fd, readbuf, sizeof(readbuf));
+        if (n == 0) {
+            ptls_buffer_dispose(&sendbuf);
+            throw csp::error("tls: peer closed during handshake");
+        }
+        input = readbuf;
+        inlen = static_cast<size_t>(n);
+    }
+
+    ptls_buffer_dispose(&sendbuf);
 }
 
 ssize_t conn::read(void* buf, size_t len) {
-    int ret = retry_tls_io(impl_->fd, [&] {
-        return mbedtls_ssl_read(&impl_->ssl,
-                                 static_cast<unsigned char*>(buf),
-                                 len);
-    });
-    if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return 0;
-    if (ret < 0) throw error(ret);
-    return ret;
+    // Return any previously buffered plaintext first.
+    if (impl_->plainbuf_off < impl_->plainbuf.size()) {
+        size_t avail = impl_->plainbuf.size() - impl_->plainbuf_off;
+        size_t copy = std::min(len, avail);
+        std::memcpy(buf, impl_->plainbuf.data() + impl_->plainbuf_off, copy);
+        impl_->plainbuf_off += copy;
+        if (impl_->plainbuf_off == impl_->plainbuf.size()) {
+            impl_->plainbuf.clear();
+            impl_->plainbuf_off = 0;
+        }
+        return static_cast<ssize_t>(copy);
+    }
+
+    ptls_buffer_t decbuf;
+    uint8_t decbuf_small[256];
+    ptls_buffer_init(&decbuf, decbuf_small, sizeof(decbuf_small));
+
+    uint8_t readbuf[4096];
+
+    auto return_plaintext = [&](size_t len) -> ssize_t {
+        size_t copy = std::min(len, decbuf.off);
+        std::memcpy(buf, decbuf.base, copy);
+        // Buffer any excess for the next read call.
+        if (copy < decbuf.off) {
+            impl_->plainbuf.assign(decbuf.base + copy,
+                                   decbuf.base + decbuf.off);
+            impl_->plainbuf_off = 0;
+        }
+        ptls_buffer_dispose(&decbuf);
+        return static_cast<ssize_t>(copy);
+    };
+
+    for (;;) {
+        // Try to decrypt from already-buffered ciphertext.
+        if (impl_->recvbuf_off < impl_->recvbuf.size()) {
+            size_t avail = impl_->recvbuf.size() - impl_->recvbuf_off;
+            size_t consumed = avail;
+            int ret = ptls_receive(impl_->tls, &decbuf,
+                                   impl_->recvbuf.data() + impl_->recvbuf_off,
+                                   &consumed);
+            impl_->recvbuf_off += consumed;
+
+            // Compact buffer if fully consumed.
+            if (impl_->recvbuf_off == impl_->recvbuf.size()) {
+                impl_->recvbuf.clear();
+                impl_->recvbuf_off = 0;
+            }
+
+            if (ret == PTLS_ALERT_TO_PEER_ERROR(PTLS_ALERT_CLOSE_NOTIFY)) {
+                ptls_buffer_dispose(&decbuf);
+                return 0;
+            }
+            if (ret != 0 && ret != PTLS_ERROR_IN_PROGRESS) {
+                ptls_buffer_dispose(&decbuf);
+                throw error(ret);
+            }
+            if (decbuf.off > 0) return return_plaintext(len);
+            // Need more data — fall through to socket read.
+        }
+
+        // Read from socket.
+        ssize_t n = read_from_socket(impl_->fd, readbuf, sizeof(readbuf));
+        if (n == 0) {
+            ptls_buffer_dispose(&decbuf);
+            return 0; // EOF
+        }
+
+        // Feed to PicoTLS.
+        size_t consumed = static_cast<size_t>(n);
+        int ret = ptls_receive(impl_->tls, &decbuf, readbuf, &consumed);
+
+        // Buffer any unconsumed ciphertext.
+        if (consumed < static_cast<size_t>(n)) {
+            impl_->recvbuf.insert(impl_->recvbuf.end(),
+                                  readbuf + consumed,
+                                  readbuf + n);
+        }
+
+        if (ret == PTLS_ALERT_TO_PEER_ERROR(PTLS_ALERT_CLOSE_NOTIFY)) {
+            ptls_buffer_dispose(&decbuf);
+            return 0;
+        }
+        if (ret != 0 && ret != PTLS_ERROR_IN_PROGRESS) {
+            ptls_buffer_dispose(&decbuf);
+            throw error(ret);
+        }
+        if (decbuf.off > 0) return return_plaintext(len);
+        // No plaintext yet — loop to read more.
+    }
 }
 
 ssize_t conn::write(const void* buf, size_t len) {
-    auto p = static_cast<const unsigned char*>(buf);
-    size_t written = 0;
-    while (written < len) {
-        int ret = retry_tls_io(impl_->fd, [&] {
-            return mbedtls_ssl_write(&impl_->ssl,
-                                      p + written,
-                                      len - written);
-        });
-        if (ret < 0) throw error(ret);
-        written += static_cast<size_t>(ret);
+    ptls_buffer_t sendbuf;
+    uint8_t sendbuf_small[256];
+    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+
+    int ret = ptls_send(impl_->tls, &sendbuf,
+                        static_cast<const uint8_t*>(buf), len);
+    if (ret != 0) {
+        ptls_buffer_dispose(&sendbuf);
+        throw error(ret);
     }
-    return static_cast<ssize_t>(written);
+
+    flush_to_socket(impl_->fd, sendbuf);
+    ptls_buffer_dispose(&sendbuf);
+    return static_cast<ssize_t>(len);
 }
 
 void conn::shutdown() {
+    ptls_buffer_t sendbuf;
+    uint8_t sendbuf_small[64];
+    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+
     // Ignore errors on close_notify — peer may have already closed.
-    retry_tls_io(impl_->fd, [&] {
-        return mbedtls_ssl_close_notify(&impl_->ssl);
-    });
+    ptls_send_alert(impl_->tls, &sendbuf,
+                    PTLS_ALERT_LEVEL_WARNING, PTLS_ALERT_CLOSE_NOTIFY);
+    if (sendbuf.off > 0) {
+        try {
+            flush_to_socket(impl_->fd, sendbuf);
+        } catch (...) {
+            // Best-effort — peer may have closed.
+        }
+    }
+    ptls_buffer_dispose(&sendbuf);
 }
 
 int conn::fd() const {

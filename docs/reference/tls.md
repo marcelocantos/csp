@@ -1,6 +1,7 @@
 # TLS Reference
 
-Cancel-aware TLS via mbedTLS. Available when `CSP_TLS` is defined.
+Cancel-aware TLS 1.3 via PicoTLS (minicrypto backend). Available when
+`CSP_TLS` is defined.
 
 All types live in `namespace csp::tls`. Header: `#include "csp.h"`.
 
@@ -9,33 +10,49 @@ All types live in `namespace csp::tls`. Header: `#include "csp.h"`.
 ## Table of Contents
 
 1. [csp::tls::error](#csptlserror) -- TLS exception type
-2. [csp::tls::context](#csptlscontext) -- TLS configuration (shared across connections)
-3. [csp::tls::conn](#csptlsconn) -- TLS session on a socket
+2. [csp::tls::verify_fn](#csptlsverify_fn) -- Certificate verification callback
+3. [csp::tls::context](#csptlscontext) -- TLS configuration (shared across connections)
+4. [csp::tls::conn](#csptlsconn) -- TLS session on a socket
 
 ---
 
 ## csp::tls::error
 
-Exception thrown on TLS failures. Wraps an mbedTLS error code with a
+Exception thrown on TLS failures. Wraps a PicoTLS error code with a
 human-readable message.
 
 ### Signature
 
 ```cpp
 struct error : csp::error {
-    int code;       // mbedTLS error code
+    int code;       // PicoTLS error code
     error(int code);
-    // what() returns "tls: <mbedtls_strerror output>"
+    // what() returns "tls: <description>"
 };
 ```
 
 ---
 
+## csp::tls::verify_fn
+
+Callback type for custom certificate verification.
+
+```cpp
+using verify_fn =
+    std::function<bool(const char* server_name,
+                       const std::vector<std::vector<uint8_t>>& certs)>;
+```
+
+Receives the server name (from SNI) and the DER-encoded certificate
+chain. Return `true` to accept, `false` to reject. If no verify callback
+is set, no certificate verification is performed.
+
+---
+
 ## csp::tls::context
 
-TLS configuration: certificate chain, private key, CA trust store, and
-protocol settings. Thread-safe after construction. A single context can
-be shared across many connections.
+TLS configuration: certificate chain, private key, and verification
+settings. A single context can be shared across many connections.
 
 ### Signature
 
@@ -48,9 +65,9 @@ public:
     context(context&&) noexcept;
     context& operator=(context&&) noexcept;
 
-    void load_ca(const void* pem, size_t len);
-    void load_cert(const void* cert_pem, size_t cert_len,
-                   const void* key_pem, size_t key_len);
+    void load_cert(const char* cert_pem_path);
+    void load_key(const char* key_pem_path);
+    void set_verify(verify_fn fn);
 };
 ```
 
@@ -58,17 +75,20 @@ public:
 
 | Method | Description |
 |---|---|
-| `context(role)` | Create a context. `client` enables peer verification; `server` disables it. |
-| `load_ca(pem, len)` | Parse PEM CA certificate(s) for peer verification. Buffer must be NUL-terminated; `len` includes the NUL. |
-| `load_cert(cert, cert_len, key, key_len)` | Load own certificate + private key. Required for servers. Both PEM, NUL-terminated. |
+| `context(role)` | Create a context. |
+| `load_cert(path)` | Load certificate chain from a PEM file. |
+| `load_key(path)` | Load private key from a PKCS#8 PEM file. Must be secp256r1 (minicrypto limitation). Required for servers. |
+| `set_verify(fn)` | Set a custom certificate verification callback. Without this, no verification is performed. |
 
 ### Notes
 
-- `context` uses pimpl (`std::unique_ptr<impl>`) to hide mbedTLS types.
-- Internally holds: `ssl_config`, `entropy_context`, `ctr_drbg_context`,
-  `x509_crt` (CA chain + own cert), `pk_context` (own key).
-- Entropy and DRBG are protected by `MBEDTLS_THREADING_PTHREAD` for M:N
-  safety.
+- `context` uses pimpl (`std::unique_ptr<impl>`) to hide PicoTLS types.
+- Internally holds: `ptls_context_t` (crypto config), sign certificate
+  state, and the optional verify bridge.
+- The minicrypto backend has no X.509 chain validator. Use `set_verify`
+  with a custom callback for certificate validation.
+- Only secp256r1 keys are supported (minicrypto limitation).
+- TLS 1.3 only — TLS 1.2 connections will fail.
 
 ---
 
@@ -101,7 +121,7 @@ public:
 | Method | Description |
 |---|---|
 | `conn(ctx, fd)` | Create a TLS session. `fd` must be connected and non-blocking. Suppresses SIGPIPE on the fd. |
-| `set_hostname(h)` | Set SNI extension and enable hostname verification. Call before `handshake`. |
+| `set_hostname(h)` | Set SNI extension. Call before `handshake`. |
 | `handshake()` | Perform TLS handshake. Cancel-aware. Throws `tls::error` on failure, `csp::canceled`/`timed_out` on cancellation. |
 | `read(buf, len)` | Read up to `len` bytes. Returns bytes read, 0 on clean shutdown (`close_notify`). Cancel-aware. |
 | `write(buf, len)` | Write all `len` bytes (retries partial writes). Cancel-aware. |
@@ -115,10 +135,16 @@ All blocking methods (`handshake`, `read`, `write`) use
 scope is active, these compose the fd readiness signal with `done()` in
 a `prialt`, so cancellation fires immediately.
 
-### BIO callbacks
+### I/O model
 
-mbedTLS BIO callbacks are non-blocking: they return
-`MBEDTLS_ERR_SSL_WANT_READ` / `WANT_WRITE` on `EAGAIN`. A C++ retry helper
-loops the mbedTLS operation, calling `wait_readable` / `wait_writable` between
-attempts. Both `WANT_READ` and `WANT_WRITE` are checked in every call to
-handle TLS renegotiation transparently.
+PicoTLS operates on buffers, not sockets. The `conn` implementation
+bridges between PicoTLS's buffer-based API and the socket:
+
+1. Call PicoTLS (`ptls_handshake` / `ptls_send` / `ptls_receive`) with
+   input data.
+2. Flush any output bytes to the socket via `wait_writable` + `write`.
+3. When PicoTLS needs more input, read from the socket via
+   `wait_readable` + `read` and feed it back.
+
+This design means PicoTLS never touches the socket directly — no
+internal mutexes, no threading issues. Safe under M:N fiber migration.

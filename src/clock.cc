@@ -1,5 +1,6 @@
 #include <csp/timer.h>
 #include <csp/internal/csp_internal.h>
+#include <csp/internal/runtime.h>
 
 namespace csp {
 
@@ -18,22 +19,70 @@ real_clock real_clock_instance;
 
 } // namespace
 
-dynamic<clock_source*> clock{&real_clock_instance};
+dynamic<std::shared_ptr<clock_source>> clock{
+    std::shared_ptr<clock_source>(&real_clock_instance, [](auto*){})
+};
 
 fake_clock::fake_clock(time_point start) : current_(start) {}
 
+time_point fake_clock::now() const {
+    // Auto-enroll the calling imp in this clock's quiescence scope.
+    // Only enroll real imps (with fcontext stacks), not p.main.
+    auto* imp = detail::current_imp();
+    if (imp && imp->stk_.base && imp->qs_ != &qs_ && !imp->qs_entered_) {
+        imp->qs_ = const_cast<quiescence_scope*>(&qs_);
+        const_cast<quiescence_scope*>(&qs_)->enter();
+        imp->qs_entered_ = true;
+    }
+    return current_;
+}
+
+fake_clock::~fake_clock() {
+    // Unregister quiescence hook.
+    auto& rt = detail::Runtime::instance();
+    std::lock_guard<std::mutex> lk(rt.hook_mu_);
+    rt.quiescence_hook_ = nullptr;
+}
+
 void fake_clock::sleep_until(time_point tp) {
     if (tp <= current_) return;
-    pending_.push({tp, detail::current_imp()});
+    auto token = std::make_shared<std::atomic<bool>>(false);
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        pending_.push({tp, detail::current_imp(), token});
+    }
+    // Register quiescence hook on first use (lazy — avoids needing
+    // the runtime to be initialized at fake_clock construction time).
+    auto& rt = detail::Runtime::instance();
+    {
+        std::lock_guard<std::mutex> lk(rt.hook_mu_);
+        if (!rt.quiescence_hook_) {
+            rt.quiescence_hook_ = [this]() -> bool {
+                // Only advance time when ALL scope members are sleeping.
+                if (!qs_.is_quiescent()) return true;  // imps still active
+                return advance_to_next();  // true=advanced, false=no timers
+            };
+        }
+    }
     internal::suspend();
+    // Imp woke (timer fired or cancelled). Mark the timer entry
+    // so fire_expired skips it if it's still in pending_.
+    token->store(true, std::memory_order_release);
 }
 
 void fake_clock::fire_expired() {
-    while (!pending_.empty() && pending_.top().deadline <= current_) {
-        auto* imp = pending_.top().imp;
-        pending_.pop();
-        imp->schedule_local();
+    std::vector<detail::Imp*> expired;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        while (!pending_.empty() && pending_.top().deadline <= current_) {
+            auto& e = pending_.top();
+            if (!e.cancelled->load(std::memory_order_acquire)) {
+                expired.push_back(e.imp);
+            }
+            pending_.pop();
+        }
     }
+    for (auto* imp : expired) imp->make_runnable();
 }
 
 void fake_clock::advance(duration d) {
@@ -42,21 +91,34 @@ void fake_clock::advance(duration d) {
 }
 
 bool fake_clock::advance_to_next() {
-    if (pending_.empty()) return false;
-    current_ = pending_.top().deadline;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (pending_.empty()) return false;
+        current_ = pending_.top().deadline;
+    }
     fire_expired();
     return true;
 }
 
+dynamic_binding fake_clock::binding() {
+    // Set qs_ for child propagation WITHOUT entering the scope.
+    // The binding imp is the orchestrator, not a participant —
+    // only child imps (spawned after this) enter the scope.
+    detail::current_imp()->qs_ = &qs_;
+    return csp::clock = std::shared_ptr<clock_source>(this, [](auto*){});
+}
+
 void fake_clock::run() {
+    qs_.bind();
     for (;;) {
-        while (internal::run()) {}
+        qs_.wait();
         if (!advance_to_next()) break;
     }
 }
 
 void fake_clock::run_until_idle() {
-    while (internal::run()) {}
+    qs_.bind();
+    qs_.wait();
 }
 
 }

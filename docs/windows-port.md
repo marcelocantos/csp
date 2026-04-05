@@ -211,21 +211,17 @@ types (`HANDLE`, `DWORD`) that don't exist elsewhere.
 [consolectrl]: https://learn.microsoft.com/en-us/windows/console/setconsolectrlhandler
 [ctrl_events]: https://learn.microsoft.com/en-us/windows/console/handlerroutine
 
-### TLS (mbedTLS)
+### TLS (PicoTLS)
 
-Two changes:
-
-1. BIO callbacks: [`read`][read]/[`write`][write] →
-   [`recv`][recv]/[`send`][send] (operating on sockets)
-2. `include/mbedtls_config.h`:
-   [`MBEDTLS_THREADING_PTHREAD`][mbedtls_threading] →
-   `MBEDTLS_THREADING_WINDOWS` ([mbedTLS supports this
-   natively][mbedtls_threading])
+Socket I/O in `conn`: [`read`][read]/[`write`][write] →
+[`recv`][recv]/[`send`][send] (operating on sockets). PicoTLS itself
+is buffer-based with no platform dependencies. The minicrypto backend
+has no threading primitives, so no platform-specific mutex changes
+are needed (unlike the former mbedTLS integration).
 
 `F_SETNOSIGPIPE` is already `#ifdef`-guarded. Windows has no
 [`SIGPIPE`][sigpipe].
 
-[mbedtls_threading]: https://mbed-tls.readthedocs.io/projects/api/en/development/api/file/mbedtls__threading_8h/
 [sigpipe]: https://man7.org/linux/man-pages/man7/signal.7.html
 
 ### Small items
@@ -282,7 +278,7 @@ same file (reactor, stack_pool, io, thread naming, backtrace).
 | `src/csp.cc` | [`SetThreadDescription`][setthreaddesc] branch |
 | `src/log.cc` | [`CaptureStackBackTrace`][capturestackbt] or stub |
 | `src/tls.cc` | [`recv`][recv]/[`send`][send] in BIO callbacks |
-| `include/mbedtls_config.h` | Conditional `MBEDTLS_THREADING_WINDOWS` |
+| TLS (PicoTLS) | No platform changes needed (buffer-based, no mutexes) |
 
 ### Distribution (amalgamation)
 
@@ -358,7 +354,7 @@ and GAS inline assembly works.
 3. **I/O wrappers** — [Winsock][winsock] layer. Test loopback TCP.
 4. **csp::win** — console_ctrl() and notify(HANDLE).
 5. **Build** — CMakeLists.txt.
-6. **TLS** — rebuild mbedTLS with `MBEDTLS_THREADING_WINDOWS`.
+6. **TLS** — PicoTLS: socket I/O in conn (recv/send instead of read/write).
 7. **Distribution** — update amalgamate.py for Windows fcontext variants.
 
 [winsock]: https://learn.microsoft.com/en-us/windows/win32/winsock/getting-started-with-winsock

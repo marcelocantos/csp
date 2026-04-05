@@ -62,7 +62,7 @@ These are generated from the development sources by `scripts/amalgamate.py`
 - **include/csp/io.h** — Non-blocking I/O (kqueue reactor, DNS resolution).
 - **include/csp/cancel.h** — Cooperative cancellation (`cancel_guard`,
   `done`, `timed_out`).
-- **include/csp/tls.h** — TLS via mbedTLS (`context`, `conn`), behind
+- **include/csp/tls.h** — TLS 1.3 via PicoTLS (`context`, `conn`), behind
   `#ifdef CSP_TLS`.
 - **include/csp/signal.h** — Unix signal channels.
 - **include/csp/blocking.h** — Blocking thread pool.
@@ -190,9 +190,9 @@ with `.test.cc` extension.
 - **Boost.Context** (vendored as git submodule in
   `vendor/github.com/boostorg/context/`; only the fcontext assembly files are
   compiled)
-- **mbedTLS** (vendored as git submodule in
-  `vendor/github.com/Mbed-TLS/mbedtls/` v3.6.2; compiled when `CSP_TLS=1`,
-  which is the default)
+- **PicoTLS** (vendored as git submodule in
+  `vendor/github.com/h2o/picotls/` with minicrypto backend; compiled when
+  `CSP_TLS=1`, which is the default; TLS 1.3 only, no OpenSSL dependency)
 - **doctest** (vendored, header-only)
 
 ### Optional tools

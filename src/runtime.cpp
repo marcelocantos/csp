@@ -1,4 +1,5 @@
 #include <csp/internal/runtime.h>
+#include <csp/csp.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -60,10 +61,12 @@ namespace csp {
             }
 
             if (num_procs <= 0) {
-                num_procs = std::max(1, (int)std::thread::hardware_concurrency());
+                num_procs = std::max(2, (int)std::thread::hardware_concurrency());
             }
+            // Always M:N: at least 2 procs so workers can process
+            // imps while the main thread parks in main_loop().
+            if (num_procs < 2) num_procs = 2;
 
-            mn_mode_ = num_procs > 1;
             initial_procs_ = num_procs;
             max_procs_ = std::max(num_procs, (int)std::thread::hardware_concurrency() * 4);
 
@@ -86,7 +89,7 @@ namespace csp {
                 });
             }
 
-            if (mn_mode_) {
+            if (num_procs > 1) {
                 watchdog_ = std::thread([this] { watchdog_loop(); });
             }
         }
@@ -114,7 +117,6 @@ namespace csp {
 
             procs.clear();
             num_procs_.store(0, std::memory_order_release);
-            mn_mode_ = false;
         }
 
         void Runtime::unpark_one() {
@@ -157,6 +159,7 @@ namespace csp {
                 {
                     std::unique_lock<std::mutex> lk(park_mu); // TLA:WorkerParking.WorkerAcquirePark
                     p.parked.store(true, std::memory_order_release);
+                    park_cv.notify_all();  // wake run() quiescence check
 
                     // Surplus Ps wind down after 5s idle.
                     using namespace std::chrono;
@@ -190,11 +193,68 @@ namespace csp {
         }
 
         void Runtime::main_loop() {
-            // Main thread waits for all imps to complete.
-            // Workers do all the actual execution.
+            auto user_done = [this] {
+                return live_gs.load(std::memory_order_acquire)
+                    <= daemon_gs.load(std::memory_order_acquire);
+            };
+            auto all_parked = [this] {
+                int np = num_procs_.load(std::memory_order_acquire);
+                for (int i = 1; i < np; ++i) {
+                    if (procs[i] && procs[i]->alive.load(std::memory_order_acquire)
+                        && !procs[i]->parked.load(std::memory_order_acquire))
+                        return false;
+                }
+                return true;
+            };
+
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lk(park_mu);
+                    park_cv.wait(lk, [&] {
+                        if (user_done()) return true;
+                        if (has_global_work_.load(std::memory_order_acquire)) return true;
+                        return all_parked();  // quiescent — check hook
+                    });
+                }
+                if (user_done()) break;
+                if (has_global_work_.load(std::memory_order_acquire)) continue;
+                // Quiescent: all workers parked. Call hook if registered.
+                {
+                    std::lock_guard<std::mutex> hlk(hook_mu_);
+                    if (quiescence_hook_) {
+                        if (!quiescence_hook_()) {
+                            // Hook has no more fake-clock work. Live imps
+                            // woken by the last timer fire may not have run
+                            // to completion yet — only exit if truly done.
+                            if (user_done()) break;
+                            // Re-park; workers will drain remaining imps.
+                        }
+                        continue;
+                    }
+                }
+                // No hook — genuine deadlock or waiting for external event.
+                // Park again; we'll wake on global work or user_done.
+                continue;
+            }
+        }
+
+        void Runtime::quiescent_loop() {
+            // Wait until no runnable work remains (all workers parked and
+            // global queue empty).  Unlike main_loop(), suspended imps that
+            // are waiting for external events (e.g. fake_clock timers) do NOT
+            // prevent this from returning — they are not in any run queue.
             std::unique_lock<std::mutex> lk(park_mu);
             park_cv.wait(lk, [this] {
-                return live_gs.load(std::memory_order_acquire) == 0;
+                if (has_global_work_.load(std::memory_order_acquire)) {
+                    return false;
+                }
+                int n = num_procs_.load(std::memory_order_acquire);
+                for (int i = 0; i < n; ++i) {
+                    auto& p = *procs[i];
+                    if (!p.alive.load(std::memory_order_acquire)) continue;
+                    if (!p.parked.load(std::memory_order_acquire)) return false;
+                }
+                return true;
             });
         }
 
@@ -291,6 +351,7 @@ namespace csp {
         bool Runtime::take_from_global(Processor& p) {
             std::lock_guard<std::mutex> lk(global_mu);
             if (global_run_queue.empty()) {
+                has_global_work_.store(false, std::memory_order_release);
                 return false;
             }
 
@@ -303,6 +364,9 @@ namespace csp {
                 global_run_queue.pop_front();
                 imp->in_global_ = false;
                 imp->schedule_local();
+            }
+            if (global_run_queue.empty()) {
+                has_global_work_.store(false, std::memory_order_release);
             }
             return true;
         }

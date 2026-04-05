@@ -16,7 +16,7 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
   with `operator|` composition
 - **Non-blocking I/O** via platform-native reactor (kqueue/epoll/WSAEventSelect)
 - **Unix/Windows signals** — signal channels composable with `alt`
-- **TLS** — cancel-aware TLS via mbedTLS (`#ifdef CSP_TLS`)
+- **TLS** — cancel-aware TLS 1.3 via PicoTLS (`#ifdef CSP_TLS`)
 - **Cooperative cancellation** — scope-based, with deadlines, composable in `alt`
 - **Dynamic scoping** — inherited variables with scoped bindings and copy-on-write
   isolation

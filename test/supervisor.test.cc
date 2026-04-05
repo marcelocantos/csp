@@ -19,7 +19,7 @@ TEST_CASE("all workers exit normally") {
         };
         wg.run();
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(a == 1);
     CHECK(b == 2);
     CHECK(c == 3);
@@ -36,7 +36,7 @@ TEST_CASE("worker exception triggers restart") {
         };
         wg.run();
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(count == 2);
 }
 
@@ -59,56 +59,56 @@ TEST_CASE("max restarts exceeded") {
             CHECK(e.cause != nullptr);
         }
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(caught);
     CHECK(count == 3); // initial + 2 restarts
 }
 
 TEST_CASE("sliding window forgets old restarts") {
-    RunStats stats;
     int count = 0;
     fake_clock fc;
-    stats.spawn([&]() {
-        csp::local l{csp::clock = &fc};
+    RunStats stats;
+    csp::run([&] {
+        csp::local l{fc.binding()};
         // max_restarts = 2, window = 10s.
         // Worker advances fake time by 11s before each throw,
         // pushing prior restarts outside the window.
-        worker_group wg;
-        wg.policy.max_restarts = 2;
-        wg.policy.window = std::chrono::seconds(10);
-        wg.workers["timed_fail"] = [&count, &fc]() {
-            ++count;
-            fc.advance(std::chrono::seconds(11));
-            if (count <= 5) throw std::runtime_error("fail");
-        };
-        wg.run();
+        stats.spawn([&]() {
+            worker_group wg;
+            wg.policy.max_restarts = 2;
+            wg.policy.window = std::chrono::seconds(10);
+            wg.workers["timed_fail"] = [&count, &fc]() {
+                ++count;
+                fc.advance(std::chrono::seconds(11));
+                if (count <= 5) throw std::runtime_error("fail");
+            };
+            wg.run();
+        });
     });
-    csp::schedule();
-    fc.run();
     // Without window expiry, max_restarts=2 would escalate at count=3.
     // With expiry, each restart sees an empty window: 5 failures + 1 success.
     CHECK(count == 6);
 }
 
 TEST_CASE("backoff delays restart") {
-    RunStats stats;
     int count = 0;
     fake_clock fc;
     std::vector<time_point> times;
-    stats.spawn([&]() {
-        csp::local l{csp::clock = &fc};
-        worker_group wg;
-        wg.policy.max_restarts = 3;
-        wg.policy.backoff = std::chrono::seconds(5);
-        wg.workers["fail_once"] = [&]() {
-            ++count;
-            times.push_back(csp::now());
-            if (count == 1) throw std::runtime_error("fail");
-        };
-        wg.run();
+    RunStats stats;
+    csp::run([&] {
+        csp::local l{fc.binding()};
+        stats.spawn([&]() {
+            worker_group wg;
+            wg.policy.max_restarts = 3;
+            wg.policy.backoff = std::chrono::seconds(5);
+            wg.workers["fail_once"] = [&]() {
+                ++count;
+                times.push_back(csp::now());
+                if (count == 1) throw std::runtime_error("fail");
+            };
+            wg.run();
+        });
     });
-    csp::schedule();
-    fc.run();
     CHECK(count == 2);
     REQUIRE(times.size() == 2);
     auto delay = times[1] - times[0];
@@ -127,7 +127,7 @@ TEST_CASE("mixed workers") {
         };
         wg.run();
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(stable_count == 1);
     CHECK(flaky_count == 2);
 }
@@ -153,7 +153,7 @@ TEST_CASE("nested groups") {
             CHECK(e.worker_name == "inner_group");
         }
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(caught);
 }
 
@@ -163,7 +163,7 @@ TEST_CASE("empty group") {
         worker_group wg;
         wg.run(); // should return immediately
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
 }
 
 TEST_CASE("channel leak check") {
@@ -179,7 +179,7 @@ TEST_CASE("channel leak check") {
         };
         wg.run();
     });
-    while (csp::internal::run()) {}
+    csp::schedule();
     CHECK(count == 3);
 }
 

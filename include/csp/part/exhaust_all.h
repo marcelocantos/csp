@@ -17,15 +17,19 @@ inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> i
         B b;
         reader<B> discard;
         for (;;) {
-            // ~sub vulture fires immediately on sub death (as ~1),
-            // ensuring we detect it before the alt matches a ready
-            // peer on input (data chanops defer dead-channel).
-            switch (csp::prialt(sub >> b, ~sub, in >> discard, ~out)) {
-            case 0:  // Sub data — forward.
+            // ~sub is at slot 0 so it fires immediately in Phase 1
+            // when sub is already dead. In Phase 2 (sub dies while
+            // sleeping) either ~sub (~0) or sub >> b (~1) may win the
+            // CAS — both indicate sub death. ~in (~2) is impossible here
+            // since only writers can die and trigger dead-data; ~out (~3)
+            // means output died.
+            switch (csp::prialt(~sub, sub >> b, in >> discard, ~out)) {
+            case ~0:  // Sub died (vulture won Phase 1 or Phase 2 CAS).
+            case ~1:  // Sub died (data chanop won Phase 2 CAS).
+                break;
+            case 1:  // Sub data — forward.
                 if (!(out << std::move(b))) return;
                 continue;
-            case ~1:  // Sub died (vulture) — outer loop gets next.
-                break;
             case 2:  // New sub from input — discard.
                 continue;
             case ~2:  // Input died — drain remaining sub.
@@ -36,7 +40,7 @@ inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> i
             default:  // Output died.
                 return;
             }
-            break;  // Reached only from case ~1 (sub died).
+            break;  // Reached only from case ~0 or ~1 (sub died).
         }
     }
 });

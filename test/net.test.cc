@@ -7,7 +7,8 @@ using namespace csp;
 TEST_SUITE("net") {
 
 TEST_CASE("listen and dial - basic echo") {
-    RunStats stats;
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     chan<uint16_t> port_ch;
 
@@ -46,16 +47,19 @@ TEST_CASE("listen and dial - basic echo") {
     });
 
     schedule();
+    csp::shutdown_runtime();
 }
 
 TEST_CASE("dial - connection refused") {
-    RunStats stats;
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
 
     spawn([] {
         CHECK_THROWS_AS(net::dial("127.0.0.1", 19999), csp::error);
     });
 
     schedule();
+    csp::shutdown_runtime();
 }
 
 } // TEST_SUITE

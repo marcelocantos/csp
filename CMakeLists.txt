@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # --- Options ---
-option(CSP_TLS "Enable TLS support via mbedTLS" OFF)
+option(CSP_TLS "Enable TLS support via PicoTLS" OFF)
 option(CSP_BUILD_TESTS "Build tests" ON)
 
 # --- Compiler flags ---
@@ -143,18 +143,53 @@ endif()
 if(CSP_TLS)
     target_compile_definitions(csp PUBLIC CSP_TLS)
 
-    set(MBEDTLS_DIR vendor/github.com/Mbed-TLS/mbedtls)
-    file(GLOB MBEDTLS_SRCS ${MBEDTLS_DIR}/library/*.c)
-    add_library(mbedtls_csp STATIC ${MBEDTLS_SRCS})
-    target_include_directories(mbedtls_csp PRIVATE
-        include
-        ${MBEDTLS_DIR}/include
+    set(PICOTLS_DIR vendor/github.com/h2o/picotls)
+    set(CIFRA_DIR ${PICOTLS_DIR}/deps/cifra/src)
+    set(UECC_DIR ${PICOTLS_DIR}/deps/micro-ecc)
+
+    set(PICOTLS_SRCS
+        ${PICOTLS_DIR}/lib/picotls.c
+        ${PICOTLS_DIR}/lib/hpke.c
+        ${PICOTLS_DIR}/lib/pembase64.c
+        ${PICOTLS_DIR}/lib/cifra.c
+        ${PICOTLS_DIR}/lib/cifra/x25519.c
+        ${PICOTLS_DIR}/lib/cifra/chacha20.c
+        ${PICOTLS_DIR}/lib/cifra/aes128.c
+        ${PICOTLS_DIR}/lib/cifra/aes256.c
+        ${PICOTLS_DIR}/lib/cifra/random.c
+        ${PICOTLS_DIR}/lib/uecc.c
+        ${PICOTLS_DIR}/lib/minicrypto-pem.c
+        ${PICOTLS_DIR}/lib/asn1.c
+        ${PICOTLS_DIR}/lib/ffx.c
+        ${UECC_DIR}/uECC.c
+        ${CIFRA_DIR}/aes.c
+        ${CIFRA_DIR}/blockwise.c
+        ${CIFRA_DIR}/chacha20.c
+        ${CIFRA_DIR}/chash.c
+        ${CIFRA_DIR}/curve25519.c
+        ${CIFRA_DIR}/drbg.c
+        ${CIFRA_DIR}/hmac.c
+        ${CIFRA_DIR}/gcm.c
+        ${CIFRA_DIR}/gf128.c
+        ${CIFRA_DIR}/modes.c
+        ${CIFRA_DIR}/poly1305.c
+        ${CIFRA_DIR}/sha256.c
+        ${CIFRA_DIR}/sha512.c
     )
-    target_compile_definitions(mbedtls_csp PRIVATE
-        MBEDTLS_CONFIG_FILE="mbedtls_config.h"
+    add_library(picotls_csp STATIC ${PICOTLS_SRCS})
+    target_include_directories(picotls_csp PRIVATE
+        ${PICOTLS_DIR}/include
+        ${CIFRA_DIR}
+        ${CIFRA_DIR}/ext
+        ${UECC_DIR}
     )
-    target_include_directories(csp PRIVATE ${MBEDTLS_DIR}/include)
-    target_link_libraries(csp PRIVATE mbedtls_csp)
+    target_include_directories(csp PRIVATE
+        ${PICOTLS_DIR}/include
+        ${CIFRA_DIR}
+        ${CIFRA_DIR}/ext
+        ${UECC_DIR}
+    )
+    target_link_libraries(csp PRIVATE picotls_csp)
 endif()
 
 # --- Platform link libraries ---
@@ -169,7 +204,11 @@ endif()
 if(CSP_BUILD_TESTS)
     file(GLOB TEST_SRCS test/*.test.cc)
 
-    # On Windows, exclude tests that depend on TLS (mbedTLS not built by default)
+    # Exclude tests for features not in the dist amalgamation.
+    # net.h/net.cc are not yet amalgamated (WIP: T3.1).
+    list(FILTER TEST_SRCS EXCLUDE REGEX "net\\.test\\.cc$")
+
+    # On Windows, exclude tests that depend on TLS (PicoTLS not built by default)
     if(WIN32)
         list(FILTER TEST_SRCS EXCLUDE REGEX "tls\\.test\\.cc$")
     endif()

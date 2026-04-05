@@ -123,14 +123,14 @@ namespace {
                 uint32_t expected = Imp::ALT_WAITING;
                 if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                     cw.thread->signal_ = INT_MIN;
-                    cw.thread->schedule();
+                    cw.thread->make_runnable();
                 }
             }
             for (auto const & cv : ep.vultures) {
                 uint32_t expected = Imp::ALT_WAITING;
                 if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                     cv.thread->signal_ = INT_MIN;
-                    cv.thread->schedule();
+                    cv.thread->make_runnable();
                 }
             }
         }
@@ -153,7 +153,7 @@ namespace {
                     if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cw.chanop - cw.thread->chanops_);
                         cw.thread->signal_ = ~idx;
-                        cw.thread->schedule();
+                        cw.thread->make_runnable();
                     }
                 }
                 for (auto const & cv : ep.vultures) {
@@ -161,7 +161,7 @@ namespace {
                     if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cv.chanop - cv.thread->chanops_);
                         cv.thread->signal_ = ~idx;
-                        cv.thread->schedule();
+                        cv.thread->make_runnable();
                     }
                 }
             }
@@ -215,7 +215,7 @@ namespace {
             int n_sorted;
             Imp* peer;
             bool needs_unlock;
-            bool use_run;           // single-P writer: unlock then run
+            // (removed: use_run field was for single-P cooperative path)
             bool has_pins;          // re-resolution alive_ pins active
         };
         static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
@@ -252,7 +252,6 @@ namespace {
 
             mi->peer = nullptr;
             mi->needs_unlock = false;
-            mi->use_run = false;
             out->src = nullptr;
             out->dst = nullptr;
             out->result = 0;
@@ -394,7 +393,6 @@ namespace {
                                 if (endpt == wr) {
                                     out->src = chop.message;
                                     out->dst = const_cast<void *>(cw.chanop->message);
-                                    mi->use_run = !Runtime::instance().mn_mode_;
                                 } else {
                                     out->src = cw.chanop->message;
                                     out->dst = const_cast<void *>(chop.message);
@@ -490,20 +488,14 @@ namespace {
         static void alt_end_impl(AltMatch * m) {
             auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
             if (mi->needs_unlock) {
-                if (mi->use_run) {
-                    // Single-P writer path: unlock first, then context-switch
-                    // to peer (runs until it yields, then returns here).
-                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
-                    mi->peer->run(Status::run);
-                } else {
-                    if (mi->peer) mi->peer->schedule();
-                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
-                }
+                for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
             }
             if (mi->has_pins) {
                 for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
             }
+            auto* peer = mi->peer;
             delete[] mi->heap_alloc;
+            if (peer) peer->make_runnable();
         }
 
 

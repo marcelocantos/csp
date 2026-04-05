@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: fe73f81 -->
+<!-- last-evaluated: 70ef67b5478c7bf28e8ef17d7339bfeaaea1b863 -->
 
 ## Active
 
@@ -72,7 +72,7 @@
 - **Acceptance**:
   - `csp::http::get(url)` / `post(url, body)` return `reader<http::response>` (non-blocking)
   - Connection pooling with per-host channels
-  - TLS support via existing mbedTLS integration
+  - TLS support via PicoTLS integration
   - Timeout via cancellation scope
   - Tests and reference docs
 - **Status**: not started
@@ -265,6 +265,75 @@
 - **Status**: achieved — no violations found. Handler uses only atomic loads + write(). Teardown race is benign (EBADF on closed fd, SIGPIPE ignored). Findings in audit-log.md.
 - **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
+
+### 🎯T14 Dynamic scoping uses chained stack arrays instead of HAMT
+- **Weight**: 2 (value 5 / cost 3)
+- **Acceptance**:
+  - HAMT (hamt.cc, hamt.h) removed entirely
+  - `csp::local` embeds entries inline (compile-time sized member array from parameter pack)
+  - Each `local` node has a parent pointer forming a chain; lookup walks the chain
+  - Spawn coalesces the chain into a single flat array owned by the child (one heap allocation per spawn, zero sharing)
+  - No refcounting, no pointer tagging, no atomic ops on the dynamic scope path
+  - Zero heap allocation on bind/unbind — node lives in the `local` object on the imp's fcontext stack
+  - All existing `dynamic<T>` tests pass
+  - ASan clean (no use-after-free possible — ownership is unambiguous)
+- **Status**: not started
+- **Discovered**: 2026-04-04
+- **Context**: HAMT (231 lines) is over-engineered for 3-5 dynamic variables. It introduces refcount lifecycle bugs (paper 9 use-after-free in `start()`, cross-imp HAMT corruption via shared `cancel_guard`). Chained stack arrays eliminate the entire bug class: each `csp::local` is a node on the imp's stack, lookup is a short chain walk (2-3 deep), and spawn-time coalescing gives children O(1) lookup with zero shared ownership. The `local` object IS the node — template pack gives compile-time entry count, so entries are an inline member array. No alloca needed.
+
+### 🎯T13 Per-worker wake eliminates thundering herd
+- **Weight**: 1 (value 3 / cost 8)
+- **Acceptance**:
+  - `unpark_one()` wakes exactly one sleeping worker, not all
+  - No `notify_all` on shared condvar in the imp scheduling hot path
+  - main_loop quiescence detection still works (fake_clock tests pass)
+  - 665/665 tests pass, no performance regression
+- **Status**: not started
+- **Discovered**: 2026-04-02
+- **Context**: Current `unpark_one()` does `park_cv.notify_all()` on a shared condvar, waking all parked workers (thundering herd). Investigation found three approaches and their failure modes: (1) per-P condvar deadlocks with `has_work()` predicate holding `global_mu`; (2) `atomic::wait` avoids deadlock but main_loop quiescence ping-pongs on every park cycle; (3) split worker/main condvar has lost-wakeup race. The proper fix requires either platform-specific futex primitives (`__ulock_wait`/`futex`), Go-style `note` (single-word futex per M), or decoupling main_loop quiescence from the worker parking condvar. See Go runtime (`gopark`/`goready`/`notesleep`) and Tokio's per-worker deque + atomic searching counter for reference designs.
+
+### 🎯T12 Test names contain no spaces
+- **Weight**: 1 (value 2 / cost 1)
+- **Acceptance**:
+  - All TEST_CASE names use hyphens or underscores instead of spaces
+  - `./build/normal/csp_tests -ltc` shows no names with spaces
+  - `-tc=` filters work without quoting gymnastics
+- **Status**: not started
+- **Discovered**: 2026-04-02
+- **Context**: Spaces in test names cause shell quoting issues with doctest's `-tc=` filter, especially inside lldb, scripts, and CI. Replace `"Foo - Bar Baz"` with `"Foo-BarBaz"` or similar.
+
+### 🎯T11 Scheduler is always M:N
+- **Weight**: 3 (value 8 / cost 5)
+- **Acceptance**:
+  - `mn_mode_` flag removed; always M:N with min 2 procs
+  - `schedule()` renamed to `await_completion()` (`schedule()` kept as deprecated inline alias)
+  - `run()` removed from public API or reimplemented via quiescence detection (parks until workers finish or deadlock detected)
+  - `use_run` removed from channel matching (always `peer->schedule()`)
+  - Daemon imp concept: `daemon_gs` counter excludes daemon imps from completion check
+  - `RunStats` exception handler spawned as daemon
+  - `fake_clock` reworked to detect quiescence without cooperative `run()` loop
+  - All 665+ tests pass
+  - `default_scheduler_impl` deleted; scheduler always uses `main_loop()`
+- **Status**: in progress — 663/663 tests pass. PR #18 open. Core scheduler done. Remaining: fake_clock auto-advance via main_loop quiescence hook (stashed WIP), inline `fake_clock{}` syntax (needs `dynamic<T>` type erasure rework).
+- **Discovered**: 2026-03-29
+- **Context**: M:N scheduler complete. `quiescence_scope` implemented for deterministic testing (scoped, inheritable via Imp::qs_). fake_clock thread-safe (mutex on pending_). Next step: main_loop quiescence hook so `fc.run()` is unnecessary — stashed WIP has the hook in Runtime but fake_clock tests need migration from `fc.run()` to automatic advancement.
+
+### 🎯T15 TLS uses PicoTLS instead of mbedTLS
+- **Weight**: 3 (value 5 / cost 3)
+- **Acceptance**:
+  - mbedTLS submodule removed, PicoTLS vendored at `vendor/github.com/h2o/picotls/`
+  - minicrypto backend (no OpenSSL dependency)
+  - TLS 1.3 only (documented limitation)
+  - No built-in X.509 chain verification; `context::set_verify_callback()` hook for user-supplied verification
+  - Test certs regenerated as ECDSA secp256r1 (minicrypto requirement)
+  - Linux concurrent connections test unskipped (no more pthread mutex issue)
+  - TSan suppressions for mbedTLS removed
+  - All TLS tests pass on macOS and Linux
+  - CLAUDE.md, AGENTS-CSP.md, dist/ updated
+- **Status**: achieved — PicoTLS vendored, mbedTLS removed, 664/664 tests pass (0 skipped), all CI green including Linux TSan/ASan.
+- **Achieved**: 2026-04-05
+- **Discovered**: 2026-04-04
+- **Context**: mbedTLS uses internal pthread mutexes that cause SIGABRT under M:N fiber migration on Linux (lock on thread T1, unlock on T2). TSan also reports false races. PicoTLS has zero internal locking — thread-local PRNG only, harmless under migration. Buffer-in/buffer-out API integrates cleanly with CSP's reactor. minicrypto backend is self-contained (cifra + micro-ecc, ~13.5K lines C). Limitation: minicrypto only supports secp256r1 keys and has no X.509 verifier. TLS 1.2 fallback can be added later via a second backend if needed.
 
 ## Achieved
 

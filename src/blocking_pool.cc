@@ -69,7 +69,7 @@ void BlockingPool::worker() {
             queue_.pop_back();
         }
         w.fn();
-        w.imp->schedule();
+        w.imp->make_runnable();
     }
 }
 

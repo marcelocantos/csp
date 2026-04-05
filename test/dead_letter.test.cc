@@ -9,13 +9,12 @@ using namespace std::chrono_literals;
 TEST_SUITE("DeadLetter") {
 
 TEST_CASE("Throttle - excess goes to dead letter") {
-    RunStats stats;
     fake_clock fc;
 
     std::vector<int> dead;
 
-    stats.spawn([&]{
-        csp::local l{csp::clock = &fc};
+    csp::run([&] {
+        csp::local l{fc.binding()};
 
         auto [dl_w, dl_r] = chan<int>{};
 
@@ -31,17 +30,14 @@ TEST_CASE("Throttle - excess goes to dead letter") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
-    fc.run();
     CHECK(std::vector<int>({2, 3, 4, 5}) == dead);
 }
 
 TEST_CASE("Throttle - no dead letter, no crash") {
-    RunStats stats;
     fake_clock fc;
 
-    stats.spawn([&]{
-        csp::local l{csp::clock = &fc};
+    csp::run([&] {
+        csp::local l{fc.binding()};
 
         // Same scenario without dead letter — existing behaviour.
         auto r = throttle<int>(tick(1s)).spawn(count(1, 6).spawn());
@@ -50,19 +46,15 @@ TEST_CASE("Throttle - no dead letter, no crash") {
         int _;
         CHECK_FALSE(bool(r >> _));
     });
-
-    csp::schedule();
-    fc.run();
 }
 
 TEST_CASE("Throttle - budget reset with dead letter") {
-    RunStats stats;
     fake_clock fc;
 
     std::vector<int> dead;
 
-    stats.spawn([&]{
-        csp::local l{csp::clock = &fc};
+    csp::run([&] {
+        csp::local l{fc.binding()};
 
         auto [dl_w, dl_r] = chan<int>{};
         auto th = throttle<int>(tick(100ms), {.n = 2, .dead_letter = std::move(dl_w)}).spawn();
@@ -92,19 +84,16 @@ TEST_CASE("Throttle - budget reset with dead letter") {
         CHECK_FALSE(bool(th.r >> _));
     });
 
-    csp::schedule();
-    fc.run();
     CHECK(std::vector<int>({3, 6}) == dead);
 }
 
 TEST_CASE("Debounce - superseded values go to dead letter") {
-    RunStats stats;
     fake_clock fc;
 
     std::vector<int> dead;
 
-    stats.spawn([&]{
-        csp::local l{csp::clock = &fc};
+    csp::run([&] {
+        csp::local l{fc.binding()};
 
         auto [dl_w, dl_r] = chan<int>{};
 
@@ -121,17 +110,14 @@ TEST_CASE("Debounce - superseded values go to dead letter") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
-    fc.run();
     CHECK(std::vector<int>({1, 2, 3, 4}) == dead);
 }
 
 TEST_CASE("Debounce - no dead letter, no crash") {
-    RunStats stats;
     fake_clock fc;
 
-    stats.spawn([&]{
-        csp::local l{csp::clock = &fc};
+    csp::run([&] {
+        csp::local l{fc.binding()};
 
         auto r = debounce<int>(50ms).spawn(count(1, 6).spawn());
 
@@ -139,19 +125,15 @@ TEST_CASE("Debounce - no dead letter, no crash") {
         int _;
         CHECK_FALSE(bool(r >> _));
     });
-
-    csp::schedule();
-    fc.run();
 }
 
 TEST_CASE("Debounce - spaced values, no drops") {
-    RunStats stats;
     fake_clock fc;
 
     std::vector<int> dead;
 
-    stats.spawn([&]{
-        csp::local l{csp::clock = &fc};
+    csp::run([&] {
+        csp::local l{fc.binding()};
 
         auto [dl_w, dl_r] = chan<int>{};
         auto db = debounce<int>(50ms, {.dead_letter = std::move(dl_w)}).spawn();
@@ -175,8 +157,6 @@ TEST_CASE("Debounce - spaced values, no drops") {
         CHECK_FALSE(bool(db.r >> _));
     });
 
-    csp::schedule();
-    fc.run();
     // No drops — dead letter should be empty.
     CHECK(dead.empty());
 }

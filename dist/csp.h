@@ -298,9 +298,11 @@ private:
 }
 
 #include <atomic>
+#include <condition_variable>
 #include <climits>
 #include <exception>
 #include <memory>
+#include <mutex>
 #include <stdint.h>
 
 #include <functional>
@@ -397,8 +399,10 @@ struct AltMatch {
 using EntryFn = void (*)(void *);
 
 // Imp management.
-int spawn(EntryFn entry, void * data);
+int spawn(EntryFn entry, void * data, bool daemon = false);
 int run();
+void await_idle();
+void await_quiescent();
 void yield();
 void descr(char const * fmt, ...);
 
@@ -469,7 +473,8 @@ extern Logger g_descrlog;
 
 void set_scheduler(std::function<void()> f);
 void reset_scheduler();
-void schedule();
+void await_completion();
+inline void schedule() { await_completion(); }  // deprecated alias
 
 // Yield control so other imps can run. Does nothing outside an imp.
 inline void yield() { internal::yield(); }
@@ -485,6 +490,62 @@ void set_maxprocs(int n);
 // The next schedule/spawn call will re-initialize the runtime using
 // set_maxprocs or CSP_MAXPROCS.
 void shutdown_runtime();
+
+// --- quiescence_scope ---
+// Tracks active imp count for a dynamic scope. All imps spawned
+// within a `csp::local` binding of `csp::quiescence` inherit the
+// scope. `wait()` blocks until all scope members are sleeping
+// (blocked on channels/timers) — the system is deterministic at
+// that point.
+//
+// Usage:
+//   quiescence_scope qs;
+//   csp::local l{csp::quiescence = &qs};
+//   spawn(...);  // inherits qs
+//   qs.wait();   // blocks until all spawned imps are sleeping
+//
+// The scope pointer is cached on each Imp at spawn time (one HAMT
+// lookup), so hot-path transitions (sleep/wake) are just atomic ops.
+class quiescence_scope {
+public:
+    // Block until all scope members are sleeping (active == 0).
+    // The calling imp is NOT a member (it's running, not sleeping).
+    void wait() {
+        std::unique_lock<std::mutex> lk(mu_);
+        active_.fetch_sub(1, std::memory_order_release);
+        cv_.wait(lk, [this] { return active_.load(std::memory_order_acquire) == 0; });
+        active_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    quiescence_scope() = default;
+    // Movable (for storage in std::any). Only safe to move a
+    // freshly constructed scope with no active members.
+    quiescence_scope(quiescence_scope&&) noexcept {}
+    quiescence_scope& operator=(quiescence_scope&&) = delete;
+    quiescence_scope(const quiescence_scope&) = delete;
+    quiescence_scope& operator=(const quiescence_scope&) = delete;
+
+    // Bind this scope to the current imp. All child imps spawned
+    // from this point inherit the scope.
+    void bind();
+
+    // True when all scope members are sleeping (active == 0).
+    bool is_quiescent() const { return active_.load(std::memory_order_acquire) == 0; }
+
+    // Called by the runtime on context switch boundaries.
+    void enter() { active_.fetch_add(1, std::memory_order_relaxed); }
+    void leave() {
+        if (active_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            std::lock_guard<std::mutex> lk(mu_);
+            cv_.notify_all();
+        }
+    }
+
+private:
+    std::atomic<int> active_{0};
+    std::mutex mu_;
+    std::condition_variable cv_;
+};
 
 class error : public std::runtime_error {
 public:
@@ -1307,13 +1368,31 @@ inline void spawn_entry(void * data) {
 }
 
 template <typename F>
-reader<std::exception_ptr> spawn(F && f) {
+reader<std::exception_ptr> spawn(F && f, bool daemon = false) {
     reader<std::exception_ptr> r;
     auto sd = new detail::spawn_data<F>{std::move(f), ++r};
-    if (!internal::spawn(detail::spawn_entry<F>, sd)) {
+    if (!internal::spawn(detail::spawn_entry<F>, sd, daemon)) {
         throw error("spawn failed");
     }
     return r;
+}
+
+template <typename T, typename F>
+writer<T> spawn_daemon_consumer(F f) {
+    writer<T> w;
+    spawn([f = std::move(f), r = --w]() mutable {
+        f(std::move(r));
+    }, /*daemon=*/true);
+    return w;
+}
+
+// Spawn f as an imp and block until all non-daemon imps complete.
+// This is the standard entry point for CSP programs — the main
+// thread must not perform channel operations directly.
+template <typename F>
+void run(F && f) {
+    spawn(std::forward<F>(f));
+    await_completion();
 }
 
 inline void join(reader<std::exception_ptr> const & r) {
@@ -1700,7 +1779,6 @@ fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 
 /* csp/internal/stack_pool.h */
 
-#include <mutex>
 
 // Sanitizer detection: under ASan/TSan, shadow memory scales with mapped VA,
 // so we fall back to heap allocation (new[]/delete[]).
@@ -1881,6 +1959,7 @@ struct alignas(16) Imp {
 
     void schedule(bool make_current = false);
     void schedule_local(bool make_current = false);
+    void make_runnable();
     void deschedule();
 
     void run(Status status = Status::sleep);
@@ -1892,6 +1971,10 @@ struct alignas(16) Imp {
     std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
 
     bool in_global_ = false;  // true while in the global run queue
+    bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
+    class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
+    bool qs_entered_ = false;               // true if enter() was called (vs propagate-only)
+    std::atomic<bool> qs_sleeping_{false};   // true after leave(), cleared by enter at schedule or resume
     std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
     std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 
@@ -2166,12 +2249,22 @@ public:
     dynamic(const dynamic&) = delete;
     dynamic& operator=(const dynamic&) = delete;
 
-    // Read: HAMT lookup + any_cast. Returns by value (safe, no dangling).
+    // Read by value (safe, no dangling).
     T operator*() const {
         if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
             return *std::any_cast<T>(a);
         assert(default_.has_value());
         return *default_;
+    }
+
+    // Read by pointer into the HAMT node. Valid as long as the
+    // csp::local binding is in scope.  Allows mutation and avoids
+    // copying for non-trivial types.
+    T* operator->() const {
+        if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
+            return const_cast<T*>(std::any_cast<T>(a));
+        assert(default_.has_value());
+        return const_cast<T*>(&*default_);
     }
 
     // Bind: returns a deferred binding for use with csp::local.
@@ -2250,20 +2343,26 @@ class fake_clock : public clock_source {
     struct Entry {
         time_point deadline;
         detail::Imp* imp;
+        std::shared_ptr<std::atomic<bool>> cancelled;
         bool operator>(Entry const& o) const { return deadline > o.deadline; }
     };
+    std::mutex mu_;
     std::priority_queue<Entry, std::vector<Entry>,
                         std::greater<Entry>> pending_;
+    quiescence_scope qs_;
     void fire_expired();
 
 public:
     explicit fake_clock(time_point start = time_point{});
 
-    time_point now() const override { return current_; }
+    time_point now() const override;
     void sleep_until(time_point tp) override;
     bool uses_reactor() const override { return false; }
 
-    bool has_pending() const { return !pending_.empty(); }
+    bool has_pending() const {
+        std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(mu_));
+        return !pending_.empty();
+    }
 
     // Advance time and fire expired timers.
     void advance(duration d);
@@ -2271,17 +2370,41 @@ public:
     // Jump to next pending deadline. Returns false if no timers pending.
     bool advance_to_next();
 
-    // Run scheduler loop with auto-advance until no work remains.
+    // Bind the fake clock's quiescence scope to the current imp.
+    // Call before spawning timer-using imps so they inherit the scope.
+    void bind_scope() { qs_.bind(); }
+
+    // Convenience: bind clock + quiescence scope in one call.
+    // Returns a dynamic_binding for use with csp::local.
+    // Usage: csp::local l{fc.binding()};
+    //   — equivalent to: csp::local l{csp::clock = &fc}; fc.bind_scope();
+    [[nodiscard]] dynamic_binding binding();
+
+    // Run until all timer-blocked imps complete. If bind_scope()
+    // was not called, binds automatically (but imps spawned before
+    // this call won't be tracked). Loops: wait for quiescence →
+    // advance time → repeat.
     void run();
 
-    // Run scheduler until no imps are runnable (don't advance time).
+    // Wait for quiescence (all scope members sleeping), then return.
     void run_until_idle();
 
+    ~fake_clock();
+
+    // Movable (for storage in shared_ptr via csp::clock = fake_clock{}).
+    fake_clock(fake_clock&& o) noexcept : current_(o.current_) {}
+    fake_clock& operator=(fake_clock&&) = delete;
     fake_clock(fake_clock const&) = delete;
     fake_clock& operator=(fake_clock const&) = delete;
+
+    // Convert to shared_ptr for use with csp::clock dynamic variable.
+    // Enables: csp::local l{csp::clock = fake_clock{}};
+    operator std::shared_ptr<clock_source>() && {
+        return std::make_shared<fake_clock>(std::move(*this));
+    }
 };
 
-extern dynamic<clock_source*> clock;
+extern dynamic<std::shared_ptr<clock_source>> clock;
 
 // Current time.
 inline time_point now() {
@@ -2429,7 +2552,6 @@ exit_guard on_exit(restart_policy policy);
 
 /* csp/internal/blocking_pool.h */
 
-#include <condition_variable>
 #include <thread>
 
 namespace csp::detail {
@@ -3096,9 +3218,15 @@ struct Runtime {
     std::atomic<bool> stopping{false};
     std::atomic<bool> has_global_work_{false};  // Set by push_to_global, cleared by drain
     std::atomic<int> live_gs{0};
+    std::atomic<int> daemon_gs{0};  // daemon imps (excluded from completion check)
+
+    // Quiescence hook: called by main_loop when all workers are parked
+    // but imps are still alive.  Returns true to keep going (e.g.,
+    // fake_clock advanced time), false to stop (real deadlock).
+    std::function<bool()> quiescence_hook_;
+    std::mutex hook_mu_;
 
     // Dynamic processor pool management.
-    bool mn_mode_ = false;              // True when num_procs > 1; set once
     std::atomic<int> num_procs_{0};     // Current live P count
     int initial_procs_ = 0;            // P count at init time
     int max_procs_ = 0;                // Upper bound on total Ps
@@ -3118,6 +3246,7 @@ struct Runtime {
 
     void worker_loop();
     void main_loop();
+    void quiescent_loop();
     void watchdog_loop();
     void add_processor();
     Imp* local_next(Processor& p);
@@ -4537,15 +4666,19 @@ inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> i
         B b;
         reader<B> discard;
         for (;;) {
-            // ~sub vulture fires immediately on sub death (as ~1),
-            // ensuring we detect it before the alt matches a ready
-            // peer on input (data chanops defer dead-channel).
-            switch (csp::prialt(sub >> b, ~sub, in >> discard, ~out)) {
-            case 0:  // Sub data — forward.
+            // ~sub is at slot 0 so it fires immediately in Phase 1
+            // when sub is already dead. In Phase 2 (sub dies while
+            // sleeping) either ~sub (~0) or sub >> b (~1) may win the
+            // CAS — both indicate sub death. ~in (~2) is impossible here
+            // since only writers can die and trigger dead-data; ~out (~3)
+            // means output died.
+            switch (csp::prialt(~sub, sub >> b, in >> discard, ~out)) {
+            case ~0:  // Sub died (vulture won Phase 1 or Phase 2 CAS).
+            case ~1:  // Sub died (data chanop won Phase 2 CAS).
+                break;
+            case 1:  // Sub data — forward.
                 if (!(out << std::move(b))) return;
                 continue;
-            case ~1:  // Sub died (vulture) — outer loop gets next.
-                break;
             case 2:  // New sub from input — discard.
                 continue;
             case ~2:  // Input died — drain remaining sub.
@@ -4556,7 +4689,7 @@ inline auto const exhaust_all = make_filter<reader<B>, B>([](reader<reader<B>> i
             default:  // Output died.
                 return;
             }
-            break;  // Reached only from case ~1 (sub died).
+            break;  // Reached only from case ~0 or ~1 (sub died).
         }
     }
 });
@@ -7258,6 +7391,13 @@ struct error : csp::error {
 
 class conn;
 
+/// Callback for custom certificate verification.
+/// Receives the server name and DER-encoded certificate chain.
+/// Return true to accept, false to reject.
+using verify_fn =
+    std::function<bool(const char* server_name,
+                       const std::vector<std::vector<uint8_t>>& certs)>;
+
 class context {
 public:
     enum role { client, server };
@@ -7266,12 +7406,16 @@ public:
     context(context&&) noexcept;
     context& operator=(context&&) noexcept;
 
-    // Load CA certificate(s) for verification. PEM, NUL-terminated.
-    void load_ca(const void* pem, size_t len);
+    /// Load certificate chain from a PEM file.
+    void load_cert(const char* cert_pem_path);
 
-    // Load own certificate + private key (server required, client optional).
-    void load_cert(const void* cert_pem, size_t cert_len,
-                   const void* key_pem, size_t key_len);
+    /// Load private key from a PEM file (PKCS#8 format, secp256r1).
+    void load_key(const char* key_pem_path);
+
+    /// Set a custom certificate verification callback. Without this,
+    /// no certificate verification is performed (TLS 1.3 only,
+    /// minicrypto backend has no built-in X.509 chain validator).
+    void set_verify(verify_fn fn);
 
     context(const context&) = delete;
     context& operator=(const context&) = delete;
