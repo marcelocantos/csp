@@ -5,7 +5,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("Transpose - 3x3 matrix") {
+TEST_CASE("Transpose---3x3-matrix") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -30,7 +30,7 @@ TEST_CASE("Transpose - 3x3 matrix") {
     CHECK(got == std::vector<std::vector<int>>{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
 }
 
-TEST_CASE("Transpose - unequal lengths stops at shortest") {
+TEST_CASE("Transpose---unequal-lengths-stops-at-shortest") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -52,7 +52,7 @@ TEST_CASE("Transpose - unequal lengths stops at shortest") {
     CHECK(got == std::vector<std::vector<int>>{{1, 2}, {3, 4}});
 }
 
-TEST_CASE("Transpose - single input") {
+TEST_CASE("Transpose---single-input") {
     RunStats stats;
     auto a = chan<int>();
 
@@ -71,7 +71,7 @@ TEST_CASE("Transpose - single input") {
     CHECK(got == std::vector<std::vector<int>>{{10}, {20}});
 }
 
-TEST_CASE("Transpose - empty inputs") {
+TEST_CASE("Transpose---empty-inputs") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();

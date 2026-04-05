@@ -13,7 +13,7 @@ using namespace csp;
 
 TEST_SUITE("coin flip") {
 
-TEST_CASE("basic coin flip") {
+TEST_CASE("basic-coin-flip") {
     RunStats stats;
 
     int role_a = -1, role_b = -1;
@@ -44,7 +44,7 @@ TEST_CASE("basic coin flip") {
     CHECK(role_a != role_b);
 }
 
-TEST_CASE("coin flip - value transfer") {
+TEST_CASE("coin-flip---value-transfer") {
     RunStats stats;
 
     int sent = -1, received = -1;
@@ -75,7 +75,7 @@ TEST_CASE("coin flip - value transfer") {
     CHECK(received == sent);
 }
 
-TEST_CASE("coin flip - entropy") {
+TEST_CASE("coin-flip---entropy") {
     // Verify the coin flip produces genuine randomness, not just
     // balanced counts. 010101... and 000...111... both score 50/50
     // but have near-zero entropy.
@@ -146,7 +146,7 @@ TEST_CASE("coin flip - entropy") {
     CHECK(chi_sq < 100);
 }
 
-TEST_CASE("coin flip - prialt determinism") {
+TEST_CASE("coin-flip---prialt-determinism") {
     // With prialt (priority order), the second imp to arrive always
     // tries its write arm first (index 0), matching the first imp's
     // read arm. Verify the pattern holds over many trials.
@@ -181,7 +181,7 @@ TEST_CASE("coin flip - prialt determinism") {
     }
 }
 
-TEST_CASE("coin flip - move-only type") {
+TEST_CASE("coin-flip---move-only-type") {
     RunStats stats;
 
     bool a_wrote = false, b_wrote = false;
@@ -217,7 +217,7 @@ TEST_CASE("coin flip - move-only type") {
     }
 }
 
-TEST_CASE("coin flip - vector form") {
+TEST_CASE("coin-flip---vector-form") {
     RunStats stats;
 
     int role_a = -1, role_b = -1;
@@ -247,7 +247,7 @@ TEST_CASE("coin flip - vector form") {
     CHECK(role_a != role_b);
 }
 
-TEST_CASE("coin flip - with extra peer") {
+TEST_CASE("coin-flip---with-extra-peer") {
     // One imp does a coin flip on a channel that also has an
     // external writer waiting. Both outcomes are valid.
     RunStats stats;
@@ -283,7 +283,7 @@ TEST_CASE("coin flip - with extra peer") {
     CHECK(role >= 0);
 }
 
-TEST_CASE("coin flip - channel leak check") {
+TEST_CASE("coin-flip---channel-leak-check") {
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
@@ -296,7 +296,7 @@ TEST_CASE("coin flip - channel leak check") {
 
 TEST_SUITE("coin flip MN") {
 
-TEST_CASE("MN coin flip - stress") {
+TEST_CASE("MN-coin-flip---stress") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -325,7 +325,7 @@ TEST_CASE("MN coin flip - stress") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN coin flip - value integrity") {
+TEST_CASE("MN-coin-flip---value-integrity") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -374,7 +374,7 @@ TEST_CASE("MN coin flip - value integrity") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN coin flip - many participants") {
+TEST_CASE("MN-coin-flip---many-participants") {
     // Multiple imps competing on the same channel under M:N.
     // Even count ensures all can pair up.
     csp::shutdown_runtime();

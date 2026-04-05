@@ -5,7 +5,7 @@ using namespace csp::part;
 
 TEST_SUITE("race") {
 
-TEST_CASE("single source") {
+TEST_CASE("single-source") {
     RunStats stats;
 
     csp::run([&] {
@@ -24,7 +24,7 @@ TEST_CASE("single source") {
     });
 }
 
-TEST_CASE("multiple sources - all values received") {
+TEST_CASE("multiple-sources---all-values-received") {
     RunStats stats;
 
     csp::run([&] {
@@ -47,7 +47,7 @@ TEST_CASE("multiple sources - all values received") {
     });
 }
 
-TEST_CASE("empty sources") {
+TEST_CASE("empty-sources") {
     RunStats stats;
 
     csp::run([&] {
@@ -58,7 +58,7 @@ TEST_CASE("empty sources") {
     });
 }
 
-TEST_CASE("one source dies early") {
+TEST_CASE("one-source-dies-early") {
     RunStats stats;
 
     csp::run([&] {

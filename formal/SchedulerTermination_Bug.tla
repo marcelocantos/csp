@@ -4,7 +4,7 @@
  *
  * Models the interaction between the reactor's fire_signal() (two-step:
  * push_to_global then decrement pending_signals) and the single-P
- * scheduler's exit decision in default_scheduler_impl().
+ * scheduler's exit decision in main_loop_scheduler().
  *
  * Bug: the scheduler exits when pending_signals reaches zero, without
  * checking has_global_work.  This misses the window where fire_signal
@@ -107,7 +107,7 @@ ReactorDecr(s) ==
 (*******************************************************************************
  * SCHEDULER ACTIONS
  *
- * Single-P scheduler loop (default_scheduler_impl):
+ * Single-P scheduler loop (main_loop_scheduler):
  *   while (true) {
  *       if (run()) continue;
  *       if (live_gs == 0) break;

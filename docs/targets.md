@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: 70ef67b5478c7bf28e8ef17d7339bfeaaea1b863 -->
+<!-- last-evaluated: 4a6ddd6 -->
 
 ## Active
 
@@ -266,20 +266,14 @@
 - **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
 
-### 🎯T14 Dynamic scoping uses chained stack arrays instead of HAMT
-- **Weight**: 2 (value 5 / cost 3)
-- **Acceptance**:
-  - HAMT (hamt.cc, hamt.h) removed entirely
-  - `csp::local` embeds entries inline (compile-time sized member array from parameter pack)
-  - Each `local` node has a parent pointer forming a chain; lookup walks the chain
-  - Spawn coalesces the chain into a single flat array owned by the child (one heap allocation per spawn, zero sharing)
-  - No refcounting, no pointer tagging, no atomic ops on the dynamic scope path
-  - Zero heap allocation on bind/unbind — node lives in the `local` object on the imp's fcontext stack
-  - All existing `dynamic<T>` tests pass
-  - ASan clean (no use-after-free possible — ownership is unambiguous)
-- **Status**: not started
+### 🎯T14 Dynamic scoping improvements
+- **Weight**: 0.5 (value 3 / cost 6)
+- **Status**: parked (2026-04-05)
 - **Discovered**: 2026-04-04
-- **Context**: HAMT (231 lines) is over-engineered for 3-5 dynamic variables. It introduces refcount lifecycle bugs (paper 9 use-after-free in `start()`, cross-imp HAMT corruption via shared `cancel_guard`). Chained stack arrays eliminate the entire bug class: each `csp::local` is a node on the imp's stack, lookup is a short chain walk (2-3 deep), and spawn-time coalescing gives children O(1) lookup with zero shared ownership. The `local` object IS the node — template pack gives compile-time entry count, so entries are an inline member array. No alloca needed.
+- **Context**: HAMT (231 lines) works and the paper-09 bugs are fixed. Not a
+  current bottleneck. Several alternative designs were explored and parked —
+  see `docs/papers/18-dynamic-scope-alternatives.md` for the full analysis.
+  Revisit if profiling points here or if the HAMT causes new issues.
 
 ### 🎯T13 Per-worker wake eliminates thundering herd
 - **Weight**: 1 (value 3 / cost 8)
@@ -298,9 +292,9 @@
   - All TEST_CASE names use hyphens or underscores instead of spaces
   - `./build/normal/csp_tests -ltc` shows no names with spaces
   - `-tc=` filters work without quoting gymnastics
-- **Status**: not started
+- **Status**: achieved (2026-04-05, bd8c086)
 - **Discovered**: 2026-04-02
-- **Context**: Spaces in test names cause shell quoting issues with doctest's `-tc=` filter, especially inside lldb, scripts, and CI. Replace `"Foo - Bar Baz"` with `"Foo-BarBaz"` or similar.
+- **Context**: Spaces in test names cause shell quoting issues with doctest's `-tc=` filter, especially inside lldb, scripts, and CI. All 667 names renamed to use hyphens.
 
 ### 🎯T11 Scheduler is always M:N
 - **Weight**: 3 (value 8 / cost 5)
@@ -314,9 +308,9 @@
   - `fake_clock` reworked to detect quiescence without cooperative `run()` loop
   - All 665+ tests pass
   - `default_scheduler_impl` deleted; scheduler always uses `main_loop()`
-- **Status**: in progress — 663/663 tests pass. PR #18 open. Core scheduler done. Remaining: fake_clock auto-advance via main_loop quiescence hook (stashed WIP), inline `fake_clock{}` syntax (needs `dynamic<T>` type erasure rework).
+- **Status**: achieved (2026-04-05) — PR #18 merged (v0.6.0). All criteria met: mn_mode_ removed, await_completion() exists, use_run gone, daemon imps, fake_clock quiescence rework done, `default_scheduler_impl` renamed to `main_loop_scheduler`.
 - **Discovered**: 2026-03-29
-- **Context**: M:N scheduler complete. `quiescence_scope` implemented for deterministic testing (scoped, inheritable via Imp::qs_). fake_clock thread-safe (mutex on pending_). Next step: main_loop quiescence hook so `fc.run()` is unnecessary — stashed WIP has the hook in Runtime but fake_clock tests need migration from `fc.run()` to automatic advancement.
+- **Context**: M:N scheduler complete. `quiescence_scope` implemented for deterministic testing (scoped, inheritable via Imp::qs_). fake_clock thread-safe (mutex on pending_). fake_clock auto-advance via main_loop quiescence hook done.
 
 ### 🎯T15 TLS uses PicoTLS instead of mbedTLS
 - **Weight**: 3 (value 5 / cost 3)

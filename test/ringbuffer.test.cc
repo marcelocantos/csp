@@ -49,7 +49,7 @@ namespace {
 // Basic operations
 // ---------------------------------------------------------------------------
 
-TEST_CASE("RingBuffer - PushPop") {
+TEST_CASE("RingBuffer---PushPop") {
     RingBuffer<int> buf;
     buf.push(10);
     buf.push(20);
@@ -61,7 +61,7 @@ TEST_CASE("RingBuffer - PushPop") {
     CHECK(buf.empty());
 }
 
-TEST_CASE("RingBuffer - Emplace") {
+TEST_CASE("RingBuffer---Emplace") {
     RingBuffer<Tracked> buf;
     buf.emplace(42);
     CHECK(1 == buf.count());
@@ -70,7 +70,7 @@ TEST_CASE("RingBuffer - Emplace") {
     CHECK(Tracked::alive().empty());
 }
 
-TEST_CASE("RingBuffer - BoundedCapacity") {
+TEST_CASE("RingBuffer---BoundedCapacity") {
     RingBuffer<int> buf(3);
     buf.push(1);
     buf.push(2);
@@ -88,7 +88,7 @@ TEST_CASE("RingBuffer - BoundedCapacity") {
     CHECK(buf.empty());
 }
 
-TEST_CASE("RingBuffer - Iterator") {
+TEST_CASE("RingBuffer---Iterator") {
     RingBuffer<int> buf;
     buf.push(10);
     buf.push(20);
@@ -103,7 +103,7 @@ TEST_CASE("RingBuffer - Iterator") {
 // Grow — catches UB from std::move into uninitialized memory
 // ---------------------------------------------------------------------------
 
-TEST_CASE("RingBuffer - GrowTracked") {
+TEST_CASE("RingBuffer---GrowTracked") {
     // Default unbounded buffer starts at internal size 4.
     // Pushing 5+ items forces a grow.  The old code used std::move
     // (the algorithm) into uninitialized memory, calling move-assignment
@@ -120,7 +120,7 @@ TEST_CASE("RingBuffer - GrowTracked") {
     CHECK(Tracked::alive().empty());
 }
 
-TEST_CASE("RingBuffer - GrowWrapped") {
+TEST_CASE("RingBuffer---GrowWrapped") {
     // Push and pop to move front_ forward, then fill past capacity
     // to exercise grow when the data wraps around.
     RingBuffer<Tracked> buf;
@@ -140,7 +140,7 @@ TEST_CASE("RingBuffer - GrowWrapped") {
 // Remove — catches scanning past valid entries
 // ---------------------------------------------------------------------------
 
-TEST_CASE("RingBuffer - RemoveNotFound") {
+TEST_CASE("RingBuffer---RemoveNotFound") {
     // Old code scanned size_ (4) slots instead of count_ (2),
     // comparing against uninitialized Tracked entries.
     RingBuffer<Tracked> buf;
@@ -150,7 +150,7 @@ TEST_CASE("RingBuffer - RemoveNotFound") {
     CHECK(2 == buf.count());
 }
 
-TEST_CASE("RingBuffer - RemoveFront") {
+TEST_CASE("RingBuffer---RemoveFront") {
     RingBuffer<Tracked> buf;
     buf.push(Tracked{1});
     buf.push(Tracked{2});
@@ -160,7 +160,7 @@ TEST_CASE("RingBuffer - RemoveFront") {
     CHECK(2 == buf.front().value);
 }
 
-TEST_CASE("RingBuffer - RemoveBack") {
+TEST_CASE("RingBuffer---RemoveBack") {
     RingBuffer<Tracked> buf;
     buf.push(Tracked{1});
     buf.push(Tracked{2});
@@ -173,7 +173,7 @@ TEST_CASE("RingBuffer - RemoveBack") {
     CHECK(Tracked::alive().empty());
 }
 
-TEST_CASE("RingBuffer - RemoveMiddle") {
+TEST_CASE("RingBuffer---RemoveMiddle") {
     RingBuffer<Tracked> buf;
     buf.push(Tracked{1});
     buf.push(Tracked{2});
@@ -188,7 +188,7 @@ TEST_CASE("RingBuffer - RemoveMiddle") {
 // Destructor — verifies all elements are destroyed
 // ---------------------------------------------------------------------------
 
-TEST_CASE("RingBuffer - DestructorCleansUp") {
+TEST_CASE("RingBuffer---DestructorCleansUp") {
     {
         RingBuffer<Tracked> buf;
         for (int i = 0; i < 10; ++i) buf.push(Tracked{i});
@@ -196,7 +196,7 @@ TEST_CASE("RingBuffer - DestructorCleansUp") {
     CHECK(Tracked::alive().empty());
 }
 
-TEST_CASE("RingBuffer - ClearThenDestroy") {
+TEST_CASE("RingBuffer---ClearThenDestroy") {
     RingBuffer<Tracked> buf;
     for (int i = 0; i < 5; ++i) buf.push(Tracked{i});
     buf.clear();
@@ -208,7 +208,7 @@ TEST_CASE("RingBuffer - ClearThenDestroy") {
 // Wrap-around stress
 // ---------------------------------------------------------------------------
 
-TEST_CASE("RingBuffer - WrapAroundStress") {
+TEST_CASE("RingBuffer---WrapAroundStress") {
     // Repeatedly fill and drain a bounded buffer so that front_ and
     // back_ wrap around the internal array many times.
     RingBuffer<int> buf(4);

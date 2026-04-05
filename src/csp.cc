@@ -17,13 +17,13 @@
 
 #include <stdlib.h>
 
-static void default_scheduler_impl() {
+static void main_loop_scheduler() {
     auto& rt = csp::detail::Runtime::instance();
     rt.main_loop();
     csp::detail::Reactor::instance().shutdown();
 }
 
-static std::function<void()> g_scheduler = default_scheduler_impl;
+static std::function<void()> g_scheduler = main_loop_scheduler;
 
 
 namespace csp {
@@ -324,7 +324,7 @@ namespace csp {
     }
 
     void reset_scheduler() {
-        g_scheduler = default_scheduler_impl;
+        g_scheduler = main_loop_scheduler;
     }
 
     void await_completion() {

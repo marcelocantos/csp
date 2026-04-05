@@ -9,7 +9,7 @@ using namespace csp;
 
 TEST_SUITE("imp_exit") {
 
-TEST_CASE("no interceptor - normal exit") {
+TEST_CASE("no-interceptor---normal-exit") {
     bool ran = false;
     RunStats stats;
     csp::run([&] {
@@ -20,7 +20,7 @@ TEST_CASE("no interceptor - normal exit") {
     CHECK(ran);
 }
 
-TEST_CASE("no interceptor - exception") {
+TEST_CASE("no-interceptor---exception") {
     bool caught = false;
     RunStats stats;
     csp::run([&] {
@@ -41,7 +41,7 @@ TEST_CASE("no interceptor - exception") {
     CHECK(caught);
 }
 
-TEST_CASE("restart on exception") {
+TEST_CASE("restart-on-exception") {
     int count = 0;
     RunStats stats;
     csp::run([&] {
@@ -56,7 +56,7 @@ TEST_CASE("restart on exception") {
     CHECK(count == 2);
 }
 
-TEST_CASE("normal exit not restarted by policy") {
+TEST_CASE("normal-exit-not-restarted-by-policy") {
     int count = 0;
     RunStats stats;
     csp::run([&] {
@@ -68,7 +68,7 @@ TEST_CASE("normal exit not restarted by policy") {
     CHECK(count == 1);
 }
 
-TEST_CASE("custom handler restarts normal exit") {
+TEST_CASE("custom-handler-restarts-normal-exit") {
     int count = 0;
     RunStats stats;
     csp::run([&] {
@@ -88,7 +88,7 @@ TEST_CASE("custom handler restarts normal exit") {
     CHECK(count == 3);
 }
 
-TEST_CASE("max restarts exceeded") {
+TEST_CASE("max-restarts-exceeded") {
     int count = 0;
     RunStats stats;
     csp::run([&] {
@@ -103,7 +103,7 @@ TEST_CASE("max restarts exceeded") {
     CHECK(count == 3); // initial + 2 restarts
 }
 
-TEST_CASE("backoff delay") {
+TEST_CASE("backoff-delay") {
     int count = 0;
     fake_clock fc;
     std::vector<time_point> times;
@@ -128,7 +128,7 @@ TEST_CASE("backoff delay") {
     CHECK(delay >= std::chrono::seconds(5));
 }
 
-TEST_CASE("sliding window forgets old restarts") {
+TEST_CASE("sliding-window-forgets-old-restarts") {
     int count = 0;
     fake_clock fc;
     RunStats stats;
@@ -150,7 +150,7 @@ TEST_CASE("sliding window forgets old restarts") {
     CHECK(count == 6);
 }
 
-TEST_CASE("handler drops event") {
+TEST_CASE("handler-drops-event") {
     int count = 0;
     RunStats stats;
     csp::run([&] {
@@ -167,7 +167,7 @@ TEST_CASE("handler drops event") {
     CHECK(count == 1);
 }
 
-TEST_CASE("nested on_exit scopes") {
+TEST_CASE("nested-on_exit-scopes") {
     int inner_count = 0;
     int outer_count = 0;
     RunStats stats;
@@ -196,7 +196,7 @@ TEST_CASE("nested on_exit scopes") {
     CHECK(outer_count == 1);
 }
 
-TEST_CASE("inherited by child imps") {
+TEST_CASE("inherited-by-child-imps") {
     int handler_count = 0;
     RunStats stats;
     csp::run([&] {
@@ -216,7 +216,7 @@ TEST_CASE("inherited by child imps") {
     CHECK(handler_count == 1);
 }
 
-TEST_CASE("channel preservation on restart") {
+TEST_CASE("channel-preservation-on-restart") {
     int sum = 0;
     int count = 0;
     RunStats stats;
@@ -247,7 +247,7 @@ TEST_CASE("channel preservation on restart") {
     CHECK(sum == 30);
 }
 
-TEST_CASE("regular spawn unaffected") {
+TEST_CASE("regular-spawn-unaffected") {
     bool caught = false;
     RunStats stats;
     csp::run([&] {
@@ -274,7 +274,7 @@ TEST_CASE("regular spawn unaffected") {
 
 // TODO(T11): heap-use-after-free under ASan — supervised function
 // outlives exit_guard scope in M:N mode. Needs supervisor M:N safety fix.
-TEST_CASE("exit_guard RAII cleanup") {
+TEST_CASE("exit_guard-RAII-cleanup") {
     RunStats stats;
     auto count = std::make_shared<std::atomic<int>>(0);
     csp::run([&] {
@@ -292,7 +292,7 @@ TEST_CASE("exit_guard RAII cleanup") {
     });
 }
 
-TEST_CASE("channel leak check") {
+TEST_CASE("channel-leak-check") {
     int count = 0;
     RunStats stats;
     csp::run([&] {
@@ -311,7 +311,7 @@ TEST_CASE("channel leak check") {
 
 TEST_SUITE("imp_exit MN") {
 
-TEST_CASE("restart under MN") {
+TEST_CASE("restart-under-MN") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
     std::atomic<int> count{0};

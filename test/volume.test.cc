@@ -7,7 +7,7 @@ using namespace csp;
 
 static Logger g_log("Channel.Test");
 
-TEST_CASE("Volume - Megaloop") {
+TEST_CASE("Volume---Megaloop") {
     constexpr int n_loops = 1000000 / SCALE_HEAVY;
     int total = 0;
 
@@ -25,7 +25,7 @@ TEST_CASE("Volume - Megaloop") {
     CHECK(n_loops == total);
 }
 
-TEST_CASE("Volume - DaisyChain") {
+TEST_CASE("Volume---DaisyChain") {
     constexpr int n_threads = 100 / SCALE_LIGHT;
     constexpr int n_loops = 10000 / SCALE_MEDIUM;
     int total = 0;
@@ -48,7 +48,7 @@ TEST_CASE("Volume - DaisyChain") {
     CHECK(n_threads * n_loops == total);
 }
 
-TEST_CASE("Volume - RapidChannelLifecycle") {
+TEST_CASE("Volume---RapidChannelLifecycle") {
     constexpr int N = 10000 / SCALE_MEDIUM;
 
     int before_w = csp::internal::channel_count(0);
@@ -62,7 +62,7 @@ TEST_CASE("Volume - RapidChannelLifecycle") {
     CHECK(before_r == csp::internal::channel_count(1));
 }
 
-TEST_CASE("Volume - ManyImps") {
+TEST_CASE("Volume---ManyImps") {
     constexpr int N = 2000 / SCALE_LIGHT;
     std::atomic<int> completed{0};
 
@@ -77,7 +77,7 @@ TEST_CASE("Volume - ManyImps") {
     CHECK(0 == csp::internal::channel_count(1));
 }
 
-TEST_CASE("Volume - ManyChannelPairs") {
+TEST_CASE("Volume---ManyChannelPairs") {
     constexpr int N = 500 / SCALE_LIGHT;
     std::atomic<int> total{0};
 

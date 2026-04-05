@@ -5,7 +5,7 @@ using namespace csp::part;
 
 static Logger g_log("Quantize.Test");
 
-TEST_CASE("Quantize - Simple") {
+TEST_CASE("Quantize---Simple") {
     RunStats stats;
 
     csp::run([&]{
@@ -22,7 +22,7 @@ TEST_CASE("Quantize - Simple") {
     });
 }
 
-TEST_CASE("Quantize - Complex") {
+TEST_CASE("Quantize---Complex") {
     RunStats stats;
 
     int loops = 11;
@@ -72,7 +72,7 @@ TEST_CASE("Quantize - Complex") {
     CHECK(sent == undelivered + delivered);
 }
 
-TEST_CASE("Quantize - Uniform") {
+TEST_CASE("Quantize---Uniform") {
     RunStats stats;
 
     int sent = 0, delivered = 0, undelivered = 0;

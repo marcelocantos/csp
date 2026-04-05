@@ -8,7 +8,7 @@ using namespace std::chrono_literals;
 
 TEST_SUITE("DeadLetter") {
 
-TEST_CASE("Throttle - excess goes to dead letter") {
+TEST_CASE("Throttle---excess-goes-to-dead-letter") {
     fake_clock fc;
 
     std::vector<int> dead;
@@ -33,7 +33,7 @@ TEST_CASE("Throttle - excess goes to dead letter") {
     CHECK(std::vector<int>({2, 3, 4, 5}) == dead);
 }
 
-TEST_CASE("Throttle - no dead letter, no crash") {
+TEST_CASE("Throttle---no-dead-letter,-no-crash") {
     fake_clock fc;
 
     csp::run([&] {
@@ -48,7 +48,7 @@ TEST_CASE("Throttle - no dead letter, no crash") {
     });
 }
 
-TEST_CASE("Throttle - budget reset with dead letter") {
+TEST_CASE("Throttle---budget-reset-with-dead-letter") {
     fake_clock fc;
 
     std::vector<int> dead;
@@ -87,7 +87,7 @@ TEST_CASE("Throttle - budget reset with dead letter") {
     CHECK(std::vector<int>({3, 6}) == dead);
 }
 
-TEST_CASE("Debounce - superseded values go to dead letter") {
+TEST_CASE("Debounce---superseded-values-go-to-dead-letter") {
     fake_clock fc;
 
     std::vector<int> dead;
@@ -113,7 +113,7 @@ TEST_CASE("Debounce - superseded values go to dead letter") {
     CHECK(std::vector<int>({1, 2, 3, 4}) == dead);
 }
 
-TEST_CASE("Debounce - no dead letter, no crash") {
+TEST_CASE("Debounce---no-dead-letter,-no-crash") {
     fake_clock fc;
 
     csp::run([&] {
@@ -127,7 +127,7 @@ TEST_CASE("Debounce - no dead letter, no crash") {
     });
 }
 
-TEST_CASE("Debounce - spaced values, no drops") {
+TEST_CASE("Debounce---spaced-values,-no-drops") {
     fake_clock fc;
 
     std::vector<int> dead;
@@ -161,7 +161,7 @@ TEST_CASE("Debounce - spaced values, no drops") {
     CHECK(dead.empty());
 }
 
-TEST_CASE("Sample - overwritten values go to dead letter") {
+TEST_CASE("Sample---overwritten-values-go-to-dead-letter") {
     RunStats stats;
 
     auto [dl_w, dl_r] = chan<int>{};
@@ -192,7 +192,7 @@ TEST_CASE("Sample - overwritten values go to dead letter") {
     CHECK(std::vector<int>({1, 2}) == dead);
 }
 
-TEST_CASE("Sample - no dead letter, no crash") {
+TEST_CASE("Sample---no-dead-letter,-no-crash") {
     RunStats stats;
 
     auto [trig_w, trig_r] = chan<>{};

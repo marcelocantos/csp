@@ -10,7 +10,7 @@
 #include <thread>
 #include <vector>
 
-TEST_CASE("MN - MultipleThreads") {
+TEST_CASE("MN---MultipleThreads") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -43,7 +43,7 @@ TEST_CASE("MN - MultipleThreads") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - CrossThreadChannel") {
+TEST_CASE("MN---CrossThreadChannel") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -71,7 +71,7 @@ TEST_CASE("MN - CrossThreadChannel") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - RapidSpawnExit") {
+TEST_CASE("MN---RapidSpawnExit") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -91,7 +91,7 @@ TEST_CASE("MN - RapidSpawnExit") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - TimerSleep") {
+TEST_CASE("MN---TimerSleep") {
     using namespace std::chrono_literals;
 
     csp::shutdown_runtime();
@@ -121,7 +121,7 @@ TEST_CASE("MN - TimerSleep") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - TimerAfterInAlt") {
+TEST_CASE("MN---TimerAfterInAlt") {
     using namespace std::chrono_literals;
 
     csp::shutdown_runtime();
@@ -151,7 +151,7 @@ TEST_CASE("MN - TimerAfterInAlt") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - TimerTick") {
+TEST_CASE("MN---TimerTick") {
     using namespace std::chrono_literals;
 
     csp::shutdown_runtime();
@@ -175,7 +175,7 @@ TEST_CASE("MN - TimerTick") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - ConcurrentTimersAndChannels") {
+TEST_CASE("MN---ConcurrentTimersAndChannels") {
     using namespace std::chrono_literals;
 
     csp::shutdown_runtime();
@@ -207,7 +207,7 @@ TEST_CASE("MN - ConcurrentTimersAndChannels") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - StressChannels") {
+TEST_CASE("MN---StressChannels") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -241,7 +241,7 @@ TEST_CASE("MN - StressChannels") {
 // Volume tests
 // ---------------------------------------------------------------------------
 
-TEST_CASE("MN Volume - SpawnExit 1M") {
+TEST_CASE("MN-Volume---SpawnExit-1M") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -260,7 +260,7 @@ TEST_CASE("MN Volume - SpawnExit 1M") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Volume - ChannelPairs 10K") {
+TEST_CASE("MN-Volume---ChannelPairs-10K") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -284,7 +284,7 @@ TEST_CASE("MN Volume - ChannelPairs 10K") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Volume - ChannelPipeline") {
+TEST_CASE("MN-Volume---ChannelPipeline") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -327,7 +327,7 @@ TEST_CASE("MN Volume - ChannelPipeline") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Volume - FanOutFanIn") {
+TEST_CASE("MN-Volume---FanOutFanIn") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -373,7 +373,7 @@ TEST_CASE("MN Volume - FanOutFanIn") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Volume - ManyChannelMessages") {
+TEST_CASE("MN-Volume---ManyChannelMessages") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -399,7 +399,7 @@ TEST_CASE("MN Volume - ManyChannelMessages") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Volume - SpawnWithYield") {
+TEST_CASE("MN-Volume---SpawnWithYield") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -419,7 +419,7 @@ TEST_CASE("MN Volume - SpawnWithYield") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Volume - DaisyChain") {
+TEST_CASE("MN-Volume---DaisyChain") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -459,7 +459,7 @@ TEST_CASE("MN Volume - DaisyChain") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Volume - AltSelectStress") {
+TEST_CASE("MN-Volume---AltSelectStress") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -501,7 +501,7 @@ TEST_CASE("MN Volume - AltSelectStress") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Volume - ProducerConsumer") {
+TEST_CASE("MN-Volume---ProducerConsumer") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -540,7 +540,7 @@ TEST_CASE("MN Volume - ProducerConsumer") {
 // Stress tests — repeated init/shutdown cycles to surface races
 // ---------------------------------------------------------------------------
 
-TEST_CASE("MN Stress - Lifecycle") {
+TEST_CASE("MN-Stress---Lifecycle") {
     // Exercises the shutdown condvar race (bug #8) and global queue
     // re-init (bug #5) across many rapid init/shutdown cycles.
     constexpr int CYCLES = 100 / SCALE_MEDIUM;
@@ -558,7 +558,7 @@ TEST_CASE("MN Stress - Lifecycle") {
     }
 }
 
-TEST_CASE("MN Stress - ChannelPairs") {
+TEST_CASE("MN-Stress---ChannelPairs") {
     // Exercises the suspending_/wake_pending_ TOCTOU drain (bug #7)
     // across many cycles with many short-lived channel rendezvous pairs.
     constexpr int CYCLES = 20 / SCALE_MEDIUM;
@@ -583,7 +583,7 @@ TEST_CASE("MN Stress - ChannelPairs") {
     }
 }
 
-TEST_CASE("MN Stress - ProducerConsumer") {
+TEST_CASE("MN-Stress---ProducerConsumer") {
     // Exercises multi-writer/multi-reader channel rendezvous with
     // repeated init/shutdown to surface cross-P scheduling races.
     constexpr int CYCLES = 20 / SCALE_MEDIUM;
@@ -615,7 +615,7 @@ TEST_CASE("MN Stress - ProducerConsumer") {
     }
 }
 
-TEST_CASE("MN Volume - SpawnDuringExecution") {
+TEST_CASE("MN-Volume---SpawnDuringExecution") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -645,7 +645,7 @@ TEST_CASE("MN Volume - SpawnDuringExecution") {
 // Watchdog / dynamic processor pool tests
 // ---------------------------------------------------------------------------
 
-TEST_CASE("MN - Watchdog rescues stalled P") {
+TEST_CASE("MN---Watchdog-rescues-stalled-P") {
     using namespace std::chrono_literals;
 
     csp::shutdown_runtime();
@@ -691,7 +691,7 @@ TEST_CASE("MN - Watchdog rescues stalled P") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - Watchdog rescues timers from stalled P") {
+TEST_CASE("MN---Watchdog-rescues-timers-from-stalled-P") {
     using namespace std::chrono_literals;
 
     csp::shutdown_runtime();
@@ -729,7 +729,7 @@ TEST_CASE("MN - Watchdog rescues timers from stalled P") {
 // Coverage gap tests — concurrency coverage audit
 // ---------------------------------------------------------------------------
 
-TEST_CASE("MN - SingleWorker") {
+TEST_CASE("MN---SingleWorker") {
     csp::shutdown_runtime();
     csp::set_maxprocs(1);
 
@@ -757,7 +757,7 @@ TEST_CASE("MN - SingleWorker") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - ExceptionPropagation") {
+TEST_CASE("MN---ExceptionPropagation") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -783,7 +783,7 @@ TEST_CASE("MN - ExceptionPropagation") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - DynamicScopingInheritance") {
+TEST_CASE("MN---DynamicScopingInheritance") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -829,7 +829,7 @@ TEST_CASE("MN - DynamicScopingInheritance") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - ConcurrentSpawnStress") {
+TEST_CASE("MN---ConcurrentSpawnStress") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -855,7 +855,7 @@ TEST_CASE("MN - ConcurrentSpawnStress") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - HighContentionChannel") {
+TEST_CASE("MN---HighContentionChannel") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -897,7 +897,7 @@ TEST_CASE("MN - HighContentionChannel") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - ConcurrentBlocking") {
+TEST_CASE("MN---ConcurrentBlocking") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -926,7 +926,7 @@ TEST_CASE("MN - ConcurrentBlocking") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - HAMTStress") {
+TEST_CASE("MN---HAMTStress") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -970,7 +970,7 @@ TEST_CASE("MN - HAMTStress") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN - StackPoolExhaustion") {
+TEST_CASE("MN---StackPoolExhaustion") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 

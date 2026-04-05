@@ -15,7 +15,7 @@ TEST_SUITE("PartEdgeCases") {
 // Empty input tests: writer closes immediately, output reader sees clean close.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Empty input - batch") {
+TEST_CASE("Empty-input---batch") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -26,7 +26,7 @@ TEST_CASE("Empty input - batch") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - map") {
+TEST_CASE("Empty-input---map") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -37,7 +37,7 @@ TEST_CASE("Empty input - map") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - where") {
+TEST_CASE("Empty-input---where") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -48,7 +48,7 @@ TEST_CASE("Empty input - where") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - scan") {
+TEST_CASE("Empty-input---scan") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -60,7 +60,7 @@ TEST_CASE("Empty input - scan") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - flatten") {
+TEST_CASE("Empty-input---flatten") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -71,7 +71,7 @@ TEST_CASE("Empty input - flatten") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - distinct") {
+TEST_CASE("Empty-input---distinct") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -82,7 +82,7 @@ TEST_CASE("Empty input - distinct") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - take_while") {
+TEST_CASE("Empty-input---take_while") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -93,7 +93,7 @@ TEST_CASE("Empty input - take_while") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - skip_while") {
+TEST_CASE("Empty-input---skip_while") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -104,7 +104,7 @@ TEST_CASE("Empty input - skip_while") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - nwise") {
+TEST_CASE("Empty-input---nwise") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -115,7 +115,7 @@ TEST_CASE("Empty input - nwise") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - pairwise") {
+TEST_CASE("Empty-input---pairwise") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -126,7 +126,7 @@ TEST_CASE("Empty input - pairwise") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - stride") {
+TEST_CASE("Empty-input---stride") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -137,7 +137,7 @@ TEST_CASE("Empty input - stride") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - window") {
+TEST_CASE("Empty-input---window") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -148,7 +148,7 @@ TEST_CASE("Empty input - window") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - reduce emits initial value") {
+TEST_CASE("Empty-input---reduce-emits-initial-value") {
     RunStats rs;
     int val = -1;
     bool closed = false;
@@ -162,7 +162,7 @@ TEST_CASE("Empty input - reduce emits initial value") {
     CHECK(closed);
 }
 
-TEST_CASE("Empty input - unique") {
+TEST_CASE("Empty-input---unique") {
     RunStats rs;
     bool closed = false;
     csp::run([&]{
@@ -177,7 +177,7 @@ TEST_CASE("Empty input - unique") {
 // Output reader death tests: consumer drops reader mid-stream.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Output death - map") {
+TEST_CASE("Output-death---map") {
     RunStats rs;
     int v0 = 0, v1 = 0, v2 = 0;
 
@@ -197,7 +197,7 @@ TEST_CASE("Output death - map") {
     CHECK(6 == v2);
 }
 
-TEST_CASE("Output death - where") {
+TEST_CASE("Output-death---where") {
     RunStats rs;
     int v0 = 0, v1 = 0;
 
@@ -215,7 +215,7 @@ TEST_CASE("Output death - where") {
     CHECK(2 == v1);
 }
 
-TEST_CASE("Output death - scan") {
+TEST_CASE("Output-death---scan") {
     RunStats rs;
     int v0 = 0, v1 = 0, v2 = 0;
 
@@ -235,7 +235,7 @@ TEST_CASE("Output death - scan") {
     CHECK(6 == v2);
 }
 
-TEST_CASE("Output death - batch") {
+TEST_CASE("Output-death---batch") {
     RunStats rs;
     std::vector<int> v;
 
@@ -256,7 +256,7 @@ TEST_CASE("Output death - batch") {
 // random_bytes test
 // ---------------------------------------------------------------------------
 
-TEST_CASE("random_bytes produces correct chunk size") {
+TEST_CASE("random_bytes-produces-correct-chunk-size") {
     RunStats rs;
     size_t s0 = 0, s1 = 0;
 
@@ -281,7 +281,7 @@ TEST_CASE("random_bytes produces correct chunk size") {
 // Move-only type test
 // ---------------------------------------------------------------------------
 
-TEST_CASE("map with unique_ptr") {
+TEST_CASE("map-with-unique_ptr") {
     RunStats rs;
     int v0 = 0, v1 = 0, v2 = 0;
     bool closed = false;

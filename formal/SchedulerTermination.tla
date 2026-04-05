@@ -2,7 +2,7 @@
 (*******************************************************************************
  * Models the interaction between the reactor's fire_signal() (two-step:
  * push_to_global then decrement pending_signals) and the single-P
- * scheduler's exit decision in default_scheduler_impl().
+ * scheduler's exit decision in main_loop_scheduler().
  *
  * The scheduler must not exit while imps are still runnable.  The race
  * arises because fire_signal pushes an imp to the global queue (setting

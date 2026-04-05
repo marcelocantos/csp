@@ -15,7 +15,7 @@
 // frequently, forcing the other P to steal. Verify total count matches
 // (no MT lost or duplicated).
 
-TEST_CASE("Protocol - A1 steal_work contention") {
+TEST_CASE("Protocol---A1-steal_work-contention") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -47,7 +47,7 @@ TEST_CASE("Protocol - A1 steal_work contention") {
 // dropping the writer. All N MTs must wake with a complemented (dead)
 // result. No MT hangs.
 
-TEST_CASE("Protocol - A2 concurrent channel close + alt sleep") {
+TEST_CASE("Protocol---A2-concurrent-channel-close-+-alt-sleep") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -95,7 +95,7 @@ TEST_CASE("Protocol - A2 concurrent channel close + alt sleep") {
 // endpoints close simultaneously. Verify no leak (channel count returns
 // to baseline) and no double-free (ASan would catch this).
 
-TEST_CASE("Protocol - A3 concurrent endpoint release") {
+TEST_CASE("Protocol---A3-concurrent-endpoint-release") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -140,7 +140,7 @@ TEST_CASE("Protocol - A3 concurrent endpoint release") {
 // it context-switches. The reader does alt() and should hit the early-wake
 // path in run(Status::detach). Verify the reader gets the value.
 
-TEST_CASE("Protocol - A4 early wake path") {
+TEST_CASE("Protocol---A4-early-wake-path") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -179,7 +179,7 @@ TEST_CASE("Protocol - A4 early wake path") {
 // that all sleep_until the same near-future deadline. The 65th must be
 // deferred to the next fire_timers iteration. Verify all 65 complete.
 
-TEST_CASE("Protocol - A5 timer heap boundary") {
+TEST_CASE("Protocol---A5-timer-heap-boundary") {
     using namespace std::chrono_literals;
 
     csp::shutdown_runtime();
@@ -210,7 +210,7 @@ TEST_CASE("Protocol - A5 timer heap boundary") {
 // Call set_maxprocs(4), spawn and schedule work, shutdown, then repeat.
 // Verify the second cycle works cleanly.
 
-TEST_CASE("Protocol - A6 re-init across shutdown") {
+TEST_CASE("Protocol---A6-re-init-across-shutdown") {
     // First cycle.
     csp::shutdown_runtime();
     csp::set_maxprocs(4);

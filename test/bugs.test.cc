@@ -4,7 +4,7 @@ using namespace csp;
 
 Logger g_log("test/bugs");
 
-TEST_CASE("Bug - 2015_06_20") {
+TEST_CASE("Bug---2015_06_20") {
     csp::run([]{
         reader<int> out;
         spawn([w = ++out]{

@@ -6,7 +6,7 @@ using namespace std::chrono_literals;
 
 static Logger g_log("Timer.Test");
 
-TEST_CASE("Timer - Sleep") {
+TEST_CASE("Timer---Sleep") {
     RunStats stats;
     fake_clock fc;
     bool ran = false;
@@ -20,7 +20,7 @@ TEST_CASE("Timer - Sleep") {
     CHECK(ran);
 }
 
-TEST_CASE("Timer - After") {
+TEST_CASE("Timer---After") {
     RunStats stats;
     fake_clock fc;
     duration elapsed{};
@@ -36,7 +36,7 @@ TEST_CASE("Timer - After") {
     CHECK(elapsed == 10ms);
 }
 
-TEST_CASE("Timer - AfterInAlt") {
+TEST_CASE("Timer---AfterInAlt") {
     RunStats stats;
     fake_clock fc;
 
@@ -54,7 +54,7 @@ TEST_CASE("Timer - AfterInAlt") {
     CHECK(1 == which_result);
 }
 
-TEST_CASE("Timer - Tick") {
+TEST_CASE("Timer---Tick") {
     RunStats stats;
     fake_clock fc;
     auto epoch = time_point{};
@@ -75,7 +75,7 @@ TEST_CASE("Timer - Tick") {
     CHECK(times[2] == epoch + 150ms);
 }
 
-TEST_CASE("Timer - TickCancellation") {
+TEST_CASE("Timer---TickCancellation") {
     RunStats stats;
     fake_clock fc;
 
@@ -89,7 +89,7 @@ TEST_CASE("Timer - TickCancellation") {
     // If the tick imp didn't exit, schedule() would hang.
 }
 
-TEST_CASE("Timer - MultipleTimersOrdering") {
+TEST_CASE("Timer---MultipleTimersOrdering") {
     RunStats stats;
     fake_clock fc;
 
@@ -105,7 +105,7 @@ TEST_CASE("Timer - MultipleTimersOrdering") {
     CHECK(1 == which_result);
 }
 
-TEST_CASE("Timer - TimeoutPattern") {
+TEST_CASE("Timer---TimeoutPattern") {
     RunStats stats;
     fake_clock fc;
 
@@ -133,7 +133,7 @@ TEST_CASE("Timer - TimeoutPattern") {
     CHECK(42 == val);
 }
 
-TEST_CASE("Timer - Controlled duration") {
+TEST_CASE("Timer---Controlled-duration") {
     RunStats stats;
     fake_clock fc;
     std::vector<duration> intervals;
@@ -160,7 +160,7 @@ TEST_CASE("Timer - Controlled duration") {
     CHECK(intervals[2] == 10ms);
 }
 
-TEST_CASE("Timer - Controlled time_point") {
+TEST_CASE("Timer---Controlled-time_point") {
     RunStats stats;
     fake_clock fc;
     int fires = 0;
@@ -182,7 +182,7 @@ TEST_CASE("Timer - Controlled time_point") {
     CHECK(2 == fires);
 }
 
-TEST_CASE("Timer - Controlled cancellation") {
+TEST_CASE("Timer---Controlled-cancellation") {
     RunStats stats;
     fake_clock fc;
 

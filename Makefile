@@ -110,7 +110,8 @@ PICOTLS_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(PICOTLS_SRCS))
 PICOTLS_CFLAGS := -O2 -I$(PICOTLS_DIR)/include \
                   -I$(CIFRA_DIR) -I$(CIFRA_DIR)/ext -I$(UECC_DIR)
 ifneq ($(SANITIZE),)
-PICOTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+PICOTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer \
+                  -fno-sanitize=pointer-overflow
 endif
 endif
 

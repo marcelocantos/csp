@@ -7,7 +7,7 @@ using namespace csp::part;
 
 TEST_SUITE("reorder") {
 
-TEST_CASE("already ordered") {
+TEST_CASE("already-ordered") {
     RunStats stats;
 
     csp::run([&] {
@@ -29,7 +29,7 @@ TEST_CASE("already ordered") {
     });
 }
 
-TEST_CASE("reversed input") {
+TEST_CASE("reversed-input") {
     RunStats stats;
 
     csp::run([&] {
@@ -51,7 +51,7 @@ TEST_CASE("reversed input") {
     });
 }
 
-TEST_CASE("interleaved out of order") {
+TEST_CASE("interleaved-out-of-order") {
     RunStats stats;
 
     csp::run([&] {
@@ -79,7 +79,7 @@ TEST_CASE("interleaved out of order") {
     });
 }
 
-TEST_CASE("empty input") {
+TEST_CASE("empty-input") {
     RunStats stats;
 
     csp::run([&] {

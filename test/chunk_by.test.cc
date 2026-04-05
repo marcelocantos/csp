@@ -5,7 +5,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("ChunkBy - consecutive equal groups") {
+TEST_CASE("ChunkBy---consecutive-equal-groups") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -23,7 +23,7 @@ TEST_CASE("ChunkBy - consecutive equal groups") {
     CHECK(got == std::vector<std::vector<int>>{{1, 1}, {2, 2, 2}, {3}});
 }
 
-TEST_CASE("ChunkBy - monotone runs") {
+TEST_CASE("ChunkBy---monotone-runs") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -41,7 +41,7 @@ TEST_CASE("ChunkBy - monotone runs") {
     CHECK(got == std::vector<std::vector<int>>{{1, 3, 5}, {2, 4}, {1}});
 }
 
-TEST_CASE("ChunkBy - single element") {
+TEST_CASE("ChunkBy---single-element") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -59,7 +59,7 @@ TEST_CASE("ChunkBy - single element") {
     CHECK(got == std::vector<std::vector<int>>{{42}});
 }
 
-TEST_CASE("ChunkBy - empty input") {
+TEST_CASE("ChunkBy---empty-input") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -77,7 +77,7 @@ TEST_CASE("ChunkBy - empty input") {
     CHECK(got.empty());
 }
 
-TEST_CASE("ChunkBy - all same group") {
+TEST_CASE("ChunkBy---all-same-group") {
     RunStats stats;
     auto src = chan<int>();
 

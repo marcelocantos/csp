@@ -5,7 +5,7 @@ using namespace csp::part;
 
 static Logger g_log("Rpc.Test");
 
-TEST_CASE("Rpc - ChanPair") {
+TEST_CASE("Rpc---ChanPair") {
     RunStats stats;
 
     csp::run([&] {
@@ -23,7 +23,7 @@ TEST_CASE("Rpc - ChanPair") {
     });
 }
 
-TEST_CASE("Rpc - VoidReq") {
+TEST_CASE("Rpc---VoidReq") {
     RunStats stats;
 
     csp::run([&] {
@@ -38,7 +38,7 @@ TEST_CASE("Rpc - VoidReq") {
     });
 }
 
-TEST_CASE("Rpc - VoidRep") {
+TEST_CASE("Rpc---VoidRep") {
     RunStats stats;
 
     int result = 0;
@@ -59,7 +59,7 @@ TEST_CASE("Rpc - VoidRep") {
     CHECK(55 == result);
 }
 
-TEST_CASE("Rpc - VoidVoid") {
+TEST_CASE("Rpc---VoidVoid") {
     RunStats stats;
 
     int result = 0;
@@ -80,7 +80,7 @@ TEST_CASE("Rpc - VoidVoid") {
     CHECK(10 == result);
 }
 
-TEST_CASE("Rpc - RepInReq") {
+TEST_CASE("Rpc---RepInReq") {
     RunStats stats;
 
     csp::run([&] {
@@ -97,7 +97,7 @@ TEST_CASE("Rpc - RepInReq") {
     });
 }
 
-TEST_CASE("request/call - basic") {
+TEST_CASE("request/call---basic") {
     RunStats stats;
 
     csp::run([&] {
@@ -117,7 +117,7 @@ TEST_CASE("request/call - basic") {
     });
 }
 
-TEST_CASE("request/operator() - blocking call") {
+TEST_CASE("request/operator()---blocking-call") {
     RunStats stats;
 
     csp::run([&] {
@@ -138,7 +138,7 @@ TEST_CASE("request/operator() - blocking call") {
     });
 }
 
-TEST_CASE("request/rpc - concurrent callers") {
+TEST_CASE("request/rpc---concurrent-callers") {
     RunStats stats;
 
     csp::run([&] {
@@ -165,7 +165,7 @@ TEST_CASE("request/rpc - concurrent callers") {
     });
 }
 
-TEST_CASE("request/rpc - server death") {
+TEST_CASE("request/rpc---server-death") {
     RunStats stats;
 
     csp::run([&] {

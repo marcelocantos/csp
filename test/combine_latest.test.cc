@@ -9,7 +9,7 @@ using namespace csp::part;
 
 TEST_SUITE("CombineLatest") {
 
-TEST_CASE("Two inputs - basic") {
+TEST_CASE("Two-inputs---basic") {
     RunStats stats;
 
     auto [aw, ar] = chan<int>{};
@@ -37,7 +37,7 @@ TEST_CASE("Two inputs - basic") {
     CHECK(T(2, "y") == got[2]);
 }
 
-TEST_CASE("No emission until all inputs produce") {
+TEST_CASE("No-emission-until-all-inputs-produce") {
     RunStats stats;
 
     auto [aw, ar] = chan<int>{};
@@ -63,7 +63,7 @@ TEST_CASE("No emission until all inputs produce") {
     CHECK(std::make_tuple(3, 10) == got[0]);
 }
 
-TEST_CASE("Input dies after producing - retains last value") {
+TEST_CASE("Input-dies-after-producing---retains-last-value") {
     RunStats stats;
 
     auto [aw, ar] = chan<int>{};
@@ -94,7 +94,7 @@ TEST_CASE("Input dies after producing - retains last value") {
     CHECK(std::make_tuple(1, 30) == got[2]);
 }
 
-TEST_CASE("Input dies before producing - output closes") {
+TEST_CASE("Input-dies-before-producing---output-closes") {
     RunStats stats;
 
     auto [aw, ar] = chan<int>{};
@@ -119,7 +119,7 @@ TEST_CASE("Input dies before producing - output closes") {
     csp::schedule();
 }
 
-TEST_CASE("Output death stops") {
+TEST_CASE("Output-death-stops") {
     RunStats stats;
 
     auto [aw, ar] = chan<int>{};
@@ -145,7 +145,7 @@ TEST_CASE("Output death stops") {
     csp::schedule();
 }
 
-TEST_CASE("Three inputs") {
+TEST_CASE("Three-inputs") {
     RunStats stats;
 
     auto [aw, ar] = chan<int>{};
@@ -173,7 +173,7 @@ TEST_CASE("Three inputs") {
     CHECK(T(3, 2.5, "hi") == got[1]);
 }
 
-TEST_CASE("Combining function") {
+TEST_CASE("Combining-function") {
     RunStats stats;
 
     auto [aw, ar] = chan<int>{};

@@ -31,7 +31,7 @@ auto eratosthenes(writer<int> w, RunStats & stats) {
 
 static std::vector<int> primes();
 
-TEST_CASE("Sieve - Eratosthenes") {
+TEST_CASE("Sieve---Eratosthenes") {
     RunStats stats;
 
     csp::run([&] {

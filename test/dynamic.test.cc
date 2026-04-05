@@ -5,7 +5,7 @@
 #include <stdexcept>
 #include <string>
 
-TEST_CASE("dynamic: basic read/write") {
+TEST_CASE("dynamic:-basic-read/write") {
     RunStats stats;
     static csp::dynamic<int> count;
     stats.spawn([&]{
@@ -21,7 +21,7 @@ TEST_CASE("dynamic: basic read/write") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: explicit default") {
+TEST_CASE("dynamic:-explicit-default") {
     RunStats stats;
     static csp::dynamic<int> count(99);
     stats.spawn([&]{
@@ -32,7 +32,7 @@ TEST_CASE("dynamic: explicit default") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: spawn inherits parent context") {
+TEST_CASE("dynamic:-spawn-inherits-parent-context") {
     RunStats stats;
     static csp::dynamic<int> val;
     auto result = csp::chan<int>();
@@ -50,7 +50,7 @@ TEST_CASE("dynamic: spawn inherits parent context") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: child write isolation") {
+TEST_CASE("dynamic:-child-write-isolation") {
     RunStats stats;
     static csp::dynamic<int> val;
     auto child_done = csp::chan<int>();
@@ -75,7 +75,7 @@ TEST_CASE("dynamic: child write isolation") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: local scoped revert") {
+TEST_CASE("dynamic:-local-scoped-revert") {
     RunStats stats;
     static csp::dynamic<int> val;
     stats.spawn([&]{
@@ -89,7 +89,7 @@ TEST_CASE("dynamic: local scoped revert") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: nested locals") {
+TEST_CASE("dynamic:-nested-locals") {
     RunStats stats;
     static csp::dynamic<int> val;
     stats.spawn([&]{
@@ -107,7 +107,7 @@ TEST_CASE("dynamic: nested locals") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: multiple keys") {
+TEST_CASE("dynamic:-multiple-keys") {
     RunStats stats;
     static csp::dynamic<int> a;
     static csp::dynamic<int> b;
@@ -125,7 +125,7 @@ TEST_CASE("dynamic: multiple keys") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: context transfer over channel") {
+TEST_CASE("dynamic:-context-transfer-over-channel") {
     RunStats stats;
     static csp::dynamic<int> val;
     auto ch = csp::chan<csp::context>();
@@ -146,7 +146,7 @@ TEST_CASE("dynamic: context transfer over channel") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: string type") {
+TEST_CASE("dynamic:-string-type") {
     RunStats stats;
     static csp::dynamic<std::string> name("default");
     stats.spawn([&]{
@@ -157,7 +157,7 @@ TEST_CASE("dynamic: string type") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: deep spawn chain") {
+TEST_CASE("dynamic:-deep-spawn-chain") {
     RunStats stats;
     static csp::dynamic<int> depth;
     auto results = csp::chan<int>();
@@ -182,7 +182,7 @@ TEST_CASE("dynamic: deep spawn chain") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: multi-bind local") {
+TEST_CASE("dynamic:-multi-bind-local") {
     RunStats stats;
     static csp::dynamic<int> x;
     static csp::dynamic<int> y;
@@ -196,7 +196,7 @@ TEST_CASE("dynamic: multi-bind local") {
     csp::schedule();
 }
 
-TEST_CASE("dynamic: local binding reverts during exception") {
+TEST_CASE("dynamic:-local-binding-reverts-during-exception") {
     RunStats stats;
     static csp::dynamic<int> val(0);
     int after_catch = -1;
@@ -214,7 +214,7 @@ TEST_CASE("dynamic: local binding reverts during exception") {
     CHECK(after_catch == 10);
 }
 
-TEST_CASE("dynamic: multiple locals in same scope both revert") {
+TEST_CASE("dynamic:-multiple-locals-in-same-scope-both-revert") {
     RunStats stats;
     static csp::dynamic<int> a(0);
     static csp::dynamic<std::string> b("default");
@@ -236,7 +236,7 @@ TEST_CASE("dynamic: multiple locals in same scope both revert") {
 
 // --- imp_local tests ---
 
-TEST_CASE("imp_local: basic read/write") {
+TEST_CASE("imp_local:-basic-read/write") {
     RunStats stats;
     static csp::imp_local<int> counter;
     stats.spawn([&]{
@@ -249,7 +249,7 @@ TEST_CASE("imp_local: basic read/write") {
     csp::schedule();
 }
 
-TEST_CASE("imp_local: explicit default") {
+TEST_CASE("imp_local:-explicit-default") {
     RunStats stats;
     static csp::imp_local<int> counter(99);
     stats.spawn([&]{
@@ -260,7 +260,7 @@ TEST_CASE("imp_local: explicit default") {
     csp::schedule();
 }
 
-TEST_CASE("imp_local: not inherited by child") {
+TEST_CASE("imp_local:-not-inherited-by-child") {
     RunStats stats;
     static csp::imp_local<int> val;
     auto result = csp::chan<int>();
@@ -280,7 +280,7 @@ TEST_CASE("imp_local: not inherited by child") {
     csp::schedule();
 }
 
-TEST_CASE("imp_local: independent per imp") {
+TEST_CASE("imp_local:-independent-per-imp") {
     RunStats stats;
     static csp::imp_local<int> val;
     auto ch1 = csp::chan<int>();
@@ -303,7 +303,7 @@ TEST_CASE("imp_local: independent per imp") {
     csp::schedule();
 }
 
-TEST_CASE("imp_local: string type") {
+TEST_CASE("imp_local:-string-type") {
     RunStats stats;
     static csp::imp_local<std::string> name("default");
     stats.spawn([&]{

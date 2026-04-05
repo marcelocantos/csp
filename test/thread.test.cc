@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <string>
 
-TEST_CASE("Thread - OneShot") {
+TEST_CASE("Thread---OneShot") {
     bool ran = false;
     csp::run([&]{
         csp::spawn([&]{
@@ -18,7 +18,7 @@ TEST_CASE("Thread - OneShot") {
     CHECK(0 == csp::internal::channel_count(1));
 }
 
-TEST_CASE("Thread - Parallel") {
+TEST_CASE("Thread---Parallel") {
     char buf[6] = "";
     csp::run([&]{
         for (int i = 0; i < 5; ++i) {
@@ -32,7 +32,7 @@ TEST_CASE("Thread - Parallel") {
     CHECK(0 == csp::internal::channel_count(1));
 }
 
-TEST_CASE("Thread - SpawnSpawn") {
+TEST_CASE("Thread---SpawnSpawn") {
     int result = 0;
     csp::run([&]{
         for (int i = 0; i < 5; ++i) {
@@ -50,7 +50,7 @@ TEST_CASE("Thread - SpawnSpawn") {
     CHECK(0 == csp::internal::channel_count(1));
 }
 
-TEST_CASE("Thread - Throw") {
+TEST_CASE("Thread---Throw") {
     struct bork { };
 
     int total = 0;
@@ -79,7 +79,7 @@ TEST_CASE("Thread - Throw") {
     CHECK(0 == csp::internal::channel_count(1));
 }
 
-TEST_CASE("Thread - Yield") {
+TEST_CASE("Thread---Yield") {
     std::string trace;
 
     csp::run([&]{
@@ -104,7 +104,7 @@ TEST_CASE("Thread - Yield") {
     CHECK(0 == csp::internal::channel_count(1));
 }
 
-TEST_CASE("Thread - CustomScheduler") {
+TEST_CASE("Thread---CustomScheduler") {
     // Verify that set_scheduler installs a custom scheduler that gets called.
     bool custom_ran = false;
 
@@ -123,7 +123,7 @@ TEST_CASE("Thread - CustomScheduler") {
     csp::reset_scheduler();
 }
 
-TEST_CASE("Thread - SpawnMany") {
+TEST_CASE("Thread---SpawnMany") {
     constexpr int N = 500;
     std::atomic<int> completed{0};
 

@@ -10,7 +10,7 @@
 // Spawns many channel pairs and verifies all channels are cleaned up
 // after completion. Catches leaked channels from queue corruption or
 // double-enqueue (which could skip cleanup).
-TEST_CASE("Invariant - ChannelCleanup") {
+TEST_CASE("Invariant---ChannelCleanup") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -39,7 +39,7 @@ TEST_CASE("Invariant - ChannelCleanup") {
 // B2. No double-enqueue (exact count)
 // Rapid channel ops across multiple Ps. Any double-enqueue would cause
 // an MT to run twice (inflating count) or be skipped (deflating it).
-TEST_CASE("Invariant - ExactMessageCount") {
+TEST_CASE("Invariant---ExactMessageCount") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -71,7 +71,7 @@ TEST_CASE("Invariant - ExactMessageCount") {
 }
 
 // B2 variant: single-P mode (no M:N).
-TEST_CASE("Invariant - ExactMessageCountSingleP") {
+TEST_CASE("Invariant---ExactMessageCountSingleP") {
     constexpr int PAIRS = 200 / SCALE_MEDIUM;
     constexpr int MSGS = 10;
     std::atomic<int64_t> total{0};
@@ -100,7 +100,7 @@ TEST_CASE("Invariant - ExactMessageCountSingleP") {
 // Maximize time in the suspending window: many MTs doing alt() with
 // immediate-ready peers (fast path through suspending_=true → unlock →
 // wake_pending check → continue).
-TEST_CASE("Invariant - SuspendingWindowStress") {
+TEST_CASE("Invariant---SuspendingWindowStress") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -144,7 +144,7 @@ TEST_CASE("Invariant - SuspendingWindowStress") {
 // The strong "all N must be data results" assertion only holds in
 // single-P cooperative mode. In M:N mode we verify the total count and
 // that at least some iterations got the data result.
-TEST_CASE("Invariant - AltReadyVsDeadStress") {
+TEST_CASE("Invariant---AltReadyVsDeadStress") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 

@@ -11,7 +11,7 @@ using namespace csp;
 
 TEST_SUITE("cancellation") {
 
-TEST_CASE("cancel_guard destructor auto-cancels") {
+TEST_CASE("cancel_guard-destructor-auto-cancels") {
     RunStats stats;
     bool fired = false;
     csp::run([&] {
@@ -30,7 +30,7 @@ TEST_CASE("cancel_guard destructor auto-cancels") {
     CHECK(fired);
 }
 
-TEST_CASE("explicit cancel") {
+TEST_CASE("explicit-cancel") {
     RunStats stats;
     bool fired = false;
     csp::run([&] {
@@ -48,7 +48,7 @@ TEST_CASE("explicit cancel") {
     CHECK(fired);
 }
 
-TEST_CASE("cancel with reason") {
+TEST_CASE("cancel-with-reason") {
     RunStats stats;
     bool got_reason = false;
     csp::run([&] {
@@ -72,7 +72,7 @@ TEST_CASE("cancel with reason") {
     CHECK(got_reason);
 }
 
-TEST_CASE("done in prialt with work channel") {
+TEST_CASE("done-in-prialt-with-work-channel") {
     RunStats stats;
     int result = -1;
     csp::run([&] {
@@ -97,7 +97,7 @@ TEST_CASE("done in prialt with work channel") {
     CHECK(result == 0); // cancel fired, not work
 }
 
-TEST_CASE("done inactive without scope") {
+TEST_CASE("done-inactive-without-scope") {
     RunStats stats;
     int result = -1;
     csp::run([&] {
@@ -116,7 +116,7 @@ TEST_CASE("done inactive without scope") {
     CHECK(result == 1); // work channel fired, done inactive
 }
 
-TEST_CASE("cascading parent to child") {
+TEST_CASE("cascading-parent-to-child") {
     RunStats stats;
     bool child_cancelled = false;
     csp::run([&] {
@@ -142,7 +142,7 @@ TEST_CASE("cascading parent to child") {
     CHECK(child_cancelled);
 }
 
-TEST_CASE("multi-level cascade") {
+TEST_CASE("multi-level-cascade") {
     RunStats stats;
     bool leaf_cancelled = false;
     csp::run([&] {
@@ -175,7 +175,7 @@ TEST_CASE("multi-level cascade") {
     CHECK(leaf_cancelled);
 }
 
-TEST_CASE("direct child cancel does not affect parent") {
+TEST_CASE("direct-child-cancel-does-not-affect-parent") {
     RunStats stats;
     bool parent_saw_cancel = false;
     bool child_saw_cancel = false;
@@ -216,7 +216,7 @@ TEST_CASE("direct child cancel does not affect parent") {
     // BEFORE the parent's own guard was destroyed.
 }
 
-TEST_CASE("cancel_reason retrieval") {
+TEST_CASE("cancel_reason-retrieval") {
     RunStats stats;
     std::exception_ptr reason;
     csp::run([&] {
@@ -234,7 +234,7 @@ TEST_CASE("cancel_reason retrieval") {
     }
 }
 
-TEST_CASE("cancel_reason returns nullptr without scope") {
+TEST_CASE("cancel_reason-returns-nullptr-without-scope") {
     RunStats stats;
     std::exception_ptr reason = std::make_exception_ptr(std::runtime_error("x"));
     csp::run([&] {
@@ -245,7 +245,7 @@ TEST_CASE("cancel_reason returns nullptr without scope") {
     CHECK(reason == nullptr);
 }
 
-TEST_CASE("multiple watchers") {
+TEST_CASE("multiple-watchers") {
     RunStats stats;
     std::atomic<int> count{0};
     csp::run([&] {
@@ -265,7 +265,7 @@ TEST_CASE("multiple watchers") {
     CHECK(count == 5);
 }
 
-TEST_CASE("cancellable sleep throws") {
+TEST_CASE("cancellable-sleep-throws") {
     RunStats stats;
     fake_clock fc;
     bool threw = false;
@@ -287,7 +287,7 @@ TEST_CASE("cancellable sleep throws") {
     CHECK(threw);
 }
 
-TEST_CASE("sleep completes normally under cancel scope") {
+TEST_CASE("sleep-completes-normally-under-cancel-scope") {
     RunStats stats;
     fake_clock fc;
     bool completed = false;
@@ -306,7 +306,7 @@ TEST_CASE("sleep completes normally under cancel scope") {
     CHECK(completed);
 }
 
-TEST_CASE("double cancel is idempotent") {
+TEST_CASE("double-cancel-is-idempotent") {
     RunStats stats;
     csp::run([&] {
         stats.spawn([&]() {
@@ -319,7 +319,7 @@ TEST_CASE("double cancel is idempotent") {
     });
 }
 
-TEST_CASE("channel leak check") {
+TEST_CASE("channel-leak-check") {
     // RunStats destructor checks channel_count == 0.
     RunStats stats;
     bool fired = false;
@@ -338,7 +338,7 @@ TEST_CASE("channel leak check") {
     CHECK(fired);
 }
 
-TEST_CASE("deadline fires timed_out") {
+TEST_CASE("deadline-fires-timed_out") {
     RunStats stats;
     fake_clock fc;
     bool got_timed_out = false;
@@ -360,7 +360,7 @@ TEST_CASE("deadline fires timed_out") {
     CHECK(got_timed_out);
 }
 
-TEST_CASE("deadline done fires") {
+TEST_CASE("deadline-done-fires") {
     RunStats stats;
     fake_clock fc;
     bool fired = false;
@@ -376,7 +376,7 @@ TEST_CASE("deadline done fires") {
     CHECK(fired);
 }
 
-TEST_CASE("deadline cancel_reason is timed_out") {
+TEST_CASE("deadline-cancel_reason-is-timed_out") {
     RunStats stats;
     fake_clock fc;
     bool is_timed_out = false;
@@ -397,7 +397,7 @@ TEST_CASE("deadline cancel_reason is timed_out") {
     CHECK(is_timed_out);
 }
 
-TEST_CASE("deadline explicit cancel before timeout") {
+TEST_CASE("deadline-explicit-cancel-before-timeout") {
     RunStats stats;
     fake_clock fc;
     bool got_canceled = false;
@@ -423,7 +423,7 @@ TEST_CASE("deadline explicit cancel before timeout") {
     CHECK_FALSE(got_timed_out);
 }
 
-TEST_CASE("deadline with time_point overload") {
+TEST_CASE("deadline-with-time_point-overload") {
     RunStats stats;
     fake_clock fc;
     bool fired = false;
@@ -440,7 +440,7 @@ TEST_CASE("deadline with time_point overload") {
     CHECK(fired);
 }
 
-TEST_CASE("deadline cascades to child") {
+TEST_CASE("deadline-cascades-to-child") {
     RunStats stats;
     fake_clock fc;
     bool child_fired = false;
@@ -461,7 +461,7 @@ TEST_CASE("deadline cascades to child") {
     CHECK(child_fired);
 }
 
-TEST_CASE("is_cancel_active inside and outside scope") {
+TEST_CASE("is_cancel_active-inside-and-outside-scope") {
     RunStats stats;
     bool active_inside = false;
     bool active_outside = true;
@@ -478,7 +478,7 @@ TEST_CASE("is_cancel_active inside and outside scope") {
     CHECK_FALSE(active_outside);
 }
 
-TEST_CASE("cancel_guard move constructor") {
+TEST_CASE("cancel_guard-move-constructor") {
     RunStats stats;
     bool fired = false;
     csp::run([&] {
@@ -502,7 +502,7 @@ TEST_CASE("cancel_guard move constructor") {
     CHECK(fired);
 }
 
-TEST_CASE("cancel_guard move assignment") {
+TEST_CASE("cancel_guard-move-assignment") {
     RunStats stats;
     bool fired = false;
     csp::run([&] {
@@ -528,7 +528,7 @@ TEST_CASE("cancel_guard move assignment") {
     CHECK(fired);
 }
 
-TEST_CASE("nested cancel scopes inner fires first") {
+TEST_CASE("nested-cancel-scopes-inner-fires-first") {
     RunStats stats;
     fake_clock fc;
     bool inner_fired = false;
@@ -557,7 +557,7 @@ TEST_CASE("nested cancel scopes inner fires first") {
     // time we get here).
 }
 
-TEST_CASE("done returns inactive chan_op without scope") {
+TEST_CASE("done-returns-inactive-chan_op-without-scope") {
     RunStats stats;
     bool done_op_inactive = false;
     csp::run([&] {
@@ -577,7 +577,7 @@ TEST_CASE("done returns inactive chan_op without scope") {
     CHECK(done_op_inactive);
 }
 
-TEST_CASE("dynamic binding reverts on exception during cancel") {
+TEST_CASE("dynamic-binding-reverts-on-exception-during-cancel") {
     RunStats stats;
     static csp::dynamic<int> val(0);
     int after_unwind = -1;
@@ -603,7 +603,7 @@ TEST_CASE("dynamic binding reverts on exception during cancel") {
 
 TEST_SUITE("cancellation MN") {
 
-TEST_CASE("concurrent cancel detection") {
+TEST_CASE("concurrent-cancel-detection") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
     std::atomic<int> count{0};
@@ -626,7 +626,7 @@ TEST_CASE("concurrent cancel detection") {
 }
 
 #ifndef _WIN32
-TEST_CASE("cancel during I/O") {
+TEST_CASE("cancel-during-I/O") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
     bool threw = false;

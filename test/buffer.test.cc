@@ -2,7 +2,7 @@
 
 using namespace csp;
 
-TEST_CASE("ChanUtil - BufferBounded") {
+TEST_CASE("ChanUtil---BufferBounded") {
     RunStats stats;
 
     auto ch = chan<int>(5);
@@ -35,7 +35,7 @@ TEST_CASE("ChanUtil - BufferBounded") {
     CHECK(55 == received);
 }
 
-TEST_CASE("ChanUtil - BufferLargeCapacity") {
+TEST_CASE("ChanUtil---BufferLargeCapacity") {
     RunStats stats;
 
     int sent = 0;
@@ -79,7 +79,7 @@ TEST_CASE("ChanUtil - BufferLargeCapacity") {
     CHECK(55 == received);
 }
 
-TEST_CASE("ChanUtil - BufferEmpty") {
+TEST_CASE("ChanUtil---BufferEmpty") {
     RunStats stats;
 
     auto ch = chan<int>(5);
@@ -100,7 +100,7 @@ TEST_CASE("ChanUtil - BufferEmpty") {
     CHECK(0 == received);
 }
 
-TEST_CASE("ChanUtil - BufferSingle") {
+TEST_CASE("ChanUtil---BufferSingle") {
     RunStats stats;
 
     auto ch = chan<int>(1);
@@ -121,11 +121,11 @@ TEST_CASE("ChanUtil - BufferSingle") {
     csp::schedule();
 }
 
-TEST_CASE("ChanUtil - BufferZeroThrows") {
+TEST_CASE("ChanUtil---BufferZeroThrows") {
     CHECK_THROWS_AS(chan<int>(0), std::invalid_argument);
 }
 
-TEST_CASE("ChanUtil - BufferCapacityExact") {
+TEST_CASE("ChanUtil---BufferCapacityExact") {
     // Verify chan<T>(N) holds exactly N items, not N+1 (off-by-one check).
     for (size_t cap = 1; cap <= 5; ++cap) {
         RunStats stats;
@@ -159,7 +159,7 @@ TEST_CASE("ChanUtil - BufferCapacityExact") {
 
 using namespace csp::part;
 
-TEST_CASE("Chan - filter | chan | filter pipeline") {
+TEST_CASE("Chan---filter-|-chan-|-filter-pipeline") {
     // Lazy composition: filter | chan | filter → filter
     auto pipeline = where<int>([](int n) { return n > 0; })
                   | chan<int>(4)
@@ -178,7 +178,7 @@ TEST_CASE("Chan - filter | chan | filter pipeline") {
     CHECK(results == std::vector<int>{20, 40, 50});
 }
 
-TEST_CASE("Chan - reader | chan") {
+TEST_CASE("Chan---reader-|-chan") {
     auto source = count<int>(1, 6).spawn();
     auto buffered = std::move(source) | chan<int>(8);
     // buffered is reader<int>
@@ -190,7 +190,7 @@ TEST_CASE("Chan - reader | chan") {
     CHECK(results == std::vector<int>{1, 2, 3, 4, 5});
 }
 
-TEST_CASE("Chan - chan | writer") {
+TEST_CASE("Chan---chan-|-writer") {
     auto [w, r] = chan<int>{};
     auto buffered_w = chan<int>(4) | std::move(w);
     // buffered_w is writer<int>
@@ -205,7 +205,7 @@ TEST_CASE("Chan - chan | writer") {
     CHECK(results == std::vector<int>{1, 2, 3});
 }
 
-TEST_CASE("Chan - producer | chan") {
+TEST_CASE("Chan---producer-|-chan") {
     // Lazy: producer | chan → producer; .spawn() materializes
     auto buffered = (count<int>(1, 4) | chan<int>(8)).spawn();
     // buffered is reader<int>
@@ -217,7 +217,7 @@ TEST_CASE("Chan - producer | chan") {
     CHECK(results == std::vector<int>{1, 2, 3});
 }
 
-TEST_CASE("Chan - chan | consumer") {
+TEST_CASE("Chan---chan-|-consumer") {
     // Lazy: chan | consumer → consumer; .spawn() materializes
     std::vector<int> results;
     auto input = (chan<int>(4) | sink<int>([&](int v) { results.push_back(v); })).spawn();
@@ -229,7 +229,7 @@ TEST_CASE("Chan - chan | consumer") {
     CHECK(results == std::vector<int>{10, 20, 30});
 }
 
-TEST_CASE("Chan - multiple buffer stages") {
+TEST_CASE("Chan---multiple-buffer-stages") {
     auto pipeline = map<int>([](int n) { return n + 1; })
                   | chan<int>(2)
                   | map<int>([](int n) { return n * 2; })

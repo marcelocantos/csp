@@ -5,7 +5,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("TakeUntil - includes terminating element") {
+TEST_CASE("TakeUntil---includes-terminating-element") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -22,7 +22,7 @@ TEST_CASE("TakeUntil - includes terminating element") {
     CHECK(got == std::vector<int>{1, 2, 3});
 }
 
-TEST_CASE("TakeUntil - predicate never true") {
+TEST_CASE("TakeUntil---predicate-never-true") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -39,7 +39,7 @@ TEST_CASE("TakeUntil - predicate never true") {
     CHECK(got == std::vector<int>{1, 2, 3});
 }
 
-TEST_CASE("TakeUntil - first element matches") {
+TEST_CASE("TakeUntil---first-element-matches") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -56,7 +56,7 @@ TEST_CASE("TakeUntil - first element matches") {
     CHECK(got == std::vector<int>{5});
 }
 
-TEST_CASE("TakeUntil - empty input") {
+TEST_CASE("TakeUntil---empty-input") {
     RunStats stats;
     auto src = chan<int>();
 

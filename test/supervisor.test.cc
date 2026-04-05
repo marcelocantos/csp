@@ -7,7 +7,7 @@ using namespace csp;
 
 TEST_SUITE("worker_group") {
 
-TEST_CASE("all workers exit normally") {
+TEST_CASE("all-workers-exit-normally") {
     RunStats stats;
     int a = 0, b = 0, c = 0;
     stats.spawn([&]() {
@@ -25,7 +25,7 @@ TEST_CASE("all workers exit normally") {
     CHECK(c == 3);
 }
 
-TEST_CASE("worker exception triggers restart") {
+TEST_CASE("worker-exception-triggers-restart") {
     RunStats stats;
     int count = 0;
     stats.spawn([&]() {
@@ -40,7 +40,7 @@ TEST_CASE("worker exception triggers restart") {
     CHECK(count == 2);
 }
 
-TEST_CASE("max restarts exceeded") {
+TEST_CASE("max-restarts-exceeded") {
     RunStats stats;
     int count = 0;
     bool caught = false;
@@ -64,7 +64,7 @@ TEST_CASE("max restarts exceeded") {
     CHECK(count == 3); // initial + 2 restarts
 }
 
-TEST_CASE("sliding window forgets old restarts") {
+TEST_CASE("sliding-window-forgets-old-restarts") {
     int count = 0;
     fake_clock fc;
     RunStats stats;
@@ -90,7 +90,7 @@ TEST_CASE("sliding window forgets old restarts") {
     CHECK(count == 6);
 }
 
-TEST_CASE("backoff delays restart") {
+TEST_CASE("backoff-delays-restart") {
     int count = 0;
     fake_clock fc;
     std::vector<time_point> times;
@@ -115,7 +115,7 @@ TEST_CASE("backoff delays restart") {
     CHECK(delay >= std::chrono::seconds(5));
 }
 
-TEST_CASE("mixed workers") {
+TEST_CASE("mixed-workers") {
     RunStats stats;
     int stable_count = 0, flaky_count = 0;
     stats.spawn([&]() {
@@ -132,7 +132,7 @@ TEST_CASE("mixed workers") {
     CHECK(flaky_count == 2);
 }
 
-TEST_CASE("nested groups") {
+TEST_CASE("nested-groups") {
     RunStats stats;
     bool caught = false;
     stats.spawn([&]() {
@@ -157,7 +157,7 @@ TEST_CASE("nested groups") {
     CHECK(caught);
 }
 
-TEST_CASE("empty group") {
+TEST_CASE("empty-group") {
     RunStats stats;
     stats.spawn([&]() {
         worker_group wg;
@@ -166,7 +166,7 @@ TEST_CASE("empty group") {
     csp::schedule();
 }
 
-TEST_CASE("channel leak check") {
+TEST_CASE("channel-leak-check") {
     // RunStats destructor checks channel_count == 0.
     RunStats stats;
     int count = 0;
@@ -187,7 +187,7 @@ TEST_CASE("channel leak check") {
 
 TEST_SUITE("worker_group MN") {
 
-TEST_CASE("concurrent workers") {
+TEST_CASE("concurrent-workers") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
     std::atomic<int> sum{0};
@@ -206,7 +206,7 @@ TEST_CASE("concurrent workers") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("restart under contention") {
+TEST_CASE("restart-under-contention") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
     std::atomic<int> fail_count{0};

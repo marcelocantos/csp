@@ -60,7 +60,7 @@ __attribute__((noinline)) static void indirect_caller(void* data) {
 
 TEST_SUITE("StackAnalysis") {
 
-TEST_CASE("Leaf function") {
+TEST_CASE("Leaf-function") {
     auto result = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&leaf_func));
     CHECK(result.is_exact);
@@ -71,7 +71,7 @@ TEST_CASE("Leaf function") {
     MESSAGE("leaf_func depth: ", result.max_depth);
 }
 
-TEST_CASE("Direct call chain") {
+TEST_CASE("Direct-call-chain") {
     // calls_leaf may tail-call into leaf_func (B instead of BL at -O2).
     // Either way, the total depth should be >= leaf_func's depth.
     auto leaf_result = csp::analyze_stack_depth(
@@ -84,7 +84,7 @@ TEST_CASE("Direct call chain") {
             ", leaf_func depth: ", leaf_result.max_depth);
 }
 
-TEST_CASE("Indirect call - no data") {
+TEST_CASE("Indirect-call---no-data") {
     csp::stack_analysis_options opts;
     opts.max_instructions = 10000;
     auto result = csp::analyze_stack_depth(
@@ -96,7 +96,7 @@ TEST_CASE("Indirect call - no data") {
             ", is_exact: ", result.is_exact);
 }
 
-TEST_CASE("Indirect call - with data") {
+TEST_CASE("Indirect-call---with-data") {
     indirect_data d{&leaf_func};
     auto result = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&indirect_caller), &d);
@@ -107,7 +107,7 @@ TEST_CASE("Indirect call - with data") {
             ", is_exact: ", result.is_exact);
 }
 
-TEST_CASE("Cache consistency") {
+TEST_CASE("Cache-consistency") {
     auto r1 = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&leaf_func));
     auto r2 = csp::analyze_stack_depth(
@@ -116,7 +116,7 @@ TEST_CASE("Cache consistency") {
     CHECK(r1.is_exact == r2.is_exact);
 }
 
-TEST_CASE("Different indirect targets - different depths") {
+TEST_CASE("Different-indirect-targets---different-depths") {
     indirect_data d1{&leaf_func};
     indirect_data d2{&deeper_leaf};
     auto r1 = csp::analyze_stack_depth(

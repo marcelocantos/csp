@@ -4,7 +4,7 @@ using namespace csp;
 
 static Logger g_log("ChanMain.Test");
 
-TEST_CASE("ChanMain - Write") {
+TEST_CASE("ChanMain---Write") {
     RunStats stats;
     int result = 0;
 
@@ -21,7 +21,7 @@ TEST_CASE("ChanMain - Write") {
     CHECK(42 == result);
 }
 
-TEST_CASE("ChanMain - Read") {
+TEST_CASE("ChanMain---Read") {
     RunStats stats;
     int result = 0;
 
@@ -56,7 +56,7 @@ auto worker = [](auto && o, auto && i) {
 };
 
 // First confirm that it runs as a regular imp.
-TEST_CASE("ChanMain - WriteReadNormal") {
+TEST_CASE("ChanMain---WriteReadNormal") {
     RunStats stats;
 
     csp::run([&]{
@@ -66,7 +66,7 @@ TEST_CASE("ChanMain - WriteReadNormal") {
 }
 
 // Now try from main (via csp::run).
-TEST_CASE("ChanMain - WriteReadFromMain") {
+TEST_CASE("ChanMain---WriteReadFromMain") {
     RunStats stats;
 
     csp::run([&]{
