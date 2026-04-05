@@ -132,11 +132,11 @@ void context::set_verify(verify_fn fn) {
 
 // Flush a PicoTLS output buffer to the socket, using csp::io for
 // non-blocking writes. Returns bytes written.
-static void flush_to_socket(int fd, ptls_buffer_t& buf) {
+static void flush_to_socket(csp::io::fd_t fd, ptls_buffer_t& buf) {
     size_t off = 0;
     while (off < buf.off) {
         csp::io::wait_writable(fd);
-        ssize_t n = ::write(fd, buf.base + off, buf.off - off);
+        ssize_t n = ::write(fd.raw(), buf.base + off, buf.off - off);
         if (n > 0) {
             off += static_cast<size_t>(n);
         } else if (n < 0) {
@@ -149,10 +149,10 @@ static void flush_to_socket(int fd, ptls_buffer_t& buf) {
 
 // Read raw bytes from the socket into a buffer, using csp::io for
 // non-blocking reads. Returns bytes read, 0 on EOF.
-static ssize_t read_from_socket(int fd, uint8_t* buf, size_t len) {
+static ssize_t read_from_socket(csp::io::fd_t fd, uint8_t* buf, size_t len) {
     for (;;) {
         csp::io::wait_readable(fd);
-        ssize_t n = ::read(fd, buf, len);
+        ssize_t n = ::read(fd.raw(), buf, len);
         if (n >= 0) return n;
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             continue;
@@ -164,7 +164,7 @@ static ssize_t read_from_socket(int fd, uint8_t* buf, size_t len) {
 
 struct conn::impl {
     ptls_t* tls = nullptr;
-    int fd;
+    csp::io::fd_t fd;
     // Receive buffer for partially consumed TLS records (ciphertext).
     std::vector<uint8_t> recvbuf;
     size_t recvbuf_off = 0;
@@ -174,12 +174,12 @@ struct conn::impl {
     size_t plainbuf_off = 0;
 };
 
-conn::conn(context& ctx, int fd) : impl_(std::make_unique<impl>()) {
+conn::conn(context& ctx, io::fd_t fd) : impl_(std::make_unique<impl>()) {
     impl_->fd = fd;
 
     // Suppress SIGPIPE on this fd.
 #ifdef F_SETNOSIGPIPE
-    fcntl(fd, F_SETNOSIGPIPE, 1);
+    fcntl(fd.raw(), F_SETNOSIGPIPE, 1);
 #endif
 
     // Determine if server by checking if sign_certificate is set (servers load keys).
@@ -372,7 +372,7 @@ void conn::shutdown() {
     ptls_buffer_dispose(&sendbuf);
 }
 
-int conn::fd() const {
+io::fd_t conn::fd() const {
     return impl_->fd;
 }
 

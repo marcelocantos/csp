@@ -131,11 +131,13 @@ static void send_line(writer<std::vector<uint8_t>>& out, const std::string& msg)
     out << std::move(data);
 }
 
-static void handle_client(int fd, std::shared_ptr<RoomRegistry> registry) {
+static void handle_client(io::fd_t fd, std::shared_ptr<RoomRegistry> registry) {
     // Set up I/O pipelines.
     auto lines = part::io::split_lines.spawn(
                      part::io::byte_reader(fd).spawn());
-    auto out = part::io::byte_writer(::dup(fd)).spawn();
+    auto wfd = io::fd_t(::dup(fd.raw()));
+    io::set_nonblock(wfd);
+    auto out = part::io::byte_writer(wfd).spawn();
 
     std::string nick = "anon";
     std::string room_name = "lobby";
@@ -267,34 +269,34 @@ int main() {
         auto registry = std::make_shared<RoomRegistry>();
 
         // Create the listen socket.
-        int listen_fd = ::socket(AF_INET6, SOCK_STREAM, 0);
-        if (listen_fd < 0) {
+        io::fd_t listen_fd(::socket(AF_INET6, SOCK_STREAM, 0));
+        if (!listen_fd) {
             fprintf(stderr, "socket: %s\n", strerror(errno));
             return;
         }
 
         int opt = 1;
-        setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        setsockopt(listen_fd.raw(), SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
         // Dual-stack: accept both IPv4 and IPv6.
         int off = 0;
-        setsockopt(listen_fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
+        setsockopt(listen_fd.raw(), IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
 
         sockaddr_in6 addr{};
         addr.sin6_family = AF_INET6;
         addr.sin6_port = htons(PORT);
         addr.sin6_addr = in6addr_any;
 
-        if (::bind(listen_fd, reinterpret_cast<sockaddr*>(&addr),
+        if (::bind(listen_fd.raw(), reinterpret_cast<sockaddr*>(&addr),
                    sizeof(addr)) < 0) {
             fprintf(stderr, "bind: %s\n", strerror(errno));
-            ::close(listen_fd);
+            io::close(listen_fd);
             return;
         }
 
-        if (::listen(listen_fd, 128) < 0) {
+        if (::listen(listen_fd.raw(), 128) < 0) {
             fprintf(stderr, "listen: %s\n", strerror(errno));
-            ::close(listen_fd);
+            io::close(listen_fd);
             return;
         }
 
@@ -309,7 +311,7 @@ int main() {
         for (;;) {
             sockaddr_storage client_addr{};
             socklen_t client_len = sizeof(client_addr);
-            int client_fd;
+            io::fd_t client_fd;
             try {
                 client_fd = io::accept(
                     listen_fd,
@@ -319,9 +321,7 @@ int main() {
                 break;  // Shutdown signal received.
             }
 
-            if (client_fd < 0) continue;
-
-            io::set_nonblock(client_fd);
+            if (!client_fd) continue;
 
             // Log connection.
             char addr_str[INET6_ADDRSTRLEN]{};
@@ -341,7 +341,7 @@ int main() {
             }));
         }
 
-        ::close(listen_fd);
+        io::close(listen_fd);
         fprintf(stderr, "Server stopped.\n");
     });
 

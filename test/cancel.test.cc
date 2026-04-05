@@ -630,12 +630,13 @@ TEST_CASE("cancel-during-I/O") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
     bool threw = false;
-    int fds[2];
-    REQUIRE(pipe(fds) == 0);
+    int raw_fds[2];
+    REQUIRE(pipe(raw_fds) == 0);
+    auto rfd = csp::io::fd_t(raw_fds[0]);
+    auto wfd = csp::io::fd_t(raw_fds[1]);
 
     // Set read end non-blocking
-    int flags = fcntl(fds[0], F_GETFL);
-    fcntl(fds[0], F_SETFL, flags | O_NONBLOCK);
+    csp::io::set_nonblock(rfd);
 
     csp::spawn([&]() {
         auto guard = cancellation();
@@ -644,7 +645,7 @@ TEST_CASE("cancel-during-I/O") {
             try {
                 w = {};  // signal: about to enter I/O
                 char buf[1];
-                csp::io::read(fds[0], buf, 1);
+                csp::io::read(rfd, buf, 1);
             } catch (canceled const&) {
                 threw = true;
             }
@@ -653,12 +654,12 @@ TEST_CASE("cancel-during-I/O") {
         guard();
         csp::yield();
         // Close write end so the orphaned reactor helper can see EOF and exit.
-        ::close(fds[1]);
+        ::close(wfd.raw());
         csp::yield();
     });
     csp::schedule();
     CHECK(threw);
-    ::close(fds[0]);
+    ::close(rfd.raw());
     csp::shutdown_runtime();
 }
 #endif // !_WIN32

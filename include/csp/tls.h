@@ -3,6 +3,7 @@
 #ifdef CSP_TLS
 
 #include <csp/csp.h>
+#include <csp/io.h>
 
 #include <functional>
 #include <memory>
@@ -56,7 +57,7 @@ private:
 class conn {
 public:
     // fd must be connected and non-blocking.
-    conn(context& ctx, int fd);
+    conn(context& ctx, io::fd_t fd);
     ~conn();
     conn(conn&&) noexcept;
     conn& operator=(conn&&) noexcept;
@@ -77,7 +78,7 @@ public:
     void shutdown();
 
     // Return the underlying fd.
-    int fd() const;
+    io::fd_t fd() const;
 
     conn(const conn&) = delete;
     conn& operator=(const conn&) = delete;

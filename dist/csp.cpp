@@ -1744,6 +1744,51 @@ char const * get_descr(void * thr) {
 
 } // namespace csp::internal
 
+/* file.cc */
+
+#include <cerrno>
+#include <fstream>
+
+namespace csp::file {
+
+std::vector<uint8_t> read(const std::string& path) {
+    return csp::blocking([&]() -> std::vector<uint8_t> {
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (!f) {
+            throw csp::error("file::read: " + path + ": " +
+                             std::strerror(errno));
+        }
+        auto size = f.tellg();
+        f.seekg(0);
+        std::vector<uint8_t> data(static_cast<size_t>(size));
+        if (!f.read(reinterpret_cast<char*>(data.data()),
+                    static_cast<std::streamsize>(size))) {
+            throw csp::error("file::read: " + path + ": read failed");
+        }
+        return data;
+    });
+}
+
+void write(const std::string& path, const std::vector<uint8_t>& data) {
+    write(path, data.data(), data.size());
+}
+
+void write(const std::string& path, const void* data, size_t len) {
+    csp::blocking([&] {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        if (!f) {
+            throw csp::error("file::write: " + path + ": " +
+                             std::strerror(errno));
+        }
+        if (!f.write(static_cast<const char*>(data),
+                     static_cast<std::streamsize>(len))) {
+            throw csp::error("file::write: " + path + ": write failed");
+        }
+    });
+}
+
+} // namespace csp::file
+
 /* hamt.cc */
 
 #include <bit>
@@ -2017,10 +2062,9 @@ exit_guard on_exit(restart_policy policy) {
 
 /* io.cc */
 
-#include <cerrno>
 #include <cstdint>
+#include <vector>
 #ifndef _WIN32
-#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -2110,15 +2154,15 @@ namespace csp::io {
 
 #ifndef _WIN32
 
-int set_nonblock(int fd) {
-    int flags = fcntl(fd, F_GETFL);
+int set_nonblock(fd_t fd) {
+    int flags = fcntl(fd.raw(), F_GETFL);
     if (flags < 0) return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    return fcntl(fd.raw(), F_SETFL, flags | O_NONBLOCK);
 }
 
-ssize_t read(int fd, void* buf, size_t len) {
+ssize_t read(fd_t fd, void* buf, size_t len) {
     for (;;) {
-        ssize_t n = ::read(fd, buf, len);
+        ssize_t n = ::read(fd.raw(), buf, len);
         if (n >= 0) return n;
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -2129,11 +2173,11 @@ ssize_t read(int fd, void* buf, size_t len) {
     }
 }
 
-ssize_t write(int fd, const void* buf, size_t len) {
+ssize_t write(fd_t fd, const void* buf, size_t len) {
     size_t written = 0;
     auto p = static_cast<const uint8_t*>(buf);
     while (written < len) {
-        ssize_t n = ::write(fd, p + written, len - written);
+        ssize_t n = ::write(fd.raw(), p + written, len - written);
         if (n >= 0) {
             written += static_cast<size_t>(n);
             continue;
@@ -2148,28 +2192,32 @@ ssize_t write(int fd, const void* buf, size_t len) {
     return static_cast<ssize_t>(written);
 }
 
-int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
+fd_t accept(fd_t listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
     for (;;) {
-        int fd = ::accept(listen_fd, addr, addrlen);
-        if (fd >= 0) return fd;
+        int raw = ::accept(listen_fd.raw(), addr, addrlen);
+        if (raw >= 0) {
+            fd_t fd(raw);
+            set_nonblock(fd);
+            return fd;
+        }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             wait_readable(listen_fd);
             continue;
         }
-        return -1;
+        return invalid_fd;
     }
 }
 
-int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
-    int ret = ::connect(fd, addr, addrlen);
+int connect(fd_t fd, const struct sockaddr* addr, socklen_t addrlen) {
+    int ret = ::connect(fd.raw(), addr, addrlen);
     if (ret == 0) return 0;
     if (errno != EINPROGRESS) return -1;
 
     wait_writable(fd);
     int err = 0;
     socklen_t errlen = sizeof(err);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
+    if (getsockopt(fd.raw(), SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
     if (err != 0) { errno = err; return -1; }
     return 0;
 }
@@ -2190,6 +2238,28 @@ resolve_result resolve(const std::string& host,
     return resolve_result{.info = addrinfo_ptr(raw)};
 }
 
+std::vector<uint8_t> read_all(fd_t fd, size_t chunk_size) {
+    std::vector<uint8_t> result;
+    std::vector<uint8_t> buf(chunk_size);
+    for (;;) {
+        ssize_t n = read(fd, buf.data(), buf.size());
+        if (n <= 0) break;
+        result.insert(result.end(), buf.data(), buf.data() + n);
+    }
+    return result;
+}
+
+void write_all(fd_t fd, const std::vector<uint8_t>& data) {
+    write_all(fd, data.data(), data.size());
+}
+
+void write_all(fd_t fd, const void* data, size_t len) {
+    ssize_t n = write(fd, data, len);
+    if (n < 0 || static_cast<size_t>(n) != len) {
+        throw csp::error("write_all: incomplete write");
+    }
+}
+
 } // namespace csp::io
 
 /* log.cc */
@@ -2206,7 +2276,6 @@ resolve_result resolve(const std::string& host,
 #include <regex>
 #include <set>
 #include <unordered_map>
-#include <vector>
 
 using namespace csp;
 
@@ -2492,6 +2561,7 @@ namespace csp {
 
 #ifndef _WIN32
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #else
 #include <ws2tcpip.h>
@@ -2512,19 +2582,21 @@ std::string format_addr(const struct sockaddr* sa, socklen_t len) {
     return std::string(host) + ":" + serv;
 }
 
-connection make_connection(io::socket_t fd, std::string remote) {
-    io::set_nonblock(fd);
+connection make_connection(io::fd_t fd, std::string remote) {
+    // fd is already non-blocking (set by io::accept or net::dial).
 
 #ifdef _WIN32
     auto input = part::io::byte_reader(fd).spawn();
     auto output = part::io::byte_writer(fd).spawn();
 #else
-    int rfd = fd;
-    int wfd = ::dup(fd);
-    if (wfd < 0) {
+    auto rfd = fd;
+    int raw_wfd = ::dup(fd.raw());
+    if (raw_wfd < 0) {
         io::close(fd);
         throw csp::error("dup failed");
     }
+    auto wfd = io::fd_t(raw_wfd);
+    io::set_nonblock(wfd);
     auto input = part::io::byte_reader(rfd).spawn();
     // Socket-aware byte_writer: shutdown(SHUT_WR) before close so
     // the peer's byte_reader sees EOF even though rfd still holds a
@@ -2532,12 +2604,11 @@ connection make_connection(io::socket_t fd, std::string remote) {
     auto output = spawn_consumer<bytes>(
         [wfd](reader<bytes> in) {
             internal::descr("byte_writer");
-            io::set_nonblock(wfd);
             for (bytes chunk; in >> chunk;) {
                 if (csp::io::write(wfd, chunk.data(), chunk.size()) < 0)
                     break;
             }
-            ::shutdown(wfd, SHUT_WR);
+            ::shutdown(wfd.raw(), SHUT_WR);
             io::close(wfd);
         });
 #endif
@@ -2570,30 +2641,30 @@ listener listen(const std::string& addr, uint16_t port,
     }
 
     auto* ai = result.info.get();
-    io::socket_t listen_fd = ::socket(ai->ai_family, ai->ai_socktype,
-                                       ai->ai_protocol);
-    if (listen_fd == io::invalid_socket) {
+    io::fd_t listen_fd(::socket(ai->ai_family, ai->ai_socktype,
+                                 ai->ai_protocol));
+    if (!listen_fd) {
         throw csp::error("socket failed");
     }
 
     if (opts.reuse_addr) {
         int opt = 1;
-        setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR,
+        setsockopt(listen_fd.raw(), SOL_SOCKET, SO_REUSEADDR,
                    reinterpret_cast<const char*>(&opt), sizeof(opt));
     }
 
     if (opts.dual_stack && ai->ai_family == AF_INET6) {
         int off = 0;
-        setsockopt(listen_fd, IPPROTO_IPV6, IPV6_V6ONLY,
+        setsockopt(listen_fd.raw(), IPPROTO_IPV6, IPV6_V6ONLY,
                    reinterpret_cast<const char*>(&off), sizeof(off));
     }
 
-    if (::bind(listen_fd, ai->ai_addr, ai->ai_addrlen) < 0) {
+    if (::bind(listen_fd.raw(), ai->ai_addr, ai->ai_addrlen) < 0) {
         io::close(listen_fd);
         throw csp::error("bind failed");
     }
 
-    if (::listen(listen_fd, opts.backlog) < 0) {
+    if (::listen(listen_fd.raw(), opts.backlog) < 0) {
         io::close(listen_fd);
         throw csp::error("listen failed");
     }
@@ -2602,7 +2673,7 @@ listener listen(const std::string& addr, uint16_t port,
 
     struct sockaddr_storage bound_addr {};
     socklen_t bound_len = sizeof(bound_addr);
-    getsockname(listen_fd, reinterpret_cast<struct sockaddr*>(&bound_addr),
+    getsockname(listen_fd.raw(), reinterpret_cast<struct sockaddr*>(&bound_addr),
                 &bound_len);
     auto local = format_addr(reinterpret_cast<struct sockaddr*>(&bound_addr),
                              bound_len);
@@ -2658,11 +2729,11 @@ listener listen(const std::string& addr, uint16_t port,
                 for (;;) {
                     struct sockaddr_storage client_addr {};
                     socklen_t client_len = sizeof(client_addr);
-                    io::socket_t client_fd = io::accept(
+                    io::fd_t client_fd = io::accept(
                         listen_fd,
                         reinterpret_cast<struct sockaddr*>(&client_addr),
                         &client_len);
-                    if (client_fd == io::invalid_socket) continue;
+                    if (!client_fd) continue;
 
                     auto remote = format_addr(
                         reinterpret_cast<struct sockaddr*>(&client_addr),
@@ -2696,9 +2767,9 @@ connection dial(const std::string& host, const std::string& service) {
     }
 
     for (auto* ai = result.info.get(); ai; ai = ai->ai_next) {
-        io::socket_t fd = ::socket(ai->ai_family, ai->ai_socktype,
-                                    ai->ai_protocol);
-        if (fd == io::invalid_socket) continue;
+        io::fd_t fd(::socket(ai->ai_family, ai->ai_socktype,
+                              ai->ai_protocol));
+        if (!fd) continue;
 
         io::set_nonblock(fd);
 
@@ -3967,8 +4038,8 @@ reader<int> notify(std::initializer_list<int> sigs) {
     int pipefd[2];
     int rc = ::pipe(pipefd);
     assert(rc == 0);
-    io::set_nonblock(pipefd[0]);
-    io::set_nonblock(pipefd[1]);
+    io::set_nonblock(io::fd_t(pipefd[0]));
+    io::set_nonblock(io::fd_t(pipefd[1]));
 
     // Prevent SIGPIPE when reader is dropped and write end is still
     // referenced by g_sig_pipes. On macOS, F_SETNOSIGPIPE suppresses
@@ -4031,7 +4102,7 @@ reader<int> notify(std::initializer_list<int> sigs) {
 
         uint8_t buf[32];
         for (;;) {
-            ssize_t n = io::read(rfd, buf, sizeof(buf));
+            ssize_t n = io::read(io::fd_t(rfd), buf, sizeof(buf));
             if (n <= 0) break;  // EOF (sentinel closed wfd) or error
             for (ssize_t i = 0; i < n; ++i) {
                 if (!(out << static_cast<int>(buf[i]))) {
@@ -5696,11 +5767,11 @@ void context::set_verify(verify_fn fn) {
 
 // Flush a PicoTLS output buffer to the socket, using csp::io for
 // non-blocking writes. Returns bytes written.
-static void flush_to_socket(int fd, ptls_buffer_t& buf) {
+static void flush_to_socket(csp::io::fd_t fd, ptls_buffer_t& buf) {
     size_t off = 0;
     while (off < buf.off) {
         csp::io::wait_writable(fd);
-        ssize_t n = ::write(fd, buf.base + off, buf.off - off);
+        ssize_t n = ::write(fd.raw(), buf.base + off, buf.off - off);
         if (n > 0) {
             off += static_cast<size_t>(n);
         } else if (n < 0) {
@@ -5713,10 +5784,10 @@ static void flush_to_socket(int fd, ptls_buffer_t& buf) {
 
 // Read raw bytes from the socket into a buffer, using csp::io for
 // non-blocking reads. Returns bytes read, 0 on EOF.
-static ssize_t read_from_socket(int fd, uint8_t* buf, size_t len) {
+static ssize_t read_from_socket(csp::io::fd_t fd, uint8_t* buf, size_t len) {
     for (;;) {
         csp::io::wait_readable(fd);
-        ssize_t n = ::read(fd, buf, len);
+        ssize_t n = ::read(fd.raw(), buf, len);
         if (n >= 0) return n;
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
             continue;
@@ -5728,7 +5799,7 @@ static ssize_t read_from_socket(int fd, uint8_t* buf, size_t len) {
 
 struct conn::impl {
     ptls_t* tls = nullptr;
-    int fd;
+    csp::io::fd_t fd;
     // Receive buffer for partially consumed TLS records (ciphertext).
     std::vector<uint8_t> recvbuf;
     size_t recvbuf_off = 0;
@@ -5738,12 +5809,12 @@ struct conn::impl {
     size_t plainbuf_off = 0;
 };
 
-conn::conn(context& ctx, int fd) : impl_(std::make_unique<impl>()) {
+conn::conn(context& ctx, io::fd_t fd) : impl_(std::make_unique<impl>()) {
     impl_->fd = fd;
 
     // Suppress SIGPIPE on this fd.
 #ifdef F_SETNOSIGPIPE
-    fcntl(fd, F_SETNOSIGPIPE, 1);
+    fcntl(fd.raw(), F_SETNOSIGPIPE, 1);
 #endif
 
     // Determine if server by checking if sign_certificate is set (servers load keys).
@@ -5936,7 +6007,7 @@ void conn::shutdown() {
     ptls_buffer_dispose(&sendbuf);
 }
 
-int conn::fd() const {
+io::fd_t conn::fd() const {
     return impl_->fd;
 }
 

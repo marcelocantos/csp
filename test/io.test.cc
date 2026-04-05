@@ -24,7 +24,7 @@ using namespace csp::part;
 #include <ws2tcpip.h>
 
 // Create a connected loopback TCP socket pair (Windows substitute for pipe()).
-inline std::pair<csp::io::socket_t, csp::io::socket_t> test_pipe() {
+inline std::pair<csp::io::fd_t, csp::io::fd_t> test_pipe() {
     // Ensure Winsock is initialized.
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -50,35 +50,39 @@ inline std::pair<csp::io::socket_t, csp::io::socket_t> test_pipe() {
     REQUIRE(reader_sock != INVALID_SOCKET);
     closesocket(listener);
 
-    return {reader_sock, writer_sock};
+    return {csp::io::fd_t(reader_sock), csp::io::fd_t(writer_sock)};
 }
 
-inline void test_close(csp::io::socket_t fd) { closesocket(fd); }
+inline void test_close(csp::io::fd_t fd) { closesocket(fd.raw()); }
 
-inline ssize_t test_raw_write(csp::io::socket_t fd, const void* buf, size_t len) {
-    return ::send(fd, static_cast<const char*>(buf), static_cast<int>(len), 0);
+inline ssize_t test_raw_write(csp::io::fd_t fd, const void* buf, size_t len) {
+    return ::send(fd.raw(), static_cast<const char*>(buf), static_cast<int>(len), 0);
 }
 
-inline ssize_t test_raw_read(csp::io::socket_t fd, void* buf, size_t len) {
-    return ::recv(fd, static_cast<char*>(buf), static_cast<int>(len), 0);
+inline ssize_t test_raw_read(csp::io::fd_t fd, void* buf, size_t len) {
+    return ::recv(fd.raw(), static_cast<char*>(buf), static_cast<int>(len), 0);
 }
 
 #else // !_WIN32
 
-inline std::pair<csp::io::socket_t, csp::io::socket_t> test_pipe() {
+inline std::pair<csp::io::fd_t, csp::io::fd_t> test_pipe() {
     int pipefd[2];
     REQUIRE_EQ(0, pipe(pipefd));
-    return {pipefd[0], pipefd[1]};
+    auto rfd = csp::io::fd_t(pipefd[0]);
+    auto wfd = csp::io::fd_t(pipefd[1]);
+    csp::io::set_nonblock(rfd);
+    csp::io::set_nonblock(wfd);
+    return {rfd, wfd};
 }
 
-inline void test_close(csp::io::socket_t fd) { ::close(fd); }
+inline void test_close(csp::io::fd_t fd) { ::close(fd.raw()); }
 
-inline ssize_t test_raw_write(csp::io::socket_t fd, const void* buf, size_t len) {
-    return ::write(fd, buf, len);
+inline ssize_t test_raw_write(csp::io::fd_t fd, const void* buf, size_t len) {
+    return ::write(fd.raw(), buf, len);
 }
 
-inline ssize_t test_raw_read(csp::io::socket_t fd, void* buf, size_t len) {
-    return ::read(fd, buf, len);
+inline ssize_t test_raw_read(csp::io::fd_t fd, void* buf, size_t len) {
+    return ::read(fd.raw(), buf, len);
 }
 
 #endif // _WIN32
@@ -245,7 +249,7 @@ TEST_CASE("IO---ByteWriter") {
         char buf[64];
         ssize_t total = 0;
         for (;;) {
-            ssize_t n = test_raw_read(rfd, buf + total, sizeof(buf) - total);
+            ssize_t n = csp::io::read(rfd, buf + total, sizeof(buf) - total);
             if (n <= 0) break;
             total += n;
         }
@@ -553,6 +557,124 @@ TEST_CASE("IO---Fixed-multi-chunk") {
     CHECK(closed);
 }
 
+// --- io::read_all ---
+
+TEST_CASE("IO---ReadAll") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    auto [rfd, wfd] = test_pipe();
+
+    csp::spawn([wfd] {
+        const char* msg = "All the bytes!";
+        csp::io::write(wfd, msg, strlen(msg));
+        test_close(wfd);
+    });
+
+    bytes result;
+    std::atomic<bool> done{false};
+
+    csp::spawn([&result, &done, rfd] {
+        result = csp::io::read_all(rfd);
+        done.store(true, std::memory_order_relaxed);
+        test_close(rfd);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    CHECK("All the bytes!" == std::string(result.begin(), result.end()));
+    csp::shutdown_runtime();
+}
+
+// --- io::write_all ---
+
+TEST_CASE("IO---WriteAll") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    auto [rfd, wfd] = test_pipe();
+
+    csp::spawn([wfd] {
+        std::string msg = "Write all bytes!";
+        bytes data(msg.begin(), msg.end());
+        csp::io::write_all(wfd, data);
+        test_close(wfd);
+    });
+
+    bytes result;
+    std::atomic<bool> done{false};
+
+    csp::spawn([&result, &done, rfd] {
+        result = csp::io::read_all(rfd);
+        done.store(true, std::memory_order_relaxed);
+        test_close(rfd);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    CHECK("Write all bytes!" == std::string(result.begin(), result.end()));
+    csp::shutdown_runtime();
+}
+
+// --- io::lines (convenience) ---
+
+TEST_CASE("IO---Lines-convenience") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    auto [rfd, wfd] = test_pipe();
+
+    csp::spawn([wfd] {
+        const char* data = "alpha\nbeta\ngamma\n";
+        csp::io::write(wfd, data, strlen(data));
+        test_close(wfd);
+    });
+
+    std::vector<std::string> result;
+    std::atomic<bool> done{false};
+
+    csp::spawn([&result, &done, rfd] {
+        auto lr = part::io::lines(rfd);
+        for (std::string line; lr >> line;) {
+            result.push_back(std::move(line));
+        }
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    REQUIRE(3 == result.size());
+    CHECK("alpha" == result[0]);
+    CHECK("beta" == result[1]);
+    CHECK("gamma" == result[2]);
+    csp::shutdown_runtime();
+}
+
+// --- file::read / file::write ---
+
+TEST_CASE("IO---File-roundtrip") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    std::string path = "/tmp/csp_test_file_roundtrip.bin";
+    std::string content = "Hello from file I/O!";
+    bytes data(content.begin(), content.end());
+    bytes result;
+    std::atomic<bool> done{false};
+
+    csp::spawn([&] {
+        csp::file::write(path, data);
+        result = csp::file::read(path);
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    CHECK(data == result);
+    ::unlink(path.c_str());
+    csp::shutdown_runtime();
+}
+
 // --- Composed pipeline: split_lines(byte_reader(fd)) ---
 
 TEST_CASE("IO---Composed-lines-from-pipe") {
@@ -595,7 +717,7 @@ TEST_CASE("IO---Multiple-concurrent-waiters") {
     csp::set_maxprocs(4);
 
     constexpr int N = 8;
-    csp::io::socket_t rfds[N], wfds[N];
+    csp::io::fd_t rfds[N], wfds[N];
     for (int i = 0; i < N; ++i) {
         auto [r, w] = test_pipe();
         rfds[i] = r;

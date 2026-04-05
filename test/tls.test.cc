@@ -14,31 +14,31 @@ using namespace csp;
 // --- Helpers ---
 
 // Create a listening socket on localhost, return fd and bound port.
-static std::pair<int, uint16_t> listen_localhost() {
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    REQUIRE(fd >= 0);
+static std::pair<csp::io::fd_t, uint16_t> listen_localhost() {
+    csp::io::fd_t fd(::socket(AF_INET, SOCK_STREAM, 0));
+    REQUIRE(fd.valid());
 
     int on = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    ::setsockopt(fd.raw(), SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 
     struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = 0; // OS-assigned
-    REQUIRE(0 == ::bind(fd, (struct sockaddr*)&addr, sizeof(addr)));
+    REQUIRE(0 == ::bind(fd.raw(), (struct sockaddr*)&addr, sizeof(addr)));
 
     socklen_t len = sizeof(addr);
-    REQUIRE(0 == ::getsockname(fd, (struct sockaddr*)&addr, &len));
+    REQUIRE(0 == ::getsockname(fd.raw(), (struct sockaddr*)&addr, &len));
 
-    REQUIRE(0 == ::listen(fd, 5));
+    REQUIRE(0 == ::listen(fd.raw(), 5));
     csp::io::set_nonblock(fd);
 
     return {fd, ntohs(addr.sin_port)};
 }
 
-static int connect_localhost(uint16_t port) {
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    REQUIRE(fd >= 0);
+static csp::io::fd_t connect_localhost(uint16_t port) {
+    csp::io::fd_t fd(::socket(AF_INET, SOCK_STREAM, 0));
+    REQUIRE(fd.valid());
     csp::io::set_nonblock(fd);
 
     struct sockaddr_in addr{};
@@ -61,7 +61,7 @@ TEST_CASE("TLS---Handshake-and-data-roundtrip") {
     csp::set_maxprocs(2);
 
     auto listen_pair = listen_localhost();
-    int listen_fd = listen_pair.first;
+    auto listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
 
     std::atomic<bool> done{false};
@@ -69,9 +69,8 @@ TEST_CASE("TLS---Handshake-and-data-roundtrip") {
 
     // Server imp
     csp::spawn([&, listen_fd] {
-        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        REQUIRE(client_fd >= 0);
-        csp::io::set_nonblock(client_fd);
+        auto client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+        REQUIRE(client_fd.valid());
 
         csp::tls::context ctx(csp::tls::context::server);
         ctx.load_cert("test/certs/server.crt");
@@ -89,13 +88,13 @@ TEST_CASE("TLS---Handshake-and-data-roundtrip") {
         // Write "pong"
         c.write("pong", 4);
         c.shutdown();
-        ::close(client_fd);
-        ::close(listen_fd);
+        csp::io::close(client_fd);
+        csp::io::close(listen_fd);
     });
 
     // Client imp
     csp::spawn([&, port] {
-        int fd = connect_localhost(port);
+        auto fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
         ctx.set_verify(accept_all);
@@ -111,7 +110,7 @@ TEST_CASE("TLS---Handshake-and-data-roundtrip") {
         client_received = std::string(buf, n);
 
         c.shutdown();
-        ::close(fd);
+        csp::io::close(fd);
         done.store(true, std::memory_order_relaxed);
     });
 
@@ -127,14 +126,14 @@ TEST_CASE("TLS---Cancel-during-handshake") {
 
     // Listen but never accept — client handshake will block forever.
     auto listen_pair = listen_localhost();
-    int listen_fd = listen_pair.first;
+    auto listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
 
     std::atomic<bool> got_cancel{false};
 
     csp::spawn([&, port] {
         auto cancel = csp::cancellation(std::chrono::milliseconds(50));
-        int fd = connect_localhost(port);
+        auto fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
         ctx.set_verify(accept_all);
@@ -147,13 +146,13 @@ TEST_CASE("TLS---Cancel-during-handshake") {
         } catch (const csp::canceled&) {
             got_cancel.store(true, std::memory_order_relaxed);
         }
-        ::close(fd);
+        csp::io::close(fd);
     });
 
     csp::spawn([listen_fd] {
         // Keep listen_fd alive until the test completes.
         csp::sleep(std::chrono::milliseconds(200));
-        ::close(listen_fd);
+        csp::io::close(listen_fd);
     });
 
     csp::schedule();
@@ -166,16 +165,15 @@ TEST_CASE("TLS---Cancel-during-read") {
     csp::set_maxprocs(2);
 
     auto listen_pair = listen_localhost();
-    int listen_fd = listen_pair.first;
+    auto listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
 
     std::atomic<bool> got_timeout{false};
 
     // Server: handshake then go silent.
     csp::spawn([&, listen_fd] {
-        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        REQUIRE(client_fd >= 0);
-        csp::io::set_nonblock(client_fd);
+        auto client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+        REQUIRE(client_fd.valid());
 
         csp::tls::context ctx(csp::tls::context::server);
         ctx.load_cert("test/certs/server.crt");
@@ -186,13 +184,13 @@ TEST_CASE("TLS---Cancel-during-read") {
 
         // Go silent — let client timeout.
         csp::sleep(std::chrono::milliseconds(500));
-        ::close(client_fd);
-        ::close(listen_fd);
+        csp::io::close(client_fd);
+        csp::io::close(listen_fd);
     });
 
     // Client: handshake, then read with timeout.
     csp::spawn([&, port] {
-        int fd = connect_localhost(port);
+        auto fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
         ctx.set_verify(accept_all);
@@ -209,7 +207,7 @@ TEST_CASE("TLS---Cancel-during-read") {
         } catch (const csp::timed_out&) {
             got_timeout.store(true, std::memory_order_relaxed);
         }
-        ::close(fd);
+        csp::io::close(fd);
     });
 
     csp::schedule();
@@ -222,16 +220,15 @@ TEST_CASE("TLS---No-verify-callback-rejects-by-default") {
     csp::set_maxprocs(2);
 
     auto listen_pair = listen_localhost();
-    int listen_fd = listen_pair.first;
+    auto listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
 
     std::atomic<bool> got_error{false};
 
     // Server
     csp::spawn([&, listen_fd] {
-        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        if (client_fd < 0) { ::close(listen_fd); return; }
-        csp::io::set_nonblock(client_fd);
+        auto client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+        if (!client_fd) { csp::io::close(listen_fd); return; }
 
         csp::tls::context ctx(csp::tls::context::server);
         ctx.load_cert("test/certs/server.crt");
@@ -239,13 +236,13 @@ TEST_CASE("TLS---No-verify-callback-rejects-by-default") {
 
         csp::tls::conn c(ctx, client_fd);
         try { c.handshake(); } catch (...) {}
-        ::close(client_fd);
-        ::close(listen_fd);
+        csp::io::close(client_fd);
+        csp::io::close(listen_fd);
     });
 
     // Client with rejecting verifier.
     csp::spawn([&, port] {
-        int fd = connect_localhost(port);
+        auto fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
         ctx.set_verify([](const char*, const auto&) { return false; });
@@ -258,7 +255,7 @@ TEST_CASE("TLS---No-verify-callback-rejects-by-default") {
         } catch (const csp::tls::error&) {
             got_error.store(true, std::memory_order_relaxed);
         }
-        ::close(fd);
+        csp::io::close(fd);
     });
 
     csp::schedule();
@@ -275,7 +272,7 @@ TEST_CASE("TLS---Concurrent-connections"
     csp::set_maxprocs(2);
 
     auto listen_pair = listen_localhost();
-    int listen_fd = listen_pair.first;
+    auto listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
 
     constexpr int N = 4;
@@ -286,9 +283,8 @@ TEST_CASE("TLS---Concurrent-connections"
     csp::spawn([&, listen_fd] {
         for (int i = 0; i < N; ++i) {
             csp::spawn([&, listen_fd] {
-                int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-                REQUIRE(client_fd >= 0);
-                csp::io::set_nonblock(client_fd);
+                auto client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+                REQUIRE(client_fd.valid());
 
                 csp::tls::context ctx(csp::tls::context::server);
                 ctx.load_cert("test/certs/server.crt");
@@ -303,7 +299,7 @@ TEST_CASE("TLS---Concurrent-connections"
 
                 c.write(buf, n);
                 c.shutdown();
-                ::close(client_fd);
+                csp::io::close(client_fd);
                 server_done.fetch_add(1, std::memory_order_relaxed);
             });
         }
@@ -312,7 +308,7 @@ TEST_CASE("TLS---Concurrent-connections"
     // Client imps: each connects, sends a unique message, verifies echo.
     for (int i = 0; i < N; ++i) {
         csp::spawn([&, port, i] {
-            int fd = connect_localhost(port);
+            auto fd = connect_localhost(port);
 
             csp::tls::context ctx(csp::tls::context::client);
             ctx.set_verify(accept_all);
@@ -329,7 +325,7 @@ TEST_CASE("TLS---Concurrent-connections"
             CHECK(msg == std::string(buf, n));
 
             c.shutdown();
-            ::close(fd);
+            csp::io::close(fd);
             client_done.fetch_add(1, std::memory_order_relaxed);
         });
     }
@@ -340,7 +336,7 @@ TEST_CASE("TLS---Concurrent-connections"
                client_done.load(std::memory_order_relaxed) < N) {
             csp::sleep(std::chrono::milliseconds(10));
         }
-        ::close(listen_fd);
+        csp::io::close(listen_fd);
     });
 
     csp::schedule();
@@ -354,7 +350,7 @@ TEST_CASE("TLS---Large-transfer") {
     csp::set_maxprocs(2);
 
     auto listen_pair = listen_localhost();
-    int listen_fd = listen_pair.first;
+    auto listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
 
     // 256 KB payload.
@@ -369,9 +365,8 @@ TEST_CASE("TLS---Large-transfer") {
 
     // Server: read all data and store it.
     csp::spawn([&, listen_fd] {
-        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        REQUIRE(client_fd >= 0);
-        csp::io::set_nonblock(client_fd);
+        auto client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+        REQUIRE(client_fd.valid());
 
         csp::tls::context ctx(csp::tls::context::server);
         ctx.load_cert("test/certs/server.crt");
@@ -388,14 +383,14 @@ TEST_CASE("TLS---Large-transfer") {
         }
 
         c.shutdown();
-        ::close(client_fd);
-        ::close(listen_fd);
+        csp::io::close(client_fd);
+        csp::io::close(listen_fd);
         done.store(true, std::memory_order_relaxed);
     });
 
     // Client: send entire payload.
     csp::spawn([&, port] {
-        int fd = connect_localhost(port);
+        auto fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
         ctx.set_verify(accept_all);
@@ -406,7 +401,7 @@ TEST_CASE("TLS---Large-transfer") {
 
         c.write(payload.data(), payload.size());
         c.shutdown();
-        ::close(fd);
+        csp::io::close(fd);
     });
 
     csp::schedule();
@@ -421,7 +416,7 @@ TEST_CASE("TLS---conn-move-semantics") {
     csp::set_maxprocs(2);
 
     auto listen_pair = listen_localhost();
-    int listen_fd = listen_pair.first;
+    auto listen_fd = listen_pair.first;
     uint16_t port = listen_pair.second;
 
     std::atomic<bool> done{false};
@@ -429,9 +424,8 @@ TEST_CASE("TLS---conn-move-semantics") {
 
     // Server
     csp::spawn([&, listen_fd] {
-        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        REQUIRE(client_fd >= 0);
-        csp::io::set_nonblock(client_fd);
+        auto client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
+        REQUIRE(client_fd.valid());
 
         csp::tls::context ctx(csp::tls::context::server);
         ctx.load_cert("test/certs/server.crt");
@@ -452,13 +446,13 @@ TEST_CASE("TLS---conn-move-semantics") {
 
         c2.write("pong", 4);
         c2.shutdown();
-        ::close(client_fd);
-        ::close(listen_fd);
+        csp::io::close(client_fd);
+        csp::io::close(listen_fd);
     });
 
     // Client
     csp::spawn([&, port] {
-        int fd = connect_localhost(port);
+        auto fd = connect_localhost(port);
 
         csp::tls::context ctx(csp::tls::context::client);
         ctx.set_verify(accept_all);
@@ -477,7 +471,7 @@ TEST_CASE("TLS---conn-move-semantics") {
         client_received = std::string(buf, n);
 
         c2.shutdown();
-        ::close(fd);
+        csp::io::close(fd);
         done.store(true, std::memory_order_relaxed);
     });
 

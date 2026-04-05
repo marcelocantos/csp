@@ -84,8 +84,8 @@ reader<int> notify(std::initializer_list<int> sigs) {
     int pipefd[2];
     int rc = ::pipe(pipefd);
     assert(rc == 0);
-    io::set_nonblock(pipefd[0]);
-    io::set_nonblock(pipefd[1]);
+    io::set_nonblock(io::fd_t(pipefd[0]));
+    io::set_nonblock(io::fd_t(pipefd[1]));
 
     // Prevent SIGPIPE when reader is dropped and write end is still
     // referenced by g_sig_pipes. On macOS, F_SETNOSIGPIPE suppresses
@@ -148,7 +148,7 @@ reader<int> notify(std::initializer_list<int> sigs) {
 
         uint8_t buf[32];
         for (;;) {
-            ssize_t n = io::read(rfd, buf, sizeof(buf));
+            ssize_t n = io::read(io::fd_t(rfd), buf, sizeof(buf));
             if (n <= 0) break;  // EOF (sentinel closed wfd) or error
             for (ssize_t i = 0; i < n; ++i) {
                 if (!(out << static_cast<int>(buf[i]))) {

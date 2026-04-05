@@ -11,11 +11,12 @@ namespace csp::part::io {
 // Produce byte chunks from a non-blocking fd/socket. Each message
 // contains as much data as was available from a single read() call.
 // Owns the fd and closes it on exit.
-inline auto byte_reader(csp::io::socket_t fd, size_t chunk_size = 4096) {
+// The fd must already be non-blocking (all CSP-produced fds are).
+inline auto byte_reader(csp::io::fd_t fd, size_t chunk_size = 4096) {
     return make_producer<bytes>(
         [fd, chunk_size](writer<bytes> out) {
             internal::descr("byte_reader");
-            csp::io::set_nonblock(fd);
+            assert(fd.is_nonblock() && "fd must be non-blocking");
 
             bytes buf(chunk_size);
             for (;;) {
@@ -31,11 +32,12 @@ inline auto byte_reader(csp::io::socket_t fd, size_t chunk_size = 4096) {
 
 // Consume byte chunks and write them to an fd/socket. Owns the fd
 // and closes it on exit.
-inline auto byte_writer(csp::io::socket_t fd) {
+// The fd must already be non-blocking (all CSP-produced fds are).
+inline auto byte_writer(csp::io::fd_t fd) {
     return make_consumer<bytes>(
         [fd](reader<bytes> in) {
             internal::descr("byte_writer");
-            csp::io::set_nonblock(fd);
+            assert(fd.is_nonblock() && "fd must be non-blocking");
 
             for (bytes chunk; in >> chunk;) {
                 if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
@@ -106,6 +108,13 @@ inline auto fixed_frames(size_t frame_size) {
                 }
             }
         });
+}
+
+// Convenience: return a reader<string> of newline-delimited lines
+// read from a non-blocking fd. Composes byte_reader | split_lines.
+inline csp::reader<std::string> lines(csp::io::fd_t fd,
+                                       size_t chunk_size = 4096) {
+    return split_lines.spawn(byte_reader(fd, chunk_size).spawn());
 }
 
 }

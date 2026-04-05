@@ -6,8 +6,8 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <vector>
 #ifndef _WIN32
-#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -97,15 +97,15 @@ namespace csp::io {
 
 #ifndef _WIN32
 
-int set_nonblock(int fd) {
-    int flags = fcntl(fd, F_GETFL);
+int set_nonblock(fd_t fd) {
+    int flags = fcntl(fd.raw(), F_GETFL);
     if (flags < 0) return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    return fcntl(fd.raw(), F_SETFL, flags | O_NONBLOCK);
 }
 
-ssize_t read(int fd, void* buf, size_t len) {
+ssize_t read(fd_t fd, void* buf, size_t len) {
     for (;;) {
-        ssize_t n = ::read(fd, buf, len);
+        ssize_t n = ::read(fd.raw(), buf, len);
         if (n >= 0) return n;
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -116,11 +116,11 @@ ssize_t read(int fd, void* buf, size_t len) {
     }
 }
 
-ssize_t write(int fd, const void* buf, size_t len) {
+ssize_t write(fd_t fd, const void* buf, size_t len) {
     size_t written = 0;
     auto p = static_cast<const uint8_t*>(buf);
     while (written < len) {
-        ssize_t n = ::write(fd, p + written, len - written);
+        ssize_t n = ::write(fd.raw(), p + written, len - written);
         if (n >= 0) {
             written += static_cast<size_t>(n);
             continue;
@@ -135,28 +135,32 @@ ssize_t write(int fd, const void* buf, size_t len) {
     return static_cast<ssize_t>(written);
 }
 
-int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
+fd_t accept(fd_t listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
     for (;;) {
-        int fd = ::accept(listen_fd, addr, addrlen);
-        if (fd >= 0) return fd;
+        int raw = ::accept(listen_fd.raw(), addr, addrlen);
+        if (raw >= 0) {
+            fd_t fd(raw);
+            set_nonblock(fd);
+            return fd;
+        }
         if (errno == EINTR) continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             wait_readable(listen_fd);
             continue;
         }
-        return -1;
+        return invalid_fd;
     }
 }
 
-int connect(int fd, const struct sockaddr* addr, socklen_t addrlen) {
-    int ret = ::connect(fd, addr, addrlen);
+int connect(fd_t fd, const struct sockaddr* addr, socklen_t addrlen) {
+    int ret = ::connect(fd.raw(), addr, addrlen);
     if (ret == 0) return 0;
     if (errno != EINPROGRESS) return -1;
 
     wait_writable(fd);
     int err = 0;
     socklen_t errlen = sizeof(err);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
+    if (getsockopt(fd.raw(), SOL_SOCKET, SO_ERROR, &err, &errlen) < 0) return -1;
     if (err != 0) { errno = err; return -1; }
     return 0;
 }
@@ -175,6 +179,28 @@ resolve_result resolve(const std::string& host,
     });
     if (err != 0) return resolve_result{.error = err};
     return resolve_result{.info = addrinfo_ptr(raw)};
+}
+
+std::vector<uint8_t> read_all(fd_t fd, size_t chunk_size) {
+    std::vector<uint8_t> result;
+    std::vector<uint8_t> buf(chunk_size);
+    for (;;) {
+        ssize_t n = read(fd, buf.data(), buf.size());
+        if (n <= 0) break;
+        result.insert(result.end(), buf.data(), buf.data() + n);
+    }
+    return result;
+}
+
+void write_all(fd_t fd, const std::vector<uint8_t>& data) {
+    write_all(fd, data.data(), data.size());
+}
+
+void write_all(fd_t fd, const void* data, size_t len) {
+    ssize_t n = write(fd, data, len);
+    if (n < 0 || static_cast<size_t>(n) != len) {
+        throw csp::error("write_all: incomplete write");
+    }
 }
 
 } // namespace csp::io

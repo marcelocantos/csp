@@ -112,6 +112,8 @@ set(LIB_SRCS
     src/imp_exit.cc
     src/supervisor.cc
     src/byte_reader.cc
+    src/net.cc
+    src/file.cc
 )
 
 if(WIN32)

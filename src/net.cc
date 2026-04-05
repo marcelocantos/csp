@@ -28,19 +28,21 @@ std::string format_addr(const struct sockaddr* sa, socklen_t len) {
     return std::string(host) + ":" + serv;
 }
 
-connection make_connection(io::socket_t fd, std::string remote) {
-    io::set_nonblock(fd);
+connection make_connection(io::fd_t fd, std::string remote) {
+    // fd is already non-blocking (set by io::accept or net::dial).
 
 #ifdef _WIN32
     auto input = part::io::byte_reader(fd).spawn();
     auto output = part::io::byte_writer(fd).spawn();
 #else
-    int rfd = fd;
-    int wfd = ::dup(fd);
-    if (wfd < 0) {
+    auto rfd = fd;
+    int raw_wfd = ::dup(fd.raw());
+    if (raw_wfd < 0) {
         io::close(fd);
         throw csp::error("dup failed");
     }
+    auto wfd = io::fd_t(raw_wfd);
+    io::set_nonblock(wfd);
     auto input = part::io::byte_reader(rfd).spawn();
     // Socket-aware byte_writer: shutdown(SHUT_WR) before close so
     // the peer's byte_reader sees EOF even though rfd still holds a
@@ -48,12 +50,11 @@ connection make_connection(io::socket_t fd, std::string remote) {
     auto output = spawn_consumer<bytes>(
         [wfd](reader<bytes> in) {
             internal::descr("byte_writer");
-            io::set_nonblock(wfd);
             for (bytes chunk; in >> chunk;) {
                 if (csp::io::write(wfd, chunk.data(), chunk.size()) < 0)
                     break;
             }
-            ::shutdown(wfd, SHUT_WR);
+            ::shutdown(wfd.raw(), SHUT_WR);
             io::close(wfd);
         });
 #endif
@@ -86,30 +87,30 @@ listener listen(const std::string& addr, uint16_t port,
     }
 
     auto* ai = result.info.get();
-    io::socket_t listen_fd = ::socket(ai->ai_family, ai->ai_socktype,
-                                       ai->ai_protocol);
-    if (listen_fd == io::invalid_socket) {
+    io::fd_t listen_fd(::socket(ai->ai_family, ai->ai_socktype,
+                                 ai->ai_protocol));
+    if (!listen_fd) {
         throw csp::error("socket failed");
     }
 
     if (opts.reuse_addr) {
         int opt = 1;
-        setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR,
+        setsockopt(listen_fd.raw(), SOL_SOCKET, SO_REUSEADDR,
                    reinterpret_cast<const char*>(&opt), sizeof(opt));
     }
 
     if (opts.dual_stack && ai->ai_family == AF_INET6) {
         int off = 0;
-        setsockopt(listen_fd, IPPROTO_IPV6, IPV6_V6ONLY,
+        setsockopt(listen_fd.raw(), IPPROTO_IPV6, IPV6_V6ONLY,
                    reinterpret_cast<const char*>(&off), sizeof(off));
     }
 
-    if (::bind(listen_fd, ai->ai_addr, ai->ai_addrlen) < 0) {
+    if (::bind(listen_fd.raw(), ai->ai_addr, ai->ai_addrlen) < 0) {
         io::close(listen_fd);
         throw csp::error("bind failed");
     }
 
-    if (::listen(listen_fd, opts.backlog) < 0) {
+    if (::listen(listen_fd.raw(), opts.backlog) < 0) {
         io::close(listen_fd);
         throw csp::error("listen failed");
     }
@@ -118,7 +119,7 @@ listener listen(const std::string& addr, uint16_t port,
 
     struct sockaddr_storage bound_addr {};
     socklen_t bound_len = sizeof(bound_addr);
-    getsockname(listen_fd, reinterpret_cast<struct sockaddr*>(&bound_addr),
+    getsockname(listen_fd.raw(), reinterpret_cast<struct sockaddr*>(&bound_addr),
                 &bound_len);
     auto local = format_addr(reinterpret_cast<struct sockaddr*>(&bound_addr),
                              bound_len);
@@ -174,11 +175,11 @@ listener listen(const std::string& addr, uint16_t port,
                 for (;;) {
                     struct sockaddr_storage client_addr {};
                     socklen_t client_len = sizeof(client_addr);
-                    io::socket_t client_fd = io::accept(
+                    io::fd_t client_fd = io::accept(
                         listen_fd,
                         reinterpret_cast<struct sockaddr*>(&client_addr),
                         &client_len);
-                    if (client_fd == io::invalid_socket) continue;
+                    if (!client_fd) continue;
 
                     auto remote = format_addr(
                         reinterpret_cast<struct sockaddr*>(&client_addr),
@@ -212,9 +213,9 @@ connection dial(const std::string& host, const std::string& service) {
     }
 
     for (auto* ai = result.info.get(); ai; ai = ai->ai_next) {
-        io::socket_t fd = ::socket(ai->ai_family, ai->ai_socktype,
-                                    ai->ai_protocol);
-        if (fd == io::invalid_socket) continue;
+        io::fd_t fd(::socket(ai->ai_family, ai->ai_socktype,
+                              ai->ai_protocol));
+        if (!fd) continue;
 
         io::set_nonblock(fd);
 

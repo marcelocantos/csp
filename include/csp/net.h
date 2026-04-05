@@ -16,12 +16,12 @@ namespace csp::net {
 // Closing (or dropping) the connection closes the underlying fd.
 
 struct connection {
-    io::socket_t fd;
+    io::fd_t fd;
     reader<std::vector<uint8_t>> input;   // bytes from peer
     writer<std::vector<uint8_t>> output;  // bytes to peer
     std::string remote_addr;              // peer address string
 
-    connection() : fd(io::invalid_socket) {}
+    connection() = default;
     connection(connection&&) = default;
     connection& operator=(connection&&) = default;
     connection(connection const&) = delete;

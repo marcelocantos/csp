@@ -164,7 +164,8 @@ LIB_SRCS := src/csp.cc \
             src/signal.cc \
             src/stack_pool.cc \
             src/imp_exit.cc \
-            src/net.cc
+            src/net.cc \
+            src/file.cc
 ifeq ($(CSP_TLS),1)
 LIB_SRCS += src/tls.cc
 endif
