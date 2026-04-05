@@ -1,6 +1,7 @@
 #include "testutil.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <memory>
 #include <vector>
@@ -735,15 +736,15 @@ TEST_CASE("Channel---NWritersNReaders") {
     chan<int> ch;
 
     constexpr int N = 10;
-    int sent = 0, received = 0;
+    std::atomic<int> sent{0}, received{0};
 
     for (int i = 0; i < N; ++i) {
         stats.spawn([w = ch.w.copy(), &sent]{
             w << 1;
-            ++sent;
+            sent.fetch_add(1, std::memory_order_relaxed);
         });
         stats.spawn([r = ch.r.copy(), &received]{
-            received += r.read();
+            received.fetch_add(r.read(), std::memory_order_relaxed);
         });
     }
 
@@ -751,8 +752,8 @@ TEST_CASE("Channel---NWritersNReaders") {
 
     csp::schedule();
 
-    CHECK(N == sent);
-    CHECK(N == received);
+    CHECK(N == sent.load());
+    CHECK(N == received.load());
 }
 
 TEST_CASE("Channel---AltFairness") {
