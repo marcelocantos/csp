@@ -1,29 +1,42 @@
 # Convergence Report
 
-**Generated**: 2026-04-05
+**Generated**: 2026-04-06
 **Branch**: master
-**SHA**: e37e19d
+**SHA**: b9983a0
 
 ## Standing invariants
 
-- Tests: 664/664 passed (local not re-run this evaluation).
-- CI: **FAILING** — macOS ASan+UBSan job fails with UBSan error in vendored PicoTLS (`picotls.c:6041:54: runtime error: applying zero offset to null pointer`). All other 9/10 jobs pass (including Linux ASan+UBSan, both TSan jobs, Windows, TLA+). This is a UBSan false positive in third-party code, not a CSP bug.
+- Tests: 664/664 passed (per last session).
+- CI: **GREEN** (9/10 jobs passed on 454bea8; macOS arm64 test job was cancelled, not failed. macOS ASan+UBSan now passes after UBSan fix 608c5dc. PR branch 05ab580 was 10/10 green).
 
 ## Movement
 
-- 🎯T12: not started → **achieved** (bd8c086, all test names use hyphens)
-- 🎯T11: close → **achieved** (`default_scheduler_impl` renamed to `main_loop_scheduler`, b3c024b)
-- 🎯T14: not started → **parked** (paper 18 documents alternatives, HAMT works and is not a bottleneck)
-- 🎯T15: (unchanged) achieved
-- 🎯T7: (unchanged) achieved
-- 🎯T3: (unchanged) not started
-- 🎯T13: (unchanged) not started
+- CI: **FAILING** (UBSan) → **GREEN** (UBSan fix 608c5dc merged via PR #19)
+- All targets: (unchanged since last report)
 
 ## Gap report
 
-### 🎯T3.1 Ergonomic I/O wrappers exist  [weight 1.6]
+### 🎯T7.3 Web crawler example  [weight 1.7]
 Gap: not started
-No `fd_t` type, no `net::listen`/`net::dial`, no `io::lines`/`read_all`/`write_all`. Foundation for all networking targets.
+No web crawler in `examples/`. Depends on networking infrastructure (which partially exists via `net::listen`/`net::dial`), but could be built as a simulated/mock example like the existing examples.
+
+### 🎯T7.4 Sensor fusion dashboard example  [weight 1.7]
+Gap: not started
+No sensor fusion example in `examples/`. Pure channel-based — no I/O dependencies. Uses `combine_latest`, `quantize`, sliding windows.
+
+### 🎯T7.6 Log aggregator example  [weight 1.7]
+Gap: not started
+No log aggregator in `examples/`. Could use blocking pool for file tailing, channels for routing/aggregation.
+
+### 🎯T3.1 Ergonomic I/O wrappers exist  [weight 1.6]
+Gap: **close**
+Significant infrastructure already exists but doesn't match the target's naming/shape:
+- `io::socket_t` exists (not `fd_t`, but functionally equivalent)
+- `net::listen` and `net::dial` exist and return `connection` with split I/O channels
+- `byte_reader`/`byte_writer` exist in `csp::part::io` (but call `set_nonblock` instead of asserting)
+- `split_lines` exists (equivalent to `io::lines`)
+- Missing: `io::read_all`/`io::write_all`, `file::read`/`file::write` via blocking pool, opaque `fd_t` wrapper with no implicit int conversion
+- The gap is mostly about naming alignment, the `fd_t` wrapper type, and file I/O helpers — the hard I/O plumbing is done.
 
 ### 🎯T3.2 Channel-native HTTP/1.1 server works  [weight 1.6]
 Gap: not started
@@ -33,16 +46,17 @@ No llhttp vendored, no `http::serve`. Depends on 🎯T3.1.
 Gap: not started
 No wslay vendored. Depends on 🎯T3.2 for HTTP upgrade path.
 
-### 🎯T3 Runtime is production-ready for I/O workloads  [weight 0.6]
-Gap: not started (0/9 sub-targets achieved)
+### 🎯T3.6 HTTP client  [weight 1.0]
+Gap: not started
+No HTTP client implementation. Depends on 🎯T3.1.
+
+### 🎯T13 Per-worker wake eliminates thundering herd  [weight 0.4]  (status only)
+Status: not started
+No changed files overlap.
 
 ### 🎯T14 Dynamic scoping improvements  [weight 0.5]  (parked)
 Gap: parked
-Paper 18 explores alternatives. HAMT works, not a bottleneck. Revisit if profiling points here.
-
-### 🎯T13 Per-worker wake eliminates thundering herd  [weight 0.4]
-Gap: not started
-`unpark_one()` still uses `notify_all`. Three approaches explored in status notes, all have failure modes. Requires platform-specific futex primitives or design rethink.
+No change since last report. Revisit if profiling points here.
 
 ### Achieved targets (unchanged)
 
@@ -57,43 +71,57 @@ Gap: not started
 
 ## Recommendation
 
-Work on: **CI UBSan failure (standing invariant violation)**
-Reason: CI is red on macOS ASan+UBSan due to a UBSan null-pointer-offset error in vendored PicoTLS. Standing invariant violations take priority over all target work. This blocks all convergence — no PR can merge green until it's fixed.
+Work on: **🎯T3.1 Ergonomic I/O wrappers exist**
+Reason: Despite 🎯T7.3/T7.4/T7.6 having slightly higher effective weight (1.7 vs 1.6), 🎯T3.1 is **close** rather than not-started — most of the I/O infrastructure already exists. Closing it is cheaper and unblocks the entire 🎯T3 subtree (HTTP/1.1, WebSocket, HTTP client — all weight 1.6). The example targets are independent leaves with no downstream impact. 🎯T3.1 is higher leverage per unit of effort.
 
 ## Suggested action
 
-Investigate `vendor/github.com/h2o/picotls/lib/picotls.c:6041` — the UBSan "applying zero offset to null pointer" error. Options: (1) add a UBSan suppression for PicoTLS code (fast, pragmatic — it's third-party), (2) patch the line to guard against null before pointer arithmetic, or (3) check if upstream PicoTLS has a fix. Option 1 is recommended as the immediate fix — add a `ubsan_suppressions.txt` file and pass it via `-fsanitize-blacklist` for the PicoTLS compilation unit.
+Audit the existing I/O surface against 🎯T3.1 acceptance criteria and close the gaps: (1) introduce an opaque `fd_t` type wrapping `socket_t` with no implicit int conversion, (2) change `byte_reader`/`byte_writer` to assert non-blocking rather than calling `set_nonblock`, (3) add `io::read_all`/`io::write_all` convenience functions, (4) add `file::read`/`file::write` via the blocking pool, (5) add reference docs and tests for new additions.
 
 <!-- convergence-deps
-evaluated: 2026-04-05T12:00:00Z
-sha: e37e19d
+evaluated: 2026-04-06T00:00:00Z
+sha: b9983a0
 
-🎯T12:
-  gap: achieved
-  assessment: "All test names use hyphens. No spaces found in TEST_CASE names."
+🎯T7.3:
+  gap: not started
+  assessment: "No web crawler example in examples/."
   read:
-    - test/channel.test.cc
+    - examples/
 
-🎯T11:
-  gap: achieved
-  assessment: "All criteria met. default_scheduler_impl renamed to main_loop_scheduler. No references in source code."
+🎯T7.4:
+  gap: not started
+  assessment: "No sensor fusion example in examples/."
   read:
-    - src/csp.cc
+    - examples/
 
-🎯T14:
-  gap: parked
-  assessment: "Paper 18 written. HAMT works, not a bottleneck. Parked."
+🎯T7.6:
+  gap: not started
+  assessment: "No log aggregator example in examples/."
   read:
-    - docs/papers/18-dynamic-scope-alternatives.md
+    - examples/
 
-🎯T15:
-  gap: achieved
-  assessment: "PicoTLS vendored, mbedTLS removed, 664/664 tests. UBSan issue in picotls.c:6041 is third-party, not CSP."
+🎯T3.1:
+  gap: close
+  assessment: "socket_t, net::listen, net::dial, byte_reader, byte_writer, split_lines all exist. Missing fd_t opaque wrapper, read_all/write_all, file::read/write. byte_reader/byte_writer set_nonblock instead of asserting."
+  read:
+    - include/csp/io.h
+    - include/csp/net.h
+    - include/csp/part/io.h
+    - include/csp/byte_reader.h
+
+🎯T3.2:
+  gap: not started
+  assessment: "No llhttp vendored, no http::serve."
   read: []
 
-🎯T3:
+🎯T3.5:
   gap: not started
-  assessment: "0/9 sub-targets achieved. No I/O wrapper, HTTP, or WebSocket work begun."
+  assessment: "No wslay vendored."
+  read: []
+
+🎯T3.6:
+  gap: not started
+  assessment: "No HTTP client implementation."
   read: []
 
 🎯T13:
@@ -101,8 +129,48 @@ sha: e37e19d
   assessment: "unpark_one() still uses notify_all. No implementation progress."
   read: []
 
+🎯T14:
+  gap: parked
+  assessment: "Parked. HAMT works, not a bottleneck."
+  read: []
+
+🎯T12:
+  gap: achieved
+  assessment: "All test names use hyphens."
+  read: []
+
+🎯T11:
+  gap: achieved
+  assessment: "All criteria met. PR #18 merged."
+  read: []
+
+🎯T15:
+  gap: achieved
+  assessment: "PicoTLS vendored, mbedTLS removed, all tests pass."
+  read: []
+
 🎯T7:
   gap: achieved
   assessment: "3/6 sub-targets complete. Acceptance threshold met."
+  read: []
+
+🎯T2:
+  gap: achieved
+  assessment: "diff, frame, reorder, race implemented."
+  read: []
+
+🎯T4:
+  gap: achieved
+  assessment: "closer<EP> and main() error message both done."
+  read: []
+
+🎯T5:
+  gap: achieved
+  assessment: "3 TLA+ spec pairs written."
+  read: []
+
+🎯T8:
+  gap: achieved
+  assessment: "Signal handling audited, no violations."
   read: []
 -->
