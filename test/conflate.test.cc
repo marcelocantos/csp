@@ -5,7 +5,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("Conflate - passthrough when consumer keeps up") {
+TEST_CASE("Conflate---passthrough-when-consumer-keeps-up") {
     // Consumer reads immediately. With a sum merge function, the sum of
     // received values always equals 1+2+3=6 regardless of merging.
     // We verify no values are lost.
@@ -34,7 +34,7 @@ TEST_CASE("Conflate - passthrough when consumer keeps up") {
     CHECK(count <= 3);
 }
 
-TEST_CASE("Conflate - merges when consumer is slow") {
+TEST_CASE("Conflate---merges-when-consumer-is-slow") {
     RunStats stats;
 
     int result = 0;
@@ -66,7 +66,7 @@ TEST_CASE("Conflate - merges when consumer is slow") {
     CHECK(6 == result);
 }
 
-TEST_CASE("Conflate - flushes on input close") {
+TEST_CASE("Conflate---flushes-on-input-close") {
     csp::run([&] {
         auto [w, r] = chan<int>{};
         auto cr = conflate<int>([](int a, int b) { return a + b; })
@@ -85,7 +85,7 @@ TEST_CASE("Conflate - flushes on input close") {
     });
 }
 
-TEST_CASE("Conflate - output death stops filter") {
+TEST_CASE("Conflate---output-death-stops-filter") {
     RunStats stats;
 
     // Test that after output dies, conflate eventually stops reading input.
@@ -114,7 +114,7 @@ TEST_CASE("Conflate - output death stops filter") {
     CHECK(succeeded.load() < N);
 }
 
-TEST_CASE("Conflate - custom merge function") {
+TEST_CASE("Conflate---custom-merge-function") {
     RunStats stats;
 
     std::string result;

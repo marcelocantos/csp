@@ -85,7 +85,7 @@ inline ssize_t test_raw_read(csp::io::socket_t fd, void* buf, size_t len) {
 
 // --- Layer 1: wait_readable / wait_writable ---
 
-TEST_CASE("IO - WaitReadable") {
+TEST_CASE("IO---WaitReadable") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -116,7 +116,7 @@ TEST_CASE("IO - WaitReadable") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("IO - WaitWritable") {
+TEST_CASE("IO---WaitWritable") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -150,7 +150,7 @@ TEST_CASE("IO - WaitWritable") {
 
 // --- Layer 2: io::read / io::write ---
 
-TEST_CASE("IO - ReadWrite roundtrip") {
+TEST_CASE("IO---ReadWrite-roundtrip") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -189,7 +189,7 @@ TEST_CASE("IO - ReadWrite roundtrip") {
 
 // --- Layer 3: byte_reader ---
 
-TEST_CASE("IO - ByteReader") {
+TEST_CASE("IO---ByteReader") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -223,7 +223,7 @@ TEST_CASE("IO - ByteReader") {
 
 // --- Layer 3: byte_writer ---
 
-TEST_CASE("IO - ByteWriter") {
+TEST_CASE("IO---ByteWriter") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -262,7 +262,7 @@ TEST_CASE("IO - ByteWriter") {
 
 // --- byte_reader (channel-backed) ---
 
-TEST_CASE("IO - byte_reader exact chunk") {
+TEST_CASE("IO---byte_reader-exact-chunk") {
     RunStats rs;
     bytes result;
     bool ok = false;
@@ -284,7 +284,7 @@ TEST_CASE("IO - byte_reader exact chunk") {
     CHECK(bytes({'A', 'B', 'C', 'D'}) == result);
 }
 
-TEST_CASE("IO - byte_reader spans chunks") {
+TEST_CASE("IO---byte_reader-spans-chunks") {
     RunStats rs;
     bytes result1, result2;
     bool ok1 = false, ok2 = false;
@@ -315,7 +315,7 @@ TEST_CASE("IO - byte_reader spans chunks") {
     CHECK(bytes({'F'}) == result2);
 }
 
-TEST_CASE("IO - byte_reader partial on close") {
+TEST_CASE("IO---byte_reader-partial-on-close") {
     RunStats rs;
     bytes result;
     int n = -1;
@@ -338,7 +338,7 @@ TEST_CASE("IO - byte_reader partial on close") {
     CHECK('Y' == result[1]);
 }
 
-TEST_CASE("IO - byte_reader empty buffer") {
+TEST_CASE("IO---byte_reader-empty-buffer") {
     RunStats rs;
     int n = -1;
 
@@ -353,7 +353,7 @@ TEST_CASE("IO - byte_reader empty buffer") {
     CHECK(0 == n);
 }
 
-TEST_CASE("IO - byte_reader multiple reads with leftover") {
+TEST_CASE("IO---byte_reader-multiple-reads-with-leftover") {
     RunStats rs;
     bytes r0, r1, r2, r3;
     int n0 = -1, n1 = -1, n2 = -1, n3 = -1;
@@ -390,7 +390,7 @@ TEST_CASE("IO - byte_reader multiple reads with leftover") {
     CHECK('9' == r3[0]);
 }
 
-TEST_CASE("IO - byte_reader closed reader returns zero") {
+TEST_CASE("IO---byte_reader-closed-reader-returns-zero") {
     RunStats rs;
     int n = -1;
 
@@ -410,7 +410,7 @@ TEST_CASE("IO - byte_reader closed reader returns zero") {
 
 // --- Layer 3: split_lines — pure channel test, no I/O ---
 
-TEST_CASE("IO - Lines framing") {
+TEST_CASE("IO---Lines-framing") {
     RunStats rs;
     std::string l0, l1, l2;
 
@@ -434,7 +434,7 @@ TEST_CASE("IO - Lines framing") {
     CHECK("foo" == l2);
 }
 
-TEST_CASE("IO - Lines partial flush") {
+TEST_CASE("IO---Lines-partial-flush") {
     RunStats rs;
     std::string l0, l1;
     bool closed = false;
@@ -460,7 +460,7 @@ TEST_CASE("IO - Lines partial flush") {
     CHECK(closed);
 }
 
-TEST_CASE("IO - Lines multi-chunk") {
+TEST_CASE("IO---Lines-multi-chunk") {
     RunStats rs;
     std::string l0, l1;
     bool closed = false;
@@ -490,7 +490,7 @@ TEST_CASE("IO - Lines multi-chunk") {
 
 // --- Layer 3: fixed_frames() — pure channel test ---
 
-TEST_CASE("IO - Fixed framing") {
+TEST_CASE("IO---Fixed-framing") {
     RunStats rs;
     bytes f1, f2;
     bool closed = false;
@@ -524,7 +524,7 @@ TEST_CASE("IO - Fixed framing") {
     CHECK(closed);
 }
 
-TEST_CASE("IO - Fixed multi-chunk") {
+TEST_CASE("IO---Fixed-multi-chunk") {
     RunStats rs;
     bytes f1;
     bool closed = false;
@@ -555,7 +555,7 @@ TEST_CASE("IO - Fixed multi-chunk") {
 
 // --- Composed pipeline: split_lines(byte_reader(fd)) ---
 
-TEST_CASE("IO - Composed lines from pipe") {
+TEST_CASE("IO---Composed-lines-from-pipe") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -590,7 +590,7 @@ TEST_CASE("IO - Composed lines from pipe") {
 
 // --- Multiple concurrent I/O waiters ---
 
-TEST_CASE("IO - Multiple concurrent waiters") {
+TEST_CASE("IO---Multiple-concurrent-waiters") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -632,7 +632,7 @@ TEST_CASE("IO - Multiple concurrent waiters") {
 
 // --- csp::blocking ---
 
-TEST_CASE("IO - Blocking offload") {
+TEST_CASE("IO---Blocking-offload") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -658,7 +658,7 @@ TEST_CASE("IO - Blocking offload") {
 
 // --- DNS resolution ---
 
-TEST_CASE("IO - Resolve unresolvable hostname") {
+TEST_CASE("IO---Resolve-unresolvable-hostname") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -678,7 +678,7 @@ TEST_CASE("IO - Resolve unresolvable hostname") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("IO - Resolve localhost") {
+TEST_CASE("IO---Resolve-localhost") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -701,7 +701,7 @@ TEST_CASE("IO - Resolve localhost") {
 
 // --- csp::blocking edge cases ---
 
-TEST_CASE("IO - Blocking void return") {
+TEST_CASE("IO---Blocking-void-return") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -718,7 +718,7 @@ TEST_CASE("IO - Blocking void return") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("IO - Blocking with non-trivial return type") {
+TEST_CASE("IO---Blocking-with-non-trivial-return-type") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -737,7 +737,7 @@ TEST_CASE("IO - Blocking with non-trivial return type") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("IO - Multiple concurrent blocking calls") {
+TEST_CASE("IO---Multiple-concurrent-blocking-calls") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -764,7 +764,7 @@ TEST_CASE("IO - Multiple concurrent blocking calls") {
 
 #ifdef _WIN32
 
-TEST_CASE("IO - Console signal delivery") {
+TEST_CASE("IO---Console-signal-delivery") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -790,7 +790,7 @@ TEST_CASE("IO - Console signal delivery") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("IO - Console signal multiple events") {
+TEST_CASE("IO---Console-signal-multiple-events") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -823,7 +823,7 @@ TEST_CASE("IO - Console signal multiple events") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("IO - Console signal reader drop cleanup") {
+TEST_CASE("IO---Console-signal-reader-drop-cleanup") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -847,7 +847,7 @@ TEST_CASE("IO - Console signal reader drop cleanup") {
 
 #ifndef _WIN32
 
-TEST_CASE("IO - Signal delivery") {
+TEST_CASE("IO---Signal-delivery") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -871,7 +871,7 @@ TEST_CASE("IO - Signal delivery") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("IO - Signal multiple signals") {
+TEST_CASE("IO---Signal-multiple-signals") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -904,7 +904,7 @@ TEST_CASE("IO - Signal multiple signals") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("IO - Signal reader drop cleanup") {
+TEST_CASE("IO---Signal-reader-drop-cleanup") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 

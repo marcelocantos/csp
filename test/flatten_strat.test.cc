@@ -12,7 +12,7 @@ TEST_SUITE("FlattenStrategies") {
 // merge_all
 // ========================================================================
 
-TEST_CASE("merge_all - concurrent merge") {
+TEST_CASE("merge_all---concurrent-merge") {
     csp::run([]{
         auto [w, r] = chan<reader<int>>{};
         auto out = merge_all<int>.spawn(std::move(r));
@@ -29,7 +29,7 @@ TEST_CASE("merge_all - concurrent merge") {
     });
 }
 
-TEST_CASE("merge_all - empty input") {
+TEST_CASE("merge_all---empty-input") {
     csp::run([]{
         auto [w, r] = chan<reader<int>>{};
         auto out = merge_all<int>.spawn(std::move(r));
@@ -40,7 +40,7 @@ TEST_CASE("merge_all - empty input") {
     });
 }
 
-TEST_CASE("merge_all - output death") {
+TEST_CASE("merge_all---output-death") {
     RunStats stats;
 
     csp::run([&]{
@@ -57,7 +57,7 @@ TEST_CASE("merge_all - output death") {
     });
 }
 
-TEST_CASE("map | merge_all - same as flat_map") {
+TEST_CASE("map-|-merge_all---same-as-flat_map") {
     csp::run([]{
         auto r = (map<int, reader<int>>([](int n) {
                       return count(n * 10, n * 10 + 3).spawn();
@@ -75,7 +75,7 @@ TEST_CASE("map | merge_all - same as flat_map") {
 // concat_all
 // ========================================================================
 
-TEST_CASE("concat_all - sequential drain") {
+TEST_CASE("concat_all---sequential-drain") {
     csp::run([]{
         auto [w, r] = chan<reader<int>>{};
         auto out = concat_all<int>.spawn(std::move(r));
@@ -92,7 +92,7 @@ TEST_CASE("concat_all - sequential drain") {
     });
 }
 
-TEST_CASE("concat_all - empty input") {
+TEST_CASE("concat_all---empty-input") {
     csp::run([]{
         auto [w, r] = chan<reader<int>>{};
         auto out = concat_all<int>.spawn(std::move(r));
@@ -103,7 +103,7 @@ TEST_CASE("concat_all - empty input") {
     });
 }
 
-TEST_CASE("concat_all - empty sub-stream") {
+TEST_CASE("concat_all---empty-sub-stream") {
     csp::run([]{
         auto [w, r] = chan<reader<int>>{};
         auto out = concat_all<int>.spawn(std::move(r));
@@ -123,7 +123,7 @@ TEST_CASE("concat_all - empty sub-stream") {
     });
 }
 
-TEST_CASE("map | concat_all - sequential order") {
+TEST_CASE("map-|-concat_all---sequential-order") {
     csp::run([]{
         auto r = (map<int, reader<int>>([](int n) {
                       return count(n * 10, n * 10 + 3).spawn();
@@ -136,7 +136,7 @@ TEST_CASE("map | concat_all - sequential order") {
     });
 }
 
-TEST_CASE("map | concat_all - output death") {
+TEST_CASE("map-|-concat_all---output-death") {
     RunStats stats;
 
     csp::run([&]{
@@ -155,7 +155,7 @@ TEST_CASE("map | concat_all - output death") {
 // switch_all
 // ========================================================================
 
-TEST_CASE("switch_all - latest wins") {
+TEST_CASE("switch_all---latest-wins") {
     csp::run([]{
         auto [outer_w, outer_r] = chan<reader<int>>{};
         auto out = switch_all<int>.spawn(std::move(outer_r));
@@ -176,7 +176,7 @@ TEST_CASE("switch_all - latest wins") {
     });
 }
 
-TEST_CASE("switch_all - sub dies naturally") {
+TEST_CASE("switch_all---sub-dies-naturally") {
     csp::run([]{
         auto [outer_w, outer_r] = chan<reader<int>>{};
         auto out = switch_all<int>.spawn(std::move(outer_r));
@@ -199,7 +199,7 @@ TEST_CASE("switch_all - sub dies naturally") {
     });
 }
 
-TEST_CASE("switch_all - empty input") {
+TEST_CASE("switch_all---empty-input") {
     csp::run([]{
         auto [w, r] = chan<reader<int>>{};
         auto out = switch_all<int>.spawn(std::move(r));
@@ -210,7 +210,7 @@ TEST_CASE("switch_all - empty input") {
     });
 }
 
-TEST_CASE("map | switch_all - cancel previous") {
+TEST_CASE("map-|-switch_all---cancel-previous") {
     RunStats stats;
 
     csp::run([&]{
@@ -243,7 +243,7 @@ TEST_CASE("map | switch_all - cancel previous") {
 // exhaust_all
 // ========================================================================
 
-TEST_CASE("exhaust_all - discard while draining") {
+TEST_CASE("exhaust_all---discard-while-draining") {
     csp::run([]{
         auto [outer_w, outer_r] = chan<reader<int>>{};
         auto out = exhaust_all<int>.spawn(std::move(outer_r));
@@ -275,7 +275,7 @@ TEST_CASE("exhaust_all - discard while draining") {
     });
 }
 
-TEST_CASE("exhaust_all - no overlap") {
+TEST_CASE("exhaust_all---no-overlap") {
     csp::run([]{
         auto [outer_w, outer_r] = chan<reader<int>>{};
         auto out = exhaust_all<int>.spawn(std::move(outer_r));
@@ -296,7 +296,7 @@ TEST_CASE("exhaust_all - no overlap") {
     });
 }
 
-TEST_CASE("exhaust_all - empty input") {
+TEST_CASE("exhaust_all---empty-input") {
     csp::run([]{
         auto [w, r] = chan<reader<int>>{};
         auto out = exhaust_all<int>.spawn(std::move(r));
@@ -307,7 +307,7 @@ TEST_CASE("exhaust_all - empty input") {
     });
 }
 
-TEST_CASE("map | exhaust_all - ignore while busy") {
+TEST_CASE("map-|-exhaust_all---ignore-while-busy") {
     RunStats stats;
 
     csp::run([&]{

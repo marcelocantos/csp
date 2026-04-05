@@ -8,7 +8,7 @@ using namespace csp;
 
 TEST_SUITE("join") {
 
-TEST_CASE("single handle") {
+TEST_CASE("single-handle") {
     std::atomic<int> result{0};
     csp::run([&] {
         auto h = spawn([&] { result = 42; });
@@ -17,7 +17,7 @@ TEST_CASE("single handle") {
     CHECK(result == 42);
 }
 
-TEST_CASE("vector of handles") {
+TEST_CASE("vector-of-handles") {
     constexpr int N = 10;
     std::atomic<int> count{0};
 
@@ -31,7 +31,7 @@ TEST_CASE("vector of handles") {
     CHECK(count == N);
 }
 
-TEST_CASE("variadic handles") {
+TEST_CASE("variadic-handles") {
     std::atomic<int> a{0}, b{0}, c{0};
 
     csp::run([&] {
@@ -45,7 +45,7 @@ TEST_CASE("variadic handles") {
     CHECK(c == 3);
 }
 
-TEST_CASE("vector - first exception rethrown after all complete") {
+TEST_CASE("vector---first-exception-rethrown-after-all-complete") {
     constexpr int N = 5;
     std::atomic<int> finished{0};
 
@@ -62,7 +62,7 @@ TEST_CASE("vector - first exception rethrown after all complete") {
     CHECK(finished == N - 1);
 }
 
-TEST_CASE("variadic - first exception rethrown after all complete") {
+TEST_CASE("variadic---first-exception-rethrown-after-all-complete") {
     std::atomic<bool> second_done{false};
 
     csp::run([&] {
@@ -75,7 +75,7 @@ TEST_CASE("variadic - first exception rethrown after all complete") {
     CHECK(second_done);
 }
 
-TEST_CASE("vector - multiple exceptions, first wins") {
+TEST_CASE("vector---multiple-exceptions,-first-wins") {
     csp::run([&] {
         std::vector<reader<std::exception_ptr>> handles;
         handles.push_back(spawn([] { throw std::runtime_error("first"); }));
@@ -84,7 +84,7 @@ TEST_CASE("vector - multiple exceptions, first wins") {
     });
 }
 
-TEST_CASE("vector - no exceptions") {
+TEST_CASE("vector---no-exceptions") {
     csp::run([&] {
         std::vector<reader<std::exception_ptr>> handles;
         for (int i = 0; i < 5; i++) {
@@ -94,7 +94,7 @@ TEST_CASE("vector - no exceptions") {
     });
 }
 
-TEST_CASE("vector - empty") {
+TEST_CASE("vector---empty") {
     std::vector<reader<std::exception_ptr>> handles;
     CHECK_NOTHROW(join(handles));
 }

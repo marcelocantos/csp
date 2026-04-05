@@ -5,7 +5,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("AnyOf - match found") {
+TEST_CASE("AnyOf---match-found") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -18,7 +18,7 @@ TEST_CASE("AnyOf - match found") {
     csp::schedule();
 }
 
-TEST_CASE("AnyOf - no match") {
+TEST_CASE("AnyOf---no-match") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -31,7 +31,7 @@ TEST_CASE("AnyOf - no match") {
     csp::schedule();
 }
 
-TEST_CASE("AnyOf - empty input") {
+TEST_CASE("AnyOf---empty-input") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -44,7 +44,7 @@ TEST_CASE("AnyOf - empty input") {
     csp::schedule();
 }
 
-TEST_CASE("AllOf - all match") {
+TEST_CASE("AllOf---all-match") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -57,7 +57,7 @@ TEST_CASE("AllOf - all match") {
     csp::schedule();
 }
 
-TEST_CASE("AllOf - early mismatch") {
+TEST_CASE("AllOf---early-mismatch") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -70,7 +70,7 @@ TEST_CASE("AllOf - early mismatch") {
     csp::schedule();
 }
 
-TEST_CASE("AllOf - empty input") {
+TEST_CASE("AllOf---empty-input") {
     RunStats stats;
     auto src = chan<int>();
 

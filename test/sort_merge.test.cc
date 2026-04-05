@@ -5,7 +5,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("SortMerge - three sorted streams") {
+TEST_CASE("SortMerge---three-sorted-streams") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -30,7 +30,7 @@ TEST_CASE("SortMerge - three sorted streams") {
     CHECK(got == std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9});
 }
 
-TEST_CASE("SortMerge - interleaved values") {
+TEST_CASE("SortMerge---interleaved-values") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -52,7 +52,7 @@ TEST_CASE("SortMerge - interleaved values") {
     CHECK(got == std::vector<int>{1, 2, 3, 4, 5, 6});
 }
 
-TEST_CASE("SortMerge - one empty stream") {
+TEST_CASE("SortMerge---one-empty-stream") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -74,7 +74,7 @@ TEST_CASE("SortMerge - one empty stream") {
     CHECK(got == std::vector<int>{1, 2, 3});
 }
 
-TEST_CASE("SortMerge - custom comparator (descending)") {
+TEST_CASE("SortMerge---custom-comparator-(descending)") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -96,7 +96,7 @@ TEST_CASE("SortMerge - custom comparator (descending)") {
     CHECK(got == std::vector<int>{9, 8, 6, 5, 3, 2});
 }
 
-TEST_CASE("SortMerge - single stream") {
+TEST_CASE("SortMerge---single-stream") {
     RunStats stats;
     auto a = chan<int>();
 

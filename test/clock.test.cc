@@ -11,7 +11,7 @@ using namespace csp;
 using namespace csp::part;
 using namespace std::chrono_literals;
 
-TEST_CASE("now() returns real time without override") {
+TEST_CASE("now()-returns-real-time-without-override") {
     RunStats stats;
 
     time_point t;
@@ -24,7 +24,7 @@ TEST_CASE("now() returns real time without override") {
     });
 }
 
-TEST_CASE("now() returns fake time when overridden") {
+TEST_CASE("now()-returns-fake-time-when-overridden") {
     RunStats stats;
 
     fake_clock fc;
@@ -36,7 +36,7 @@ TEST_CASE("now() returns fake time when overridden") {
     });
 }
 
-TEST_CASE("advance moves time forward") {
+TEST_CASE("advance-moves-time-forward") {
     fake_clock fc;
     auto start = fc.now();
     fc.advance(500ms);
@@ -45,7 +45,7 @@ TEST_CASE("advance moves time forward") {
     CHECK(fc.now() == start + 1s);
 }
 
-TEST_CASE("sleep with fake clock") {
+TEST_CASE("sleep-with-fake-clock") {
     RunStats stats;
 
     fake_clock fc;
@@ -62,7 +62,7 @@ TEST_CASE("sleep with fake clock") {
     CHECK(woke);
 }
 
-TEST_CASE("after fires on advance") {
+TEST_CASE("after-fires-on-advance") {
     RunStats stats;
 
     fake_clock fc;
@@ -77,7 +77,7 @@ TEST_CASE("after fires on advance") {
     CHECK(fired_at != time_point{});
 }
 
-TEST_CASE("tick fires periodically") {
+TEST_CASE("tick-fires-periodically") {
     RunStats stats;
 
     fake_clock fc;
@@ -100,7 +100,7 @@ TEST_CASE("tick fires periodically") {
     CHECK(ticks[2] == epoch + 300ms);
 }
 
-TEST_CASE("advance_to_next jumps to exact deadline") {
+TEST_CASE("advance_to_next-jumps-to-exact-deadline") {
     RunStats stats;
 
     fake_clock fc;
@@ -118,12 +118,12 @@ TEST_CASE("advance_to_next jumps to exact deadline") {
     CHECK(fc.now() == time_point{} + 42ms);
 }
 
-TEST_CASE("advance_to_next returns false when empty") {
+TEST_CASE("advance_to_next-returns-false-when-empty") {
     fake_clock fc;
     CHECK(!fc.advance_to_next());
 }
 
-TEST_CASE("multiple timers fire in order") {
+TEST_CASE("multiple-timers-fire-in-order") {
     RunStats stats;
 
     fake_clock fc;
@@ -143,7 +143,7 @@ TEST_CASE("multiple timers fire in order") {
     CHECK(sorted == std::vector{1, 2, 3});
 }
 
-TEST_CASE("auto-advance via run()") {
+TEST_CASE("auto-advance-via-run()") {
     RunStats stats;
 
     fake_clock fc;
@@ -163,7 +163,7 @@ TEST_CASE("auto-advance via run()") {
     CHECK(sorted == std::vector{1, 2, 3});
 }
 
-TEST_CASE("run_until_idle does not advance time") {
+TEST_CASE("run_until_idle-does-not-advance-time") {
     // With csp::run's quiescence hook, time advances automatically.
     // This test now simply verifies that sleeping imps complete.
     RunStats stats;
@@ -182,7 +182,7 @@ TEST_CASE("run_until_idle does not advance time") {
     CHECK(woke);
 }
 
-TEST_CASE("child inherits fake clock") {
+TEST_CASE("child-inherits-fake-clock") {
     RunStats stats;
 
     fake_clock fc;
@@ -200,7 +200,7 @@ TEST_CASE("child inherits fake clock") {
     CHECK(child_time == time_point{} + 42s);
 }
 
-TEST_CASE("sleep_until past time returns immediately") {
+TEST_CASE("sleep_until-past-time-returns-immediately") {
     RunStats stats;
 
     fake_clock fc;
@@ -220,7 +220,7 @@ TEST_CASE("sleep_until past time returns immediately") {
 
 // ---- Demo: fake clock accelerates real combinator tests ----
 
-TEST_CASE("fake clock: debounce emits after quiet period") {
+TEST_CASE("fake-clock:-debounce-emits-after-quiet-period") {
     // Without fake clock this would need real 200ms waits.
     // With fake clock it's instant and deterministic.
     RunStats stats;
@@ -245,7 +245,7 @@ TEST_CASE("fake clock: debounce emits after quiet period") {
     CHECK(out == std::vector{3});
 }
 
-TEST_CASE("fake clock: timeout closes after inactivity") {
+TEST_CASE("fake-clock:-timeout-closes-after-inactivity") {
     // Tests a 5-second timeout without waiting 5 real seconds.
     RunStats stats;
 
@@ -270,7 +270,7 @@ TEST_CASE("fake clock: timeout closes after inactivity") {
     // Total real time: ~0ms.
 }
 
-TEST_CASE("fake clock: delay shifts values forward in time") {
+TEST_CASE("fake-clock:-delay-shifts-values-forward-in-time") {
     // Tests 1-second delays without waiting.
     RunStats stats;
 
@@ -294,7 +294,7 @@ TEST_CASE("fake clock: delay shifts values forward in time") {
     CHECK(out == std::vector{10, 20, 30});
 }
 
-TEST_CASE("fake clock: throttle rate-limits with tick trigger") {
+TEST_CASE("fake-clock:-throttle-rate-limits-with-tick-trigger") {
     // Tests rate-limiting at "1 per 100ms" without real delays.
     RunStats stats;
 
@@ -325,7 +325,7 @@ TEST_CASE("fake clock: throttle rate-limits with tick trigger") {
     CHECK(out.front() == 1);
 }
 
-TEST_CASE("after with zero duration fires promptly") {
+TEST_CASE("after-with-zero-duration-fires-promptly") {
     RunStats stats;
 
     fake_clock fc;
@@ -341,7 +341,7 @@ TEST_CASE("after with zero duration fires promptly") {
     CHECK(fired);
 }
 
-TEST_CASE("sleep with zero duration returns immediately") {
+TEST_CASE("sleep-with-zero-duration-returns-immediately") {
     RunStats stats;
 
     fake_clock fc;
@@ -356,7 +356,7 @@ TEST_CASE("sleep with zero duration returns immediately") {
     CHECK(completed);
 }
 
-TEST_CASE("sleep_until exact now returns immediately") {
+TEST_CASE("sleep_until-exact-now-returns-immediately") {
     RunStats stats;
 
     fake_clock fc;
@@ -373,7 +373,7 @@ TEST_CASE("sleep_until exact now returns immediately") {
     CHECK(!fc.has_pending());
 }
 
-TEST_CASE("fake_clock with non-default start time") {
+TEST_CASE("fake_clock-with-non-default-start-time") {
     auto epoch = time_point{};
     auto start = epoch + 42s;
     fake_clock fc(start);
@@ -383,7 +383,7 @@ TEST_CASE("fake_clock with non-default start time") {
     CHECK(fc.now() == start + 10s);
 }
 
-TEST_CASE("fake clock: periodic polling with exact timing") {
+TEST_CASE("fake-clock:-periodic-polling-with-exact-timing") {
     // Simulates polling a sensor every 500ms for 2s.
     // With real time: 2s wait. With fake clock: instant.
     RunStats stats;

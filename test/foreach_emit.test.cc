@@ -6,7 +6,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("ForeachEmit - running sum extracted as string") {
+TEST_CASE("ForeachEmit---running-sum-extracted-as-string") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -27,7 +27,7 @@ TEST_CASE("ForeachEmit - running sum extracted as string") {
     CHECK(got == std::vector<std::string>{"1", "3", "6"});
 }
 
-TEST_CASE("ForeachEmit - extract subset of state") {
+TEST_CASE("ForeachEmit---extract-subset-of-state") {
     RunStats stats;
     auto src = chan<int>();
 
@@ -53,7 +53,7 @@ TEST_CASE("ForeachEmit - extract subset of state") {
     CHECK(got[2] == doctest::Approx(20.0));
 }
 
-TEST_CASE("ForeachEmit - empty input") {
+TEST_CASE("ForeachEmit---empty-input") {
     RunStats stats;
     auto src = chan<int>();
 

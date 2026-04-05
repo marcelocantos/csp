@@ -7,7 +7,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("Random - UniformInt") {
+TEST_CASE("Random---UniformInt") {
     RunStats stats;
     csp::run([&] {
         auto r = rand::uniform_int(1, 6).spawn();
@@ -19,7 +19,7 @@ TEST_CASE("Random - UniformInt") {
     });
 }
 
-TEST_CASE("Random - UniformInt seeded") {
+TEST_CASE("Random---UniformInt-seeded") {
     RunStats stats;
     csp::run([&] {
         auto r1 = rand::uniform_int(0, 99, std::mt19937_64{42}).spawn();
@@ -30,7 +30,7 @@ TEST_CASE("Random - UniformInt seeded") {
     });
 }
 
-TEST_CASE("Random - UniformReal") {
+TEST_CASE("Random---UniformReal") {
     RunStats stats;
     csp::run([&] {
         auto r = rand::uniform_real(0.0, 1.0).spawn();
@@ -42,7 +42,7 @@ TEST_CASE("Random - UniformReal") {
     });
 }
 
-TEST_CASE("Random - Bernoulli") {
+TEST_CASE("Random---Bernoulli") {
     RunStats stats;
     int trues = 0;
     csp::run([&] {
@@ -56,7 +56,7 @@ TEST_CASE("Random - Bernoulli") {
     CHECK(trues < 800);
 }
 
-TEST_CASE("Random - Bernoulli extremes") {
+TEST_CASE("Random---Bernoulli-extremes") {
     RunStats stats;
     csp::run([&] {
         auto r0 = rand::bernoulli(0.0).spawn();
@@ -71,7 +71,7 @@ TEST_CASE("Random - Bernoulli extremes") {
     });
 }
 
-TEST_CASE("Random - Normal") {
+TEST_CASE("Random---Normal") {
     RunStats stats;
     double sum = 0;
     int n = 1000;
@@ -87,7 +87,7 @@ TEST_CASE("Random - Normal") {
     CHECK(mean < 110.0);
 }
 
-TEST_CASE("Random - Choice") {
+TEST_CASE("Random---Choice") {
     RunStats stats;
     std::set<int> seen;
     csp::run([&] {
@@ -102,7 +102,7 @@ TEST_CASE("Random - Choice") {
     CHECK(3 == seen.size());
 }
 
-TEST_CASE("Random - Choice container") {
+TEST_CASE("Random---Choice-container") {
     RunStats stats;
     std::vector<std::string> words = {"alpha", "beta", "gamma"};
     std::set<std::string> seen;
@@ -117,7 +117,7 @@ TEST_CASE("Random - Choice container") {
     CHECK(3 == seen.size());
 }
 
-TEST_CASE("Random - Shuffle") {
+TEST_CASE("Random---Shuffle") {
     RunStats stats;
     std::vector<int> got;
     csp::run([&] {
@@ -136,7 +136,7 @@ TEST_CASE("Random - Shuffle") {
     }
 }
 
-TEST_CASE("Random - Shuffle seeded") {
+TEST_CASE("Random---Shuffle-seeded") {
     RunStats stats;
     csp::run([&] {
         auto r1 = (count(1, 11)
@@ -149,7 +149,7 @@ TEST_CASE("Random - Shuffle seeded") {
     });
 }
 
-TEST_CASE("Random - Shuffle small input") {
+TEST_CASE("Random---Shuffle-small-input") {
     RunStats stats;
     std::vector<int> got;
     csp::run([&] {

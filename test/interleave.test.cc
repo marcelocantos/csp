@@ -15,7 +15,7 @@
 // sends (schedule sets wake_pending because reader is suspending). Then
 // drain_suspended finds wake_pending=true, pushes to global. Verify the
 // reader completes with the correct value.
-TEST_CASE("Interleave - DrainSeesWakePending") {
+TEST_CASE("Interleave---DrainSeesWakePending") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -47,7 +47,7 @@ TEST_CASE("Interleave - DrainSeesWakePending") {
 // Spawn a long-running and a short MT. With 2 Ps, work stealing should
 // move the short MT to the other P but not steal the running one.
 // Verify both complete and ran on different OS threads.
-TEST_CASE("Interleave - StealSkipsRunning") {
+TEST_CASE("Interleave---StealSkipsRunning") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -85,7 +85,7 @@ TEST_CASE("Interleave - StealSkipsRunning") {
 // C3. Surplus P wind-down (observational)
 // Stall both initial Ps, forcing the watchdog to add surplus Ps.
 // Verify all work completes and shutdown is clean (no thread leak).
-TEST_CASE("Interleave - SurplusPWindDown") {
+TEST_CASE("Interleave---SurplusPWindDown") {
     using namespace std::chrono_literals;
 
     csp::shutdown_runtime();
@@ -130,7 +130,7 @@ TEST_CASE("Interleave - SurplusPWindDown") {
 // One MT does alt() on 4 channels. Four writer MTs each write to one
 // channel simultaneously. Exactly one writer should win the alt CAS.
 // The other 3 writers complete by sending to additional reader MTs.
-TEST_CASE("Interleave - MultiWakerAltClaim") {
+TEST_CASE("Interleave---MultiWakerAltClaim") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -176,7 +176,7 @@ TEST_CASE("Interleave - MultiWakerAltClaim") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("Interleave - PrialtDeterminism") {
+TEST_CASE("Interleave---PrialtDeterminism") {
     constexpr int ITERS = 200 / SCALE_MEDIUM;
 
     for (int iter = 0; iter < ITERS; ++iter) {
@@ -224,7 +224,7 @@ TEST_CASE("Interleave - PrialtDeterminism") {
 // Stress: repeated drain_suspended under high contention.
 // Many channel pairs with yield between send and receive to maximize
 // scheduling churn and suspending window transitions.
-TEST_CASE("Interleave - DrainStress") {
+TEST_CASE("Interleave---DrainStress") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 

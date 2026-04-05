@@ -5,7 +5,7 @@ using namespace csp::part;
 
 static Logger g_log("fanout.test");
 
-TEST_CASE("Fanout - Simple") {
+TEST_CASE("Fanout---Simple") {
     RunStats stats;
 
     csp::run([&]{
@@ -38,7 +38,7 @@ TEST_CASE("Fanout - Simple") {
     });
 }
 
-TEST_CASE("Fanout - Complex") {
+TEST_CASE("Fanout---Complex") {
     RunStats stats;
 
     struct {
@@ -98,7 +98,7 @@ TEST_CASE("Fanout - Complex") {
     }
 }
 
-TEST_CASE("Fanout - Waves") {
+TEST_CASE("Fanout---Waves") {
     RunStats stats;
 
     struct {
@@ -176,7 +176,7 @@ TEST_CASE("Fanout - Waves") {
     }
 }
 
-TEST_CASE("Fanout - Chain") {
+TEST_CASE("Fanout---Chain") {
     RunStats stats;
     std::atomic<int> total{0};
 

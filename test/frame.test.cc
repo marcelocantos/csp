@@ -6,7 +6,7 @@ using namespace std::chrono_literals;
 
 TEST_SUITE("frame") {
 
-TEST_CASE("batch fills before timeout") {
+TEST_CASE("batch-fills-before-timeout") {
     RunStats stats;
 
     csp::run([&] {
@@ -27,7 +27,7 @@ TEST_CASE("batch fills before timeout") {
     });
 }
 
-TEST_CASE("partial frame flushed on input close") {
+TEST_CASE("partial-frame-flushed-on-input-close") {
     RunStats stats;
 
     csp::run([&] {
@@ -47,7 +47,7 @@ TEST_CASE("partial frame flushed on input close") {
     });
 }
 
-TEST_CASE("timeout flushes partial frame") {
+TEST_CASE("timeout-flushes-partial-frame") {
     RunStats stats;
 
     chan<int> in;
@@ -76,7 +76,7 @@ TEST_CASE("timeout flushes partial frame") {
     CHECK(frames[0] == std::vector<int>{1, 2});
 }
 
-TEST_CASE("empty input") {
+TEST_CASE("empty-input") {
     RunStats stats;
 
     csp::run([&] {

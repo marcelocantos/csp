@@ -4,7 +4,7 @@ using namespace csp;
 
 TEST_SUITE("Closer") {
 
-TEST_CASE("closer wraps reader for death-watch") {
+TEST_CASE("closer-wraps-reader-for-death-watch") {
     RunStats stats;
 
     csp::run([&] {
@@ -28,7 +28,7 @@ TEST_CASE("closer wraps reader for death-watch") {
     });
 }
 
-TEST_CASE("closer wraps writer for death-watch") {
+TEST_CASE("closer-wraps-writer-for-death-watch") {
     RunStats stats;
 
     csp::run([&] {
@@ -47,7 +47,7 @@ TEST_CASE("closer wraps writer for death-watch") {
     });
 }
 
-TEST_CASE("closer from spawn handle") {
+TEST_CASE("closer-from-spawn-handle") {
     RunStats stats;
 
     csp::run([&] {
@@ -65,7 +65,7 @@ TEST_CASE("closer from spawn handle") {
     });
 }
 
-TEST_CASE("dropping closer signals other side") {
+TEST_CASE("dropping-closer-signals-other-side") {
     RunStats stats;
 
     bool writer_saw_death = false;
@@ -88,7 +88,7 @@ TEST_CASE("dropping closer signals other side") {
     CHECK(writer_saw_death);
 }
 
-TEST_CASE("closer endpoint() accessor") {
+TEST_CASE("closer-endpoint()-accessor") {
     RunStats stats;
 
     csp::run([&] {

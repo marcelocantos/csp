@@ -9,7 +9,7 @@ using namespace csp::part;
 
 // --- mux ---
 
-TEST_CASE("Mux - basic two types") {
+TEST_CASE("Mux---basic-two-types") {
     RunStats stats;
 
     using V = std::variant<int, std::string>;
@@ -49,7 +49,7 @@ TEST_CASE("Mux - basic two types") {
     CHECK(got_str);
 }
 
-TEST_CASE("Mux - input death continues") {
+TEST_CASE("Mux---input-death-continues") {
     RunStats stats;
 
     using V = std::variant<int, std::string>;
@@ -81,7 +81,7 @@ TEST_CASE("Mux - input death continues") {
     });
 }
 
-TEST_CASE("Mux - all inputs dead closes output") {
+TEST_CASE("Mux---all-inputs-dead-closes-output") {
     using V = std::variant<int, double>;
 
     csp::run([&] {
@@ -100,7 +100,7 @@ TEST_CASE("Mux - all inputs dead closes output") {
     });
 }
 
-TEST_CASE("Mux - output death stops mux") {
+TEST_CASE("Mux---output-death-stops-mux") {
     csp::run([&] {
         chan<int> ci;
         chan<std::string> cs;
@@ -119,7 +119,7 @@ TEST_CASE("Mux - output death stops mux") {
 
 // --- demux ---
 
-TEST_CASE("Demux - basic two types") {
+TEST_CASE("Demux---basic-two-types") {
     using V = std::variant<int, std::string>;
 
     csp::run([&] {
@@ -146,7 +146,7 @@ TEST_CASE("Demux - basic two types") {
     });
 }
 
-TEST_CASE("Demux - input closes all outputs") {
+TEST_CASE("Demux---input-closes-all-outputs") {
     using V = std::variant<int, double>;
 
     csp::run([&] {
@@ -163,7 +163,7 @@ TEST_CASE("Demux - input closes all outputs") {
     });
 }
 
-TEST_CASE("Demux - output reader drop stops demux") {
+TEST_CASE("Demux---output-reader-drop-stops-demux") {
     using V = std::variant<int, std::string>;
 
     csp::run([&] {
@@ -186,7 +186,7 @@ TEST_CASE("Demux - output reader drop stops demux") {
 
 // --- roundtrip ---
 
-TEST_CASE("Mux/Demux - roundtrip") {
+TEST_CASE("Mux/Demux---roundtrip") {
     RunStats stats;
 
     std::vector<int> ints;

@@ -6,7 +6,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("Collect - back_inserter") {
+TEST_CASE("Collect---back_inserter") {
     RunStats stats;
 
     std::vector<int> result;
@@ -23,7 +23,7 @@ TEST_CASE("Collect - back_inserter") {
     CHECK(30 == result[2]);
 }
 
-TEST_CASE("Collect - raw pointer") {
+TEST_CASE("Collect---raw-pointer") {
     RunStats stats;
 
     int buf[3] = {};
@@ -39,7 +39,7 @@ TEST_CASE("Collect - raw pointer") {
     CHECK(3 == buf[2]);
 }
 
-TEST_CASE("Collect - pipeline") {
+TEST_CASE("Collect---pipeline") {
     RunStats stats;
 
     std::vector<int> result;

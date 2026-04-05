@@ -7,7 +7,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("TryMap - all succeed") {
+TEST_CASE("TryMap---all-succeed") {
     RunStats stats;
     auto src = chan<int>();
     auto err = chan<std::exception_ptr>();
@@ -27,7 +27,7 @@ TEST_CASE("TryMap - all succeed") {
     csp::schedule();
 }
 
-TEST_CASE("TryMap - exceptions to error channel") {
+TEST_CASE("TryMap---exceptions-to-error-channel") {
     RunStats stats;
     auto src = chan<int>();
     auto err = chan<std::exception_ptr>();
@@ -57,7 +57,7 @@ TEST_CASE("TryMap - exceptions to error channel") {
     CHECK(errors == std::vector<std::string>{"negative", "negative"});
 }
 
-TEST_CASE("TryMap - no error channel (exceptions propagate)") {
+TEST_CASE("TryMap---no-error-channel-(exceptions-propagate)") {
     RunStats stats;
     auto src = chan<int>();
     auto out = std::move(src.r) | try_map<int>([](int n) { return n + 1; });
@@ -69,7 +69,7 @@ TEST_CASE("TryMap - no error channel (exceptions propagate)") {
     csp::schedule();
 }
 
-TEST_CASE("TryMap - type-changing transform") {
+TEST_CASE("TryMap---type-changing-transform") {
     RunStats stats;
     auto src = chan<int>();
     auto err = chan<std::exception_ptr>();
@@ -96,7 +96,7 @@ TEST_CASE("TryMap - type-changing transform") {
     CHECK(error_count == 1);
 }
 
-TEST_CASE("TryMap - error channel closed stops processing") {
+TEST_CASE("TryMap---error-channel-closed-stops-processing") {
     RunStats stats;
     auto src = chan<int>();
     auto err = chan<std::exception_ptr>();

@@ -9,7 +9,7 @@ using namespace std::chrono_literals;
 
 TEST_SUITE("Pace") {
 
-TEST_CASE("Pace - all values pass through") {
+TEST_CASE("Pace---all-values-pass-through") {
     fake_clock fc;
 
     std::vector<int> got;
@@ -28,7 +28,7 @@ TEST_CASE("Pace - all values pass through") {
     CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
-TEST_CASE("Pace - enforces minimum interval") {
+TEST_CASE("Pace---enforces-minimum-interval") {
     fake_clock fc;
 
     std::vector<int> got;
@@ -59,7 +59,7 @@ TEST_CASE("Pace - enforces minimum interval") {
     CHECK(last_time - first_time >= 80ms);
 }
 
-TEST_CASE("Pace - first value passes immediately") {
+TEST_CASE("Pace---first-value-passes-immediately") {
     fake_clock fc;
 
     int got = 0;
@@ -80,7 +80,7 @@ TEST_CASE("Pace - first value passes immediately") {
     CHECK(42 == got);
 }
 
-TEST_CASE("Pace - output death stops") {
+TEST_CASE("Pace---output-death-stops") {
     fake_clock fc;
 
     csp::run([&] {
@@ -97,7 +97,7 @@ TEST_CASE("Pace - output death stops") {
     });
 }
 
-TEST_CASE("Pace - pipe composition") {
+TEST_CASE("Pace---pipe-composition") {
     fake_clock fc;
 
     std::vector<int> got;
@@ -112,7 +112,7 @@ TEST_CASE("Pace - pipe composition") {
     CHECK(std::vector<int>({1, 2, 3}) == got);
 }
 
-TEST_CASE("Pace - trigger death stops") {
+TEST_CASE("Pace---trigger-death-stops") {
     RunStats stats;
 
     auto [tw, tr] = chan<>{};

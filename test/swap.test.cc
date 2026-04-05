@@ -12,12 +12,12 @@ using namespace csp;
 
 TEST_SUITE("swap") {
 
-TEST_CASE("baseline channel count") {
+TEST_CASE("baseline-channel-count") {
     MESSAGE("wr=" << csp::internal::channel_count(0)
             << " rd=" << csp::internal::channel_count(1));
 }
 
-TEST_CASE("swap writers - basic data transfer") {
+TEST_CASE("swap-writers---basic-data-transfer") {
     int va = 0, vb = 0;
     csp::run([&] {
         chan<int> a;
@@ -33,7 +33,7 @@ TEST_CASE("swap writers - basic data transfer") {
     CHECK(99 == vb);
 }
 
-TEST_CASE("swap writers - redirects data") {
+TEST_CASE("swap-writers---redirects-data") {
     int va = 0, vb = 0;
     csp::run([&] {
         chan<int> a;
@@ -51,7 +51,7 @@ TEST_CASE("swap writers - redirects data") {
     CHECK(42 == vb);
 }
 
-TEST_CASE("swap readers - redirects data") {
+TEST_CASE("swap-readers---redirects-data") {
     int va = 0, vb = 0;
     csp::run([&] {
         chan<int> a;
@@ -69,7 +69,7 @@ TEST_CASE("swap readers - redirects data") {
     CHECK(42 == vb);
 }
 
-TEST_CASE("swap with copies - all copies see redirection") {
+TEST_CASE("swap-with-copies---all-copies-see-redirection") {
     int va = 0, vb = 0;
     csp::run([&] {
         chan<int> a;
@@ -93,7 +93,7 @@ TEST_CASE("swap with copies - all copies see redirection") {
     CHECK(10 == vb);
 }
 
-TEST_CASE("swap self is no-op") {
+TEST_CASE("swap-self-is-no-op") {
     int v = 0;
     csp::run([&] {
         chan<int> a;
@@ -106,7 +106,7 @@ TEST_CASE("swap self is no-op") {
     CHECK(7 == v);
 }
 
-TEST_CASE("double swap restores original") {
+TEST_CASE("double-swap-restores-original") {
     int va = 0, vb = 0;
     csp::run([&] {
         chan<int> a;
@@ -125,7 +125,7 @@ TEST_CASE("double swap restores original") {
     CHECK(99 == vb);
 }
 
-TEST_CASE("swap death detection - writer dies on swapped channel") {
+TEST_CASE("swap-death-detection---writer-dies-on-swapped-channel") {
     bool b_r_dead = false;
     int a_r_val = 0;
     csp::run([&] {
@@ -146,7 +146,7 @@ TEST_CASE("swap death detection - writer dies on swapped channel") {
     CHECK(55 == a_r_val);
 }
 
-TEST_CASE("swap during blocked read - waiter retries") {
+TEST_CASE("swap-during-blocked-read---waiter-retries") {
     bool got_value = false;
     int result = 0;
 
@@ -177,7 +177,7 @@ TEST_CASE("swap during blocked read - waiter retries") {
     CHECK(77 == result);
 }
 
-TEST_CASE("swap three-way rotation") {
+TEST_CASE("swap-three-way-rotation") {
     int va = 0, vb = 0, vc = 0;
     csp::run([&] {
         chan<int> a;
@@ -200,7 +200,7 @@ TEST_CASE("swap three-way rotation") {
     CHECK(2 == vc);
 }
 
-TEST_CASE("swap refcounts preserved") {
+TEST_CASE("swap-refcounts-preserved") {
     int wr_before = csp::internal::channel_count(0);
     int rd_before = csp::internal::channel_count(1);
     {
@@ -212,7 +212,7 @@ TEST_CASE("swap refcounts preserved") {
     CHECK(rd_before == csp::internal::channel_count(1));
 }
 
-TEST_CASE("swap refcounts with copies preserved") {
+TEST_CASE("swap-refcounts-with-copies-preserved") {
     int wr_before = csp::internal::channel_count(0);
     int rd_before = csp::internal::channel_count(1);
     {
@@ -225,7 +225,7 @@ TEST_CASE("swap refcounts with copies preserved") {
     CHECK(rd_before == csp::internal::channel_count(1));
 }
 
-TEST_CASE("basic swap suite channel leak check") {
+TEST_CASE("basic-swap-suite-channel-leak-check") {
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
@@ -238,7 +238,7 @@ TEST_CASE("basic swap suite channel leak check") {
 
 TEST_SUITE("swap MN") {
 
-TEST_CASE("MN Swap - concurrent data flow") {
+TEST_CASE("MN-Swap---concurrent-data-flow") {
     // Swap writers while data is actively flowing through both channels.
     // Verify no data is lost or duplicated.
     csp::shutdown_runtime();
@@ -289,7 +289,7 @@ TEST_CASE("MN Swap - concurrent data flow") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Swap - swap during blocked alt") {
+TEST_CASE("MN-Swap---swap-during-blocked-alt") {
     // Imps blocked in alt on one channel get woken by swap and retry
     // successfully on the new channel.
     csp::shutdown_runtime();
@@ -334,7 +334,7 @@ TEST_CASE("MN Swap - swap during blocked alt") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Swap - swap racing with endpoint death") {
+TEST_CASE("MN-Swap---swap-racing-with-endpoint-death") {
     // Swap and endpoint close happen concurrently. Verify no crash or leak.
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
@@ -381,7 +381,7 @@ TEST_CASE("MN Swap - swap racing with endpoint death") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Swap - rapid repeated swaps") {
+TEST_CASE("MN-Swap---rapid-repeated-swaps") {
     // Rapidly swap writers back and forth many times, then verify
     // data goes to the correct final destination.
     csp::shutdown_runtime();
@@ -425,7 +425,7 @@ TEST_CASE("MN Swap - rapid repeated swaps") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Swap - multi-channel swap storm") {
+TEST_CASE("MN-Swap---multi-channel-swap-storm") {
     // Many channels swapping concurrently. Exercises lock ordering
     // and the bijection invariant under contention.
     csp::shutdown_runtime();
@@ -488,7 +488,7 @@ TEST_CASE("MN Swap - multi-channel swap storm") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Swap - swap with shared copies across threads") {
+TEST_CASE("MN-Swap---swap-with-shared-copies-across-threads") {
     // Multiple imps hold copies of the same writer. Swap redirects the
     // slot; all copies (on different OS threads) should see the new channel.
     csp::shutdown_runtime();
@@ -534,7 +534,7 @@ TEST_CASE("MN Swap - swap with shared copies across threads") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Stress - swap during pipeline") {
+TEST_CASE("MN-Stress---swap-during-pipeline") {
     // A pipeline where the middle link gets swapped to a different channel.
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
@@ -591,7 +591,7 @@ TEST_CASE("MN Stress - swap during pipeline") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Stress - swap lifecycle") {
+TEST_CASE("MN-Stress---swap-lifecycle") {
     // Repeated init/shutdown cycles with swaps to surface cleanup races.
     constexpr int CYCLES = 50 / SCALE_MEDIUM;
     constexpr int PAIRS = 50 / SCALE_LIGHT;
@@ -636,7 +636,7 @@ TEST_CASE("MN Stress - swap lifecycle") {
 
 TEST_SUITE("fuse") {
 
-TEST_CASE("pipe operator - basic data transfer") {
+TEST_CASE("pipe-operator---basic-data-transfer") {
     int val = 0;
     bool a_r_dead = false, b_w_dead = false;
     csp::run([&] {
@@ -658,7 +658,7 @@ TEST_CASE("pipe operator - basic data transfer") {
     CHECK(b_w_dead);
 }
 
-TEST_CASE("fuse - basic data transfer") {
+TEST_CASE("fuse---basic-data-transfer") {
     int val = 0;
     bool a_r_dead = false, b_w_dead = false;
     csp::run([&] {
@@ -685,7 +685,7 @@ TEST_CASE("fuse - basic data transfer") {
     CHECK(b_w_dead);
 }
 
-TEST_CASE("fuse - death propagation") {
+TEST_CASE("fuse---death-propagation") {
     bool a_r_dead = false, b_w_dead = false;
     csp::run([&] {
         chan<int> a;
@@ -704,7 +704,7 @@ TEST_CASE("fuse - death propagation") {
     CHECK(b_w_dead);
 }
 
-TEST_CASE("fuse - copies follow redirection") {
+TEST_CASE("fuse---copies-follow-redirection") {
     int val = 0;
     csp::run([&] {
         chan<int> a;
@@ -723,7 +723,7 @@ TEST_CASE("fuse - copies follow redirection") {
     CHECK(77 == val);
 }
 
-TEST_CASE("4-arg swap - split") {
+TEST_CASE("4-arg-swap---split") {
     // Split: swap(w, move(a.r), move(b.w), r) breaks one channel into two.
     // After: orig.w → b's channel, orig.r → a's channel.
     // The consumed a.r and b.w die on return, killing orig's channel.
@@ -750,7 +750,7 @@ TEST_CASE("4-arg swap - split") {
     CHECK(99 == orig_val);
 }
 
-TEST_CASE("fuse while reader is blocked") {
+TEST_CASE("fuse-while-reader-is-blocked") {
     bool got_value = false;
     int result = 0;
 
@@ -785,7 +785,7 @@ TEST_CASE("fuse while reader is blocked") {
     CHECK(77 == result);
 }
 
-TEST_CASE("split while reader is blocked") {
+TEST_CASE("split-while-reader-is-blocked") {
     bool got_value = false;
     int result = 0;
 
@@ -821,7 +821,7 @@ TEST_CASE("split while reader is blocked") {
     CHECK(88 == result);
 }
 
-TEST_CASE("fuse - channel leak check") {
+TEST_CASE("fuse---channel-leak-check") {
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
@@ -830,7 +830,7 @@ TEST_CASE("fuse - channel leak check") {
 
 TEST_SUITE("fuse MN") {
 
-TEST_CASE("MN Fuse - basic pipeline") {
+TEST_CASE("MN-Fuse---basic-pipeline") {
     // Fuse a.w onto b.r, then send data through the fused path.
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
@@ -867,7 +867,7 @@ TEST_CASE("MN Fuse - basic pipeline") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Fuse - repeated fuse") {
+TEST_CASE("MN-Fuse---repeated-fuse") {
     // Many concurrent fuse operations under M:N threading.
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
@@ -900,7 +900,7 @@ TEST_CASE("MN Fuse - repeated fuse") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Fuse - racing with endpoint death") {
+TEST_CASE("MN-Fuse---racing-with-endpoint-death") {
     // Fuse and endpoint death happen concurrently.
     // Exercises the alive_ pinning logic.
     csp::shutdown_runtime();
@@ -944,7 +944,7 @@ TEST_CASE("MN Fuse - racing with endpoint death") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Fuse - fuse while reader is blocked") {
+TEST_CASE("MN-Fuse---fuse-while-reader-is-blocked") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -985,7 +985,7 @@ TEST_CASE("MN Fuse - fuse while reader is blocked") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Split - split while reader is blocked") {
+TEST_CASE("MN-Split---split-while-reader-is-blocked") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -1035,7 +1035,7 @@ TEST_CASE("MN Split - split while reader is blocked") {
 
 TEST_SUITE("tap") {
 
-TEST_CASE("tap - basic observation") {
+TEST_CASE("tap---basic-observation") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1060,7 +1060,7 @@ TEST_CASE("tap - basic observation") {
     });
 }
 
-TEST_CASE("tap - data reaches original reader") {
+TEST_CASE("tap---data-reaches-original-reader") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1080,7 +1080,7 @@ TEST_CASE("tap - data reaches original reader") {
     });
 }
 
-TEST_CASE("tap - auto-fuse on reader destruction") {
+TEST_CASE("tap---auto-fuse-on-reader-destruction") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1098,7 +1098,7 @@ TEST_CASE("tap - auto-fuse on reader destruction") {
     });
 }
 
-TEST_CASE("tap - copies follow redirection") {
+TEST_CASE("tap---copies-follow-redirection") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1120,7 +1120,7 @@ TEST_CASE("tap - copies follow redirection") {
     });
 }
 
-TEST_CASE("tap - death propagation after untap") {
+TEST_CASE("tap---death-propagation-after-untap") {
     bool ch_r_dead = false;
     csp::run([&] {
         chan<int> ch;
@@ -1140,7 +1140,7 @@ TEST_CASE("tap - death propagation after untap") {
     CHECK(ch_r_dead);
 }
 
-TEST_CASE("tap - channel leak check") {
+TEST_CASE("tap---channel-leak-check") {
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
@@ -1149,7 +1149,7 @@ TEST_CASE("tap - channel leak check") {
 
 TEST_SUITE("tap MN") {
 
-TEST_CASE("MN Tap - observe pipeline") {
+TEST_CASE("MN-Tap---observe-pipeline") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -1189,7 +1189,7 @@ TEST_CASE("MN Tap - observe pipeline") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Tap - auto-fuse restores direct path") {
+TEST_CASE("MN-Tap---auto-fuse-restores-direct-path") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -1222,7 +1222,7 @@ TEST_CASE("MN Tap - auto-fuse restores direct path") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Tap - splice mid-flight") {
+TEST_CASE("MN-Tap---splice-mid-flight") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -1282,7 +1282,7 @@ TEST_CASE("MN Tap - splice mid-flight") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Tap - remove mid-flight") {
+TEST_CASE("MN-Tap---remove-mid-flight") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -1333,7 +1333,7 @@ TEST_CASE("MN Tap - remove mid-flight") {
 
 TEST_SUITE("splice") {
 
-TEST_CASE("splice - basic forwarding") {
+TEST_CASE("splice---basic-forwarding") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1356,7 +1356,7 @@ TEST_CASE("splice - basic forwarding") {
     });
 }
 
-TEST_CASE("splice - filter transforms values") {
+TEST_CASE("splice---filter-transforms-values") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1379,7 +1379,7 @@ TEST_CASE("splice - filter transforms values") {
     });
 }
 
-TEST_CASE("splice - filter drops values") {
+TEST_CASE("splice---filter-drops-values") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1402,7 +1402,7 @@ TEST_CASE("splice - filter drops values") {
     });
 }
 
-TEST_CASE("splice - auto-fuse on filter return") {
+TEST_CASE("splice---auto-fuse-on-filter-return") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1435,7 +1435,7 @@ TEST_CASE("splice - auto-fuse on filter return") {
     });
 }
 
-TEST_CASE("splice - auto-fuse on upstream death") {
+TEST_CASE("splice---auto-fuse-on-upstream-death") {
     bool dead = false;
     csp::run([&] {
         chan<int> ch;
@@ -1462,7 +1462,7 @@ TEST_CASE("splice - auto-fuse on upstream death") {
     CHECK(dead);
 }
 
-TEST_CASE("splice - auto-fuse on downstream death") {
+TEST_CASE("splice---auto-fuse-on-downstream-death") {
     csp::run([&] {
         chan<int> ch;
 
@@ -1482,7 +1482,7 @@ TEST_CASE("splice - auto-fuse on downstream death") {
     });
 }
 
-TEST_CASE("splice - channel leak check") {
+TEST_CASE("splice---channel-leak-check") {
     CHECK(0 == csp::internal::channel_count(0));
     CHECK(0 == csp::internal::channel_count(1));
 }
@@ -1495,7 +1495,7 @@ TEST_CASE("splice - channel leak check") {
 
 TEST_SUITE("splice MN") {
 
-TEST_CASE("MN Splice - data integrity") {
+TEST_CASE("MN-Splice---data-integrity") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -1529,7 +1529,7 @@ TEST_CASE("MN Splice - data integrity") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Splice - filter exits mid-stream") {
+TEST_CASE("MN-Splice---filter-exits-mid-stream") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 
@@ -1568,7 +1568,7 @@ TEST_CASE("MN Splice - filter exits mid-stream") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("MN Splice - splice mid-flight") {
+TEST_CASE("MN-Splice---splice-mid-flight") {
     csp::shutdown_runtime();
     csp::set_maxprocs(4);
 

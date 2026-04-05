@@ -5,7 +5,7 @@
 using namespace csp;
 using namespace csp::part;
 
-TEST_CASE("Fallback - first reader produces") {
+TEST_CASE("Fallback---first-reader-produces") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -27,7 +27,7 @@ TEST_CASE("Fallback - first reader produces") {
     CHECK(got == std::vector<int>{1, 2});
 }
 
-TEST_CASE("Fallback - first empty, second produces") {
+TEST_CASE("Fallback---first-empty,-second-produces") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -49,7 +49,7 @@ TEST_CASE("Fallback - first empty, second produces") {
     CHECK(got == std::vector<int>{10, 20});
 }
 
-TEST_CASE("Fallback - all empty") {
+TEST_CASE("Fallback---all-empty") {
     RunStats stats;
     auto a = chan<int>();
     auto b = chan<int>();
@@ -71,7 +71,7 @@ TEST_CASE("Fallback - all empty") {
     CHECK(got.empty());
 }
 
-TEST_CASE("Fallback - single reader") {
+TEST_CASE("Fallback---single-reader") {
     RunStats stats;
     auto a = chan<int>();
 

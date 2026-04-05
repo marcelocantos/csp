@@ -36,7 +36,7 @@ static csp::transfer_t jmpf(csp::fcontext_t ctx, std::function<void()> & f) {
 //----------------------------------------------------------------
 // Basic
 
-TEST_CASE("Context - Basic") {
+TEST_CASE("Context---Basic") {
     stack_allocator alloc;
     bool ran = false;
 
@@ -55,7 +55,7 @@ TEST_CASE("Context - Basic") {
 //----------------------------------------------------------------
 // StdFunction
 
-TEST_CASE("Context - StdFunction") {
+TEST_CASE("Context---StdFunction") {
     stack_allocator alloc;
     bool ran_f1 = false;
 
@@ -74,7 +74,7 @@ TEST_CASE("Context - StdFunction") {
 //----------------------------------------------------------------
 // AutoReturn
 
-TEST_CASE("Context - AutoReturn") {
+TEST_CASE("Context---AutoReturn") {
     stack_allocator alloc;
     bool ran_f1 = false;
 
@@ -95,7 +95,7 @@ TEST_CASE("Context - AutoReturn") {
 //----------------------------------------------------------------
 // PingPong
 
-TEST_CASE("Context - PingPong") {
+TEST_CASE("Context---PingPong") {
     stack_allocator alloc;
     csp::fcontext_t ping, pong;
 

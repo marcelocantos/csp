@@ -9,7 +9,7 @@ using namespace csp::part;
 
 TEST_SUITE("ParallelMap") {
 
-TEST_CASE("Unordered - all values processed") {
+TEST_CASE("Unordered---all-values-processed") {
     RunStats stats;
 
     auto r = count(1, 6).spawn()
@@ -26,7 +26,7 @@ TEST_CASE("Unordered - all values processed") {
     CHECK(std::vector<int>({10, 20, 30, 40, 50}) == got);
 }
 
-TEST_CASE("Ordered - preserves input order") {
+TEST_CASE("Ordered---preserves-input-order") {
     RunStats stats;
 
     auto r = count(1, 6).spawn()
@@ -42,7 +42,7 @@ TEST_CASE("Ordered - preserves input order") {
     CHECK(std::vector<int>({10, 20, 30, 40, 50}) == got);
 }
 
-TEST_CASE("Ordered - type-changing transform") {
+TEST_CASE("Ordered---type-changing-transform") {
     RunStats stats;
 
     auto r = count(1, 4).spawn()
@@ -60,7 +60,7 @@ TEST_CASE("Ordered - type-changing transform") {
     CHECK(std::vector<std::string>({"1", "2", "3"}) == got);
 }
 
-TEST_CASE("Ordered - variable-cost work stays in order") {
+TEST_CASE("Ordered---variable-cost-work-stays-in-order") {
     RunStats stats;
 
     // Reverse sleep: item 1 takes longest, item 5 shortest.
@@ -83,7 +83,7 @@ TEST_CASE("Ordered - variable-cost work stays in order") {
     CHECK(std::vector<int>({1, 2, 3, 4, 5}) == got);
 }
 
-TEST_CASE("Output death stops workers") {
+TEST_CASE("Output-death-stops-workers") {
     RunStats stats;
 
     auto r = count_forever(1).spawn()
@@ -100,7 +100,7 @@ TEST_CASE("Output death stops workers") {
     csp::schedule();
 }
 
-TEST_CASE("Single worker") {
+TEST_CASE("Single-worker") {
     RunStats stats;
 
     auto r = count(1, 4).spawn()

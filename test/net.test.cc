@@ -6,7 +6,7 @@ using namespace csp;
 
 TEST_SUITE("net") {
 
-TEST_CASE("listen and dial - basic echo") {
+TEST_CASE("listen-and-dial---basic-echo") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
@@ -50,7 +50,7 @@ TEST_CASE("listen and dial - basic echo") {
     csp::shutdown_runtime();
 }
 
-TEST_CASE("dial - connection refused") {
+TEST_CASE("dial---connection-refused") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 

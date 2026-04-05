@@ -5,7 +5,7 @@ using namespace csp::part;
 
 TEST_SUITE("diff") {
 
-TEST_CASE("basic differences") {
+TEST_CASE("basic-differences") {
     RunStats stats;
 
     csp::run([&] {
@@ -22,7 +22,7 @@ TEST_CASE("basic differences") {
     });
 }
 
-TEST_CASE("single element - no output") {
+TEST_CASE("single-element---no-output") {
     RunStats stats;
 
     csp::run([&] {
@@ -37,7 +37,7 @@ TEST_CASE("single element - no output") {
     });
 }
 
-TEST_CASE("empty input") {
+TEST_CASE("empty-input") {
     RunStats stats;
 
     csp::run([&] {
@@ -47,7 +47,7 @@ TEST_CASE("empty input") {
     });
 }
 
-TEST_CASE("constant input - all zeros") {
+TEST_CASE("constant-input---all-zeros") {
     RunStats stats;
 
     csp::run([&] {
@@ -64,7 +64,7 @@ TEST_CASE("constant input - all zeros") {
     });
 }
 
-TEST_CASE("difference triangle") {
+TEST_CASE("difference-triangle") {
     RunStats stats;
 
     // Pascal's triangle row: 1 4 6 4 1
