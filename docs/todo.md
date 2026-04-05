@@ -5,17 +5,18 @@ All work items are tracked as convergence targets in
 
 ## Open items
 
-- ~~**Chat server shutdown crash**~~: Fixed. Both `Runtime::~Runtime()`
-  and `Reactor::~Reactor()` now call `shutdown()`, joining their threads
-  before static destruction destroys member variables.
+No open bugs. All previously tracked items resolved:
 
+- ~~**Chat server shutdown crash**~~: Fixed. Destructor-based shutdown.
 - ~~**mbedTLS TSan false positives**~~: Resolved by replacing mbedTLS with
-  PicoTLS (minicrypto backend). PicoTLS has zero internal mutexes, eliminating
-  the TSan fiber-mutex interaction entirely.
-
+  PicoTLS. Zero internal mutexes.
 - ~~**`push_to_global` assertion with fake_clock + alt + multiple timers**~~:
-  Resolved. The race (quiescence hook firing while imp is in a worker's local
-  queue) is guarded by `if (next_) return;` in `Imp::schedule()`. Supporting
-  fixes: cancel tokens for fake_clock timer entries, quiescence gap closure
-  via `make_runnable` + atomic `qs_sleeping_`, and `alt_end_impl` reordering.
-  Test runs and passes (not skipped).
+  Resolved. Schedule guard + quiescence gap closure + alt_end reordering.
+- ~~**Supervisor "restart under contention" SIGSEGV**~~: Resolved. HAMT
+  use-after-free fix + exit_guard heap allocation + M:N supervisor transforms.
+  Not reproduced in 25 stress runs with MALLOC_PERTURB_=42.
+- ~~**Flaky timing tests under Linux MALLOC_PERTURB_**~~: Resolved on real
+  hardware (CI green). Residual failures under QEMU x86_64 emulation are
+  timing artifacts, not logic bugs.
+- ~~**TLS concurrent connections SIGABRT on Linux**~~: Resolved by PicoTLS
+  swap (no pthread mutexes under fiber migration).

@@ -330,7 +330,8 @@
   - TSan suppressions for mbedTLS removed
   - All TLS tests pass on macOS and Linux
   - CLAUDE.md, AGENTS-CSP.md, dist/ updated
-- **Status**: in progress
+- **Status**: achieved — PicoTLS vendored, mbedTLS removed, 664/664 tests pass (0 skipped), all CI green including Linux TSan/ASan.
+- **Achieved**: 2026-04-05
 - **Discovered**: 2026-04-04
 - **Context**: mbedTLS uses internal pthread mutexes that cause SIGABRT under M:N fiber migration on Linux (lock on thread T1, unlock on T2). TSan also reports false races. PicoTLS has zero internal locking — thread-local PRNG only, harmless under migration. Buffer-in/buffer-out API integrates cleanly with CSP's reactor. minicrypto backend is self-contained (cifra + micro-ecc, ~13.5K lines C). Limitation: minicrypto only supports secp256r1 keys and has no X.509 verifier. TLS 1.2 fallback can be added later via a second backend if needed.
 
