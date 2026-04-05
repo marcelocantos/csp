@@ -49,7 +49,7 @@ Additionally, the tests lacked `shutdown_runtime()` / `set_maxprocs()`
 calls. Without these, the first `spawn()` triggers runtime init with
 hardware concurrency. But the `RunStats` exception handler imp was
 already in the system, and in single-P mode (when hardware_concurrency
-resolved to 1 in some configurations), the `default_scheduler_impl`
+resolved to 1 in some configurations), the `main_loop_scheduler`
 deadlock detection would fire prematurely — before `io::resolve()`
 (which uses the blocking pool) could complete.
 
@@ -81,7 +81,7 @@ pointed to a context-switch issue. In reality:
    imps.
 
 2. **Single-P deadlock detection vs blocking pool**: The
-   `default_scheduler_impl` deadlock check (`!has_pending_signals &&
+   `main_loop_scheduler` deadlock check (`!has_pending_signals &&
    !has_global_work`) doesn't account for outstanding blocking pool
    work. An imp suspended in `csp::blocking()` has no reactor signal
    and no global work yet — the blocking pool thread hasn't finished.

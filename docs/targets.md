@@ -314,9 +314,9 @@
   - `fake_clock` reworked to detect quiescence without cooperative `run()` loop
   - All 665+ tests pass
   - `default_scheduler_impl` deleted; scheduler always uses `main_loop()`
-- **Status**: close — PR #18 merged (v0.6.0). All major criteria met: mn_mode_ removed, await_completion() exists, use_run gone, daemon imps, fake_clock quiescence rework done (no fc.run() in tests). Residual: `default_scheduler_impl` function name still in csp.cc (cosmetic — it calls main_loop()).
+- **Status**: achieved (2026-04-05) — PR #18 merged (v0.6.0). All criteria met: mn_mode_ removed, await_completion() exists, use_run gone, daemon imps, fake_clock quiescence rework done, `default_scheduler_impl` renamed to `main_loop_scheduler`.
 - **Discovered**: 2026-03-29
-- **Context**: M:N scheduler complete. `quiescence_scope` implemented for deterministic testing (scoped, inheritable via Imp::qs_). fake_clock thread-safe (mutex on pending_). fake_clock auto-advance via main_loop quiescence hook done. `default_scheduler_impl` is the only remaining acceptance gap — it's internal plumbing that always calls `main_loop()`, so the name is misleading but the behavior is correct.
+- **Context**: M:N scheduler complete. `quiescence_scope` implemented for deterministic testing (scoped, inheritable via Imp::qs_). fake_clock thread-safe (mutex on pending_). fake_clock auto-advance via main_loop quiescence hook done.
 
 ### 🎯T15 TLS uses PicoTLS instead of mbedTLS
 - **Weight**: 3 (value 5 / cost 3)
