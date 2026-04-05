@@ -266,20 +266,14 @@
 - **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
 
-### 🎯T14 Dynamic scoping uses chained stack arrays instead of HAMT
-- **Weight**: 2 (value 5 / cost 3)
-- **Acceptance**:
-  - HAMT (hamt.cc, hamt.h) removed entirely
-  - `csp::local` embeds entries inline (compile-time sized member array from parameter pack)
-  - Each `local` node has a parent pointer forming a chain; lookup walks the chain
-  - Spawn coalesces the chain into a single flat array owned by the child (one heap allocation per spawn, zero sharing)
-  - No refcounting, no pointer tagging, no atomic ops on the dynamic scope path
-  - Zero heap allocation on bind/unbind — node lives in the `local` object on the imp's fcontext stack
-  - All existing `dynamic<T>` tests pass
-  - ASan clean (no use-after-free possible — ownership is unambiguous)
-- **Status**: not started
+### 🎯T14 Dynamic scoping improvements
+- **Weight**: 0.5 (value 3 / cost 6)
+- **Status**: parked (2026-04-05)
 - **Discovered**: 2026-04-04
-- **Context**: HAMT (231 lines) is over-engineered for 3-5 dynamic variables. It introduces refcount lifecycle bugs (paper 9 use-after-free in `start()`, cross-imp HAMT corruption via shared `cancel_guard`). Chained stack arrays eliminate the entire bug class: each `csp::local` is a node on the imp's stack, lookup is a short chain walk (2-3 deep), and spawn-time coalescing gives children O(1) lookup with zero shared ownership. The `local` object IS the node — template pack gives compile-time entry count, so entries are an inline member array. No alloca needed.
+- **Context**: HAMT (231 lines) works and the paper-09 bugs are fixed. Not a
+  current bottleneck. Several alternative designs were explored and parked —
+  see `docs/papers/18-dynamic-scope-alternatives.md` for the full analysis.
+  Revisit if profiling points here or if the HAMT causes new issues.
 
 ### 🎯T13 Per-worker wake eliminates thundering herd
 - **Weight**: 1 (value 3 / cost 8)

@@ -86,3 +86,13 @@ debugging of the CSP imp-based concurrency library.
     migrate between OS threads while holding mbedTLS mutexes, TSan
     reports false races. Root cause, investigation timeline, and
     implications for M:N schedulers.
+
+17. **[net::listen Lifecycle and Shutdown](17-net-listen-lifecycle.md)**
+    — Investigation of the net::listen accept loop lifecycle, stopper
+    pattern, and fcontext terminate interaction with the M:N scheduler.
+
+18. **[Dynamic Scope Alternatives to HAMT](18-dynamic-scope-alternatives.md)**
+    — Exploration of alternative designs for dynamic scoping: chained
+    stack arrays, segment lists, garbage collection with opaque handles,
+    and flat root optimisation. All parked — the HAMT works and isn't a
+    bottleneck.
