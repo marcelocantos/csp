@@ -13,10 +13,9 @@ All work items are tracked as convergence targets in
   PicoTLS (minicrypto backend). PicoTLS has zero internal mutexes, eliminating
   the TSan fiber-mutex interaction entirely.
 
-- **`push_to_global` assertion with fake_clock + alt + multiple timers**:
-  "Timer - MultipleTimersOrdering" crashes ~50% of the time under `csp::run`
-  with `Assertion failed: (!imp->next_), function push_to_global, file
-  runtime.cpp, line 133`. The test creates two `after` timers and uses `alt`
-  to select the faster one. The quiescence-driven `advance_to_next` appears
-  to trigger a race in imp scheduling. Test is currently skipped with
-  `doctest::skip()` in `test/timer.test.cc`.
+- ~~**`push_to_global` assertion with fake_clock + alt + multiple timers**~~:
+  Resolved. The race (quiescence hook firing while imp is in a worker's local
+  queue) is guarded by `if (next_) return;` in `Imp::schedule()`. Supporting
+  fixes: cancel tokens for fake_clock timer entries, quiescence gap closure
+  via `make_runnable` + atomic `qs_sleeping_`, and `alt_end_impl` reordering.
+  Test runs and passes (not skipped).

@@ -90,9 +90,6 @@ TEST_CASE("Timer - TickCancellation") {
 }
 
 TEST_CASE("Timer - MultipleTimersOrdering") {
-    // TODO: Flaky crash in push_to_global assertion (!imp->next_) when
-    // csp::run + fake_clock + alt with two timers. Pre-existing runtime
-    // race exposed by quiescence-driven fake_clock advancement.
     RunStats stats;
     fake_clock fc;
 
