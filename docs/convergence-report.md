@@ -2,110 +2,104 @@
 
 **Generated**: 2026-04-05
 **Branch**: master
-**SHA**: 4a6ddd6
+**SHA**: e37e19d
 
 ## Standing invariants
 
-- Tests: 664/664 passed (per T15 status; local not re-run this evaluation).
-- CI: **in progress** — v0.6.0 release push running. Prior merge commit (c0b4c2f) failed on macOS test + Linux TSan (build/dist binary not found — CI config issue, not test failure). Monitoring.
+- Tests: 664/664 passed (local not re-run this evaluation).
+- CI: **FAILING** — macOS ASan+UBSan job fails with UBSan error in vendored PicoTLS (`picotls.c:6041:54: runtime error: applying zero offset to null pointer`). All other 9/10 jobs pass (including Linux ASan+UBSan, both TSan jobs, Windows, TLA+). This is a UBSan false positive in third-party code, not a CSP bug.
 
 ## Movement
 
-- 🎯T11: in progress → close (PR #18 merged, fake_clock quiescence done; residual: `default_scheduler_impl` name)
-- 🎯T15: (new) → achieved (PicoTLS vendored, mbedTLS removed, 664/664, all CI green)
-- 🎯T14: (new) → not started
-- 🎯T12: (unchanged) not started
+- 🎯T12: not started → **achieved** (bd8c086, all test names use hyphens)
+- 🎯T11: close → **achieved** (`default_scheduler_impl` renamed to `main_loop_scheduler`, b3c024b)
+- 🎯T14: not started → **parked** (paper 18 documents alternatives, HAMT works and is not a bottleneck)
+- 🎯T15: (unchanged) achieved
 - 🎯T7: (unchanged) achieved
 - 🎯T3: (unchanged) not started
 - 🎯T13: (unchanged) not started
 
 ## Gap report
 
-### 🎯T12 Test names contain no spaces  [weight 2.0]
+### 🎯T3.1 Ergonomic I/O wrappers exist  [weight 1.6]
 Gap: not started
-667 TEST_CASE names still contain spaces across test/*.test.cc. No progress since last report.
+No `fd_t` type, no `net::listen`/`net::dial`, no `io::lines`/`read_all`/`write_all`. Foundation for all networking targets.
 
-### 🎯T14 Dynamic scoping uses chained stack arrays instead of HAMT  [weight 1.7]
+### 🎯T3.2 Channel-native HTTP/1.1 server works  [weight 1.6]
 Gap: not started
-HAMT code still present. No work begun on chained stack array replacement.
+No llhttp vendored, no `http::serve`. Depends on 🎯T3.1.
 
-### 🎯T15 TLS uses PicoTLS instead of mbedTLS  [weight 1.7]
-Gap: achieved
-PicoTLS vendored at vendor/github.com/h2o/picotls/. mbedTLS submodule removed. TSan suppressions for mbedTLS removed (only fake_clock suppression remains). 664/664 tests, 0 skipped. All acceptance criteria met.
+### 🎯T3.5 WebSocket support (server and client)  [weight 1.6]
+Gap: not started
+No wslay vendored. Depends on 🎯T3.2 for HTTP upgrade path.
 
-### 🎯T7 Non-trivial example applications demonstrate CSP  [weight 1.7]
-Gap: achieved
-3/6 sub-targets complete (T7.1, T7.2, T7.5). Acceptance threshold (at least 3) met.
+### 🎯T3 Runtime is production-ready for I/O workloads  [weight 0.6]
+Gap: not started (0/9 sub-targets achieved)
 
-### 🎯T11 Scheduler is always M:N  [weight 1.6]
-Gap: close
-PR #18 merged into master (v0.6.0). Major criteria met: mn_mode_ removed, await_completion() exists with schedule() as deprecated alias, use_run gone, daemon imps implemented, fake_clock quiescence rework complete (no fc.run() in tests). One residual: `default_scheduler_impl` function still exists in src/csp.cc — it always calls main_loop(), so behavior is correct but the name should be cleaned up or the function inlined.
+### 🎯T14 Dynamic scoping improvements  [weight 0.5]  (parked)
+Gap: parked
+Paper 18 explores alternatives. HAMT works, not a bottleneck. Revisit if profiling points here.
 
-### 🎯T4 API safety gaps are closed  [weight 1.2]  (status only)
-Status: achieved
+### 🎯T13 Per-worker wake eliminates thundering herd  [weight 0.4]
+Gap: not started
+`unpark_one()` still uses `notify_all`. Three approaches explored in status notes, all have failure modes. Requires platform-specific futex primitives or design rethink.
 
-### 🎯T5 Unmodeled concurrent decision points have TLA+ specs  [weight 1.0]  (status only)
-Status: achieved
+### Achieved targets (unchanged)
 
-### 🎯T8 Signal handling is audited for correctness  [weight 1.0]  (status only)
-Status: achieved
-
-### 🎯T3 Runtime is production-ready for I/O workloads  [weight 0.6]  (status only)
-Status: not started (0/9 sub-targets)
-
-### 🎯T2 Tier D combinators are implemented  [weight 0.6]  (status only)
-Status: achieved
-
-### 🎯T13 Per-worker wake eliminates thundering herd  [weight 0.4]  (status only)
-Status: not started
+- 🎯T12 Test names contain no spaces — achieved
+- 🎯T11 Scheduler is always M:N — achieved
+- 🎯T15 TLS uses PicoTLS instead of mbedTLS — achieved
+- 🎯T7 Non-trivial example applications demonstrate CSP — achieved (3/6)
+- 🎯T4 API safety gaps are closed — achieved
+- 🎯T5 Unmodeled concurrent decision points have TLA+ specs — achieved
+- 🎯T8 Signal handling is audited for correctness — achieved
+- 🎯T2 Tier D combinators are implemented — achieved
 
 ## Recommendation
 
-Work on: **🎯T12 Test names contain no spaces**
-Reason: Highest effective weight (2.0) among unblocked, non-achieved targets. Cost 1 (mechanical find-and-replace) for value 2 — fixes shell quoting issues in lldb, scripts, and CI. Quick win before tackling larger targets like 🎯T14 (HAMT replacement) or 🎯T11 cleanup.
+Work on: **CI UBSan failure (standing invariant violation)**
+Reason: CI is red on macOS ASan+UBSan due to a UBSan null-pointer-offset error in vendored PicoTLS. Standing invariant violations take priority over all target work. This blocks all convergence — no PR can merge green until it's fixed.
 
 ## Suggested action
 
-Grep for `TEST_CASE("` in `test/*.test.cc`, replace spaces with hyphens in all test names, build and run `./build/normal/csp_tests -ltc` to verify no names contain spaces, then run `./build/normal/csp_tests` to confirm all tests pass. Run `make dist` afterward to update dist/ files.
+Investigate `vendor/github.com/h2o/picotls/lib/picotls.c:6041` — the UBSan "applying zero offset to null pointer" error. Options: (1) add a UBSan suppression for PicoTLS code (fast, pragmatic — it's third-party), (2) patch the line to guard against null before pointer arithmetic, or (3) check if upstream PicoTLS has a fix. Option 1 is recommended as the immediate fix — add a `ubsan_suppressions.txt` file and pass it via `-fsanitize-blacklist` for the PicoTLS compilation unit.
 
 <!-- convergence-deps
-evaluated: 2026-04-05T09:00:00Z
-sha: 4a6ddd6
+evaluated: 2026-04-05T12:00:00Z
+sha: e37e19d
 
 🎯T12:
-  gap: not started
-  assessment: "667 TEST_CASE names with spaces in test/*.test.cc. All need renaming."
+  gap: achieved
+  assessment: "All test names use hyphens. No spaces found in TEST_CASE names."
   read:
     - test/channel.test.cc
-    - test/chanutil.test.cc
-    - test/fanout.test.cc
-    - test/flatten_strat.test.cc
-    - test/imp_exit.test.cc
-    - test/mn.test.cc
-    - test/parallel_map.test.cc
-    - test/timer.test.cc
-    - test/tls.test.cc
+
+🎯T11:
+  gap: achieved
+  assessment: "All criteria met. default_scheduler_impl renamed to main_loop_scheduler. No references in source code."
+  read:
+    - src/csp.cc
 
 🎯T14:
-  gap: not started
-  assessment: "HAMT code still present. No work begun on chained stack array replacement."
-  read: []
+  gap: parked
+  assessment: "Paper 18 written. HAMT works, not a bottleneck. Parked."
+  read:
+    - docs/papers/18-dynamic-scope-alternatives.md
 
 🎯T15:
   gap: achieved
-  assessment: "PicoTLS vendored, mbedTLS removed, TSan suppressions cleaned, 664/664 tests, 0 skipped."
-  read:
-    - vendor/github.com/h2o/picotls/
-    - test/tsan_suppressions.txt
-    - .gitmodules
+  assessment: "PicoTLS vendored, mbedTLS removed, 664/664 tests. UBSan issue in picotls.c:6041 is third-party, not CSP."
+  read: []
 
-🎯T11:
-  gap: close
-  assessment: "PR #18 merged. All major criteria met. Residual: default_scheduler_impl function name in csp.cc."
-  read:
-    - src/csp.cc
-    - src/channel.cc
-    - include/csp/csp.h
+🎯T3:
+  gap: not started
+  assessment: "0/9 sub-targets achieved. No I/O wrapper, HTTP, or WebSocket work begun."
+  read: []
+
+🎯T13:
+  gap: not started
+  assessment: "unpark_one() still uses notify_all. No implementation progress."
+  read: []
 
 🎯T7:
   gap: achieved
