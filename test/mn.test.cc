@@ -709,12 +709,12 @@ TEST_CASE("MN---Watchdog-rescues-timers-from-stalled-P") {
 
     // A timer-based sleep on what might be the same P. The watchdog should
     // fire the timer even though the P is stalled.
-    csp::spawn([&timer_fired] {
-        auto start = std::chrono::steady_clock::now();
+    csp::spawn([&timer_fired, &stall_done] {
         csp::sleep(50ms);
-        auto elapsed = std::chrono::steady_clock::now() - start;
-        // Should fire reasonably close to 50ms, not delayed by 300ms stall.
-        CHECK(elapsed < (CSP_TEST_SANITIZER ? 1000ms : 200ms));
+        // The timer must fire before the 300ms stall completes. If the
+        // scheduler failed to migrate the sleeping imp away from the
+        // stalled P, it would be blocked until the stall finishes.
+        CHECK(!stall_done.load(std::memory_order_relaxed));
         timer_fired.store(true, std::memory_order_relaxed);
     });
 
