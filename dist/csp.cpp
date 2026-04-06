@@ -6107,7 +6107,7 @@ namespace csp::win::signal {
 
 reader<DWORD> notify(std::initializer_list<DWORD> events) {
     auto [read_sock, write_sock] = create_socket_pair();
-    csp::io::set_nonblock(read_sock);
+    csp::io::set_nonblock(io::fd_t(read_sock));
 
     uint32_t mask = 0;
     for (DWORD ev : events) {
@@ -6150,7 +6150,7 @@ reader<DWORD> notify(std::initializer_list<DWORD> events) {
 
         uint8_t buf[32];
         for (;;) {
-            ssize_t n = io::read(rsock, buf, sizeof(buf));
+            ssize_t n = io::read(io::fd_t(rsock), buf, sizeof(buf));
             if (n <= 0) break;  // EOF (sentinel closed wsock) or error
             for (ssize_t i = 0; i < n; ++i) {
                 if (!(out << static_cast<DWORD>(buf[i]))) {

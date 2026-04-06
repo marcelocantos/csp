@@ -5,3 +5,10 @@
 # unsynchronized read is benign — it may see a stale value, but the
 # hook rechecks under the mutex.
 race:csp::fake_clock::now
+
+# M:N fiber migration false positives — TSan tracks memory ops per OS
+# thread, not per fiber.  Exception objects created on one OS thread
+# and destroyed on another (after fcontext switch) appear as races.
+# See docs/papers/16-tsan-fiber-mutex-interaction.pdf.
+race:__cxa_decrement_exception_refcount
+race:std::range_error::~range_error
