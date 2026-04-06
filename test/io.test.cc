@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -656,7 +657,8 @@ TEST_CASE("IO---File-roundtrip") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
-    std::string path = "/tmp/csp_test_file_roundtrip.bin";
+    auto tmp = std::filesystem::temp_directory_path() / "csp_test_file_roundtrip.bin";
+    std::string path = tmp.string();
     std::string content = "Hello from file I/O!";
     bytes data(content.begin(), content.end());
     bytes result;
