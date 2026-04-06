@@ -178,6 +178,17 @@ None.
   reactor backend added. 20 demo programs added. Worker threads labelled
   `csp-1`, `csp-2`, etc. for clearer diagnostics.
 
+## 2026-04-06 — /release v0.7.0
+
+- **Commit**: `0a49625`
+- **Outcome**: Released v0.7.0. Opaque `fd_t` type wrapping raw file descriptors
+  (no implicit int conversion). All CSP fd-producing functions return `fd_t`
+  already set non-blocking. New convenience functions: `io::read_all`,
+  `io::write_all`, `part::io::lines`, `file::read`/`file::write` (blocking
+  pool). `byte_reader`/`byte_writer` assert non-blocking. `fd_t` threaded
+  through net, TLS, signals, examples. 668/668 tests (4 new).
+  STABILITY.md updated for v0.7.0. 🎯T3.1 achieved.
+
 ## 2026-04-05 — /release v0.6.0
 
 - **Commit**: `c0b4c2f` (PR #18)
