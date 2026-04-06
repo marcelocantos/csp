@@ -12,3 +12,8 @@ race:csp::fake_clock::now
 # See docs/papers/16-tsan-fiber-mutex-interaction.pdf.
 race:__cxa_decrement_exception_refcount
 race:std::range_error::~range_error
+
+# PicoTLS context cleanup — ptls_free accesses context fields during
+# teardown.  Under M:N migration the TLS connection may be created on
+# one OS thread and freed on another, which TSan flags as a race.
+race:ptls_free
