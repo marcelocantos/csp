@@ -608,14 +608,12 @@ public:
         new (&buf_) T(t);
     }
 
-    // Write operation (move).  Points message directly at the caller's
-    // value — no staging into buf_.  The caller's stack frame is stable
-    // for the entire rendezvous (either this imp is parked, or it's the
-    // arriving side and hasn't returned yet), so the pointer is safe.
-    // The transfer moves from the caller's value; afterwards it is in a
-    // moved-from state, which is what the caller expects.
+    // Write operation (move).
     chan_op(internal::WriterRef w, T && t)
-        : chanop_{internal::wait(w), &t, internal::get_slot(w.ptr)} {}
+        : chanop_{internal::wait(w), &buf_, internal::get_slot(w.ptr)}, has_buf_(true)
+    {
+        new (&buf_) T(std::move(t));
+    }
 
     // Read operation.
     template <typename U>
