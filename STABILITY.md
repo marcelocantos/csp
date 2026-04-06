@@ -5,7 +5,7 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
-Snapshot as of v0.6.0.
+Snapshot as of v0.7.0.
 
 ## Interaction surface catalogue
 
@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.6.0"` | Stable |
+| `CSP_VERSION` | `"0.7.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `6` | Stable |
+| `CSP_VERSION_MINOR` | `7` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
@@ -291,7 +291,7 @@ Combinator catalogue (all Stable unless noted):
 `bernoulli`, `normal`, `choice`, `random_bytes`, `shuffle`.
 
 **I/O** (`csp::part::io`): `byte_reader`, `byte_writer`, `split_lines`,
-`fixed_frames`.
+`fixed_frames`, `lines`.
 
 **RPC** (`csp::part::rpc`): `rpc_client` (2 overloads), `rpc_server`
 (2 overloads).
