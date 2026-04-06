@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: ae99747 -->
+<!-- last-evaluated: 9dcf16f -->
 
 ## Active
 
@@ -189,7 +189,7 @@
 ### 🎯T7 Non-trivial example applications demonstrate CSP
 - **Weight**: 2 (value 30 / cost 18)
 - **Acceptance**: at least 3 sub-target examples are complete
-- **Status**: achieved — 3/6 sub-targets complete (T7.1 chat server, T7.2 ETL pipeline, T7.5 task scheduler)
+- **Status**: achieved — 6/6 sub-targets complete (T7.1 chat server, T7.2 ETL pipeline, T7.3 web crawler, T7.4 sensor fusion, T7.5 task scheduler, T7.6 log aggregator)
 - **Discovered**: 2026-03-09
 - **Achieved**: 2026-03-23
 
@@ -222,7 +222,8 @@
   - Breadth-first crawl with bounded concurrency, URL frontier, dedup
   - Per-host rate limiting, graceful shutdown
   - Compiles and runs in `examples/`
-- **Status**: not started
+- **Status**: achieved — `examples/web_crawler.cc`: 3-worker pool, simulated 16-page web graph with cycles, per-host 100ms rate limiting, in-flight tracking for idle detection, BLO shutdown cascade.
+- **Achieved**: 2026-04-06
 - **Discovered**: 2026-03-09
 
 ### 🎯T7.4 Sensor fusion dashboard example
@@ -232,7 +233,8 @@
   - Multiple simulated sensor streams at different rates
   - combine_latest fusion, quantize throttling, sliding window anomaly detection
   - Compiles and runs in `examples/`
-- **Status**: not started
+- **Status**: achieved — `examples/sensor_fusion.cc`: 3 sensors at different rates (200/300/500ms), combine_latest fusion, sample-throttled to 1Hz, window(5) sliding anomaly detection (3σ threshold).
+- **Achieved**: 2026-04-06
 - **Discovered**: 2026-03-09
 
 ### 🎯T7.5 Task scheduler example
@@ -253,7 +255,8 @@
   - Tails multiple log files, parses, routes by severity
   - Time-window aggregation, periodic flush, threshold alerts
   - Compiles and runs in `examples/`
-- **Status**: not started
+- **Status**: achieved — `examples/log_aggregator.cc`: 4 simulated services, merge fan-in, severity-based routing imp, tick(1s) window aggregation with per-service counts, error threshold alerting (≥3 errors).
+- **Achieved**: 2026-04-06
 - **Discovered**: 2026-03-09
 
 ### 🎯T8 Signal handling is audited for correctness
