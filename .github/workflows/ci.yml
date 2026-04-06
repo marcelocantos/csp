@@ -165,6 +165,7 @@ jobs:
             sanitize: thread
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+            use_source: true  # dist single-TU hangs on ARM64 runners
 
     steps:
       - uses: actions/checkout@v4
@@ -179,10 +180,10 @@ jobs:
           sudo apt-get install -y ${{ matrix.packages }}
           sudo sysctl -w kernel.core_pattern=core.%p
 
-      - name: Build and test (dist, ${{ matrix.sanitize }})
+      - name: Build and test (${{ matrix.use_source && 'source' || 'dist' }}, ${{ matrix.sanitize }})
         run: |
           ulimit -c unlimited
-          make test-dist SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }}
+          make ${{ matrix.use_source && 'test' || 'test-dist' }} SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }}
         env:
           # libc++abi on Linux frees std::logic_error strings with free()
           # instead of operator delete, triggering false positives under ASan.
