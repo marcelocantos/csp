@@ -148,20 +148,27 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Kind | Stability |
 |--------|------|-----------|
-| `socket_t` | type alias (`SOCKET` on Windows, `int` on Unix) | Stable |
-| `invalid_socket` | constant | Stable |
-| `wait_readable(socket_t)` | function | Stable |
-| `wait_writable(socket_t)` | function | Stable |
-| `set_nonblock(socket_t) → int` | function | Stable |
-| `close(socket_t)` | function | Stable |
-| `read(socket_t, void*, size_t) → ssize_t` | function | Stable |
-| `write(socket_t, const void*, size_t) → ssize_t` | function | Stable |
-| `accept(socket_t, sockaddr*, socklen_t*) → socket_t` | function | Stable |
-| `connect(socket_t, const sockaddr*, socklen_t) → int` | function | Stable |
+| `fd_t` | opaque fd wrapper (no implicit int conversion) | Stable |
+| `wait_readable(fd_t)` | function | Stable |
+| `wait_writable(fd_t)` | function | Stable |
+| `set_nonblock(fd_t) → int` | function | Stable |
+| `read(fd_t, void*, size_t) → ssize_t` | function | Stable |
+| `write(fd_t, const void*, size_t) → ssize_t` | function | Stable |
+| `accept(fd_t, sockaddr*, socklen_t*) → fd_t` | function (returned fd is non-blocking) | Stable |
+| `connect(fd_t, const sockaddr*, socklen_t) → int` | function | Stable |
+| `read_all(fd_t) → vector<uint8_t>` | function | Stable |
+| `write_all(fd_t, span<const uint8_t>)` | function | Stable |
 | `addrinfo_deleter` | struct | Stable |
 | `addrinfo_ptr` | unique_ptr alias | Stable |
 | `resolve_result` | struct (`info`, `error`, `operator bool`, `message`) | Stable |
 | `resolve(string, string, addrinfo*) → resolve_result` | function | Stable |
+
+### File I/O (`csp::file`)
+
+| Symbol | Kind | Stability |
+|--------|------|-----------|
+| `file::read(string) → vector<uint8_t>` | function (blocking pool) | Stable |
+| `file::write(string, span<const uint8_t>)` | function (blocking pool) | Stable |
 
 ### Blocking pool (`include/csp/blocking.h`)
 

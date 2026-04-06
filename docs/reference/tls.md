@@ -102,7 +102,7 @@ own or close the fd.
 ```cpp
 class conn {
 public:
-    conn(context& ctx, int fd);
+    conn(context& ctx, io::fd_t fd);
     ~conn();
     conn(conn&&) noexcept;
     conn& operator=(conn&&) noexcept;
@@ -112,7 +112,7 @@ public:
     ssize_t read(void* buf, size_t len);
     ssize_t write(const void* buf, size_t len);
     void shutdown();
-    int fd() const;
+    io::fd_t fd() const;
 };
 ```
 
@@ -120,13 +120,13 @@ public:
 
 | Method | Description |
 |---|---|
-| `conn(ctx, fd)` | Create a TLS session. `fd` must be connected and non-blocking. Suppresses SIGPIPE on the fd. |
+| `conn(ctx, fd)` | Create a TLS session. `fd` (`io::fd_t`) must be connected and non-blocking. Suppresses SIGPIPE on the fd. `conn` does not own or close the fd. |
 | `set_hostname(h)` | Set SNI extension. Call before `handshake`. |
 | `handshake()` | Perform TLS handshake. Cancel-aware. Throws `tls::error` on failure, `csp::canceled`/`timed_out` on cancellation. |
 | `read(buf, len)` | Read up to `len` bytes. Returns bytes read, 0 on clean shutdown (`close_notify`). Cancel-aware. |
 | `write(buf, len)` | Write all `len` bytes (retries partial writes). Cancel-aware. |
 | `shutdown()` | Send `close_notify`. Errors are ignored (peer may have already closed). |
-| `fd()` | Return the underlying file descriptor. |
+| `fd()` | Return the underlying `io::fd_t`. |
 
 ### Cancel awareness
 

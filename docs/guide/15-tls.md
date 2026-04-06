@@ -91,19 +91,19 @@ A TLS session on an existing non-blocking socket.
 ```cpp
 class conn {
 public:
-    conn(context& ctx, int fd);
+    conn(context& ctx, io::fd_t fd);
 
     void set_hostname(const std::string& hostname);
     void handshake();
     ssize_t read(void* buf, size_t len);
     ssize_t write(const void* buf, size_t len);
     void shutdown();
-    int fd() const;
+    io::fd_t fd() const;
 };
 ```
 
-- **`conn(ctx, fd)`** — the fd must be connected and non-blocking. `conn`
-  does not own or close the fd.
+- **`conn(ctx, fd)`** — `fd` is an `io::fd_t`. It must be connected and
+  non-blocking. `conn` does not own or close the fd.
 - **`set_hostname`** — sets the SNI extension. Call before `handshake`.
 - **`handshake`** — performs the TLS handshake. Cancel-aware: if a
   cancellation scope fires, the handshake throws `csp::canceled` (or

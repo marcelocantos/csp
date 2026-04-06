@@ -7,7 +7,7 @@ closes it on exit.
 ## Signature
 
 ```cpp
-auto byte_reader(int fd, size_t chunk_size = 4096);
+auto byte_reader(io::fd_t fd, size_t chunk_size = 4096);
 // Returns: producer<std::vector<uint8_t>, ...>
 ```
 
@@ -23,9 +23,13 @@ produces one channel message containing the bytes that were available.
 
 ## Semantics
 
-- **fd ownership**: `byte_reader` takes ownership of `fd`. It sets the fd to
-  non-blocking mode (`O_NONBLOCK`) and closes it when the imp exits.
-  The caller must not read from or close the fd after passing it.
+- **fd ownership**: `byte_reader` takes ownership of `fd` (an `io::fd_t`).
+  It closes the fd when the imp exits. The caller must not read from or close
+  the fd after passing it.
+- **Non-blocking required**: The fd must already be in non-blocking mode
+  (`O_NONBLOCK`). `byte_reader` asserts this at startup; it does not call
+  `set_nonblock` itself. Use `io::accept` (which returns a non-blocking `fd_t`)
+  or call `io::set_nonblock` before passing the fd.
 - **Non-blocking I/O**: Uses `csp::io::read()`, which suspends the imp
   on `EAGAIN`/`EWOULDBLOCK` (via `io::wait_readable`) and retries on `EINTR`.
   The processor is never blocked.
@@ -49,16 +53,18 @@ produces one channel message containing the bytes that were available.
 using namespace csp;
 using namespace csp::part;
 
-int pipefd[2];
-pipe(pipefd);
+int raw[2];
+pipe(raw);
+io::fd_t rfd{raw[0]}, wfd{raw[1]};
+io::set_nonblock(rfd);
 
-// byte_reader owns pipefd[0] and closes it on exit.
-auto r = io::byte_reader(pipefd[0], 16).spawn();
+// byte_reader owns rfd and closes it on exit.
+auto r = io::byte_reader(std::move(rfd), 16).spawn();
 
-csp::spawn([wfd = pipefd[1]] {
+csp::spawn([wfd = std::move(wfd)] {
     const char* msg = "Hello, CSP!";
-    ::write(wfd, msg, strlen(msg));
-    ::close(wfd);
+    ::write(wfd.raw(), msg, strlen(msg));
+    // wfd closes automatically when it goes out of scope
 });
 
 std::vector<uint8_t> all;

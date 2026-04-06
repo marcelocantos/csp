@@ -328,18 +328,36 @@ Uses kqueue reactor (macOS), epoll (Linux), IOCP (Windows).
 
 ```cpp
 namespace csp::io {
+
+// Opaque fd wrapper. No implicit int conversion.
+struct fd_t {
+    explicit fd_t(int raw_fd = -1);
+    int raw() const;          // access the underlying descriptor
+    bool valid() const;       // raw() >= 0
+    bool is_nonblock() const; // O_NONBLOCK is set
+    explicit operator bool() const;  // same as valid()
+    // Comparison operators (==, !=, <, etc.)
+    // Move-only: copy is deleted.
+};
+
 // Layer 1: suspend until fd ready.
-void wait_readable(int fd);
-void wait_writable(int fd);
+void wait_readable(fd_t fd);
+void wait_writable(fd_t fd);
 
 // Layer 2: auto-retry on EAGAIN/EINTR.
-ssize_t read(int fd, void* buf, size_t len);   // 0=EOF, -1=error
-ssize_t write(int fd, const void* buf, size_t len); // writes ALL, -1=error
-int accept(int listen_fd, sockaddr* addr, socklen_t* addrlen);
-int connect(int fd, const sockaddr* addr, socklen_t addrlen); // 0=ok
+ssize_t read(fd_t fd, void* buf, size_t len);   // 0=EOF, -1=error
+ssize_t write(fd_t fd, const void* buf, size_t len); // writes ALL, -1=error
+fd_t accept(fd_t listen_fd, sockaddr* addr, socklen_t* addrlen); // returned fd is non-blocking
+int connect(fd_t fd, const sockaddr* addr, socklen_t addrlen); // 0=ok
+
+// Convenience: read until EOF.
+std::vector<uint8_t> read_all(fd_t fd);
+
+// Convenience: write all bytes, throw on failure.
+void write_all(fd_t fd, std::span<const uint8_t> data);
 
 // Utility.
-int set_nonblock(int fd);
+int set_nonblock(fd_t fd);
 
 // DNS (runs on blocking pool).
 // resolve_result { addrinfo_ptr info; int error; explicit operator bool(); const char* message(); }
@@ -349,14 +367,27 @@ resolve_result resolve(const std::string& host,
 }
 ```
 
+```cpp
+namespace csp::file {
+// Read entire file into a vector (runs on blocking pool).
+std::vector<uint8_t> read(const std::string& path);
+
+// Write data to file (runs on blocking pool). Throws on failure.
+void write(const std::string& path, std::span<const uint8_t> data);
+}
+```
+
 Layer 3 parts:
 ```cpp
-// byte_reader: fd → reader<vector<uint8_t>>. Owns fd, closes on exit.
+// byte_reader: fd → reader<vector<uint8_t>>. Owns fd (must be non-blocking), closes on exit.
 auto r = csp::part::io::byte_reader(fd).spawn();          // 4096 chunks
 auto r = csp::part::io::byte_reader(fd, 65536).spawn();   // custom size
 
-// byte_writer: writer<vector<uint8_t>> → fd. Owns fd, closes on exit.
+// byte_writer: writer<vector<uint8_t>> → fd. Owns fd (must be non-blocking), closes on exit.
 auto w = csp::part::io::byte_writer(fd).spawn();
+
+// lines: fd → reader<string> (composes byte_reader | split_lines).
+auto lr = csp::part::io::lines(fd).spawn();
 
 // split_lines: byte stream → string stream (LF-delimited).
 auto lr = csp::part::io::split_lines.spawn(std::move(byte_reader));
@@ -494,13 +525,13 @@ class context {
 };
 
 class conn {
-    conn(context& ctx, int fd);  // fd must be non-blocking, connected
+    conn(context& ctx, io::fd_t fd);  // fd must be non-blocking, connected
     void set_hostname(const std::string& h);  // SNI
     void handshake();              // cancel-aware
     ssize_t read(void* buf, size_t len);   // 0 = clean shutdown
     ssize_t write(const void* buf, size_t len);  // writes all
     void shutdown();               // close_notify
-    int fd() const;
+    io::fd_t fd() const;
 };
 
 }
@@ -590,6 +621,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `killswitch<T>()` | filter | Forward until keepalive dies |
 | `last<T>(n)` | filter | Buffer; emit last n on close |
 | `latch<T>()` | filter | Serve most recent value on demand |
+| `io::lines(fd)` | producer | fd → `reader<string>` via `byte_reader \| split_lines` |
 | `map<In,Out>(f)` | filter | Transform each element |
 | `merge<T>(readers...)` | producer | Non-deterministic merge |
 | `mux(reader<Ts>...)` | producer | Heterogeneous merge into `variant<Ts...>` |

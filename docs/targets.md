@@ -33,7 +33,7 @@
   - `csp::io::lines`, `csp::io::read_all`, `csp::io::write_all` for fd I/O
   - `csp::file::read`, `csp::file::write` via blocking pool
   - Tests and reference docs for each
-- **Status**: close — `io::socket_t`, `net::listen`/`net::dial`, `byte_reader`/`byte_writer`, `split_lines` exist. Missing `fd_t` opaque wrapper, `read_all`/`write_all`, `file::read`/`file::write`.
+- **Status**: achieved — `io::fd_t` opaque wrapper introduced; `io::accept` returns non-blocking `fd_t`; `byte_reader`/`byte_writer` accept `fd_t` and assert non-blocking; `io::read_all`, `io::write_all`, `io::lines`, `file::read`, `file::write` added; docs updated.
 - **Discovered**: 2026-03-09
 
 ### 🎯T3.2 Channel-native HTTP/1.1 server works
