@@ -201,11 +201,11 @@ None.
 
 ## 2026-04-06 — /release v0.8.0
 
-- **Commit**: `880b952`
+- **Commit**: `613fc9c`
 - **Outcome**: Released v0.8.0. Three new example applications: sensor fusion
   (combine_latest, sample, window anomaly detection), web crawler (BFS, worker
   pool, per-host rate limiting, BLO shutdown), log aggregator (merge, severity
-  routing, tick windows, alerting). Direct-pointer channel transfer optimization:
-  move-writes skip staging buffer, one fewer move per exchange; unmatched alt
-  arms no longer waste moves. 668/668 tests. 🎯T7.3, 🎯T7.4, 🎯T7.6 achieved
-  (🎯T7 now 6/6). STABILITY.md updated.
+  routing, tick windows, alerting). 668/668 tests. 🎯T7.3, 🎯T7.4, 🎯T7.6
+  achieved (🎯T7 now 6/6). STABILITY.md updated. Note: direct-pointer channel
+  transfer optimization was attempted and reverted — unsafe for chan_ops stored
+  in containers (dynamic alt vectors).
