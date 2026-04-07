@@ -268,9 +268,6 @@ TEST_CASE("exhaust_all---discard-while-draining") {
 
         std::vector<int> got;
         for (int n; out >> n;) got.push_back(n);
-        std::string dbg = "exhaust_all discard got:";
-        for (int v : got) dbg += " " + std::to_string(v);
-        MESSAGE(dbg);
         CHECK(std::vector<int>({1, 2, 3, 70, 71, 72}) == got);
     });
 }

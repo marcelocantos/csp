@@ -13,8 +13,8 @@ using namespace csp;
 TEST_SUITE("swap") {
 
 TEST_CASE("baseline-channel-count") {
-    MESSAGE("wr=" << csp::internal::channel_count(0)
-            << " rd=" << csp::internal::channel_count(1));
+    CAPTURE(csp::internal::channel_count(0));
+    CAPTURE(csp::internal::channel_count(1));
 }
 
 TEST_CASE("swap-writers---basic-data-transfer") {
@@ -1277,7 +1277,7 @@ TEST_CASE("MN-Tap---splice-mid-flight") {
     CHECK(consumer_total.load() <= expected);
     // Tap may see zero values if M:N scheduling completes the producer
     // before the tapper installs — this is a benign scheduling race.
-    MESSAGE("tap_total: ", tap_total.load());
+    CAPTURE(tap_total.load());
 
     csp::shutdown_runtime();
 }

@@ -125,8 +125,8 @@ TEST_CASE("coin-flip---entropy") {
     // Chi-squared on non-overlapping 4-bit blocks.
     constexpr int K = 4;
     constexpr int CATEGORIES = 1 << K;  // 16
-    int n_blocks = TRIALS / K;          // 50
-    double expected = static_cast<double>(n_blocks) / CATEGORIES;  // 3.125
+    int n_blocks = TRIALS / K;          // 2500
+    double expected = static_cast<double>(n_blocks) / CATEGORIES;  // 156.25
 
     int freq[CATEGORIES] = {};
     for (int i = 0; i < n_blocks; ++i) {
@@ -142,7 +142,7 @@ TEST_CASE("coin-flip---entropy") {
         chi_sq += d * d / expected;
     }
 
-    MESSAGE("chi_sq=" << chi_sq << " (expect <100 for random, >1000 for structured)");
+    CAPTURE(chi_sq);
     CHECK(chi_sq < 100);
 }
 
