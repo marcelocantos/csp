@@ -111,7 +111,6 @@ TEST_CASE("Input-dies-before-producing---output-closes") {
     aw = {};
 
     stats.spawn([r = std::move(r)]{
-        int _;
         std::tuple<int, int> t;
         CHECK_FALSE(bool(r >> t));
     });

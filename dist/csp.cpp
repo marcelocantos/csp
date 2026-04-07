@@ -850,7 +850,7 @@ bool make_chan(WriterRef * w, ReaderRef * r) {
         *w = {reinterpret_cast<void *>(ws)};
         *r = {reinterpret_cast<void *>((uintptr_t)rs | 1)};
         return true;
-    } catch (std::exception const & e) {
+    } catch (std::exception const &) {
     } catch (...) {
     }
     return false;
@@ -981,8 +981,8 @@ void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {
     }
 
     // Determine which endpoint side (write or read) for each channel.
-    bool a_is_write = (ca->write_slot_ == sa);
-    bool b_is_write = (cb->write_slot_ == sb);
+    [[maybe_unused]] bool a_is_write = (ca->write_slot_ == sa);
+    [[maybe_unused]] bool b_is_write = (cb->write_slot_ == sb);
     assert(a_is_write == b_is_write && "cannot swap write slot with read slot");
 
     // Exchange channel pointers in slots.
@@ -1289,7 +1289,7 @@ namespace csp {
             }
         }
 
-        void Imp::schedule(bool make_current) {
+        void Imp::schedule([[maybe_unused]] bool make_current) {
             auto& rt = Runtime::instance();
 
             // Push to the global run queue so any worker can pick
@@ -1538,7 +1538,7 @@ static void start(transfer_t t) {
 
     try {
         start_f(data);
-    } catch (std::exception const & e) {
+    } catch (std::exception const &) {
     } catch (...) {
     }
     do_switch(Status::exit);
@@ -1563,7 +1563,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
         assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
-        auto usable_size = static_cast<size_t>((char*)imp - usable_base);
+        [[maybe_unused]] auto usable_size = static_cast<size_t>((char*)imp - usable_base);
 #ifdef _WIN32
         // On Windows, pass only the initially committed stack size to
         // make_fcontext.  This sets NT_TIB StackLimit (saved in the
@@ -1633,7 +1633,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         rt.park_cv.notify_all();
 
         return 1;
-    } catch (std::exception const & e) {
+    } catch (std::exception const &) {
         return 0;
     } catch (...) {
         return 0;
@@ -2659,7 +2659,7 @@ listener listen(const std::string& addr, uint16_t port,
                    reinterpret_cast<const char*>(&off), sizeof(off));
     }
 
-    if (::bind(listen_fd.raw(), ai->ai_addr, ai->ai_addrlen) < 0) {
+    if (::bind(listen_fd.raw(), ai->ai_addr, static_cast<int>(ai->ai_addrlen)) < 0) {
         io::close(listen_fd);
         throw csp::error("bind failed");
     }
@@ -2773,8 +2773,8 @@ connection dial(const std::string& host, const std::string& service) {
 
         io::set_nonblock(fd);
 
-        if (io::connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
-            auto remote = format_addr(ai->ai_addr, ai->ai_addrlen);
+        if (io::connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) == 0) {
+            auto remote = format_addr(ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen));
             return make_connection(fd, std::move(remote));
         }
 
@@ -2939,7 +2939,7 @@ std::pair<reader<>, uintptr_t> Reactor::create_fd_event(SOCKET sock, int kind) {
     WSAEventSelect(sock, evt, net_events);
 
     HANDLE wait = nullptr;
-    BOOL ok = RegisterWaitForSingleObject(
+    [[maybe_unused]] BOOL ok = RegisterWaitForSingleObject(
         &wait, evt,
         fd_callback,
         reinterpret_cast<PVOID>(ident),
@@ -3867,7 +3867,7 @@ namespace csp {
         }
 
         // TLA:StealWork.TkAcquireGlobal TLA:StealWork.TkPopAndSchedule
-        bool Runtime::take_from_global(Processor& p) {
+        bool Runtime::take_from_global([[maybe_unused]] Processor& p) {
             std::lock_guard<std::mutex> lk(global_mu);
             if (global_run_queue.empty()) {
                 has_global_work_.store(false, std::memory_order_release);

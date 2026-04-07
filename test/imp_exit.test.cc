@@ -155,7 +155,7 @@ TEST_CASE("handler-drops-event") {
     RunStats stats;
     csp::run([&] {
         stats.spawn([&]() {
-            auto guard = on_exit([](imp_event ev) {
+            auto guard = on_exit([](imp_event) {
                 // Drop ev without calling restart() -> imp dies.
             });
             spawn(supervised([&]() {
@@ -173,12 +173,12 @@ TEST_CASE("nested-on_exit-scopes") {
     RunStats stats;
     csp::run([&] {
         stats.spawn([&]() {
-            auto outer = on_exit([&](imp_event ev) {
+            auto outer = on_exit([&](imp_event) {
                 ++outer_count;
                 // Don't restart.
             });
             {
-                auto inner = on_exit([&](imp_event ev) {
+                auto inner = on_exit([&](imp_event) {
                     ++inner_count;
                     // Don't restart.
                 });
@@ -201,7 +201,7 @@ TEST_CASE("inherited-by-child-imps") {
     RunStats stats;
     csp::run([&] {
         stats.spawn([&]() {
-            auto guard = on_exit([&](imp_event ev) {
+            auto guard = on_exit([&](imp_event) {
                 ++handler_count;
                 // Don't restart.
             });

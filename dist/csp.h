@@ -5009,7 +5009,7 @@ namespace csp::part {
 // Throws std::runtime_error if all readers close without producing a value.
 template <typename T>
 T first_wins(std::vector<reader<T>> inputs) {
-    T t;
+    T t{};
     std::vector<internal::ChanOp> chanops;
     for (auto& r : inputs) {
         chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
@@ -6099,8 +6099,8 @@ auto quantize(reader<T> source,  // incoming units
                     }
                 } else if (rc == ~1) { // Dead quanta; drain source.
                     while (q) {
-                        switch (int rc = alt(acc < q ? source >> t : ~source,
-                                             q <= acc ? sink << q : ~sink)) {
+                        switch (int rc2 = alt(acc < q ? source >> t : ~source,
+                                              q <= acc ? sink << q : ~sink)) {
                         case 0: // source
                             CSP_LOG(s_log, "quantize[~quanta]: source >> %d", t);
                             acc += t;
@@ -6110,10 +6110,10 @@ auto quantize(reader<T> source,  // incoming units
                             acc -= q;
                             return;
                         default:
-                            CSP_LOG(s_log, "quantize[~quanta]: ~%d", ~rc);
+                            CSP_LOG(s_log, "quantize[~quanta]: ~%d", ~rc2);
                             if (q && q <= acc && sink << q) {
                                 CSP_LOG(s_log, "quantize[~quanta,~%s]: sink << %d",
-                                         rc == ~0 ? "source" : "sink", q);
+                                         rc2 == ~0 ? "source" : "sink", q);
                                 acc -= q;
                             }
                             return;

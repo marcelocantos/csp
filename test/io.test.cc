@@ -334,7 +334,7 @@ TEST_CASE("IO---byte_reader-partial-on-close") {
         });
 
         bytes buf(10);
-        n = br.read(buf);
+        n = static_cast<int>(br.read(buf));
         result = buf;
     });
 
@@ -352,7 +352,7 @@ TEST_CASE("IO---byte_reader-empty-buffer") {
         byte_reader br(std::move(r));
 
         bytes buf;
-        n = br.read(buf);
+        n = static_cast<int>(br.read(buf));
     });
 
     CHECK(0 == n);
@@ -374,12 +374,12 @@ TEST_CASE("IO---byte_reader-multiple-reads-with-leftover") {
 
         bytes buf(3);
 
-        n0 = br.read(buf); r0 = buf;
-        n1 = br.read(buf); r1 = buf;
-        n2 = br.read(buf); r2 = buf;
+        n0 = static_cast<int>(br.read(buf)); r0 = buf;
+        n1 = static_cast<int>(br.read(buf)); r1 = buf;
+        n2 = static_cast<int>(br.read(buf)); r2 = buf;
 
         // Only 1 byte left.
-        n3 = br.read(buf); r3 = buf;
+        n3 = static_cast<int>(br.read(buf)); r3 = buf;
     });
 
     CHECK(3 == n0);
@@ -407,7 +407,7 @@ TEST_CASE("IO---byte_reader-closed-reader-returns-zero") {
         { auto _ = std::move(w); }
 
         bytes buf(4);
-        n = br.read(buf);
+        n = static_cast<int>(br.read(buf));
     });
 
     CHECK(0 == n);
@@ -568,7 +568,7 @@ TEST_CASE("IO---ReadAll") {
 
     csp::spawn([wfd] {
         const char* msg = "All the bytes!";
-        csp::io::write(wfd, msg, strlen(msg));
+        (void)csp::io::write(wfd, msg, strlen(msg));
         test_close(wfd);
     });
 
@@ -627,7 +627,7 @@ TEST_CASE("IO---Lines-convenience") {
 
     csp::spawn([wfd] {
         const char* data = "alpha\nbeta\ngamma\n";
-        csp::io::write(wfd, data, strlen(data));
+        (void)csp::io::write(wfd, data, strlen(data));
         test_close(wfd);
     });
 
