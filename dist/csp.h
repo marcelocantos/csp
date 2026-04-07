@@ -58,7 +58,7 @@ private:
 
     union {
         bool enabled_;
-        struct { char a, b; };
+        struct { char a, b; } pad_;
     };
     Rep* rep_;
 
@@ -585,7 +585,7 @@ template <int I>
 inline void transfer_at(int, void *, void *) {}
 
 template <int I, typename Op, typename... Ops>
-inline void transfer_at(int idx, void * src, void * dst, Op && op, Ops &&... ops) {
+inline void transfer_at(int idx, void * src, void * dst, Op &&, Ops &&... ops) {
     if (idx == I) {
         std::decay_t<Op>::transfer(src, dst);
     } else {
@@ -1942,8 +1942,8 @@ struct alignas(16) Imp {
     int n_chanops_, signal_;
 
     size_t id_ = []{
-        static std::atomic<size_t> next_{0};
-        return next_++;
+        static std::atomic<size_t> counter{0};
+        return counter++;
     }();
 
     Imp(fcontext_t ctx, StackRegion stk);
@@ -2910,6 +2910,10 @@ auto mallocedResource(T * p) {
 
 namespace csp::detail {
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324) // structure was padded due to alignment specifier
+#endif
 struct Processor {
     Imp  main;       // Sentinel node for this P's run queue
     Imp* busy;       // Head of circular DLL run queue
@@ -2950,6 +2954,9 @@ struct Processor {
     Processor(Processor const &) = delete;
     Processor& operator=(Processor const &) = delete;
 };
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 Processor& current_p();
 void bind_processor(Processor* p);
@@ -4855,7 +4862,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
 
         while (!outs.empty()) {
             internal::AltMatch m;
-            internal::prialt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::prialt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
             if (m.src && m.dst) {
                 int idx = (m.result >= 0 ? m.result : ~m.result);
                 if (idx == 0 || idx == 2)
@@ -5010,7 +5017,7 @@ T first_wins(std::vector<reader<T>> inputs) {
 
     while (!inputs.empty()) {
         internal::AltMatch m;
-        internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+        internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
         if (m.src && m.dst)
             *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
         internal::alt_end(&m);
@@ -5061,7 +5068,7 @@ auto flat_map(F&& f) {
             size_t sub_base = input_alive ? 2 : 1;
 
             internal::AltMatch m;
-            internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
 
             // Type-aware transfer: input slot reads A, sub-stream slots read B.
             if (m.src && m.dst) {
@@ -5353,7 +5360,7 @@ void join(std::vector<reader<T>> inputs) {
 
     while (!inputs.empty()) {
         internal::AltMatch m;
-        internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+        internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
         if (m.src && m.dst)
             *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
         internal::alt_end(&m);
@@ -5473,7 +5480,7 @@ auto merge(std::vector<reader<T>> inputs) {
 
             while (!inputs.empty()) {
                 internal::AltMatch m;
-                internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+                internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
                 if (m.src && m.dst)
                     *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
                 internal::alt_end(&m);
@@ -5529,7 +5536,7 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
             size_t sub_base = input_alive ? 2 : 1;
 
             internal::AltMatch m;
-            internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
 
             if (m.src && m.dst) {
                 if (input_alive && m.result == 1) {

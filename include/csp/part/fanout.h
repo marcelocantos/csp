@@ -47,7 +47,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
 
         while (!outs.empty()) {
             internal::AltMatch m;
-            internal::prialt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::prialt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
             if (m.src && m.dst) {
                 int idx = (m.result >= 0 ? m.result : ~m.result);
                 if (idx == 0 || idx == 2)

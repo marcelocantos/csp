@@ -26,7 +26,7 @@ auto merge(std::vector<reader<T>> inputs) {
 
             while (!inputs.empty()) {
                 internal::AltMatch m;
-                internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+                internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
                 if (m.src && m.dst)
                     *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
                 internal::alt_end(&m);

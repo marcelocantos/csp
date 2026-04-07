@@ -30,8 +30,12 @@ set(FCONTEXT_DIR vendor/github.com/boostorg/context/src/asm)
 
 if(WIN32)
     if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        # Native MSVC: use MASM assembly
-        enable_language(ASM_MASM)
+        # Native MSVC: ARM64 uses armasm64 (ASM_MARMASM), x86/x64 uses ml/ml64 (ASM_MASM).
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+            enable_language(ASM_MARMASM)
+        else()
+            enable_language(ASM_MASM)
+        endif()
         # BOOST_CONTEXT_EXPORT define is applied via target_compile_definitions
         # below (after add_library) — CMAKE_ASM_MASM_FLAGS doesn't reliably
         # pass trailing = in VS generators.

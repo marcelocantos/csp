@@ -299,7 +299,7 @@ template <int I>
 inline void transfer_at(int, void *, void *) {}
 
 template <int I, typename Op, typename... Ops>
-inline void transfer_at(int idx, void * src, void * dst, Op && op, Ops &&... ops) {
+inline void transfer_at(int idx, void * src, void * dst, Op &&, Ops &&... ops) {
     if (idx == I) {
         std::decay_t<Op>::transfer(src, dst);
     } else {

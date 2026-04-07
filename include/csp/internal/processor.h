@@ -7,6 +7,10 @@
 
 namespace csp::detail {
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324) // structure was padded due to alignment specifier
+#endif
 struct Processor {
     Imp  main;       // Sentinel node for this P's run queue
     Imp* busy;       // Head of circular DLL run queue
@@ -47,6 +51,9 @@ struct Processor {
     Processor(Processor const &) = delete;
     Processor& operator=(Processor const &) = delete;
 };
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 Processor& current_p();
 void bind_processor(Processor* p);

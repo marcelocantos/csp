@@ -30,7 +30,7 @@ auto flat_map(F&& f) {
             size_t sub_base = input_alive ? 2 : 1;
 
             internal::AltMatch m;
-            internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
 
             // Type-aware transfer: input slot reads A, sub-stream slots read B.
             if (m.src && m.dst) {

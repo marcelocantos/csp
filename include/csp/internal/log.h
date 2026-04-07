@@ -43,7 +43,7 @@ private:
 
     union {
         bool enabled_;
-        struct { char a, b; };
+        struct { char a, b; } pad_;
     };
     Rep* rep_;
 
