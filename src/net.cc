@@ -105,7 +105,7 @@ listener listen(const std::string& addr, uint16_t port,
                    reinterpret_cast<const char*>(&off), sizeof(off));
     }
 
-    if (::bind(listen_fd.raw(), ai->ai_addr, ai->ai_addrlen) < 0) {
+    if (::bind(listen_fd.raw(), ai->ai_addr, static_cast<int>(ai->ai_addrlen)) < 0) {
         io::close(listen_fd);
         throw csp::error("bind failed");
     }
@@ -219,8 +219,8 @@ connection dial(const std::string& host, const std::string& service) {
 
         io::set_nonblock(fd);
 
-        if (io::connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
-            auto remote = format_addr(ai->ai_addr, ai->ai_addrlen);
+        if (io::connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) == 0) {
+            auto remote = format_addr(ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen));
             return make_connection(fd, std::move(remote));
         }
 

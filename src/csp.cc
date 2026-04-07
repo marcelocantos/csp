@@ -137,7 +137,7 @@ namespace csp {
             }
         }
 
-        void Imp::schedule(bool make_current) {
+        void Imp::schedule([[maybe_unused]] bool make_current) {
             auto& rt = Runtime::instance();
 
             // Push to the global run queue so any worker can pick
@@ -386,7 +386,7 @@ static void start(transfer_t t) {
 
     try {
         start_f(data);
-    } catch (std::exception const & e) {
+    } catch (std::exception const &) {
     } catch (...) {
     }
     do_switch(Status::exit);
@@ -411,7 +411,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
         assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
-        auto usable_size = static_cast<size_t>((char*)imp - usable_base);
+        [[maybe_unused]] auto usable_size = static_cast<size_t>((char*)imp - usable_base);
 #ifdef _WIN32
         // On Windows, pass only the initially committed stack size to
         // make_fcontext.  This sets NT_TIB StackLimit (saved in the
@@ -481,7 +481,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         rt.park_cv.notify_all();
 
         return 1;
-    } catch (std::exception const & e) {
+    } catch (std::exception const &) {
         return 0;
     } catch (...) {
         return 0;

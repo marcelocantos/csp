@@ -153,7 +153,7 @@ std::pair<reader<>, uintptr_t> Reactor::create_fd_event(SOCKET sock, int kind) {
     WSAEventSelect(sock, evt, net_events);
 
     HANDLE wait = nullptr;
-    BOOL ok = RegisterWaitForSingleObject(
+    [[maybe_unused]] BOOL ok = RegisterWaitForSingleObject(
         &wait, evt,
         fd_callback,
         reinterpret_cast<PVOID>(ident),

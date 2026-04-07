@@ -348,7 +348,7 @@ namespace csp {
         }
 
         // TLA:StealWork.TkAcquireGlobal TLA:StealWork.TkPopAndSchedule
-        bool Runtime::take_from_global(Processor& p) {
+        bool Runtime::take_from_global([[maybe_unused]] Processor& p) {
             std::lock_guard<std::mutex> lk(global_mu);
             if (global_run_queue.empty()) {
                 has_global_work_.store(false, std::memory_order_release);
