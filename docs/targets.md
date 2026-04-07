@@ -269,6 +269,29 @@
 - **Achieved**: 2026-03-27
 - **Discovered**: 2026-03-09
 
+### 🎯T16 Dist-build test suite does not hang on CI
+- **Weight**: 2 (value 5 / cost 5)
+- **Acceptance**:
+  - `make test-dist` completes reliably on all CI platforms (no hangs)
+  - No ARM64 or x86_64 `use_source` workarounds needed in CI
+  - Root cause identified and fixed (timing race, static init order, or TLS layout)
+- **Status**: not started
+- **Discovered**: 2026-04-07
+- **Context**: The dist build amalgamates all source into a single TU (`csp.cpp`),
+  with `csp_globals.cpp` kept separate (see `docs/tls-caching-bug.md` for why).
+  The resulting test binary intermittently hangs on CI runners — observed on
+  ARM64 (TSan, ASan) and x86_64 (test). Source-built tests never hang.
+  Single-TU compilation can cause semantic changes beyond timing: the
+  TLS caching bug that motivated the two-file split is a known example.
+  Other candidates: static init order changes, different inlining causing
+  different lock/unlock interleaving, ODR-invisible differences in internal
+  linkage symbols. Constrained multi-tenant CI runners trigger it more
+  often but the root cause may not be a race at all — it could be a
+  deterministic semantic difference that only manifests as a hang.
+  Currently worked around by using source builds for ARM64 sanitizer jobs.
+  Needs a structured investigation (`docs/papers/` → enumerate actors →
+  hypothesise → compare source vs dist binary behaviour).
+
 ### 🎯T14 Dynamic scoping improvements
 - **Weight**: 0.5 (value 3 / cost 6)
 - **Status**: parked (2026-04-05)
