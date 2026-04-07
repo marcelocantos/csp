@@ -275,7 +275,8 @@
   - `make test-dist` completes reliably on all CI platforms (no hangs)
   - No ARM64 or x86_64 `use_source` workarounds needed in CI
   - Root cause identified and fixed (timing race, static init order, or TLS layout)
-- **Status**: not started
+- **Status**: achieved — `noinline` on all TLS accessor functions in `csp_globals.cpp` prevents the compiler from inlining and caching stale TLS addresses. CI workarounds removed, all 10 jobs green on dist builds.
+- **Achieved**: 2026-04-07
 - **Discovered**: 2026-04-07
 - **Context**: The dist build amalgamates all source into a single TU (`csp.cpp`),
   with `csp_globals.cpp` kept separate (see `docs/tls-caching-bug.md` for why).
