@@ -6,6 +6,17 @@
 
 #include <cstdlib>
 
+// Prevent the compiler from inlining TLS accessor functions into callers.
+// In single-TU (dist) builds, inlining lets the compiler cache the resolved
+// TLS address across jump_fcontext calls. After fiber migration to a
+// different OS thread, the cached address is stale — writes go to the
+// wrong thread's TLS slot.  See docs/tls-caching-bug.md.
+#ifdef _MSC_VER
+#define CSP_TLS_NOINLINE __declspec(noinline)
+#else
+#define CSP_TLS_NOINLINE __attribute__((noinline))
+#endif
+
 namespace csp {
 
     writer<std::exception_ptr> global_exception_handler = std::move(chan<std::exception_ptr>().w);
@@ -18,8 +29,8 @@ namespace csp {
 
         static thread_local Imp * g_imp = nullptr;
 
-        Imp* current_imp() { return g_imp; }
-        void set_current_imp(Imp* p) { g_imp = p; }
+        CSP_TLS_NOINLINE Imp* current_imp() { return g_imp; }
+        CSP_TLS_NOINLINE void set_current_imp(Imp* p) { g_imp = p; }
 
         static thread_local Processor * tl_proc_ = nullptr;
         static bool runtime_initialized_ = false;
@@ -47,7 +58,7 @@ namespace csp {
             runtime_initialized_ = true;
         }
 
-        Processor& current_p() {
+        CSP_TLS_NOINLINE Processor& current_p() {
             if (!tl_proc_) {
                 if (!runtime_initialized_) {
                     init_runtime(resolve_maxprocs());
@@ -59,11 +70,11 @@ namespace csp {
             return *tl_proc_;
         }
 
-        bool has_processor() {
+        CSP_TLS_NOINLINE bool has_processor() {
             return tl_proc_ != nullptr;
         }
 
-        void bind_processor(Processor * p) {
+        CSP_TLS_NOINLINE void bind_processor(Processor * p) {
             tl_proc_ = p;
             g_imp = &p->main;
 #if CSP_TSAN
