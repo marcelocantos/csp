@@ -199,9 +199,9 @@ TEST_CASE("Fanout---Chain") {
                     csp::internal::descr("fanout");
                     BRAC_SCOPE(g_log, "FanoutChain::λ", "%d, %d", i, j);
 
-                    for (int i; r >> i;) {
-                        CSP_LOG(g_log, "received %d", i);
-                        total += i;
+                    for (int v; r >> v;) {
+                        CSP_LOG(g_log, "received %d", v);
+                        total += v;
                     }
                 });
             }

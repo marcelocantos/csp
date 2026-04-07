@@ -465,7 +465,7 @@ TEST_CASE("Channel---String") {
     stats.spawn([r = std::move(branch[0].r), w = std::move(merge[0].w)]{
             for (std::string s; r >> s;) {
                 for (auto & c : s) {
-                    c = toupper(c);
+                    c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
                 }
                 w << s;
             }
@@ -583,7 +583,7 @@ static void spawn_inward_tree(RunStats & stats, reader<T> * ins, size_t n_ins, w
         reader<T> inner0, inner1;
         spawn_inward_tree(stats, ins, n_ins / 2, ++inner0);
         spawn_inward_tree(stats, ins + n_ins / 2, n_ins - n_ins / 2, ++inner1);
-        stats.spawn([out = std::move(out), inner0 = std::move(inner0), inner1 = std::move(inner1)] mutable {
+        stats.spawn([out = std::move(out), inner0 = std::move(inner0), inner1 = std::move(inner1)]() mutable {
             // alt — drain both subtrees; when one dies, continue with the other.
             T t;
             for (;;) {

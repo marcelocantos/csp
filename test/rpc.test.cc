@@ -183,7 +183,6 @@ TEST_CASE("request/rpc---server-death") {
 
         // Server is dead — next rpc's write fails (chan_op destructor
         // blocks in prialt, sees dead channel).
-        int v;
         CHECK_FALSE(bool(ch.w << request<int, int>{99, {}}));
     });
 }

@@ -12,7 +12,7 @@ option(CSP_BUILD_TESTS "Build tests" ON)
 if(MSVC OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC"))
     # clang-cl or MSVC — use generator expressions so /W4 /O2 don't leak to MASM
     add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/W4> $<$<COMPILE_LANGUAGE:C,CXX>:/O2>)
-    add_compile_definitions(DEBUG NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_compile_definitions(DEBUG NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
 else()
     add_compile_options(-O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
@@ -30,8 +30,12 @@ set(FCONTEXT_DIR vendor/github.com/boostorg/context/src/asm)
 
 if(WIN32)
     if(MSVC AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        # Native MSVC: use MASM assembly
-        enable_language(ASM_MASM)
+        # Native MSVC: ARM64 uses armasm64 (ASM_MARMASM), x86/x64 uses ml/ml64 (ASM_MASM).
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+            enable_language(ASM_MARMASM)
+        else()
+            enable_language(ASM_MASM)
+        endif()
         # BOOST_CONTEXT_EXPORT define is applied via target_compile_definitions
         # below (after add_library) — CMAKE_ASM_MASM_FLAGS doesn't reliably
         # pass trailing = in VS generators.

@@ -12,7 +12,7 @@ namespace csp::part {
 // Throws std::runtime_error if all readers close without producing a value.
 template <typename T>
 T first_wins(std::vector<reader<T>> inputs) {
-    T t;
+    T t{};
     std::vector<internal::ChanOp> chanops;
     for (auto& r : inputs) {
         chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
@@ -20,7 +20,7 @@ T first_wins(std::vector<reader<T>> inputs) {
 
     while (!inputs.empty()) {
         internal::AltMatch m;
-        internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+        internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
         if (m.src && m.dst)
             *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
         internal::alt_end(&m);

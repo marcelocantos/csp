@@ -198,3 +198,14 @@ None.
   push_to_global assertion, mbedTLS TSan false races, cancel/timer flakes).
   664/664 tests, 0 skipped. All 10 CI jobs green. New targets: 🎯T12–T15.
   STABILITY.md updated for v0.6.0 (TLS API surface changes).
+
+## 2026-04-06 — /release v0.8.0
+
+- **Commit**: `613fc9c`
+- **Outcome**: Released v0.8.0. Three new example applications: sensor fusion
+  (combine_latest, sample, window anomaly detection), web crawler (BFS, worker
+  pool, per-host rate limiting, BLO shutdown), log aggregator (merge, severity
+  routing, tick windows, alerting). 668/668 tests. 🎯T7.3, 🎯T7.4, 🎯T7.6
+  achieved (🎯T7 now 6/6). STABILITY.md updated. Note: direct-pointer channel
+  transfer optimization was attempted and reverted — unsafe for chan_ops stored
+  in containers (dynamic alt vectors).

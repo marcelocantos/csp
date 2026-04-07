@@ -5,7 +5,7 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
-Snapshot as of v0.7.0.
+Snapshot as of v0.8.0.
 
 ## Interaction surface catalogue
 
@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.7.0"` | Stable |
+| `CSP_VERSION` | `"0.8.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `7` | Stable |
+| `CSP_VERSION_MINOR` | `8` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
@@ -263,7 +263,8 @@ Core infrastructure (`part.h`):
 Combinator catalogue (all Stable unless noted):
 
 **Transformation**: `map`, `try_map`, `foreach_emit`, `scan`, `reduce`,
-`pairwise`, `enumerate`, `count`, `count_forever`, `flatten`, `cycle`.
+`pairwise`, `enumerate`, `count`, `count_forever`, `flatten`, `cycle`,
+`diff`, `frame`.
 
 **Filtering**: `where`, `distinct`, `unique`, `take_while`, `take_until`,
 `skip_while`, `skip_first`, `skip_last`, `first`, `last`, `stride`.
@@ -277,7 +278,7 @@ Combinator catalogue (all Stable unless noted):
 `combine_latest`, `mux`, `sort_merge`.
 
 **Routing**: `round_robin`, `partition`, `interleave`, `fanout`, `demux`,
-`unzip`, `transpose`.
+`unzip`, `transpose`, `reorder`.
 
 **Temporal**: `delay`, `pace`, `throttle`, `debounce`, `sample`, `timeout`,
 `conflate`, `latch`, `gate`, `killswitch`, `timer` (part).
@@ -297,7 +298,7 @@ Combinator catalogue (all Stable unless noted):
 (2 overloads).
 
 **Terminal**: `blackhole`, `mute`, `deaf`, `collect`, `sink`, `join`,
-`first_wins`.
+`first_wins`, `race`.
 
 **Monitoring**: `metrics`, `quantize` (2 overloads + spawn variants).
 

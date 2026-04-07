@@ -30,7 +30,7 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
             size_t sub_base = input_alive ? 2 : 1;
 
             internal::AltMatch m;
-            internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
 
             if (m.src && m.dst) {
                 if (input_alive && m.result == 1) {

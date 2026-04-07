@@ -566,7 +566,7 @@ bool make_chan(WriterRef * w, ReaderRef * r) {
         *w = {reinterpret_cast<void *>(ws)};
         *r = {reinterpret_cast<void *>((uintptr_t)rs | 1)};
         return true;
-    } catch (std::exception const & e) {
+    } catch (std::exception const &) {
     } catch (...) {
     }
     return false;
@@ -697,8 +697,8 @@ void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {
     }
 
     // Determine which endpoint side (write or read) for each channel.
-    bool a_is_write = (ca->write_slot_ == sa);
-    bool b_is_write = (cb->write_slot_ == sb);
+    [[maybe_unused]] bool a_is_write = (ca->write_slot_ == sa);
+    [[maybe_unused]] bool b_is_write = (cb->write_slot_ == sb);
     assert(a_is_write == b_is_write && "cannot swap write slot with read slot");
 
     // Exchange channel pointers in slots.

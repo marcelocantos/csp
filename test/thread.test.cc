@@ -23,7 +23,7 @@ TEST_CASE("Thread---Parallel") {
     csp::run([&]{
         for (int i = 0; i < 5; ++i) {
             csp::spawn([&, i]{
-                buf[i] = 478560413032U >> (8 * i);
+                buf[i] = static_cast<char>(478560413032U >> (8 * i));
             });
         }
     });

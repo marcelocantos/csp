@@ -7,9 +7,9 @@
 
 /* csp/csp.h */
 
-#define CSP_VERSION "0.7.0"
+#define CSP_VERSION "0.8.0"
 #define CSP_VERSION_MAJOR 0
-#define CSP_VERSION_MINOR 7
+#define CSP_VERSION_MINOR 8
 #define CSP_VERSION_PATCH 0
 
 
@@ -58,7 +58,7 @@ private:
 
     union {
         bool enabled_;
-        struct { char a, b; };
+        struct { char a, b; } pad_;
     };
     Rep* rep_;
 
@@ -585,7 +585,7 @@ template <int I>
 inline void transfer_at(int, void *, void *) {}
 
 template <int I, typename Op, typename... Ops>
-inline void transfer_at(int idx, void * src, void * dst, Op && op, Ops &&... ops) {
+inline void transfer_at(int idx, void * src, void * dst, Op &&, Ops &&... ops) {
     if (idx == I) {
         std::decay_t<Op>::transfer(src, dst);
     } else {
@@ -1942,8 +1942,8 @@ struct alignas(16) Imp {
     int n_chanops_, signal_;
 
     size_t id_ = []{
-        static std::atomic<size_t> next_{0};
-        return next_++;
+        static std::atomic<size_t> counter{0};
+        return counter++;
     }();
 
     Imp(fcontext_t ctx, StackRegion stk);
@@ -2910,6 +2910,10 @@ auto mallocedResource(T * p) {
 
 namespace csp::detail {
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4324) // structure was padded due to alignment specifier
+#endif
 struct Processor {
     Imp  main;       // Sentinel node for this P's run queue
     Imp* busy;       // Head of circular DLL run queue
@@ -2950,6 +2954,9 @@ struct Processor {
     Processor(Processor const &) = delete;
     Processor& operator=(Processor const &) = delete;
 };
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 Processor& current_p();
 void bind_processor(Processor* p);
@@ -4855,7 +4862,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
 
         while (!outs.empty()) {
             internal::AltMatch m;
-            internal::prialt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::prialt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
             if (m.src && m.dst) {
                 int idx = (m.result >= 0 ? m.result : ~m.result);
                 if (idx == 0 || idx == 2)
@@ -5002,7 +5009,7 @@ namespace csp::part {
 // Throws std::runtime_error if all readers close without producing a value.
 template <typename T>
 T first_wins(std::vector<reader<T>> inputs) {
-    T t;
+    T t{};
     std::vector<internal::ChanOp> chanops;
     for (auto& r : inputs) {
         chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
@@ -5010,7 +5017,7 @@ T first_wins(std::vector<reader<T>> inputs) {
 
     while (!inputs.empty()) {
         internal::AltMatch m;
-        internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+        internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
         if (m.src && m.dst)
             *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
         internal::alt_end(&m);
@@ -5061,7 +5068,7 @@ auto flat_map(F&& f) {
             size_t sub_base = input_alive ? 2 : 1;
 
             internal::AltMatch m;
-            internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
 
             // Type-aware transfer: input slot reads A, sub-stream slots read B.
             if (m.src && m.dst) {
@@ -5353,7 +5360,7 @@ void join(std::vector<reader<T>> inputs) {
 
     while (!inputs.empty()) {
         internal::AltMatch m;
-        internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+        internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
         if (m.src && m.dst)
             *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
         internal::alt_end(&m);
@@ -5473,7 +5480,7 @@ auto merge(std::vector<reader<T>> inputs) {
 
             while (!inputs.empty()) {
                 internal::AltMatch m;
-                internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+                internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
                 if (m.src && m.dst)
                     *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
                 internal::alt_end(&m);
@@ -5529,7 +5536,7 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
             size_t sub_base = input_alive ? 2 : 1;
 
             internal::AltMatch m;
-            internal::alt_begin(&m, chanops.data(), chanops.size(), 0);
+            internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
 
             if (m.src && m.dst) {
                 if (input_alive && m.result == 1) {
@@ -6092,8 +6099,8 @@ auto quantize(reader<T> source,  // incoming units
                     }
                 } else if (rc == ~1) { // Dead quanta; drain source.
                     while (q) {
-                        switch (int rc = alt(acc < q ? source >> t : ~source,
-                                             q <= acc ? sink << q : ~sink)) {
+                        switch (int rc2 = alt(acc < q ? source >> t : ~source,
+                                              q <= acc ? sink << q : ~sink)) {
                         case 0: // source
                             CSP_LOG(s_log, "quantize[~quanta]: source >> %d", t);
                             acc += t;
@@ -6103,10 +6110,10 @@ auto quantize(reader<T> source,  // incoming units
                             acc -= q;
                             return;
                         default:
-                            CSP_LOG(s_log, "quantize[~quanta]: ~%d", ~rc);
+                            CSP_LOG(s_log, "quantize[~quanta]: ~%d", ~rc2);
                             if (q && q <= acc && sink << q) {
                                 CSP_LOG(s_log, "quantize[~quanta,~%s]: sink << %d",
-                                         rc == ~0 ? "source" : "sink", q);
+                                         rc2 == ~0 ? "source" : "sink", q);
                                 acc -= q;
                             }
                             return;

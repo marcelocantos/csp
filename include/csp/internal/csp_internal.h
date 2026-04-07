@@ -101,8 +101,8 @@ struct alignas(16) Imp {
     int n_chanops_, signal_;
 
     size_t id_ = []{
-        static std::atomic<size_t> next_{0};
-        return next_++;
+        static std::atomic<size_t> counter{0};
+        return counter++;
     }();
 
     Imp(fcontext_t ctx, StackRegion stk);

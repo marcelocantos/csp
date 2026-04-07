@@ -1,8 +1,8 @@
 #pragma once
 
-#define CSP_VERSION "0.7.0"
+#define CSP_VERSION "0.8.0"
 #define CSP_VERSION_MAJOR 0
-#define CSP_VERSION_MINOR 7
+#define CSP_VERSION_MINOR 8
 #define CSP_VERSION_PATCH 0
 
 #include <csp/internal/log.h>
@@ -299,7 +299,7 @@ template <int I>
 inline void transfer_at(int, void *, void *) {}
 
 template <int I, typename Op, typename... Ops>
-inline void transfer_at(int idx, void * src, void * dst, Op && op, Ops &&... ops) {
+inline void transfer_at(int idx, void * src, void * dst, Op &&, Ops &&... ops) {
     if (idx == I) {
         std::decay_t<Op>::transfer(src, dst);
     } else {
