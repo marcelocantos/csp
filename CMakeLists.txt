@@ -12,7 +12,7 @@ option(CSP_BUILD_TESTS "Build tests" ON)
 if(MSVC OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC"))
     # clang-cl or MSVC — use generator expressions so /W4 /O2 don't leak to MASM
     add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/W4> $<$<COMPILE_LANGUAGE:C,CXX>:/O2>)
-    add_compile_definitions(DEBUG NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    add_compile_definitions(DEBUG NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
 else()
     add_compile_options(-O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
