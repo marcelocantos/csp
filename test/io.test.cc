@@ -673,7 +673,7 @@ TEST_CASE("IO---File-roundtrip") {
     csp::schedule();
     CHECK(done.load());
     CHECK(data == result);
-    ::unlink(path.c_str());
+    std::filesystem::remove(path);
     csp::shutdown_runtime();
 }
 
