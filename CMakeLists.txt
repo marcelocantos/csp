@@ -118,6 +118,7 @@ set(LIB_SRCS
     src/byte_reader.cc
     src/net.cc
     src/file.cc
+    src/http.cc
 )
 
 if(WIN32)
@@ -135,10 +136,21 @@ if(CSP_TLS)
     list(APPEND LIB_SRCS src/tls.cc)
 endif()
 
+# --- llhttp (vendored HTTP parser) ---
+set(LLHTTP_DIR vendor/github.com/nodejs/llhttp)
+add_library(llhttp_csp STATIC
+    ${LLHTTP_DIR}/src/llhttp.c
+    ${LLHTTP_DIR}/src/api.c
+    ${LLHTTP_DIR}/src/http.c
+)
+target_include_directories(llhttp_csp PUBLIC ${LLHTTP_DIR}/include)
+
 # --- CSP library ---
 add_library(csp STATIC ${LIB_SRCS} ${FCONTEXT_SRCS})
 
 target_include_directories(csp PUBLIC include vendor/include)
+target_include_directories(csp PRIVATE ${LLHTTP_DIR}/include)
+target_link_libraries(csp PRIVATE llhttp_csp)
 
 # Boost.Context MASM files reference BOOST_CONTEXT_EXPORT; define as empty
 # for static-library builds.
@@ -211,12 +223,13 @@ if(CSP_BUILD_TESTS)
     file(GLOB TEST_SRCS test/*.test.cc)
 
     # Exclude tests for features not in the dist amalgamation.
-    # net.h/net.cc are not yet amalgamated (WIP: T3.1).
     list(FILTER TEST_SRCS EXCLUDE REGEX "net\\.test\\.cc$")
 
-    # On Windows, exclude tests that depend on TLS (PicoTLS not built by default)
     if(WIN32)
+        # Exclude tests that depend on TLS (PicoTLS not built by default on Windows)
         list(FILTER TEST_SRCS EXCLUDE REGEX "tls\\.test\\.cc$")
+        # HTTP tests not yet verified on Windows
+        list(FILTER TEST_SRCS EXCLUDE REGEX "http\\.test\\.cc$")
     endif()
 
     add_executable(csp_tests test/main.cc ${TEST_SRCS})
