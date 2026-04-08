@@ -7,6 +7,7 @@
 #include "csp/csp.h"
 #include "csp/dynamic.h"
 #include "csp/fcontext.h"
+#include "csp/http.h"
 #include "csp/file.h"
 #include "csp/imp_exit.h"
 #include "csp/internal/blocking_pool.h"
