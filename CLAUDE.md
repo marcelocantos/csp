@@ -64,6 +64,9 @@ These are generated from the development sources by `scripts/amalgamate.py`
   `done`, `timed_out`).
 - **include/csp/tls.h** — TLS 1.3 via PicoTLS (`context`, `conn`), behind
   `#ifdef CSP_TLS`.
+- **include/csp/http.h** — HTTP/1.1 server (`serve`, `request`, `response`,
+  `endpoint`). Implementation in `src/http.cc` with vendored llhttp.
+- **include/csp/net.h** — TCP networking (`listen`, `dial`, `connection`).
 - **include/csp/signal.h** — Unix signal channels.
 - **include/csp/blocking.h** — Blocking thread pool.
 - **include/csp/dynamic.h** — `dynamic<T>` dynamic-scoped variables (HAMT).
@@ -74,7 +77,8 @@ These are generated from the development sources by `scripts/amalgamate.py`
 - **src/** — Implementation files (`csp.cc`, `channel.cc`, `runtime.cpp`,
   `csp_globals.cpp`, `reactor.cc`, `blocking_pool.cc`, `signal.cc`,
   `stack_pool.cc`, `hamt.cc`, `stack_analysis_arm64.cc`, `log.cc`,
-  `cancel.cc`, `timer.cc`, `io.cc`, `clock.cc`, `tls.cc`).
+  `cancel.cc`, `timer.cc`, `io.cc`, `clock.cc`, `tls.cc`, `net.cc`,
+  `http.cc`).
 
 ### Stream combinator conventions
 
@@ -193,6 +197,9 @@ with `.test.cc` extension.
 - **PicoTLS** (vendored as git submodule in
   `vendor/github.com/h2o/picotls/` with minicrypto backend; compiled when
   `CSP_TLS=1`, which is the default; TLS 1.3 only, no OpenSSL dependency)
+- **llhttp** (vendored in `vendor/github.com/nodejs/llhttp/`; MIT licence;
+  HTTP/1.1 parser from Node.js; compiled as part of the normal build;
+  excluded from the dist amalgamation)
 - **doctest** (vendored, header-only)
 
 ### Optional tools

@@ -1,132 +1,172 @@
 # Convergence Report
 
-**Generated**: 2026-04-06
+**Generated**: 2026-04-08
 **Branch**: master
-**SHA**: b9983a0
+**SHA**: eff9850
 
 ## Standing invariants
 
-- Tests: 664/664 passed (per last session).
-- CI: **GREEN** (9/10 jobs passed on 454bea8; macOS arm64 test job was cancelled, not failed. macOS ASan+UBSan now passes after UBSan fix 608c5dc. PR branch 05ab580 was 10/10 green).
+- Tests: 668/668 passed.
+- CI: **GREEN** (all 3 recent runs succeeded, including PR #21 merge).
+- No open PRs.
 
 ## Movement
 
-- CI: **FAILING** (UBSan) → **GREEN** (UBSan fix 608c5dc merged via PR #19)
-- All targets: (unchanged since last report)
+- 🎯T7.3 Web crawler example: not started -> **achieved** (v0.8.0, PR #20)
+- 🎯T7.4 Sensor fusion dashboard example: not started -> **achieved** (v0.8.0, PR #20)
+- 🎯T7.6 Log aggregator example: not started -> **achieved** (v0.8.0, PR #20)
+- 🎯T7 Non-trivial example applications: achieved (3/6) -> **achieved (6/6)**
+- 🎯T16 Dist-build test suite does not hang on CI: (new) -> **achieved** (PR #21)
+- 🎯T3.1 Ergonomic I/O wrappers exist: close -> **achieved**
+- 🎯T3.2: (unchanged — not started)
+- 🎯T13, 🎯T14: (unchanged)
 
 ## Gap report
 
-### 🎯T7.3 Web crawler example  [weight 1.7]
+### 🎯T3.2 Channel-native HTTP/1.1 server works  [weight 2]
 Gap: not started
-No web crawler in `examples/`. Depends on networking infrastructure (which partially exists via `net::listen`/`net::dial`), but could be built as a simulated/mock example like the existing examples.
+No llhttp vendored, no `http::serve`. Gateway target — unblocks 🎯T3.5 (WebSocket), 🎯T3.6 (HTTP client), 🎯T3.7 (HTTP/2). All dependencies satisfied (🎯T3.1 achieved).
 
-### 🎯T7.4 Sensor fusion dashboard example  [weight 1.7]
+### 🎯T3.5 WebSocket support (server and client)  [weight 2]  **BLOCKED by 🎯T3.2**
 Gap: not started
-No sensor fusion example in `examples/`. Pure channel-based — no I/O dependencies. Uses `combine_latest`, `quantize`, sliding windows.
+No wslay vendored. Cannot start until HTTP/1.1 server provides the upgrade path.
 
-### 🎯T7.6 Log aggregator example  [weight 1.7]
+### 🎯T3.6 HTTP client  [weight 1]  **BLOCKED by 🎯T3.2**
 Gap: not started
-No log aggregator in `examples/`. Could use blocking pool for file tailing, channels for routing/aggregation.
+Reuses llhttp for response parsing. Blocked on HTTP/1.1 work establishing shared types.
 
-### 🎯T3.1 Ergonomic I/O wrappers exist  [weight 1.6]
-Gap: **close**
-Significant infrastructure already exists but doesn't match the target's naming/shape:
-- `io::socket_t` exists (not `fd_t`, but functionally equivalent)
-- `net::listen` and `net::dial` exist and return `connection` with split I/O channels
-- `byte_reader`/`byte_writer` exist in `csp::part::io` (but call `set_nonblock` instead of asserting)
-- `split_lines` exists (equivalent to `io::lines`)
-- Missing: `io::read_all`/`io::write_all`, `file::read`/`file::write` via blocking pool, opaque `fd_t` wrapper with no implicit int conversion
-- The gap is mostly about naming alignment, the `fd_t` wrapper type, and file I/O helpers — the hard I/O plumbing is done.
-
-### 🎯T3.2 Channel-native HTTP/1.1 server works  [weight 1.6]
+### 🎯T3.7 HTTP/2 support  [weight 1]  **BLOCKED by 🎯T3.2**
 Gap: not started
-No llhttp vendored, no `http::serve`. Depends on 🎯T3.1.
+No nghttp2 vendored. Blocked on shared HTTP types from 🎯T3.2.
 
-### 🎯T3.5 WebSocket support (server and client)  [weight 1.6]
+### 🎯T3.8 QUIC transport  [weight 0.4]
 Gap: not started
-No wslay vendored. Depends on 🎯T3.2 for HTTP upgrade path.
+No ngtcp2 vendored. Largest networking target (cost 13). Independent of HTTP/1.1 chain.
 
-### 🎯T3.6 HTTP client  [weight 1.0]
+### 🎯T3.9 HTTP/3 over QUIC  [weight 1]  **BLOCKED by 🎯T3.7 + 🎯T3.8**
 Gap: not started
-No HTTP client implementation. Depends on 🎯T3.1.
+Depends on both HTTP/2 types and QUIC transport.
+
+### 🎯T3.3 High-density stack scaling  [weight 0.4]  (status only)
+Status: not started
+No changed files overlap.
+
+### 🎯T3.4 Context-aware stack depth analysis  [weight 0.2]  (status only)
+Status: not started
+No changed files overlap.
+
+### 🎯T3 Runtime is production-ready for I/O workloads  [weight 1]
+Gap: converging (1/9 sub-targets achieved)
+
+  [x] 🎯T3.1 Ergonomic I/O wrappers exist — achieved
+  [ ] 🎯T3.2 Channel-native HTTP/1.1 server — not started (gateway)
+  [ ] 🎯T3.5 WebSocket — not started (blocked by T3.2)
+  [ ] 🎯T3.6 HTTP client — not started (blocked by T3.2)
+  [ ] 🎯T3.7 HTTP/2 — not started (blocked by T3.2)
+  [ ] 🎯T3.8 QUIC transport — not started
+  [ ] 🎯T3.9 HTTP/3 — not started (blocked by T3.7 + T3.8)
+  [ ] 🎯T3.3 Stack scaling — not started
+  [ ] 🎯T3.4 Stack analysis — not started
 
 ### 🎯T13 Per-worker wake eliminates thundering herd  [weight 0.4]  (status only)
 Status: not started
 No changed files overlap.
 
 ### 🎯T14 Dynamic scoping improvements  [weight 0.5]  (parked)
-Gap: parked
-No change since last report. Revisit if profiling points here.
+Status: parked
+No change since last report.
 
-### Achieved targets (unchanged)
+### Achieved targets (since last report)
 
-- 🎯T12 Test names contain no spaces — achieved
-- 🎯T11 Scheduler is always M:N — achieved
-- 🎯T15 TLS uses PicoTLS instead of mbedTLS — achieved
-- 🎯T7 Non-trivial example applications demonstrate CSP — achieved (3/6)
-- 🎯T4 API safety gaps are closed — achieved
-- 🎯T5 Unmodeled concurrent decision points have TLA+ specs — achieved
-- 🎯T8 Signal handling is audited for correctness — achieved
-- 🎯T2 Tier D combinators are implemented — achieved
+- 🎯T3.1 Ergonomic I/O wrappers exist — achieved
+- 🎯T7 Non-trivial example applications (6/6) — achieved
+- 🎯T16 Dist-build test suite does not hang on CI — achieved
+
+### Previously achieved (unchanged)
+
+- 🎯T2 Tier D combinators — achieved
+- 🎯T4 API safety gaps — achieved
+- 🎯T5 TLA+ specs — achieved
+- 🎯T8 Signal handling audit — achieved
+- 🎯T11 Scheduler always M:N — achieved
+- 🎯T12 Test names no spaces — achieved
+- 🎯T15 TLS PicoTLS — achieved
 
 ## Recommendation
 
-Work on: **🎯T3.1 Ergonomic I/O wrappers exist**
-Reason: Despite 🎯T7.3/T7.4/T7.6 having slightly higher effective weight (1.7 vs 1.6), 🎯T3.1 is **close** rather than not-started — most of the I/O infrastructure already exists. Closing it is cheaper and unblocks the entire 🎯T3 subtree (HTTP/1.1, WebSocket, HTTP client — all weight 1.6). The example targets are independent leaves with no downstream impact. 🎯T3.1 is higher leverage per unit of effort.
+Work on: **🎯T3.2 Channel-native HTTP/1.1 server works**
+
+Both the markdown WSJF analysis and bullseye agree: 🎯T3.2 is the highest-weight unblocked target (weight 2, value 8 / cost 5). It is also the critical gateway — completing it unblocks three downstream targets (🎯T3.5 WebSocket, 🎯T3.6 HTTP client, 🎯T3.7 HTTP/2), making it the highest-leverage next step by a wide margin. All its own dependencies are satisfied (🎯T3.1 achieved).
 
 ## Suggested action
 
-Audit the existing I/O surface against 🎯T3.1 acceptance criteria and close the gaps: (1) introduce an opaque `fd_t` type wrapping `socket_t` with no implicit int conversion, (2) change `byte_reader`/`byte_writer` to assert non-blocking rather than calling `set_nonblock`, (3) add `io::read_all`/`io::write_all` convenience functions, (4) add `file::read`/`file::write` via the blocking pool, (5) add reference docs and tests for new additions.
+Vendor llhttp into `vendor/` (it is a single-file, parser-only library from Node.js). Define the `http::request` and `http::response` types with channel-based body streaming. Implement `http::serve(port)` that returns a `reader` of per-connection endpoint bundles, with each connection spawning an imp that reads HTTP requests via llhttp and exposes them as `reader<http::request>` + `writer<http::response>`.
+
+## Bullseye scorecard
+
+**Ranking**:        +1
+**Blocking**:       +2
+**Data quality**:   -2
+**Overall**:        +1
+**Markdown rec**:   🎯T3.2 Channel-native HTTP/1.1 server works
+**Bullseye rec**:   🎯T2.2 Channel-native HTTP/1.1 server works
+**Notes**: Ranking +1: bullseye correctly placed T2.2 (=md T3.2) at the top with weight 2, ahead of all others. The markdown rank.py also had it at weight 1.6, but did not capture the dependency edges from Context fields, so it showed T3.5/T3.6 as equal peers rather than blocked — bullseye's explicit depends_on edges make the gateway role visible. Blocking +2: bullseye correctly identifies T2.3, T2.4, T2.5 as blocked by T2.2, and T2.7 as blocked by T2.5+T2.6. The markdown rank.py showed zero blocked targets because dependencies were only in prose Context fields. Data quality -2: this was a bootstrap run, so all discovered dates are today and IDs don't match the markdown T-numbers (bullseye T2.2 = markdown T3.2). The ID mismatch will cause ongoing confusion. Additionally, bullseye's MCP server silently overwrote targets.md with a lossy render (lost historical context, achieved dates, last-evaluated marker) — had to `git checkout` to restore it. Future runs should keep IDs aligned, and the render side-effect needs guarding. Overall +1: bullseye's blocking analysis is meaningfully better than markdown's for this repo; the ranking agrees; the main gap is the ID mapping.
 
 <!-- convergence-deps
-evaluated: 2026-04-06T00:00:00Z
-sha: b9983a0
-
-🎯T7.3:
-  gap: not started
-  assessment: "No web crawler example in examples/."
-  read:
-    - examples/
-
-🎯T7.4:
-  gap: not started
-  assessment: "No sensor fusion example in examples/."
-  read:
-    - examples/
-
-🎯T7.6:
-  gap: not started
-  assessment: "No log aggregator example in examples/."
-  read:
-    - examples/
-
-🎯T3.1:
-  gap: close
-  assessment: "socket_t, net::listen, net::dial, byte_reader, byte_writer, split_lines all exist. Missing fd_t opaque wrapper, read_all/write_all, file::read/write. byte_reader/byte_writer set_nonblock instead of asserting."
-  read:
-    - include/csp/io.h
-    - include/csp/net.h
-    - include/csp/part/io.h
-    - include/csp/byte_reader.h
+evaluated: 2026-04-08T00:00:00Z
+sha: eff9850
 
 🎯T3.2:
   gap: not started
-  assessment: "No llhttp vendored, no http::serve."
-  read: []
+  assessment: "No llhttp vendored, no http::serve. Gateway target unblocking T3.5, T3.6, T3.7."
+  read:
+    - include/csp/io.h
+    - vendor/
 
 🎯T3.5:
   gap: not started
-  assessment: "No wslay vendored."
+  assessment: "No wslay vendored. Blocked by T3.2."
   read: []
 
 🎯T3.6:
   gap: not started
-  assessment: "No HTTP client implementation."
+  assessment: "No HTTP client. Blocked by T3.2."
   read: []
+
+🎯T3.7:
+  gap: not started
+  assessment: "No nghttp2 vendored. Blocked by T3.2."
+  read: []
+
+🎯T3.8:
+  gap: not started
+  assessment: "No ngtcp2 vendored. Largest networking target."
+  read: []
+
+🎯T3.9:
+  gap: not started
+  assessment: "Blocked by T3.7 + T3.8."
+  read: []
+
+🎯T3.3:
+  gap: not started
+  assessment: "No progress."
+  read: []
+
+🎯T3.4:
+  gap: not started
+  assessment: "No progress."
+  read: []
+
+🎯T3.1:
+  gap: achieved
+  assessment: "fd_t opaque wrapper, byte_reader/byte_writer, read_all/write_all, lines, file::read/write all exist."
+  read:
+    - include/csp/io.h
 
 🎯T13:
   gap: not started
-  assessment: "unpark_one() still uses notify_all. No implementation progress."
+  assessment: "unpark_one() still uses notify_all."
   read: []
 
 🎯T14:
@@ -134,43 +174,11 @@ sha: b9983a0
   assessment: "Parked. HAMT works, not a bottleneck."
   read: []
 
-🎯T12:
-  gap: achieved
-  assessment: "All test names use hyphens."
-  read: []
-
-🎯T11:
-  gap: achieved
-  assessment: "All criteria met. PR #18 merged."
-  read: []
-
-🎯T15:
-  gap: achieved
-  assessment: "PicoTLS vendored, mbedTLS removed, all tests pass."
-  read: []
-
-🎯T7:
-  gap: achieved
-  assessment: "3/6 sub-targets complete. Acceptance threshold met."
-  read: []
-
-🎯T2:
-  gap: achieved
-  assessment: "diff, frame, reorder, race implemented."
-  read: []
-
-🎯T4:
-  gap: achieved
-  assessment: "closer<EP> and main() error message both done."
-  read: []
-
-🎯T5:
-  gap: achieved
-  assessment: "3 TLA+ spec pairs written."
-  read: []
-
-🎯T8:
-  gap: achieved
-  assessment: "Signal handling audited, no violations."
-  read: []
+bullseye:
+  ranking: 1
+  blocking: 2
+  data_quality: -2
+  overall: 1
+  markdown_rec: T3.2
+  bullseye_rec: T2.2
 -->

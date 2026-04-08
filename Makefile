@@ -59,7 +59,8 @@ endif
 DEPFLAGS = -MMD -MP
 
 INCLUDES := -I$(CSP_INCLUDE) \
-            -Ivendor/include
+            -Ivendor/include \
+            -Ivendor/github.com/nodejs/llhttp/include
 
 # --- TLS support (via PicoTLS + minicrypto) ---
 
@@ -115,6 +116,19 @@ PICOTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer \
 endif
 endif
 
+# --- llhttp (vendored HTTP parser) ---
+
+LLHTTP_DIR  := vendor/github.com/nodejs/llhttp
+LLHTTP_SRCS := $(LLHTTP_DIR)/src/llhttp.c \
+               $(LLHTTP_DIR)/src/api.c \
+               $(LLHTTP_DIR)/src/http.c
+LLHTTP_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(LLHTTP_SRCS))
+
+LLHTTP_CFLAGS := -O2 -I$(LLHTTP_DIR)/include
+ifneq ($(SANITIZE),)
+LLHTTP_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
 # --- fcontext (vendored from Boost.Context) ---
 
 UNAME_S := $(shell uname -s)
@@ -166,15 +180,16 @@ LIB_SRCS := src/csp.cc \
             src/imp_exit.cc \
             src/net.cc \
             src/file.cc
+LIB_SRCS += src/http.cc
 ifeq ($(CSP_TLS),1)
 LIB_SRCS += src/tls.cc
 endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
-# net.test.cc depends on csp/net.h which is not in the dist amalgamation.
+# net.test.cc and http.test.cc depend on headers not in the dist amalgamation.
 ifeq ($(CSP_INCLUDE),dist)
-TEST_SRCS    := $(filter-out test/net.test.cc,$(TEST_SRCS))
+TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)
@@ -183,7 +198,7 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
 ifneq ($(CSP_INCLUDE),dist)
-LIB_OBJS   += $(FCONTEXT_OBJS)
+LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS)
 endif
 ifeq ($(CSP_TLS),1)
 LIB_OBJS   += $(PICOTLS_OBJS)
@@ -239,6 +254,11 @@ $(BUILDDIR)/src/%.o: src/%.cpp
 $(BUILDDIR)/fcontext/%.o: $(FCONTEXT_DIR)/%.S
 	@mkdir -p $(dir $@)
 	$(CXX) -c -o $@ $<
+
+# llhttp C sources
+$(BUILDDIR)/$(LLHTTP_DIR)/%.o: $(LLHTTP_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(LLHTTP_CFLAGS) -o $@ $<
 
 # PicoTLS + minicrypto C sources
 ifeq ($(CSP_TLS),1)

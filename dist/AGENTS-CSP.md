@@ -400,6 +400,91 @@ auto lr = csp::part::io::byte_reader(fd) | csp::part::io::split_lines;
 auto line_reader = lr.spawn();
 ```
 
+## Networking
+
+```cpp
+namespace csp::net {
+
+struct connection {
+    io::fd_t fd;
+    reader<bytes> input;    // bytes from peer
+    writer<bytes> output;   // bytes to peer
+    std::string remote_addr;
+};
+
+struct listener {
+    reader<connection> connections;  // read to accept
+    uint16_t port;                  // actual bound port
+    std::string local_addr;
+};
+
+listener listen(uint16_t port, listen_options opts = {});
+connection dial(const std::string& host, uint16_t port);
+}
+```
+
+## HTTP
+
+Channel-native HTTP/1.1 server. Not in the dist amalgamation — compile
+`src/http.cc` + llhttp separately.
+
+```cpp
+namespace csp::http {
+
+enum class method { GET, HEAD, POST, PUT, DELETE_, PATCH, OPTIONS, CONNECT, TRACE };
+const char* method_name(method m);
+
+struct response {
+    int status = 200;
+    std::vector<std::pair<std::string, std::string>> headers;
+    bytes body;
+};
+
+struct request {
+    http::method method;
+    std::string url;
+    uint8_t version_major, version_minor;
+    std::vector<std::pair<std::string, std::string>> headers;
+    bytes body;                    // buffered request body
+    bool keep_alive;
+    writer<response> respond;      // write exactly one response
+
+    std::string header(const std::string& name) const;  // case-insensitive
+    int64_t content_length() const;                       // -1 if absent
+};
+
+struct endpoint {
+    reader<request> requests;      // one per HTTP request
+    std::string remote_addr;
+};
+
+struct server {
+    reader<endpoint> endpoints;    // one per connection
+    uint16_t port;
+    std::string local_addr;
+};
+
+server serve(uint16_t port, serve_options opts = {});
+}
+```
+
+Usage:
+```cpp
+auto srv = http::serve(8080);
+http::endpoint ep;
+while (srv.endpoints >> ep) {
+    csp::spawn([ep = std::move(ep)] {
+        http::request req;
+        while (ep.requests >> req) {
+            std::string body = "Hello!";
+            req.respond << http::response{200,
+                {{"Content-Type", "text/plain"}},
+                bytes(body.begin(), body.end())};
+        }
+    });
+}
+```
+
 ## Signals
 
 ```cpp

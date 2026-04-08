@@ -1,6 +1,6 @@
 # Targets
 
-<!-- last-evaluated: 9dcf16f -->
+<!-- last-evaluated: 1ff87e4 -->
 
 ## Active
 
@@ -19,7 +19,7 @@
 ### 🎯T3 Runtime is production-ready for I/O workloads
 - **Weight**: 1 (value 21 / cost 34)
 - **Acceptance**: Core: T3.1 (I/O wrappers) + T3.2 (HTTP/1.1) + T3.5 (WebSocket) + T3.6 (HTTP client). Full stack: + T3.7 (HTTP/2) + T3.8 (QUIC) + T3.9 (HTTP/3). Infrastructure: T3.3 (stack scaling), T3.4 (stack analysis).
-- **Status**: not started
+- **Status**: converging (2/9 sub-targets achieved)
 - **Discovered**: 2026-03-09
 
 ### 🎯T3.1 Ergonomic I/O wrappers exist
@@ -47,9 +47,10 @@
   - Keep-alive handled automatically
   - Graceful shutdown via channel lifecycle (drop the listener → connections drain)
   - Tests and reference docs
-- **Status**: not started
+- **Status**: achieved — llhttp v9.3.1 vendored; `csp::http::serve(port)` returns `reader<endpoint>` with per-connection `reader<request>` and per-request `writer<response>` channel; buffered request bodies; keep-alive and pipelining; direct socket I/O (no cancel-scope interference); self-connect sentinel for clean shutdown; 5 tests (GET, POST, keep-alive, headers, method names); 673/673 pass.
+- **Achieved**: 2026-04-08
 - **Discovered**: 2026-03-09
-- **Context**: Decomposed from original T3.2 which was overloaded. llhttp (Node.js parser) is parser-only, no I/O — integrates cleanly as a filter between byte_reader and structured output.
+- **Context**: Decomposed from original T3.2 which was overloaded. llhttp (Node.js parser) is parser-only, no I/O — integrates cleanly as a filter between byte_reader and structured output. Body streaming deferred to future work (buffered for now).
 
 ### 🎯T3.5 WebSocket support (server and client)
 - **Weight**: 2 (value 8 / cost 5)
@@ -275,7 +276,8 @@
   - `make test-dist` completes reliably on all CI platforms (no hangs)
   - No ARM64 or x86_64 `use_source` workarounds needed in CI
   - Root cause identified and fixed (timing race, static init order, or TLS layout)
-- **Status**: not started
+- **Status**: achieved — `noinline` on all TLS accessor functions in `csp_globals.cpp` prevents the compiler from inlining and caching stale TLS addresses. CI workarounds removed, all 10 jobs green on dist builds.
+- **Achieved**: 2026-04-07
 - **Discovered**: 2026-04-07
 - **Context**: The dist build amalgamates all source into a single TU (`csp.cpp`),
   with `csp_globals.cpp` kept separate (see `docs/tls-caching-bug.md` for why).
