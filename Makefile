@@ -187,9 +187,9 @@ endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
-# net.test.cc depends on csp/net.h which is not in the dist amalgamation.
+# net.test.cc and http.test.cc depend on headers not in the dist amalgamation.
 ifeq ($(CSP_INCLUDE),dist)
-TEST_SRCS    := $(filter-out test/net.test.cc,$(TEST_SRCS))
+TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)

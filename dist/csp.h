@@ -2490,6 +2490,827 @@ void write(const std::string& path, const void* data, size_t len);
 
 }
 
+/* csp/http.h */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+
+/* csp/net.h */
+
+
+/* csp/io.h */
+
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#ifdef _MSC_VER
+using ssize_t = ptrdiff_t;
+#endif
+#else
+#include <fcntl.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
+namespace csp::internal {
+
+#ifdef _WIN32
+void io_wait_readable(SOCKET sock);
+void io_wait_writable(SOCKET sock);
+#else
+// Layer 1 primitives — defined in src/io.cc.
+// Cancel-aware: if a cancel guard is active, these compose the
+// fd readiness signal with the cancel signal in a prialt.
+void io_wait_readable(int fd);
+void io_wait_writable(int fd);
+#endif
+
+}
+
+namespace csp::io {
+
+// --- Platform socket type (internal raw type) ---
+
+#ifdef _WIN32
+using socket_t = SOCKET;
+constexpr socket_t invalid_socket = INVALID_SOCKET;
+#else
+using socket_t = int;
+constexpr socket_t invalid_socket = -1;
+#endif
+
+// --- Opaque file descriptor wrapper ---
+//
+// Wraps a platform file descriptor (int on Unix, SOCKET on Windows)
+// with no implicit conversion to the underlying integer type.
+// All CSP functions that produce fds return fd_t already set
+// non-blocking.
+
+class fd_t {
+    socket_t fd_;
+
+public:
+    constexpr fd_t() : fd_(invalid_socket) {}
+    constexpr explicit fd_t(socket_t fd) : fd_(fd) {}
+
+    // Explicit access to the raw descriptor. Use sparingly —
+    // prefer the typed API.
+    [[nodiscard]] constexpr socket_t raw() const { return fd_; }
+
+    // True if this fd holds a valid descriptor.
+    [[nodiscard]] constexpr bool valid() const {
+        return fd_ != invalid_socket;
+    }
+    constexpr explicit operator bool() const { return valid(); }
+
+    // Check whether the fd is set non-blocking (Unix only).
+    // On Windows, always returns true (no kernel query available).
+    [[nodiscard]] bool is_nonblock() const {
+#ifdef _WIN32
+        return true;  // No portable query on Windows.
+#else
+        int flags = ::fcntl(fd_, F_GETFL);
+        return flags >= 0 && (flags & O_NONBLOCK);
+#endif
+    }
+
+    friend constexpr auto operator<=>(fd_t, fd_t) = default;
+    friend constexpr bool operator==(fd_t, fd_t) = default;
+};
+
+constexpr fd_t invalid_fd{};
+
+// --- Layer 1: Suspend until fd is ready ---
+
+inline void wait_readable(fd_t fd) { internal::io_wait_readable(fd.raw()); }
+inline void wait_writable(fd_t fd) { internal::io_wait_writable(fd.raw()); }
+
+// --- Utility ---
+
+#ifdef _WIN32
+
+// Set socket to non-blocking mode. Returns 0 on success, -1 on error.
+inline int set_nonblock(fd_t fd) {
+    u_long mode = 1;
+    return ioctlsocket(fd.raw(), FIONBIO, &mode) == 0 ? 0 : -1;
+}
+
+// Close a socket.
+inline void close(fd_t fd) {
+    closesocket(fd.raw());
+}
+
+#else
+
+// Set fd to non-blocking mode. Returns 0 on success, -1 on error.
+int set_nonblock(fd_t fd);
+
+// Close a file descriptor.
+inline void close(fd_t fd) {
+    ::close(fd.raw());
+}
+
+#endif
+
+// --- Layer 2: Non-blocking wrappers ---
+// These retry on would-block by suspending the imp until the fd
+// is ready, then retrying the syscall. All retry on interrupt.
+
+#ifdef _WIN32
+
+// Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
+[[nodiscard]] inline ssize_t read(fd_t fd, void* buf, size_t len) {
+    for (;;) {
+        int n = ::recv(fd.raw(), static_cast<char*>(buf), static_cast<int>(len), 0);
+        if (n >= 0) return n;
+        int err = WSAGetLastError();
+        if (err == WSAEINTR) continue;
+        if (err == WSAEWOULDBLOCK) {
+            wait_readable(fd);
+            continue;
+        }
+        return -1;
+    }
+}
+
+// Write all of buf. Returns total bytes written, or -1 on error.
+// Partial writes are retried automatically.
+[[nodiscard]] inline ssize_t write(fd_t fd, const void* buf, size_t len) {
+    size_t written = 0;
+    auto p = static_cast<const char*>(buf);
+    while (written < len) {
+        int n = ::send(fd.raw(), p + written, static_cast<int>(len - written), 0);
+        if (n >= 0) {
+            written += static_cast<size_t>(n);
+            continue;
+        }
+        int err = WSAGetLastError();
+        if (err == WSAEINTR) continue;
+        if (err == WSAEWOULDBLOCK) {
+            wait_writable(fd);
+            continue;
+        }
+        return -1;
+    }
+    return static_cast<ssize_t>(written);
+}
+
+// Accept a connection. Returns new fd (already non-blocking), or invalid_fd on error.
+[[nodiscard]] inline fd_t accept(fd_t listen_fd,
+                                 struct sockaddr* addr,
+                                 socklen_t* addrlen) {
+    for (;;) {
+        SOCKET raw = ::accept(listen_fd.raw(), addr, addrlen);
+        if (raw != INVALID_SOCKET) {
+            fd_t fd(raw);
+            set_nonblock(fd);
+            return fd;
+        }
+        int err = WSAGetLastError();
+        if (err == WSAEINTR) continue;
+        if (err == WSAEWOULDBLOCK) {
+            wait_readable(listen_fd);
+            continue;
+        }
+        return invalid_fd;
+    }
+}
+
+// Non-blocking connect. Returns 0 on success, -1 on error.
+// The socket must already be non-blocking.
+[[nodiscard]] inline int connect(fd_t fd,
+                                 const struct sockaddr* addr,
+                                 socklen_t addrlen) {
+    int ret = ::connect(fd.raw(), addr, addrlen);
+    if (ret == 0) return 0;
+    int err = WSAGetLastError();
+    if (err != WSAEWOULDBLOCK) return -1;
+
+    wait_writable(fd);
+    int optval = 0;
+    int optlen = sizeof(optval);
+    if (getsockopt(fd.raw(), SOL_SOCKET, SO_ERROR,
+                   reinterpret_cast<char*>(&optval), &optlen) < 0)
+        return -1;
+    if (optval != 0) {
+        WSASetLastError(optval);
+        return -1;
+    }
+    return 0;
+}
+
+#else // !_WIN32
+
+// Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
+[[nodiscard]] ssize_t read(fd_t fd, void* buf, size_t len);
+
+// Write all of buf. Returns total bytes written, or -1 on error.
+// Partial writes are retried automatically.
+[[nodiscard]] ssize_t write(fd_t fd, const void* buf, size_t len);
+
+// Accept a connection. Returns new fd (already non-blocking), or invalid_fd on error.
+[[nodiscard]] fd_t accept(fd_t listen_fd, struct sockaddr* addr, socklen_t* addrlen);
+
+// Non-blocking connect. Returns 0 on success, -1 on error.
+// The fd must already be non-blocking.
+[[nodiscard]] int connect(fd_t fd, const struct sockaddr* addr, socklen_t addrlen);
+
+#endif // _WIN32
+
+// --- DNS resolution ---
+// Offloads getaddrinfo to the blocking thread pool so the calling
+// imp suspends cooperatively instead of blocking its processor.
+
+struct addrinfo_deleter {
+    void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }
+};
+using addrinfo_ptr = std::unique_ptr<struct addrinfo, addrinfo_deleter>;
+
+struct resolve_result {
+    addrinfo_ptr info;
+    int error = 0;
+    explicit operator bool() const { return error == 0; }
+
+    const char* message() const {
+#ifdef _WIN32
+        // gai_strerror is not thread-safe on Windows.
+        // Use gai_strerrorA which is the narrow-char version.
+        return gai_strerrorA(error);
+#else
+        return gai_strerror(error);
+#endif
+    }
+};
+
+// Resolve host/service. hints may be nullptr for defaults.
+// Runs getaddrinfo on the blocking pool — never stalls the processor.
+[[nodiscard]] resolve_result resolve(const std::string& host,
+                              const std::string& service = {},
+                              const struct addrinfo* hints = nullptr);
+
+// --- Convenience functions ---
+
+// Read all bytes from fd until EOF. Returns the concatenated result.
+// The fd must be non-blocking.
+[[nodiscard]] std::vector<uint8_t> read_all(fd_t fd, size_t chunk_size = 4096);
+
+// Write all of data to fd. Throws csp::error on failure.
+// The fd must be non-blocking.
+void write_all(fd_t fd, const std::vector<uint8_t>& data);
+void write_all(fd_t fd, const void* data, size_t len);
+
+}
+
+/* csp/part/io.h */
+
+
+/* csp/part/part.h */
+
+
+
+namespace csp::part {
+
+// Wrapper for a reader-consuming combinator body.
+// spawn() creates a channel and imp; bind() returns a deferred
+// callable; operator() runs inline.
+template <typename T, typename F>
+struct consumer {
+    F body_;
+
+    void operator()(reader<T> r) { body_(std::move(r)); }
+
+    auto bind(reader<T> r) const & {
+        return [b = body_, r = std::move(r)]() mutable {
+            b(std::move(r));
+        };
+    }
+    auto bind(reader<T> r) && {
+        return [b = std::move(body_), r = std::move(r)]() mutable {
+            b(std::move(r));
+        };
+    }
+
+    writer<T> spawn() const & {
+        return spawn_consumer<T>(
+            [b = body_](reader<T> r) mutable {
+                b(std::move(r));
+            });
+    }
+    writer<T> spawn() && {
+        return spawn_consumer<T>(
+            [b = std::move(body_)](reader<T> r) mutable {
+                b(std::move(r));
+            });
+    }
+};
+
+// Wrapper for a writer-producing combinator body.
+template <typename T, typename F>
+struct producer {
+    F body_;
+
+    void operator()(writer<T> w) { body_(std::move(w)); }
+
+    auto bind(writer<T> w) const & {
+        return [b = body_, w = std::move(w)]() mutable {
+            b(std::move(w));
+        };
+    }
+    auto bind(writer<T> w) && {
+        return [b = std::move(body_), w = std::move(w)]() mutable {
+            b(std::move(w));
+        };
+    }
+
+    reader<T> spawn() const & {
+        return spawn_producer<T>(
+            [b = body_](writer<T> w) mutable {
+                b(std::move(w));
+            });
+    }
+    reader<T> spawn() && {
+        return spawn_producer<T>(
+            [b = std::move(body_)](writer<T> w) mutable {
+                b(std::move(w));
+            });
+    }
+};
+
+// Wrapper for a reader→writer transform combinator body.
+// spawn(writer) binds the output; spawn(reader) binds the input;
+// spawn() (when In == Out) creates both endpoints.
+template <typename In, typename Out, typename F>
+struct filter {
+    F body_;
+
+    void operator()(reader<In> r, writer<Out> w) {
+        body_(std::move(r), std::move(w));
+    }
+
+    auto bind(reader<In> r, writer<Out> w) const & {
+        return [b = body_,
+                r = std::move(r), w = std::move(w)]() mutable {
+            b(std::move(r), std::move(w));
+        };
+    }
+    auto bind(reader<In> r, writer<Out> w) && {
+        return [b = std::move(body_),
+                r = std::move(r), w = std::move(w)]() mutable {
+            b(std::move(r), std::move(w));
+        };
+    }
+
+    writer<In> spawn(writer<Out> w) const & {
+        return spawn_consumer<In>(
+            [b = body_,
+             w = std::move(w)](reader<In> r) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+    writer<In> spawn(writer<Out> w) && {
+        return spawn_consumer<In>(
+            [b = std::move(body_),
+             w = std::move(w)](reader<In> r) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+
+    reader<Out> spawn(reader<In> r) const & {
+        return spawn_producer<Out>(
+            [b = body_,
+             r = std::move(r)](writer<Out> w) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+    reader<Out> spawn(reader<In> r) && {
+        return spawn_producer<Out>(
+            [b = std::move(body_),
+             r = std::move(r)](writer<Out> w) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+
+    template <typename T = In>
+        requires std::is_same_v<T, Out>
+    chan<T> spawn() const & {
+        return spawn_filter<T>(
+            [b = body_](reader<T> r, writer<T> w) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+    template <typename T = In>
+        requires std::is_same_v<T, Out>
+    chan<T> spawn() && {
+        return spawn_filter<T>(
+            [b = std::move(body_)](reader<T> r, writer<T> w) mutable {
+                b(std::move(r), std::move(w));
+            });
+    }
+};
+
+template <typename T, typename F>
+consumer<T, std::decay_t<F>> make_consumer(F&& f) {
+    return {std::forward<F>(f)};
+}
+
+template <typename T, typename F>
+producer<T, std::decay_t<F>> make_producer(F&& f) {
+    return {std::forward<F>(f)};
+}
+
+template <typename In, typename Out = In, typename F>
+filter<In, Out, std::decay_t<F>> make_filter(F&& f) {
+    return {std::forward<F>(f)};
+}
+
+// --- Composition via | ---
+
+// filter | filter → filter
+template <typename In, typename Mid, typename F1, typename Out, typename F2>
+auto operator|(filter<In, Mid, F1> lhs, filter<Mid, Out, F2> rhs) {
+    return make_filter<In, Out>(
+        [lhs = std::move(lhs), rhs = std::move(rhs)]
+        (reader<In> in, writer<Out> out) mutable {
+            rhs(std::move(lhs).spawn(std::move(in)), std::move(out));
+        });
+}
+
+// producer | filter → producer
+template <typename T, typename F1, typename Out, typename F2>
+auto operator|(producer<T, F1> lhs, filter<T, Out, F2> rhs) {
+    return make_producer<Out>(
+        [lhs = std::move(lhs), rhs = std::move(rhs)]
+        (writer<Out> out) mutable {
+            rhs(std::move(lhs).spawn(), std::move(out));
+        });
+}
+
+// filter | consumer → consumer
+template <typename In, typename Out, typename F1, typename F2>
+auto operator|(filter<In, Out, F1> lhs, consumer<Out, F2> rhs) {
+    return make_consumer<In>(
+        [lhs = std::move(lhs), rhs = std::move(rhs)]
+        (reader<In> in) mutable {
+            rhs(std::move(lhs).spawn(std::move(in)));
+        });
+}
+
+// producer | consumer → callable
+template <typename T, typename F1, typename F2>
+auto operator|(producer<T, F1> lhs, consumer<T, F2> rhs) {
+    return [lhs = std::move(lhs), rhs = std::move(rhs)]() mutable {
+        rhs(std::move(lhs).spawn());
+    };
+}
+
+// reader | filter → reader (spawns immediately)
+template <typename In, typename Out, typename F>
+reader<Out> operator|(reader<In> r, filter<In, Out, F> f) {
+    return std::move(f).spawn(std::move(r));
+}
+
+// reader | consumer → callable
+template <typename T, typename F>
+auto operator|(reader<T> r, consumer<T, F> c) {
+    return std::move(c).bind(std::move(r));
+}
+
+// filter | writer → writer (spawns immediately)
+template <typename In, typename Out, typename F>
+writer<In> operator|(filter<In, Out, F> f, writer<Out> w) {
+    return std::move(f).spawn(std::move(w));
+}
+
+// producer | writer → callable
+template <typename T, typename F>
+auto operator|(producer<T, F> p, writer<T> w) {
+    return std::move(p).bind(std::move(w));
+}
+
+// --- chan | composition (buffered pipeline stages) ---
+// These are all lazy — returning filter/producer/consumer — matching the
+// convention that only concrete endpoints (reader/writer) trigger eager
+// spawning.
+
+// filter | chan → filter
+template <typename T, typename F>
+auto operator|(filter<T, T, F> f, chan<T> ch) {
+    return make_filter<T>(
+        [f = std::move(f), ch = std::move(ch)]
+        (reader<T> in, writer<T> out) mutable {
+            spawn([f = std::move(f),
+                   in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                f(std::move(in), std::move(w));
+            });
+            for (T v; ch.r >> v;) {
+                if (!(out << std::move(v))) return;
+            }
+        });
+}
+
+// chan | filter → filter
+template <typename T, typename F>
+auto operator|(chan<T> ch, filter<T, T, F> f) {
+    return make_filter<T>(
+        [ch = std::move(ch), f = std::move(f)]
+        (reader<T> in, writer<T> out) mutable {
+            spawn([in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                for (T v; in >> v;) {
+                    if (!(w << std::move(v))) return;
+                }
+            });
+            f(std::move(ch.r), std::move(out));
+        });
+}
+
+// producer | chan → producer
+template <typename T, typename F>
+auto operator|(producer<T, F> p, chan<T> ch) {
+    return make_producer<T>(
+        [p = std::move(p), ch = std::move(ch)]
+        (writer<T> out) mutable {
+            spawn([p = std::move(p),
+                   w = std::move(ch.w)]() mutable {
+                p(std::move(w));
+            });
+            for (T v; ch.r >> v;) {
+                if (!(out << std::move(v))) return;
+            }
+        });
+}
+
+// chan | consumer → consumer
+template <typename T, typename F>
+auto operator|(chan<T> ch, consumer<T, F> c) {
+    return make_consumer<T>(
+        [ch = std::move(ch), c = std::move(c)]
+        (reader<T> in) mutable {
+            spawn([in = std::move(in),
+                   w = std::move(ch.w)]() mutable {
+                for (T v; in >> v;) {
+                    if (!(w << std::move(v))) return;
+                }
+            });
+            c(std::move(ch.r));
+        });
+}
+
+}
+
+
+namespace csp::part::io {
+
+// Produce byte chunks from a non-blocking fd/socket. Each message
+// contains as much data as was available from a single read() call.
+// Owns the fd and closes it on exit.
+// The fd must already be non-blocking (all CSP-produced fds are).
+inline auto byte_reader(csp::io::fd_t fd, size_t chunk_size = 4096) {
+    return make_producer<bytes>(
+        [fd, chunk_size](writer<bytes> out) {
+            internal::descr("byte_reader");
+            assert(fd.is_nonblock() && "fd must be non-blocking");
+
+            bytes buf(chunk_size);
+            for (;;) {
+                ssize_t n = csp::io::read(fd, buf.data(), buf.size());
+                if (n <= 0) break;
+                buf.resize(static_cast<size_t>(n));
+                if (!(out << std::move(buf))) break;
+                buf.resize(chunk_size);
+            }
+            csp::io::close(fd);
+        });
+}
+
+// Consume byte chunks and write them to an fd/socket. Owns the fd
+// and closes it on exit.
+// The fd must already be non-blocking (all CSP-produced fds are).
+inline auto byte_writer(csp::io::fd_t fd) {
+    return make_consumer<bytes>(
+        [fd](reader<bytes> in) {
+            internal::descr("byte_writer");
+            assert(fd.is_nonblock() && "fd must be non-blocking");
+
+            for (bytes chunk; in >> chunk;) {
+                if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
+            }
+            csp::io::close(fd);
+        });
+}
+
+// Split a byte stream into lines (LF-delimited). Pure channel
+// transform — no I/O knowledge, testable with synthetic data.
+// Flushes any partial trailing line (no trailing newline) on input
+// close.
+inline auto const split_lines = make_filter<bytes, std::string>(
+    [](reader<bytes> in, writer<std::string> out) {
+        internal::descr("split_lines");
+
+        std::string pending;
+        for (bytes chunk;
+             csp::alt(in >> chunk, ~out) >= 0;) {
+            size_t start = 0;
+            for (size_t i = 0; i < chunk.size(); ++i) {
+                if (chunk[i] == '\n') {
+                    pending.append(
+                        reinterpret_cast<const char*>(chunk.data()) + start,
+                        i - start);
+                    if (!(out << std::move(pending))) return;
+                    pending.clear();
+                    start = i + 1;
+                }
+            }
+            if (start < chunk.size()) {
+                pending.append(
+                    reinterpret_cast<const char*>(chunk.data()) + start,
+                    chunk.size() - start);
+            }
+        }
+        if (!pending.empty()) {
+            out << std::move(pending);
+        }
+    });
+
+// Split a byte stream into fixed-size frames. Discards any partial
+// trailing frame on input close.
+inline auto fixed_frames(size_t frame_size) {
+    return make_filter<bytes>(
+        [frame_size](reader<bytes> in,
+                     writer<bytes> out) {
+            internal::descr("fixed_frames");
+
+            bytes frame;
+            frame.reserve(frame_size);
+            for (bytes chunk;
+                 csp::alt(in >> chunk, ~out) >= 0;) {
+                size_t i = 0;
+                while (i < chunk.size()) {
+                    size_t need = frame_size - frame.size();
+                    size_t avail = chunk.size() - i;
+                    size_t take = std::min(need, avail);
+                    frame.insert(frame.end(),
+                                 chunk.begin() + i,
+                                 chunk.begin() + i + take);
+                    i += take;
+                    if (frame.size() == frame_size) {
+                        if (!(out << std::move(frame))) return;
+                        frame.clear();
+                        frame.reserve(frame_size);
+                    }
+                }
+            }
+        });
+}
+
+// Convenience: return a reader<string> of newline-delimited lines
+// read from a non-blocking fd. Composes byte_reader | split_lines.
+inline csp::reader<std::string> lines(csp::io::fd_t fd,
+                                       size_t chunk_size = 4096) {
+    return split_lines.spawn(byte_reader(fd, chunk_size).spawn());
+}
+
+}
+
+
+namespace csp::net {
+
+// --- Connection: RAII wrapper over a connected socket ---
+//
+// Provides split read/write channels via byte_reader/byte_writer.
+// Closing (or dropping) the connection closes the underlying fd.
+
+struct connection {
+    io::fd_t fd;
+    reader<std::vector<uint8_t>> input;   // bytes from peer
+    writer<std::vector<uint8_t>> output;  // bytes to peer
+    std::string remote_addr;              // peer address string
+
+    connection() = default;
+    connection(connection&&) = default;
+    connection& operator=(connection&&) = default;
+    connection(connection const&) = delete;
+    connection& operator=(connection const&) = delete;
+};
+
+// --- Listener: TCP listener that produces connections ---
+
+struct listen_options {
+    int backlog = 128;
+    bool reuse_addr = true;
+    bool dual_stack = true;
+};
+
+struct listener {
+    reader<connection> connections;  // read to accept
+    uint16_t port;                  // actual bound port (useful with port 0)
+    std::string local_addr;         // bound address string
+};
+
+// Create a TCP listener.  Use port 0 for OS-assigned ephemeral port.
+// Dropping the connections reader stops accepting.
+listener listen(uint16_t port, listen_options opts = {});
+listener listen(const std::string& addr, uint16_t port,
+                listen_options opts = {});
+
+// --- dial: connect to a remote host ---
+//
+// Resolves the host, tries each address, returns the first successful
+// connection.  The connection has a non-blocking fd with split I/O
+// channels.
+//
+// Throws csp::error on failure (all addresses exhausted).
+// Respects cancellation scope (throws canceled if cancelled).
+
+connection dial(const std::string& host, uint16_t port);
+connection dial(const std::string& host, const std::string& service);
+
+} // namespace csp::net
+
+
+namespace csp::http {
+
+// --- HTTP method enum ---
+
+enum class method {
+    GET, HEAD, POST, PUT, DELETE_, PATCH, OPTIONS, CONNECT, TRACE,
+};
+
+const char* method_name(method m);
+
+// --- Response: what the handler sends back ---
+
+struct response {
+    int status = 200;
+    std::vector<std::pair<std::string, std::string>> headers;
+    bytes body;
+};
+
+// --- Request: a parsed HTTP/1.1 request ---
+//
+// The request body is buffered in memory. For the request body to be
+// streamed, a future API (with a reader<bytes> body) will be added.
+// Each request carries a per-request response channel: write exactly
+// one response to `respond`, then let it drop.
+
+struct request {
+    http::method method = method::GET;
+    std::string url;
+    uint8_t version_major = 1;
+    uint8_t version_minor = 1;
+    std::vector<std::pair<std::string, std::string>> headers;
+    bytes body;                 // complete request body
+    bool keep_alive = true;
+
+    // Write exactly one response for this request.
+    writer<response> respond;
+
+    // Convenience: find first header value by case-insensitive name.
+    // Returns empty string if not found.
+    std::string header(const std::string& name) const;
+
+    // Content-Length, or -1 if absent.
+    int64_t content_length() const;
+};
+
+// --- Per-connection endpoint ---
+
+struct endpoint {
+    reader<request> requests;       // one per HTTP request on this connection
+    std::string remote_addr;
+};
+
+// --- Server options ---
+
+struct serve_options {
+    net::listen_options listen = {};
+    size_t max_header_size = 8192;
+    size_t read_chunk_size = 4096;
+};
+
+// --- Server entry point ---
+
+struct server {
+    reader<endpoint> endpoints;     // one per accepted connection
+    uint16_t port;                  // actual bound port
+    std::string local_addr;
+};
+
+// Start an HTTP/1.1 server on the given port.
+// Returns a server whose endpoints reader yields one endpoint per
+// connection. Dropping the reader stops accepting.
+server serve(uint16_t port, serve_options opts = {});
+server serve(const std::string& addr, uint16_t port, serve_options opts = {});
+
+} // namespace csp::http
+
 /* csp/imp_exit.h */
 
 
@@ -2974,7 +3795,6 @@ bool has_processor();
 
 
 #ifdef _WIN32
-#include <winsock2.h>
 #endif
 
 namespace csp::detail {
@@ -3281,743 +4101,6 @@ struct Runtime {
 };
 
 }
-
-/* csp/io.h */
-
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <ws2tcpip.h>
-#ifdef _MSC_VER
-using ssize_t = ptrdiff_t;
-#endif
-#else
-#include <fcntl.h>
-#include <netdb.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-
-namespace csp::internal {
-
-#ifdef _WIN32
-void io_wait_readable(SOCKET sock);
-void io_wait_writable(SOCKET sock);
-#else
-// Layer 1 primitives — defined in src/io.cc.
-// Cancel-aware: if a cancel guard is active, these compose the
-// fd readiness signal with the cancel signal in a prialt.
-void io_wait_readable(int fd);
-void io_wait_writable(int fd);
-#endif
-
-}
-
-namespace csp::io {
-
-// --- Platform socket type (internal raw type) ---
-
-#ifdef _WIN32
-using socket_t = SOCKET;
-constexpr socket_t invalid_socket = INVALID_SOCKET;
-#else
-using socket_t = int;
-constexpr socket_t invalid_socket = -1;
-#endif
-
-// --- Opaque file descriptor wrapper ---
-//
-// Wraps a platform file descriptor (int on Unix, SOCKET on Windows)
-// with no implicit conversion to the underlying integer type.
-// All CSP functions that produce fds return fd_t already set
-// non-blocking.
-
-class fd_t {
-    socket_t fd_;
-
-public:
-    constexpr fd_t() : fd_(invalid_socket) {}
-    constexpr explicit fd_t(socket_t fd) : fd_(fd) {}
-
-    // Explicit access to the raw descriptor. Use sparingly —
-    // prefer the typed API.
-    [[nodiscard]] constexpr socket_t raw() const { return fd_; }
-
-    // True if this fd holds a valid descriptor.
-    [[nodiscard]] constexpr bool valid() const {
-        return fd_ != invalid_socket;
-    }
-    constexpr explicit operator bool() const { return valid(); }
-
-    // Check whether the fd is set non-blocking (Unix only).
-    // On Windows, always returns true (no kernel query available).
-    [[nodiscard]] bool is_nonblock() const {
-#ifdef _WIN32
-        return true;  // No portable query on Windows.
-#else
-        int flags = ::fcntl(fd_, F_GETFL);
-        return flags >= 0 && (flags & O_NONBLOCK);
-#endif
-    }
-
-    friend constexpr auto operator<=>(fd_t, fd_t) = default;
-    friend constexpr bool operator==(fd_t, fd_t) = default;
-};
-
-constexpr fd_t invalid_fd{};
-
-// --- Layer 1: Suspend until fd is ready ---
-
-inline void wait_readable(fd_t fd) { internal::io_wait_readable(fd.raw()); }
-inline void wait_writable(fd_t fd) { internal::io_wait_writable(fd.raw()); }
-
-// --- Utility ---
-
-#ifdef _WIN32
-
-// Set socket to non-blocking mode. Returns 0 on success, -1 on error.
-inline int set_nonblock(fd_t fd) {
-    u_long mode = 1;
-    return ioctlsocket(fd.raw(), FIONBIO, &mode) == 0 ? 0 : -1;
-}
-
-// Close a socket.
-inline void close(fd_t fd) {
-    closesocket(fd.raw());
-}
-
-#else
-
-// Set fd to non-blocking mode. Returns 0 on success, -1 on error.
-int set_nonblock(fd_t fd);
-
-// Close a file descriptor.
-inline void close(fd_t fd) {
-    ::close(fd.raw());
-}
-
-#endif
-
-// --- Layer 2: Non-blocking wrappers ---
-// These retry on would-block by suspending the imp until the fd
-// is ready, then retrying the syscall. All retry on interrupt.
-
-#ifdef _WIN32
-
-// Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
-[[nodiscard]] inline ssize_t read(fd_t fd, void* buf, size_t len) {
-    for (;;) {
-        int n = ::recv(fd.raw(), static_cast<char*>(buf), static_cast<int>(len), 0);
-        if (n >= 0) return n;
-        int err = WSAGetLastError();
-        if (err == WSAEINTR) continue;
-        if (err == WSAEWOULDBLOCK) {
-            wait_readable(fd);
-            continue;
-        }
-        return -1;
-    }
-}
-
-// Write all of buf. Returns total bytes written, or -1 on error.
-// Partial writes are retried automatically.
-[[nodiscard]] inline ssize_t write(fd_t fd, const void* buf, size_t len) {
-    size_t written = 0;
-    auto p = static_cast<const char*>(buf);
-    while (written < len) {
-        int n = ::send(fd.raw(), p + written, static_cast<int>(len - written), 0);
-        if (n >= 0) {
-            written += static_cast<size_t>(n);
-            continue;
-        }
-        int err = WSAGetLastError();
-        if (err == WSAEINTR) continue;
-        if (err == WSAEWOULDBLOCK) {
-            wait_writable(fd);
-            continue;
-        }
-        return -1;
-    }
-    return static_cast<ssize_t>(written);
-}
-
-// Accept a connection. Returns new fd (already non-blocking), or invalid_fd on error.
-[[nodiscard]] inline fd_t accept(fd_t listen_fd,
-                                 struct sockaddr* addr,
-                                 socklen_t* addrlen) {
-    for (;;) {
-        SOCKET raw = ::accept(listen_fd.raw(), addr, addrlen);
-        if (raw != INVALID_SOCKET) {
-            fd_t fd(raw);
-            set_nonblock(fd);
-            return fd;
-        }
-        int err = WSAGetLastError();
-        if (err == WSAEINTR) continue;
-        if (err == WSAEWOULDBLOCK) {
-            wait_readable(listen_fd);
-            continue;
-        }
-        return invalid_fd;
-    }
-}
-
-// Non-blocking connect. Returns 0 on success, -1 on error.
-// The socket must already be non-blocking.
-[[nodiscard]] inline int connect(fd_t fd,
-                                 const struct sockaddr* addr,
-                                 socklen_t addrlen) {
-    int ret = ::connect(fd.raw(), addr, addrlen);
-    if (ret == 0) return 0;
-    int err = WSAGetLastError();
-    if (err != WSAEWOULDBLOCK) return -1;
-
-    wait_writable(fd);
-    int optval = 0;
-    int optlen = sizeof(optval);
-    if (getsockopt(fd.raw(), SOL_SOCKET, SO_ERROR,
-                   reinterpret_cast<char*>(&optval), &optlen) < 0)
-        return -1;
-    if (optval != 0) {
-        WSASetLastError(optval);
-        return -1;
-    }
-    return 0;
-}
-
-#else // !_WIN32
-
-// Read up to len bytes. Returns bytes read, 0 on EOF, -1 on error.
-[[nodiscard]] ssize_t read(fd_t fd, void* buf, size_t len);
-
-// Write all of buf. Returns total bytes written, or -1 on error.
-// Partial writes are retried automatically.
-[[nodiscard]] ssize_t write(fd_t fd, const void* buf, size_t len);
-
-// Accept a connection. Returns new fd (already non-blocking), or invalid_fd on error.
-[[nodiscard]] fd_t accept(fd_t listen_fd, struct sockaddr* addr, socklen_t* addrlen);
-
-// Non-blocking connect. Returns 0 on success, -1 on error.
-// The fd must already be non-blocking.
-[[nodiscard]] int connect(fd_t fd, const struct sockaddr* addr, socklen_t addrlen);
-
-#endif // _WIN32
-
-// --- DNS resolution ---
-// Offloads getaddrinfo to the blocking thread pool so the calling
-// imp suspends cooperatively instead of blocking its processor.
-
-struct addrinfo_deleter {
-    void operator()(struct addrinfo* p) const { if (p) freeaddrinfo(p); }
-};
-using addrinfo_ptr = std::unique_ptr<struct addrinfo, addrinfo_deleter>;
-
-struct resolve_result {
-    addrinfo_ptr info;
-    int error = 0;
-    explicit operator bool() const { return error == 0; }
-
-    const char* message() const {
-#ifdef _WIN32
-        // gai_strerror is not thread-safe on Windows.
-        // Use gai_strerrorA which is the narrow-char version.
-        return gai_strerrorA(error);
-#else
-        return gai_strerror(error);
-#endif
-    }
-};
-
-// Resolve host/service. hints may be nullptr for defaults.
-// Runs getaddrinfo on the blocking pool — never stalls the processor.
-[[nodiscard]] resolve_result resolve(const std::string& host,
-                              const std::string& service = {},
-                              const struct addrinfo* hints = nullptr);
-
-// --- Convenience functions ---
-
-// Read all bytes from fd until EOF. Returns the concatenated result.
-// The fd must be non-blocking.
-[[nodiscard]] std::vector<uint8_t> read_all(fd_t fd, size_t chunk_size = 4096);
-
-// Write all of data to fd. Throws csp::error on failure.
-// The fd must be non-blocking.
-void write_all(fd_t fd, const std::vector<uint8_t>& data);
-void write_all(fd_t fd, const void* data, size_t len);
-
-}
-
-/* csp/net.h */
-
-
-/* csp/part/io.h */
-
-
-/* csp/part/part.h */
-
-
-
-namespace csp::part {
-
-// Wrapper for a reader-consuming combinator body.
-// spawn() creates a channel and imp; bind() returns a deferred
-// callable; operator() runs inline.
-template <typename T, typename F>
-struct consumer {
-    F body_;
-
-    void operator()(reader<T> r) { body_(std::move(r)); }
-
-    auto bind(reader<T> r) const & {
-        return [b = body_, r = std::move(r)]() mutable {
-            b(std::move(r));
-        };
-    }
-    auto bind(reader<T> r) && {
-        return [b = std::move(body_), r = std::move(r)]() mutable {
-            b(std::move(r));
-        };
-    }
-
-    writer<T> spawn() const & {
-        return spawn_consumer<T>(
-            [b = body_](reader<T> r) mutable {
-                b(std::move(r));
-            });
-    }
-    writer<T> spawn() && {
-        return spawn_consumer<T>(
-            [b = std::move(body_)](reader<T> r) mutable {
-                b(std::move(r));
-            });
-    }
-};
-
-// Wrapper for a writer-producing combinator body.
-template <typename T, typename F>
-struct producer {
-    F body_;
-
-    void operator()(writer<T> w) { body_(std::move(w)); }
-
-    auto bind(writer<T> w) const & {
-        return [b = body_, w = std::move(w)]() mutable {
-            b(std::move(w));
-        };
-    }
-    auto bind(writer<T> w) && {
-        return [b = std::move(body_), w = std::move(w)]() mutable {
-            b(std::move(w));
-        };
-    }
-
-    reader<T> spawn() const & {
-        return spawn_producer<T>(
-            [b = body_](writer<T> w) mutable {
-                b(std::move(w));
-            });
-    }
-    reader<T> spawn() && {
-        return spawn_producer<T>(
-            [b = std::move(body_)](writer<T> w) mutable {
-                b(std::move(w));
-            });
-    }
-};
-
-// Wrapper for a reader→writer transform combinator body.
-// spawn(writer) binds the output; spawn(reader) binds the input;
-// spawn() (when In == Out) creates both endpoints.
-template <typename In, typename Out, typename F>
-struct filter {
-    F body_;
-
-    void operator()(reader<In> r, writer<Out> w) {
-        body_(std::move(r), std::move(w));
-    }
-
-    auto bind(reader<In> r, writer<Out> w) const & {
-        return [b = body_,
-                r = std::move(r), w = std::move(w)]() mutable {
-            b(std::move(r), std::move(w));
-        };
-    }
-    auto bind(reader<In> r, writer<Out> w) && {
-        return [b = std::move(body_),
-                r = std::move(r), w = std::move(w)]() mutable {
-            b(std::move(r), std::move(w));
-        };
-    }
-
-    writer<In> spawn(writer<Out> w) const & {
-        return spawn_consumer<In>(
-            [b = body_,
-             w = std::move(w)](reader<In> r) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    writer<In> spawn(writer<Out> w) && {
-        return spawn_consumer<In>(
-            [b = std::move(body_),
-             w = std::move(w)](reader<In> r) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-
-    reader<Out> spawn(reader<In> r) const & {
-        return spawn_producer<Out>(
-            [b = body_,
-             r = std::move(r)](writer<Out> w) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    reader<Out> spawn(reader<In> r) && {
-        return spawn_producer<Out>(
-            [b = std::move(body_),
-             r = std::move(r)](writer<Out> w) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-
-    template <typename T = In>
-        requires std::is_same_v<T, Out>
-    chan<T> spawn() const & {
-        return spawn_filter<T>(
-            [b = body_](reader<T> r, writer<T> w) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-    template <typename T = In>
-        requires std::is_same_v<T, Out>
-    chan<T> spawn() && {
-        return spawn_filter<T>(
-            [b = std::move(body_)](reader<T> r, writer<T> w) mutable {
-                b(std::move(r), std::move(w));
-            });
-    }
-};
-
-template <typename T, typename F>
-consumer<T, std::decay_t<F>> make_consumer(F&& f) {
-    return {std::forward<F>(f)};
-}
-
-template <typename T, typename F>
-producer<T, std::decay_t<F>> make_producer(F&& f) {
-    return {std::forward<F>(f)};
-}
-
-template <typename In, typename Out = In, typename F>
-filter<In, Out, std::decay_t<F>> make_filter(F&& f) {
-    return {std::forward<F>(f)};
-}
-
-// --- Composition via | ---
-
-// filter | filter → filter
-template <typename In, typename Mid, typename F1, typename Out, typename F2>
-auto operator|(filter<In, Mid, F1> lhs, filter<Mid, Out, F2> rhs) {
-    return make_filter<In, Out>(
-        [lhs = std::move(lhs), rhs = std::move(rhs)]
-        (reader<In> in, writer<Out> out) mutable {
-            rhs(std::move(lhs).spawn(std::move(in)), std::move(out));
-        });
-}
-
-// producer | filter → producer
-template <typename T, typename F1, typename Out, typename F2>
-auto operator|(producer<T, F1> lhs, filter<T, Out, F2> rhs) {
-    return make_producer<Out>(
-        [lhs = std::move(lhs), rhs = std::move(rhs)]
-        (writer<Out> out) mutable {
-            rhs(std::move(lhs).spawn(), std::move(out));
-        });
-}
-
-// filter | consumer → consumer
-template <typename In, typename Out, typename F1, typename F2>
-auto operator|(filter<In, Out, F1> lhs, consumer<Out, F2> rhs) {
-    return make_consumer<In>(
-        [lhs = std::move(lhs), rhs = std::move(rhs)]
-        (reader<In> in) mutable {
-            rhs(std::move(lhs).spawn(std::move(in)));
-        });
-}
-
-// producer | consumer → callable
-template <typename T, typename F1, typename F2>
-auto operator|(producer<T, F1> lhs, consumer<T, F2> rhs) {
-    return [lhs = std::move(lhs), rhs = std::move(rhs)]() mutable {
-        rhs(std::move(lhs).spawn());
-    };
-}
-
-// reader | filter → reader (spawns immediately)
-template <typename In, typename Out, typename F>
-reader<Out> operator|(reader<In> r, filter<In, Out, F> f) {
-    return std::move(f).spawn(std::move(r));
-}
-
-// reader | consumer → callable
-template <typename T, typename F>
-auto operator|(reader<T> r, consumer<T, F> c) {
-    return std::move(c).bind(std::move(r));
-}
-
-// filter | writer → writer (spawns immediately)
-template <typename In, typename Out, typename F>
-writer<In> operator|(filter<In, Out, F> f, writer<Out> w) {
-    return std::move(f).spawn(std::move(w));
-}
-
-// producer | writer → callable
-template <typename T, typename F>
-auto operator|(producer<T, F> p, writer<T> w) {
-    return std::move(p).bind(std::move(w));
-}
-
-// --- chan | composition (buffered pipeline stages) ---
-// These are all lazy — returning filter/producer/consumer — matching the
-// convention that only concrete endpoints (reader/writer) trigger eager
-// spawning.
-
-// filter | chan → filter
-template <typename T, typename F>
-auto operator|(filter<T, T, F> f, chan<T> ch) {
-    return make_filter<T>(
-        [f = std::move(f), ch = std::move(ch)]
-        (reader<T> in, writer<T> out) mutable {
-            spawn([f = std::move(f),
-                   in = std::move(in),
-                   w = std::move(ch.w)]() mutable {
-                f(std::move(in), std::move(w));
-            });
-            for (T v; ch.r >> v;) {
-                if (!(out << std::move(v))) return;
-            }
-        });
-}
-
-// chan | filter → filter
-template <typename T, typename F>
-auto operator|(chan<T> ch, filter<T, T, F> f) {
-    return make_filter<T>(
-        [ch = std::move(ch), f = std::move(f)]
-        (reader<T> in, writer<T> out) mutable {
-            spawn([in = std::move(in),
-                   w = std::move(ch.w)]() mutable {
-                for (T v; in >> v;) {
-                    if (!(w << std::move(v))) return;
-                }
-            });
-            f(std::move(ch.r), std::move(out));
-        });
-}
-
-// producer | chan → producer
-template <typename T, typename F>
-auto operator|(producer<T, F> p, chan<T> ch) {
-    return make_producer<T>(
-        [p = std::move(p), ch = std::move(ch)]
-        (writer<T> out) mutable {
-            spawn([p = std::move(p),
-                   w = std::move(ch.w)]() mutable {
-                p(std::move(w));
-            });
-            for (T v; ch.r >> v;) {
-                if (!(out << std::move(v))) return;
-            }
-        });
-}
-
-// chan | consumer → consumer
-template <typename T, typename F>
-auto operator|(chan<T> ch, consumer<T, F> c) {
-    return make_consumer<T>(
-        [ch = std::move(ch), c = std::move(c)]
-        (reader<T> in) mutable {
-            spawn([in = std::move(in),
-                   w = std::move(ch.w)]() mutable {
-                for (T v; in >> v;) {
-                    if (!(w << std::move(v))) return;
-                }
-            });
-            c(std::move(ch.r));
-        });
-}
-
-}
-
-
-namespace csp::part::io {
-
-// Produce byte chunks from a non-blocking fd/socket. Each message
-// contains as much data as was available from a single read() call.
-// Owns the fd and closes it on exit.
-// The fd must already be non-blocking (all CSP-produced fds are).
-inline auto byte_reader(csp::io::fd_t fd, size_t chunk_size = 4096) {
-    return make_producer<bytes>(
-        [fd, chunk_size](writer<bytes> out) {
-            internal::descr("byte_reader");
-            assert(fd.is_nonblock() && "fd must be non-blocking");
-
-            bytes buf(chunk_size);
-            for (;;) {
-                ssize_t n = csp::io::read(fd, buf.data(), buf.size());
-                if (n <= 0) break;
-                buf.resize(static_cast<size_t>(n));
-                if (!(out << std::move(buf))) break;
-                buf.resize(chunk_size);
-            }
-            csp::io::close(fd);
-        });
-}
-
-// Consume byte chunks and write them to an fd/socket. Owns the fd
-// and closes it on exit.
-// The fd must already be non-blocking (all CSP-produced fds are).
-inline auto byte_writer(csp::io::fd_t fd) {
-    return make_consumer<bytes>(
-        [fd](reader<bytes> in) {
-            internal::descr("byte_writer");
-            assert(fd.is_nonblock() && "fd must be non-blocking");
-
-            for (bytes chunk; in >> chunk;) {
-                if (csp::io::write(fd, chunk.data(), chunk.size()) < 0) break;
-            }
-            csp::io::close(fd);
-        });
-}
-
-// Split a byte stream into lines (LF-delimited). Pure channel
-// transform — no I/O knowledge, testable with synthetic data.
-// Flushes any partial trailing line (no trailing newline) on input
-// close.
-inline auto const split_lines = make_filter<bytes, std::string>(
-    [](reader<bytes> in, writer<std::string> out) {
-        internal::descr("split_lines");
-
-        std::string pending;
-        for (bytes chunk;
-             csp::alt(in >> chunk, ~out) >= 0;) {
-            size_t start = 0;
-            for (size_t i = 0; i < chunk.size(); ++i) {
-                if (chunk[i] == '\n') {
-                    pending.append(
-                        reinterpret_cast<const char*>(chunk.data()) + start,
-                        i - start);
-                    if (!(out << std::move(pending))) return;
-                    pending.clear();
-                    start = i + 1;
-                }
-            }
-            if (start < chunk.size()) {
-                pending.append(
-                    reinterpret_cast<const char*>(chunk.data()) + start,
-                    chunk.size() - start);
-            }
-        }
-        if (!pending.empty()) {
-            out << std::move(pending);
-        }
-    });
-
-// Split a byte stream into fixed-size frames. Discards any partial
-// trailing frame on input close.
-inline auto fixed_frames(size_t frame_size) {
-    return make_filter<bytes>(
-        [frame_size](reader<bytes> in,
-                     writer<bytes> out) {
-            internal::descr("fixed_frames");
-
-            bytes frame;
-            frame.reserve(frame_size);
-            for (bytes chunk;
-                 csp::alt(in >> chunk, ~out) >= 0;) {
-                size_t i = 0;
-                while (i < chunk.size()) {
-                    size_t need = frame_size - frame.size();
-                    size_t avail = chunk.size() - i;
-                    size_t take = std::min(need, avail);
-                    frame.insert(frame.end(),
-                                 chunk.begin() + i,
-                                 chunk.begin() + i + take);
-                    i += take;
-                    if (frame.size() == frame_size) {
-                        if (!(out << std::move(frame))) return;
-                        frame.clear();
-                        frame.reserve(frame_size);
-                    }
-                }
-            }
-        });
-}
-
-// Convenience: return a reader<string> of newline-delimited lines
-// read from a non-blocking fd. Composes byte_reader | split_lines.
-inline csp::reader<std::string> lines(csp::io::fd_t fd,
-                                       size_t chunk_size = 4096) {
-    return split_lines.spawn(byte_reader(fd, chunk_size).spawn());
-}
-
-}
-
-
-namespace csp::net {
-
-// --- Connection: RAII wrapper over a connected socket ---
-//
-// Provides split read/write channels via byte_reader/byte_writer.
-// Closing (or dropping) the connection closes the underlying fd.
-
-struct connection {
-    io::fd_t fd;
-    reader<std::vector<uint8_t>> input;   // bytes from peer
-    writer<std::vector<uint8_t>> output;  // bytes to peer
-    std::string remote_addr;              // peer address string
-
-    connection() = default;
-    connection(connection&&) = default;
-    connection& operator=(connection&&) = default;
-    connection(connection const&) = delete;
-    connection& operator=(connection const&) = delete;
-};
-
-// --- Listener: TCP listener that produces connections ---
-
-struct listen_options {
-    int backlog = 128;
-    bool reuse_addr = true;
-    bool dual_stack = true;
-};
-
-struct listener {
-    reader<connection> connections;  // read to accept
-    uint16_t port;                  // actual bound port (useful with port 0)
-    std::string local_addr;         // bound address string
-};
-
-// Create a TCP listener.  Use port 0 for OS-assigned ephemeral port.
-// Dropping the connections reader stops accepting.
-listener listen(uint16_t port, listen_options opts = {});
-listener listen(const std::string& addr, uint16_t port,
-                listen_options opts = {});
-
-// --- dial: connect to a remote host ---
-//
-// Resolves the host, tries each address, returns the first successful
-// connection.  The connection has a non-blocking fd with split I/O
-// channels.
-//
-// Throws csp::error on failure (all addresses exhausted).
-// Respects cancellation scope (throws canceled if cancelled).
-
-connection dial(const std::string& host, uint16_t port);
-connection dial(const std::string& host, const std::string& service);
-
-} // namespace csp::net
 
 /* csp/part/batch.h */
 

@@ -417,9 +417,13 @@ def main():
     # Keeping csp_globals.cpp separate forces the wrapper-call
     # pattern, which re-resolves the TLS address on every access.
     globals_file = src_dir / 'csp_globals.cpp'
+    # http.cc depends on vendored llhttp and is excluded from the dist
+    # amalgamation.  Users who need HTTP must compile http.cc + llhttp
+    # separately.
+    http_file = src_dir / 'http.cc'
     src_files = sorted(
         p for p in (list(src_dir.glob('*.cc')) + list(src_dir.glob('*.cpp')))
-        if p.resolve() != globals_file.resolve()
+        if p.resolve() not in {globals_file.resolve(), http_file.resolve()}
     )
     print('csp.cpp:')
     amalgamate_sources(
