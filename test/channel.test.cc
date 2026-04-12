@@ -1066,35 +1066,43 @@ TEST_CASE("Channel---Nested-prialt") {
     int result = 0;
 
     csp::run([&]{
+        // Four disjoint channels: outer prialt reads from {i1,i2},
+        // inner from {i3,i4}. Reusing a channel across outer and inner
+        // is unsafe: if the outer matches a channel whose only writer
+        // then exits, the inner sees that channel as dead and
+        // short-circuits via the data-chanop-on-dead-channel path (see
+        // dead_data_result in src/channel.cc) without waiting for its
+        // other op.
         auto [w1, r1] = chan<int>{};
         auto [w2, r2] = chan<int>{};
         auto [w3, r3] = chan<int>{};
+        auto [w4, r4] = chan<int>{};
 
-        // One imp writes to ch1 and ch3.
+        // Writer A feeds the outer prialt (i1) and the inner prialt (i3).
         stats.spawn([o1 = std::move(w1), o3 = std::move(w3)]{
             o1 << 10;
             o3 << 30;
         });
 
-        // Another imp writes to ch2.
-        stats.spawn([o2 = std::move(w2)]{
+        // Writer B feeds the outer prialt (i2) and the inner prialt (i4).
+        stats.spawn([o2 = std::move(w2), o4 = std::move(w4)]{
             o2 << 20;
+            o4 << 40;
         });
 
-        // Consumer uses nested prialts.
-        stats.spawn([i1 = std::move(r1), i2 = std::move(r2), i3 = std::move(r3), &result]{
+        // Consumer uses nested prialts over disjoint channel sets.
+        stats.spawn([i1 = std::move(r1), i2 = std::move(r2),
+                     i3 = std::move(r3), i4 = std::move(r4), &result]{
             int a = 0, b = 0;
-            // Outer prialt: read from ch1 or ch2.
-            prialt(i1 >> a, i2 >> a);
-            // Inner prialt on different channels.
-            prialt(i2 >> b, i3 >> b);
+            prialt(i1 >> a, i2 >> a);  // a ∈ {10, 20}
+            prialt(i3 >> b, i4 >> b);  // b ∈ {30, 40}
             result = a + b;
         });
     });
 
-    // a is 10 or 20, b is 20 or 30. Total should be one of: 30, 40, 50.
-    CHECK(result >= 30);
-    CHECK(result <= 50);
+    // a ∈ {10, 20}, b ∈ {30, 40}. Total ∈ {40, 50, 60}.
+    CHECK(result >= 40);
+    CHECK(result <= 60);
 }
 
 TEST_CASE("Channel---Many-imps-on-one-channel") {
