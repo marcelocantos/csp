@@ -27,6 +27,18 @@ CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter
 LDFLAGS  :=
 LDLIBS   :=
 
+# --- ccache (compiler cache) ---
+# Auto-detected if installed. Set CCACHE=no to disable. Caches object
+# files by preprocessed-source hash so repeated clean builds and
+# branch-switches that touch unchanged files are near-instant.
+CCACHE ?= $(shell command -v ccache 2>/dev/null)
+ifneq ($(CCACHE),)
+ifneq ($(CCACHE),no)
+CXX := $(CCACHE) $(CXX)
+CC  := $(CCACHE) $(CC)
+endif
+endif
+
 # --- Include path ---
 # CSP_INCLUDE selects header source: 'include' for development,
 # 'dist' for distribution.  test-dist uses recursive make to switch.

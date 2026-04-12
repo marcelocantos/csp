@@ -209,3 +209,16 @@ None.
   achieved (🎯T7 now 6/6). STABILITY.md updated. Note: direct-pointer channel
   transfer optimization was attempted and reverted — unsafe for chan_ops stored
   in containers (dynamic alt vectors).
+
+## 2026-04-11 — /build-perf-audit
+
+- **Commit**: working tree dirty — `14944a1`
+- **Outcome**: Wired ccache into `Makefile` (auto-detect, disable with
+  `CCACHE=no`). Clean build 9.38s → 0.37s warm (25×); touch `include/csp/csp.h`
+  8.84s → 0.27s (33×). No-op incremental unchanged (0.05s). Correctness
+  verified — 673/673 tests, 26,046 assertions pass post-fix. Full report:
+  `docs/build-perf-2026-04-11.md`.
+- **Deferred**:
+  - CI ccache caching via `actions/cache` — high payoff, ~5–8 CPU-min/run, requires CI review
+  - PCH for `test/testutil.h` — ~1–2s additional savings, medium risk (dep tracking)
+  - Test tiering (`make fast` target) — 31.8s test runtime dominates `make` wall time
