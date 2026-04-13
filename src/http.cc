@@ -383,6 +383,158 @@ listen_result create_listener(const std::string& addr, uint16_t port,
     return {listen_fd, actual_port, std::move(local)};
 }
 
+// --- URL parsing ---
+
+struct parsed_url {
+    std::string host;
+    uint16_t port = 80;
+    std::string path;
+};
+
+parsed_url parse_url(const std::string& url) {
+    // Expected: http://host[:port][/path]
+    const std::string prefix = "http://";
+    if (url.size() < prefix.size() ||
+        !iequals(url.substr(0, prefix.size()), prefix)) {
+        throw csp::error("unsupported URL scheme (only http:// is supported)");
+    }
+
+    auto rest = url.substr(prefix.size());
+    parsed_url result;
+
+    // Split host[:port] from path.
+    auto slash = rest.find('/');
+    std::string authority;
+    if (slash == std::string::npos) {
+        authority = rest;
+        result.path = "/";
+    } else {
+        authority = rest.substr(0, slash);
+        result.path = rest.substr(slash);
+    }
+
+    // Handle [IPv6]:port
+    if (!authority.empty() && authority[0] == '[') {
+        auto bracket = authority.find(']');
+        if (bracket == std::string::npos) {
+            throw csp::error("malformed IPv6 address in URL");
+        }
+        result.host = authority.substr(1, bracket - 1);
+        if (bracket + 1 < authority.size() && authority[bracket + 1] == ':') {
+            result.port = static_cast<uint16_t>(
+                std::stoul(authority.substr(bracket + 2)));
+        }
+    } else {
+        auto colon = authority.rfind(':');
+        if (colon == std::string::npos) {
+            result.host = authority;
+        } else {
+            result.host = authority.substr(0, colon);
+            result.port = static_cast<uint16_t>(
+                std::stoul(authority.substr(colon + 1)));
+        }
+    }
+
+    if (result.host.empty()) {
+        throw csp::error("empty host in URL");
+    }
+    return result;
+}
+
+// --- Client request serialization ---
+
+bytes serialize_request(method m, const parsed_url& url,
+                        const std::vector<std::pair<std::string, std::string>>& hdrs,
+                        const bytes& body) {
+    std::ostringstream os;
+    os << method_name(m) << " " << url.path << " HTTP/1.1\r\n";
+    os << "Host: " << url.host;
+    if (url.port != 80) os << ":" << url.port;
+    os << "\r\n";
+
+    bool has_content_length = false;
+    bool has_connection = false;
+    for (auto& [k, v] : hdrs) {
+        os << k << ": " << v << "\r\n";
+        if (iequals(k, "Content-Length")) has_content_length = true;
+        if (iequals(k, "Connection")) has_connection = true;
+    }
+    if (!has_content_length && !body.empty()) {
+        os << "Content-Length: " << body.size() << "\r\n";
+    }
+    if (!has_connection) {
+        os << "Connection: close\r\n";
+    }
+    os << "\r\n";
+
+    auto head = os.str();
+    bytes out;
+    out.reserve(head.size() + body.size());
+    out.insert(out.end(), head.begin(), head.end());
+    out.insert(out.end(), body.begin(), body.end());
+    return out;
+}
+
+// --- Client response parser state ---
+
+struct resp_parse_state {
+    int status_code = 0;
+    std::string header_field;
+    std::string header_value;
+    std::vector<std::pair<std::string, std::string>> headers;
+    bytes body;
+    bool in_value = false;
+    bool message_complete = false;
+
+    void flush_header() {
+        if (in_value) {
+            headers.emplace_back(std::move(header_field),
+                                 std::move(header_value));
+            header_field.clear();
+            header_value.clear();
+            in_value = false;
+        }
+    }
+};
+
+int resp_on_status(llhttp_t*, const char*, size_t) {
+    return 0;
+}
+
+int resp_on_header_field(llhttp_t* p, const char* at, size_t len) {
+    auto* st = static_cast<resp_parse_state*>(p->data);
+    st->flush_header();
+    st->header_field.append(at, len);
+    return 0;
+}
+
+int resp_on_header_value(llhttp_t* p, const char* at, size_t len) {
+    auto* st = static_cast<resp_parse_state*>(p->data);
+    st->in_value = true;
+    st->header_value.append(at, len);
+    return 0;
+}
+
+int resp_on_headers_complete(llhttp_t* p) {
+    auto* st = static_cast<resp_parse_state*>(p->data);
+    st->flush_header();
+    st->status_code = static_cast<int>(p->status_code);
+    return 0;
+}
+
+int resp_on_body(llhttp_t* p, const char* at, size_t len) {
+    auto* st = static_cast<resp_parse_state*>(p->data);
+    st->body.insert(st->body.end(),
+                    reinterpret_cast<const uint8_t*>(at),
+                    reinterpret_cast<const uint8_t*>(at) + len);
+    return 0;
+}
+
+int resp_on_message_complete(llhttp_t* p) {
+    static_cast<resp_parse_state*>(p->data)->message_complete = true;
+    return 0;
+}
+
 } // anonymous namespace
 
 // --- request helpers ---
@@ -485,6 +637,73 @@ server serve(const std::string& addr, uint16_t port, serve_options opts) {
         });
 
     return {std::move(endpoints), lr.port, std::move(lr.local_addr)};
+}
+
+// --- fetch ---
+
+response fetch(
+    method m, const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers,
+    bytes body,
+    fetch_options opts) {
+
+    auto parsed = parse_url(url);
+    auto wire = serialize_request(m, parsed, headers, body);
+
+    // Connect via net::dial, then do direct I/O on the fd.
+    // We use the raw fd rather than the connection's channels to avoid
+    // spawning reader/writer imps for a single request-response cycle.
+    auto conn = net::dial(parsed.host, parsed.port);
+
+    // Write the request via the connection's output channel.
+    // Then close the writer to signal we're done sending.
+    conn.output << std::move(wire);
+
+    // Read the full response via the connection's input channel.
+    resp_parse_state state;
+    llhttp_settings_t settings;
+    llhttp_settings_init(&settings);
+    settings.on_status = resp_on_status;
+    settings.on_header_field = resp_on_header_field;
+    settings.on_header_value = resp_on_header_value;
+    settings.on_headers_complete = resp_on_headers_complete;
+    settings.on_body = resp_on_body;
+    settings.on_message_complete = resp_on_message_complete;
+
+    llhttp_t parser;
+    llhttp_init(&parser, HTTP_RESPONSE, &settings);
+    parser.data = &state;
+
+    bytes chunk;
+    while (!state.message_complete && (conn.input >> chunk)) {
+        auto err = llhttp_execute(
+            &parser,
+            reinterpret_cast<const char*>(chunk.data()),
+            chunk.size());
+
+        if (state.message_complete) break;
+
+        if (err != HPE_OK) {
+            throw csp::error(
+                std::string("HTTP response parse error: ") +
+                llhttp_errno_name(err));
+        }
+    }
+
+    if (!state.message_complete) {
+        // Connection closed before a complete response.
+        // If we got headers, return what we have (server may have
+        // signaled end-of-body via connection close).
+        llhttp_finish(&parser);
+        if (!state.message_complete && state.status_code == 0) {
+            throw csp::error("HTTP response incomplete: connection closed");
+        }
+    }
+
+    return response{
+        state.status_code,
+        std::move(state.headers),
+        std::move(state.body)};
 }
 
 } // namespace csp::http

@@ -85,4 +85,38 @@ struct server {
 server serve(uint16_t port, serve_options opts = {});
 server serve(const std::string& addr, uint16_t port, serve_options opts = {});
 
+// --- Client ---
+
+struct fetch_options {
+    size_t read_chunk_size = 4096;
+};
+
+// Perform an HTTP/1.1 request.  Blocks the calling imp until the
+// full response (headers + body) has been received.
+//
+// url is "http://host[:port]/path" — only the http scheme is
+// supported (use csp::tls for HTTPS).  Default port is 80.
+//
+// Throws csp::error on connection failure, DNS failure, or parse error.
+response fetch(
+    method m, const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    bytes body = {},
+    fetch_options opts = {});
+
+// Convenience wrappers.
+inline response get(
+    const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    fetch_options opts = {}) {
+    return fetch(method::GET, url, std::move(headers), {}, opts);
+}
+
+inline response post(
+    const std::string& url, bytes body,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    fetch_options opts = {}) {
+    return fetch(method::POST, url, std::move(headers), std::move(body), opts);
+}
+
 } // namespace csp::http
