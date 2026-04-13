@@ -1,7 +1,7 @@
 # TODO
 
 All work items are tracked as convergence targets in
-[targets.yaml](targets.yaml).
+[bullseye.yaml](bullseye.yaml).
 
 ## Open items
 
