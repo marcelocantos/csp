@@ -9,6 +9,14 @@ based on Communicating Sequential Processes. Namespace: `csp`.
 
 TODO items are tracked in `docs/todo.md`.
 
+## Release
+
+homebrew_tap: disabled
+
+CSP is a C++ source library distributed as three files in `dist/` — users
+vendor them into their own project. There is no binary to install, so the
+release skill's Homebrew tap plumbing does not apply.
+
 ## Build System
 
 ```bash
