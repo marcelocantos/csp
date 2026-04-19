@@ -1,3 +1,4 @@
+schema_version: 1
 last_evaluated: 1ff87e4
 targets:
   T1:
@@ -156,6 +157,20 @@ targets:
     origin: manual
     discovered: 2026-04-07
     achieved: 2026-04-07
+  T17:
+    name: Composable pull-based sized-read abstraction exists in csp::io
+    status: identified
+    value: 13.0
+    cost: 8.0
+    acceptance:
+    - A source type provides sized reads (consumer controls byte count) that propagate to the underlying syscall
+    - 'source composes: TLS source wraps a TCP source, HTTP parser consumes a TLS source, etc.'
+    - source integrates with CSP channel machinery (prialt-able via per-request response channels)
+    - http::fetch and http::post accept source for streaming request bodies
+    - Existing net::connection and http server/client use the new abstraction
+    context: 'reader&lt;bytes&gt; is push-based with producer-determined chunk boundaries — the consumer can''t control read size. Real I/O protocols need sized pulls that propagate to the syscall (io::read(fd, buf, n)). Go solves this with io.Reader; CSP needs a channel-native equivalent. Leading design: per-request response channel — writer&lt;struct{size_t n; writer&lt;bytes&gt; data;}&gt; — so each read is independently cancellable and doesn''t desync. Wide-ranging impact: touches io, net, tls, http layers. Must be designed carefully before implementation.'
+    origin: design discussion, session 2026-04-13
+    discovered: 2026-04-14
   T2:
     name: Tier D combinators are implemented
     status: identified
@@ -271,6 +286,8 @@ targets:
     - Timeout via cancellation scope
     - Tests and reference docs
     context: Reuses llhttp for response parsing. Reuses `net::dial` from 🎯T3.1 for outbound connections. The client is simpler than the server — no connection accept loop, just dial + parse.
+    depends_on:
+    - T17
     origin: manual
     discovered: 2026-03-28
   T3.7:
