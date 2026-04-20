@@ -260,4 +260,172 @@ TEST_CASE("serve---method-name") {
     CHECK(std::string(http::method_name(http::method::DELETE_)) == "DELETE");
 }
 
+// --- Client tests ---
+
+TEST_CASE("fetch---basic-get") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    // Server: respond to one GET.
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http::serve(0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                CHECK(req.method == http::method::GET);
+                CHECK(req.url == "/api/data");
+
+                std::string body_str = R"({"ok":true})";
+                bytes body(body_str.begin(), body_str.end());
+                req.respond << http::response{
+                    200,
+                    {{"Content-Type", "application/json"}},
+                    std::move(body)};
+            }
+        }
+    });
+
+    // Client: fetch from the server.
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto resp = http::get("http://127.0.0.1:" + std::to_string(port) +
+                              "/api/data");
+
+        CHECK(resp.status == 200);
+        std::string body(resp.body.begin(), resp.body.end());
+        CHECK(body == R"({"ok":true})");
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("fetch---post-with-body") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http::serve(0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                CHECK(req.method == http::method::POST);
+                CHECK(req.url == "/echo");
+
+                std::string body_str(req.body.begin(), req.body.end());
+                CHECK(body_str == "hello from client");
+
+                req.respond << http::response{
+                    201,
+                    {{"X-Echo", "true"}},
+                    std::move(req.body)};
+            }
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        std::string payload = "hello from client";
+        bytes body(payload.begin(), payload.end());
+        auto resp = http::post(
+            "http://127.0.0.1:" + std::to_string(port) + "/echo",
+            std::move(body));
+
+        CHECK(resp.status == 201);
+        std::string resp_body(resp.body.begin(), resp.body.end());
+        CHECK(resp_body == "hello from client");
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("fetch---custom-headers") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http::serve(0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                CHECK(req.header("Authorization") == "Bearer tok123");
+                CHECK(req.header("Accept") == "text/plain");
+                req.respond << http::response{200, {}, {}};
+            }
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto resp = http::get(
+            "http://127.0.0.1:" + std::to_string(port) + "/",
+            {{"Authorization", "Bearer tok123"},
+             {"Accept", "text/plain"}});
+
+        CHECK(resp.status == 200);
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("fetch---404-response") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http::serve(0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                std::string body = "not found";
+                req.respond << http::response{
+                    404, {},
+                    bytes(body.begin(), body.end())};
+            }
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto resp = http::get(
+            "http://127.0.0.1:" + std::to_string(port) + "/missing");
+        CHECK(resp.status == 404);
+        std::string body(resp.body.begin(), resp.body.end());
+        CHECK(body == "not found");
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
 } // TEST_SUITE

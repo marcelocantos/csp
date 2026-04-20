@@ -465,10 +465,20 @@ struct server {
 };
 
 server serve(uint16_t port, serve_options opts = {});
+
+// --- Client ---
+
+response fetch(method m, const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    bytes body = {}, fetch_options opts = {});
+
+// Convenience wrappers:
+response get(const std::string& url, headers = {}, opts = {});
+response post(const std::string& url, bytes body, headers = {}, opts = {});
 }
 ```
 
-Usage:
+Server usage:
 ```cpp
 auto srv = http::serve(8080);
 http::endpoint ep;
@@ -483,6 +493,19 @@ while (srv.endpoints >> ep) {
         }
     });
 }
+```
+
+Client usage:
+```cpp
+// Simple GET
+auto resp = http::get("http://example.com/api/data");
+// resp.status, resp.headers, resp.body
+
+// POST with body and custom headers
+std::string payload = R"({"key":"value"})";
+auto resp = http::post("http://example.com/api",
+    bytes(payload.begin(), payload.end()),
+    {{"Content-Type", "application/json"}});
 ```
 
 ## Signals
