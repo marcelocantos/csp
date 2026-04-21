@@ -168,9 +168,29 @@ targets:
     - source integrates with CSP channel machinery (prialt-able via per-request response channels)
     - http::fetch and http::post accept source for streaming request bodies
     - Existing net::connection and http server/client use the new abstraction
-    context: 'reader&lt;bytes&gt; is push-based with producer-determined chunk boundaries — the consumer can''t control read size. Real I/O protocols need sized pulls that propagate to the syscall (io::read(fd, buf, n)). Go solves this with io.Reader; CSP needs a channel-native equivalent. Leading design: per-request response channel — writer&lt;struct{size_t n; writer&lt;bytes&gt; data;}&gt; — so each read is independently cancellable and doesn''t desync. Wide-ranging impact: touches io, net, tls, http layers. Must be designed carefully before implementation.'
+    context: 'reader&lt;bytes&gt; is push-based with producer-determined chunk boundaries — the consumer can''t control read size. Real I/O protocols need sized pulls that propagate to the syscall (io::read(fd, buf, n)). Go solves this with io.Reader; CSP needs a channel-native equivalent. Design settled in docs/papers/19-pull-based-sources.md: `writer<request<size_t, bytes>>` as the source type, with EOF via reply-writer death, errors via the channel-exception mechanism (🎯T18). Wide-ranging impact: touches io, net, tls, http layers.'
+    depends_on:
+    - T18
+    design_doc: docs/papers/19-pull-based-sources.md
     origin: design discussion, session 2026-04-13
     discovered: 2026-04-14
+  T18:
+    name: Channels can deliver exceptions in place of values
+    status: identified
+    value: 8.0
+    cost: 2.0
+    acceptance:
+    - '`writer<T>::_throw(std::exception_ptr)` delivers an exception on next rendezvous instead of a value'
+    - Reader's `r >> val` observing an exception-delivery rethrows at the call site; channel remains live after the exception
+    - A prialt branch `r >> val` receiving an exception rethrows at the branch's call site; non-winning branches clean up via existing RAII
+    - Buffered channels carry exceptions in-order with values
+    - 'Mechanism: low-bit tag on `ChanOp::message`; `alignas(2)` on `chan_op<T>` T-storage guarantees the invariant for all T'
+    - 'Tests: unbuffered, buffered, prialt, `writer<exception_ptr>` disambiguation of `_throw` vs `<<`'
+    - Paper 03 (two-phase prialt) updated to describe phase-2 exception branch
+    - dist/AGENTS-CSP.md updated
+    context: 'See docs/papers/19-pull-based-sources.md § Target dependency. Channel delivers value OR exception on each rendezvous; analogous to C++ function calls where exceptions propagate without appearing in the type signature. Scope stays small because the rendezvous protocol, scheduler, and lifecycle are unchanged — only phase 2''s typed dispatch branches on a tag bit. Unblocks 🎯T17 (pull-based sources) and eliminates per-seam error wrapping in every `request<Req, Resp>` interaction.'
+    origin: session 2026-04-19 design discussion (paper 19)
+    discovered: 2026-04-19
   T2:
     name: Tier D combinators are implemented
     status: identified

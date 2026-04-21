@@ -96,3 +96,10 @@ debugging of the CSP imp-based concurrency library.
     stack arrays, segment lists, garbage collection with opaque handles,
     and flat root optimisation. All parked — the HAMT works and isn't a
     bottleneck.
+
+19. **[Pull-Based Sources](19-pull-based-sources.md)** *(design)*
+    — A `source = writer<request<size_t, bytes>>` abstraction that
+    gives consumers size-control over reads while still composing as
+    channels. Closes the push/pull gap at the `net::connection`
+    boundary and the TLS composition gap; enables streaming HTTP
+    bodies and a route out of `http::serve`'s direct-fd bypass.
