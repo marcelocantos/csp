@@ -222,3 +222,20 @@ None.
   - CI ccache caching via `actions/cache` — high payoff, ~5–8 CPU-min/run, requires CI review
   - PCH for `test/testutil.h` — ~1–2s additional savings, medium risk (dep tracking)
   - Test tiering (`make fast` target) — 31.8s test runtime dominates `make` wall time
+
+## 2026-04-22 — /release v0.9.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.9.0. New networking surface: HTTP/1.1 server
+  (`csp::http::serve`, 🎯T3.2) and HTTP/1.1 client
+  (`csp::http::fetch` / `get` / `post`, 🎯T3.6), both built on the
+  vendored llhttp parser (MIT, attributed in `NOTICES`). Fixed
+  dist-build TLS inlining hang (🎯T16) — all TLS accessors now carry
+  `CSP_TLS_NOINLINE`, keeping sanitizer-enabled dist CI stable. Internal:
+  ccache wired into Makefile, `docs/targets.yaml` migrated to
+  `docs/bullseye.yaml`, Homebrew tap opted out (CSP ships as source,
+  not binary). HTTP surface marked Fluid in `STABILITY.md` — streaming
+  bodies, HTTPS, connection reuse, and redirects are deferred.
+- **Known issue**: Linux arm64 ASan+UBSan CI job hung on the prior
+  `81674ef` run (9 of 10 jobs passed). Investigation launched in
+  parallel with this release.

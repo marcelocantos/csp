@@ -5,7 +5,7 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
-Snapshot as of v0.8.0.
+Snapshot as of v0.9.0.
 
 ## Interaction surface catalogue
 
@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.8.0"` | Stable |
+| `CSP_VERSION` | `"0.9.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `8` | Stable |
+| `CSP_VERSION_MINOR` | `9` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
@@ -216,6 +216,30 @@ TLS 1.3 only via PicoTLS minicrypto backend. No built-in X.509 verification.
 | `tls::context::set_verify(verify_fn)` | set custom cert verification callback | Stable |
 | `tls::conn` | TLS connection (pImpl) | Stable |
 
+### HTTP (`csp::http`, `include/csp/http.h`)
+
+HTTP/1.1 server and client built on llhttp (vendored). Body is buffered
+(streaming deferred). Server bypasses `net::listen` internally — see the
+project's http-server notes for the rationale.
+
+| Symbol | Kind | Stability |
+|--------|------|-----------|
+| `http::method` | enum class | Fluid |
+| `http::method_name(method)` | function | Fluid |
+| `http::response` | struct (`status`, `headers`, `body`) | Fluid |
+| `http::request` | struct (method, url, version, headers, body, keep_alive, `respond` writer) | Fluid |
+| `http::request::header(name)` | case-insensitive header lookup | Fluid |
+| `http::request::content_length()` | convenience accessor | Fluid |
+| `http::endpoint` | struct (`requests`, `remote_addr`) | Fluid |
+| `http::serve_options` | struct (`listen`, `max_header_size`, `read_chunk_size`) | Fluid |
+| `http::server` | struct (`endpoints`, `port`, `local_addr`) | Fluid |
+| `http::serve(port, opts)` | server factory | Fluid |
+| `http::serve(addr, port, opts)` | server factory | Fluid |
+| `http::fetch_options` | struct (`read_chunk_size`) | Fluid |
+| `http::fetch(method, url, headers, body, opts)` | one-shot client call | Fluid |
+| `http::get(url, headers, opts)` | convenience wrapper | Fluid |
+| `http::post(url, body, headers, opts)` | convenience wrapper | Fluid |
+
 ### Byte reader (`include/csp/byte_reader.h`)
 
 | Symbol | Kind | Stability |
@@ -334,6 +358,12 @@ Items that must be addressed before 1.0:
 
 6. **Distribution packaging** — `dist/` ships three files but no install
    target, pkg-config, or CMake find-module. Users must manually integrate.
+
+7. **HTTP surface** — Server and client landed in v0.9.0 with buffered
+   bodies only. Streaming request and response bodies, HTTPS (HTTP over
+   `tls::conn`), and the server / client structure are all Fluid until
+   proven in use. Expect refinements around the `response` struct,
+   `serve_options`, and client ergonomics (connection reuse, redirects).
 
 ## Out of scope for 1.0
 
