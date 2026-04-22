@@ -225,7 +225,7 @@ None.
 
 ## 2026-04-22 — /release v0.9.0
 
-- **Commit**: `pending`
+- **Commit**: `e630654`
 - **Outcome**: Released v0.9.0. New networking surface: HTTP/1.1 server
   (`csp::http::serve`, 🎯T3.2) and HTTP/1.1 client
   (`csp::http::fetch` / `get` / `post`, 🎯T3.6), both built on the
