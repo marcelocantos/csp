@@ -1114,16 +1114,17 @@ TEST_CASE("ChanUtil---Timeout-no-expiry") {
 
 TEST_CASE("ChanUtil---Timeout-expiry") {
     using namespace std::chrono_literals;
+    fake_clock fc;
     RunStats stats;
 
-    csp::run([]{
-        using namespace std::chrono_literals;
+    csp::run([&]{
+        csp::local l{fc.binding()};
         auto to = timeout<int>(100ms).spawn();
 
         csp::spawn([w = std::move(to.w)]{
             using namespace std::chrono_literals;
             w << 1;
-            csp::sleep(200ms);
+            csp::sleep(200ms);  // Fake-clock quiescence advances past timeout.
             w << 2;  // Timeout already fired.
         });
 
