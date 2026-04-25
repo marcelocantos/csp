@@ -1,6 +1,7 @@
 #pragma once
 
 #include <csp/internal/csp_internal.h>
+#include <csp/internal/note.h>
 
 #include <mutex>
 #include <thread>
@@ -20,6 +21,7 @@ struct Processor {
     std::mutex run_mu;                // Protects busy queue DLL
     Imp* running = nullptr;   // Imp claimed by local_next (steal-safe)
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
+    Note note;                        // Per-worker futex note (park/unpark)
 
     std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
@@ -44,6 +46,7 @@ struct Processor {
         running = nullptr;
         parked.store(false, std::memory_order_relaxed);
         heartbeat.store(0, std::memory_order_relaxed);
+        note.reset();
         // alive must be last — steal_work reads it with acquire.
         alive.store(true, std::memory_order_release);
     }
