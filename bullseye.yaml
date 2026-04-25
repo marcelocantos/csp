@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 3
 last_evaluated: 1ff87e4
 targets:
   T1:
@@ -171,7 +171,6 @@ targets:
     context: 'reader&lt;bytes&gt; is push-based with producer-determined chunk boundaries — the consumer can''t control read size. Real I/O protocols need sized pulls that propagate to the syscall (io::read(fd, buf, n)). Go solves this with io.Reader; CSP needs a channel-native equivalent. Design settled in docs/papers/19-pull-based-sources.md: `writer<request<size_t, bytes>>` as the source type, with EOF via reply-writer death, errors via the channel-exception mechanism (🎯T18). Wide-ranging impact: touches io, net, tls, http layers.'
     depends_on:
     - T18
-    design_doc: docs/papers/19-pull-based-sources.md
     origin: design discussion, session 2026-04-13
     discovered: 2026-04-14
   T18:
@@ -188,7 +187,7 @@ targets:
     - 'Tests: unbuffered, buffered, prialt, `writer<exception_ptr>` disambiguation of `_throw` vs `<<`'
     - Paper 03 (two-phase prialt) updated to describe phase-2 exception branch
     - dist/AGENTS-CSP.md updated
-    context: 'See docs/papers/19-pull-based-sources.md § Target dependency. Channel delivers value OR exception on each rendezvous; analogous to C++ function calls where exceptions propagate without appearing in the type signature. Scope stays small because the rendezvous protocol, scheduler, and lifecycle are unchanged — only phase 2''s typed dispatch branches on a tag bit. Unblocks 🎯T17 (pull-based sources) and eliminates per-seam error wrapping in every `request<Req, Resp>` interaction.'
+    context: See docs/papers/19-pull-based-sources.md § Target dependency. Channel delivers value OR exception on each rendezvous; analogous to C++ function calls where exceptions propagate without appearing in the type signature. Scope stays small because the rendezvous protocol, scheduler, and lifecycle are unchanged — only phase 2's typed dispatch branches on a tag bit. Unblocks 🎯T17 (pull-based sources) and eliminates per-seam error wrapping in every `request<Req, Resp>` interaction.
     origin: session 2026-04-19 design discussion (paper 19)
     discovered: 2026-04-19
     achieved: 2026-04-25
@@ -292,7 +291,7 @@ targets:
     - 'Close handshake via endpoint death (BLO: drop writer → close frame sent → reader sees death)'
     - Binary and text message types
     - Tests and reference docs
-    context: wslay is parser-only (MIT, ~2K lines). No I/O — feed bytes, get frames. Maps to a filter combinator over raw fd I/O. Depends on 🎯T3.2 for HTTP upgrade path.
+    context: Partial work preserved on remote branch `feature/T3.5-websocket` (single WIP commit). Includes wslay vendor (~2K LOC, MIT) under `vendor/github.com/tatsuhiro-t/wslay/`, draft `include/csp/ws.h`, `src/ws.cc`, `test/ws.test.cc` (one or more deadlock-prone), Makefile + amalgamate.py wiring, and modifications to `http.h` / `http.cc` / `io.cc` for the upgrade handshake. Doesn't build cleanly. Original agent stopped after retry-looping on a hung `csp_tests --test-suite=ws`. Resume by checking out the branch and attaching with lldb under `CSP_MAXPROCS=2` to identify the deadlocked imp.
     origin: manual
     discovered: 2026-03-28
   T3.6:
@@ -342,7 +341,7 @@ targets:
     - Connection migration (IP change) transparent to imp code
     - Integrates with CSP's reactor (UDP socket events)
     - Tests and reference docs
-    context: ngtcp2 (by nghttp2's author) is designed for external event loop integration. QUIC uses UDP (not TCP), so reactor needs to handle UDP socket readability. Each QUIC stream maps to a channel pair — multiplexing is native to both QUIC and CSP. This is the largest networking target. Depends on 🎯T3.1 (I/O wrappers).
+    context: 'Partial work preserved on remote branch `feature/t38-quic` (single WIP commit). Includes ngtcp2 vendor under `vendor/github.com/ngtcp2/ngtcp2/`, draft `include/csp/quic.h`, `src/quic.cc` (server + client + reactor UDP integration), `test/quic.test.cc` (echo-single-stream test deadlocks at handshake completion), Makefile wired for ngtcp2 + ngtcp2-crypto-picotls. Doesn''t build cleanly. Final agent hypothesis: `conn.incoming_streams` move-out leaves no reader on `shared_sc->incoming_ch`, so `dispatch_pending_events` writes to a dead writer when delivering the first server-side stream. Resume from that hypothesis: either keep the reader inside `ConnShared` and expose a separate handle, or wire the writer side through a different channel.'
     origin: manual
     discovered: 2026-03-28
   T3.9:
