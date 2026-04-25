@@ -420,6 +420,65 @@ auto lr = csp::part::io::byte_reader(fd) | csp::part::io::split_lines;
 auto line_reader = lr.spawn();
 ```
 
+Pull-based source (🎯T17 Stage 1):
+```cpp
+namespace csp::io {
+
+// read_request: consumer asks for up to `value` bytes; source writes the
+// result (up to value bytes) into `reply`.
+using read_request = request<size_t, bytes>;
+
+// source: the consumer-facing handle (write end of a request channel).
+using source = writer<read_request>;
+
+// errno_error: thrown (via _throw) when io::read fails.
+class errno_error : public csp::error {
+public:
+    errno_error(const std::string& syscall, int err);
+    int err() const;
+};
+
+// fd_source: spawns an imp serving read_request values from a non-blocking fd.
+// The imp owns the fd and closes it on exit (EOF, error, or channel death).
+// Partial reads (< n bytes) are normal. Zero-byte requests throw
+// std::invalid_argument across the reply and exit.
+[[nodiscard]] source fd_source(fd_t fd);
+
+// Convenience: blocking call (uses writer::operator()).
+bytes source_read(source& s, size_t n);
+
+// Convenience: non-blocking — returns reply reader for use in prialt.
+reader<bytes> call_source(source& s, size_t n);
+
+} // namespace csp::io
+
+// Outcome model:
+// Success: reply >> chunk  → true; chunk contains 1..n bytes.
+// EOF:     reply >> chunk  → false (source imp exited; reply-writer dropped).
+// Error:   reply >> chunk  → throws errno_error (or other exception).
+
+// Sequential loop:
+auto s = csp::io::fd_source(fd);
+for (;;) {
+    auto reply = csp::io::call_source(s, 4096);
+    csp::bytes chunk;
+    if (!(reply >> chunk)) break;  // EOF
+    // use chunk
+}
+
+// prialt across two sources:
+auto r1 = csp::io::call_source(s1, 4096);
+auto r2 = csp::io::call_source(s2, 4096);
+csp::bytes b1, b2;
+switch (csp::prialt(r1 >> b1, r2 >> b2)) {
+case 0: /* b1 ready */ break;
+case 1: /* b2 ready */ break;
+}
+
+// Blocking sugar (writer::operator()):
+csp::bytes chunk = s(4096);   // throws on EOF/error
+```
+
 ## Networking
 
 ```cpp
