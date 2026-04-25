@@ -5,7 +5,7 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
-Snapshot as of v0.9.0.
+Snapshot as of v0.10.0.
 
 ## Interaction surface catalogue
 
@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.9.0"` | Stable |
+| `CSP_VERSION` | `"0.10.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `9` | Stable |
+| `CSP_VERSION_MINOR` | `10` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
@@ -109,6 +109,20 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 | `prialt(Ops&&...) → int` | Stable |
 | `prialt(vector<chan_op<T>>&) → int` | Stable |
 | `prialt(vector<chan_op<T>>&, none_t) → int` | Stable |
+
+### In-band exception delivery
+
+`writer<T>::_throw(std::exception_ptr)` sends an exception in place of
+a value on the next rendezvous; the reader observes it as a thrown
+exception at its `r >> val` / `prialt(...)` call site, and the channel
+remains live and continues to carry further values or exceptions.
+Buffered channels carry exceptions in-order with values.  See
+docs/papers/03-two-phase-prialt.md §8 for the wire mechanism.
+
+| Symbol | Stability |
+|--------|-----------|
+| `writer<T>::_throw(std::exception_ptr) → chan_op<T>` | Stable |
+| `chan_op<T>::take_exception() → exception_ptr` (capture without rethrow) | Needs review |
 
 ### Globals
 

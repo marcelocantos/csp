@@ -239,3 +239,23 @@ None.
 - **Known issue**: Linux arm64 ASan+UBSan CI job hung on the prior
   `81674ef` run (9 of 10 jobs passed). Investigation launched in
   parallel with this release.
+
+## 2026-04-25 — /release v0.10.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.10.0. Headline change: in-band exception
+  delivery on channels (🎯T18). `writer<T>::_throw(exception_ptr)` sends
+  an exception in place of a value on the next rendezvous; the reader
+  rethrows at its `r >> val` / `prialt(...)` call site and the channel
+  stays live. Buffered channels carry exceptions in-order with values.
+  Wire mechanism: low-bit tag on `ChanOp::message`; channel scheduler
+  unchanged, only phase-2 typed dispatch branches on the tag. Paper 03
+  §8 added; `dist/AGENTS-CSP.md` updated. Also added `make bullseye`
+  standing-invariants hook for the convergence skill, moved
+  `bullseye.yaml` from `docs/` to repo root, and shipped the prior
+  flaky-Timeout-expiry test fix from PR #29. CSP remains source-
+  distributed (no Homebrew tap, no release binaries).
+- **Known issue**: `timeout-flushes-partial-frame` test in
+  `frame.test.cc` is timing-sensitive and may flake on overloaded CI
+  runners; tracked separately. 🎯T16 (Linux x86_64 ASan+UBSan dist
+  hang) remains open.
