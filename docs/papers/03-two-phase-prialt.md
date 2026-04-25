@@ -279,7 +279,80 @@ non-trivial move constructors, the compiler can inline the
 constructor body if it chooses — an option that was unavailable when
 the transfer went through a function pointer.
 
-## 8. Related work
+## 8. In-band exception delivery
+
+The two-phase protocol generalises naturally from "transfer a value"
+to "transfer either a value or an exception" without changing the
+scheduler. The mechanism is a single tag bit on the writer's source
+pointer.
+
+`writer<T>::_throw(std::exception_ptr)` constructs a `chan_op<T>`
+whose inline storage holds an `exception_ptr` instead of a `T`. The
+storage is sized to `max(sizeof(T), sizeof(exception_ptr))` and
+aligned to at least 2, so the address of the storage always has bit
+0 clear. When the op delivers an exception, the writer's
+`ChanOp::message` is set to `(uintptr_t)&buf | 1` — the same pointer
+with bit 0 set. The reader's `ChanOp::message` is unchanged
+(pointing at the user's `T` destination); a new field
+`ChanOp::eptr_dst` is added pointing at a default-constructed
+`std::exception_ptr` slot inside the reader's `chan_op<T>`.
+
+The channel layer (phase 1) never inspects the bytes. It propagates
+`message` and `eptr_dst` verbatim from the matched chanops into the
+returned `AltMatch`. Only phase 2 — the typed transfer at the call
+site — looks at the tag:
+
+```cpp
+static void transfer(void* src, void* dst, void* eptr_dst) {
+    if (uintptr_t(src) & 1) {
+        if (eptr_dst) {
+            auto* ep = reinterpret_cast<std::exception_ptr*>(uintptr_t(src) & ~uintptr_t(1));
+            *static_cast<std::exception_ptr*>(eptr_dst) = *ep;
+        }
+    } else if (dst) {
+        *static_cast<T*>(dst) = std::move(*static_cast<T*>(src));
+    }
+}
+```
+
+When the transfer assigns into `*eptr_dst`, the reader's `chan_op<T>`
+discovers a non-null `eptr_in_` and rethrows after `alt_end` and
+`disarm` have settled locks and registrations. The throw propagates
+out of the `r >> val` / `prialt(...)` call site as if the exception
+had been raised there directly. The channel itself stays alive — no
+state is touched by the rethrow.
+
+Asymmetry between sides is handled by where the eptr ends up rather
+than by case-splitting in the protocol. The matcher (whichever side
+woke first) runs the typed transfer and writes into
+`*m.eptr_dst`, which always points at the *reader's* `eptr_in_`
+slot. The writer side's own `eptr_in_` is never touched (its
+chanop's `eptr_dst` is null), so when the writer's `chan_op<T>` or
+its enclosing `typed_alt` checks for a captured exception, it sees
+none and proceeds normally — the writer chose to throw, and doesn't
+rethrow on its own side. The reader's `eptr_in_` is populated either
+by its own typed transfer (reader-as-matcher) or by the writer's
+typed transfer across stack frames (writer-as-matcher); after
+`disarm`, the reader-side code (destructor, `operator bool`, or
+`typed_alt`'s post-pickup loop) finds the eptr and rethrows.
+
+Buffered channels carry exceptions in-order with values. The buffer
+filter's ring slot becomes `buffered_slot<T>` (a `T` plus an
+`exception_ptr`). The filter's `alt` reads into the slot's value
+field; if the read fires with an exception payload, `alt` rethrows,
+and the filter catches the exception and stores it in the slot's
+`exc` field before pushing. The write side chooses between
+`out << move(slot.value)` and `out._throw(slot.exc)` based on which
+field is populated, preserving order across the buffer.
+
+The mechanism adds zero indirection on the value path — the tag
+check is a single `and` with bit 0 followed by a predicted branch,
+amortised against the move that follows on the value side. The
+exception path is a single pointer mask + assign. The scheduler is
+unchanged. The reader continues to see `*static_cast<T*>(dst) =
+std::move(...)` as the value-path code generation, just as before.
+
+## 9. Related work
 
 Go's channel implementation (`runtime.chansend`, `runtime.chanrecv`)
 uses `typedmemmove` — a function that dispatches on the element

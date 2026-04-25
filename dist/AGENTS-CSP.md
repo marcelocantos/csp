@@ -144,6 +144,15 @@ splice(ch.w, ch.r, [](reader<int> in, writer<int> out) {
 
 // Pipe operator: syntactic sugar for fuse(w, r).
 w | r;   // equivalent to fuse(w, r)
+
+// In-band exception delivery: send an exception in place of a value.
+// The reader rethrows at its r >> v / prialt(...) call site; the channel
+// stays live and continues to carry values or further exceptions.
+w._throw(std::make_exception_ptr(my_error("boom")));
+try { r >> v; } catch (my_error const& e) { /* observed */ }
+// Buffered channels carry exceptions in-order with values.
+// `writer<exception_ptr>` disambiguates: `<<` sends as value (no throw at
+// the reader), `_throw` sends as exception (rethrown at the reader).
 ```
 
 ## Request / Response

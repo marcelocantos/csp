@@ -390,12 +390,16 @@ namespace {
 
                                 // Set up match: src is always writer's
                                 // buffer, dst is always reader's buffer.
+                                // eptr_dst comes from the reader side (its
+                                // optional std::exception_ptr storage).
                                 if (endpt == wr) {
                                     out->src = chop.message;
                                     out->dst = const_cast<void *>(cw.chanop->message);
+                                    out->eptr_dst = cw.chanop->eptr_dst;
                                 } else {
                                     out->src = cw.chanop->message;
                                     out->dst = const_cast<void *>(chop.message);
+                                    out->eptr_dst = chop.eptr_dst;
                                 }
 
                                 out->result = i;

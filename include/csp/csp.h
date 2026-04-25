@@ -95,17 +95,33 @@ inline Waiter wait_dead(ReaderRef r) {
 }
 
 // Channel operation descriptor.
+//
+// `message` is the data pointer: writer side points at the writer's value
+// storage (with the low bit set when delivering an exception_ptr in place
+// of a value — see csp::chan_op<T>); reader side points at the reader's
+// destination of type T*. The channel layer never interprets the bytes —
+// the tag rides through verbatim into AltMatch::src for phase-2 typed
+// dispatch at the call site.
+//
+// `eptr_dst` is the optional reader-side destination for an in-band
+// exception. When non-null and the matched writer is in throw mode, the
+// caller's phase-2 transfer assigns the writer's std::exception_ptr into
+// `*eptr_dst`. Reader-side chan_op<T> sets this; ad-hoc internal callers
+// that don't care about exceptions leave it null and exceptions on those
+// channels are silently dropped.
 struct ChanOp {
     Waiter waiter;
     void * message = nullptr;
     void * slot = nullptr;     // Slot* for re-resolution after channel swap
+    void * eptr_dst = nullptr; // std::exception_ptr* (reader side; nullable)
 };
 
 // Two-phase alt/prialt match result.
 struct AltMatch {
     int result = 0;
-    void * src = nullptr;
-    void * dst = nullptr;
+    void * src = nullptr;       // writer's message (low bit = 1 → eptr)
+    void * dst = nullptr;       // reader's message (T*)
+    void * eptr_dst = nullptr;  // reader's std::exception_ptr destination (nullable)
     alignas(8) char opaque_[128];
 };
 
@@ -296,19 +312,39 @@ template <typename T> struct is_chan_op : std::false_type {};
 
 // Compile-time dispatch: call transfer on the op at runtime index idx.
 template <int I>
-inline void transfer_at(int, void *, void *) {}
+inline void transfer_at(int, void *, void *, void *) {}
 
 template <int I, typename Op, typename... Ops>
-inline void transfer_at(int idx, void * src, void * dst, Op &&, Ops &&... ops) {
+inline void transfer_at(int idx, void * src, void * dst, void * eptr_dst,
+                        Op &&, Ops &&... ops) {
     if (idx == I) {
-        std::decay_t<Op>::transfer(src, dst);
+        std::decay_t<Op>::transfer(src, dst, eptr_dst);
     } else {
-        transfer_at<I + 1>(idx, src, dst, std::forward<Ops>(ops)...);
+        transfer_at<I + 1>(idx, src, dst, eptr_dst, std::forward<Ops>(ops)...);
     }
 }
 
 }
 
+// In-band exception delivery.
+//
+// `writer<T>::_throw(ep)` sends an exception_ptr in place of a value on the
+// next rendezvous.  The reader observes it as a thrown exception at the
+// `r >> val` / `prialt(...)` call site; the channel remains live and can
+// carry further values or exceptions.
+//
+// Wire mechanism: the writer's chan_op<T> stores either a T or an
+// exception_ptr in its inline storage (sized for max(sizeof(T),
+// sizeof(exception_ptr)) and aligned to at least 2).  The low bit of
+// ChanOp::message is the value/exception tag — 0 = T, 1 = exception_ptr.
+// Reader-side ChanOp::message points at the user's T destination
+// (unchanged); reader-side ChanOp::eptr_dst points at a default-
+// constructed std::exception_ptr storage in chan_op<T>.  The channel
+// layer copies these fields verbatim into AltMatch and never inspects
+// them.  Phase-2 dispatch (chan_op<T>::transfer) reads the tag and
+// either move-assigns the T or assigns into *eptr_dst.  Reader's chan_op
+// rethrows on destruction / operator bool / typed_alt return when its
+// eptr slot is non-null.
 template <typename T = poke_t>
 class chan_op {
 public:
@@ -317,72 +353,86 @@ public:
 
     // Write operation (copy).
     chan_op(internal::WriterRef w, T const & t)
-        : chanop_{internal::wait(w), &buf_, internal::get_slot(w.ptr)}, has_buf_(true)
+        : chanop_{internal::wait(w), buf_addr_(), internal::get_slot(w.ptr), nullptr},
+          mode_(Mode::WriteValue)
     {
         new (&buf_) T(t);
     }
 
     // Write operation (move).
     chan_op(internal::WriterRef w, T && t)
-        : chanop_{internal::wait(w), &buf_, internal::get_slot(w.ptr)}, has_buf_(true)
+        : chanop_{internal::wait(w), buf_addr_(), internal::get_slot(w.ptr), nullptr},
+          mode_(Mode::WriteValue)
     {
         new (&buf_) T(std::move(t));
+    }
+
+    // Throw operation: deliver an exception_ptr at the next rendezvous.
+    struct throw_tag {};
+    chan_op(internal::WriterRef w, std::exception_ptr ep, throw_tag)
+        : chanop_{internal::wait(w),
+                  reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(buf_addr_()) | 1),
+                  internal::get_slot(w.ptr),
+                  nullptr},
+          mode_(Mode::WriteThrow)
+    {
+        new (&buf_) std::exception_ptr(std::move(ep));
     }
 
     // Read operation.
     template <typename U>
         requires std::is_convertible_v<T, U>
     chan_op(internal::ReaderRef r, U & dest)
-        : chanop_{internal::wait(r), &dest, internal::get_slot(r.ptr)} {}
+        : chanop_{internal::wait(r), &dest, internal::get_slot(r.ptr), &eptr_in_},
+          mode_(Mode::Read) {}
 
     // Raw-pointer read (for ring buffer slots and nullptr discard).
     chan_op(internal::ReaderRef r, void * dest)
-        : chanop_{internal::wait(r), dest, internal::get_slot(r.ptr)} {}
+        : chanop_{internal::wait(r), dest, internal::get_slot(r.ptr), &eptr_in_},
+          mode_(Mode::Read) {}
 
     // Dead-endpoint operation.
-    explicit chan_op(internal::ChanOp op) : chanop_(op) {}
+    explicit chan_op(internal::ChanOp op) : chanop_(op), mode_(Mode::Vulture) {}
 
     chan_op(chan_op const &) = delete;
-    chan_op(chan_op && o)
-        : chanop_(o.chanop_), has_buf_(o.has_buf_), active_(o.active_)
+    chan_op(chan_op && o) noexcept
+        : chanop_(o.chanop_), mode_(o.mode_), active_(o.active_)
     {
-        if (has_buf_) {
-            new (&buf_) T(std::move(*reinterpret_cast<T*>(&o.buf_)));
-            chanop_.message = &buf_;
-            reinterpret_cast<T*>(&o.buf_)->~T();
-        }
-        o.chanop_ = {{}, nullptr};
-        o.has_buf_ = false;
+        adopt_storage(std::move(o));
+        o.chanop_ = {{}, nullptr, nullptr, nullptr};
+        o.mode_ = Mode::Empty;
         o.active_ = false;
     }
 
-    ~chan_op() {
+    ~chan_op() noexcept(false) {
+        std::exception_ptr rethrow_ep;
         if (active_) {
             internal::AltMatch m;
             internal::prialt_begin(&m, &chanop_, 1, false);
-            if (m.src && m.dst)
-                *static_cast<T *>(m.dst) = std::move(*static_cast<T *>(m.src));
+            if (m.src) transfer(m.src, m.dst, m.eptr_dst);
             internal::alt_end(&m);
+            if (mode_ == Mode::Read && eptr_in_) {
+                rethrow_ep = std::move(eptr_in_);
+                eptr_in_ = nullptr;
+            }
         }
-        if (has_buf_) reinterpret_cast<T*>(&buf_)->~T();
+        destroy_storage();
+        // Suppress when already unwinding to avoid std::terminate on
+        // double-throw; the in-flight exception takes precedence.
+        if (rethrow_ep && !std::uncaught_exceptions()) {
+            std::rethrow_exception(rethrow_ep);
+        }
     }
 
     chan_op & operator=(chan_op const &) = delete;
-    chan_op & operator=(chan_op && o) {
-        if (has_buf_) {
-            reinterpret_cast<T*>(&buf_)->~T();
-            has_buf_ = false;
-        }
+    chan_op & operator=(chan_op && o) noexcept {
+        destroy_storage();
         chanop_ = o.chanop_;
-        has_buf_ = o.has_buf_;
+        mode_ = o.mode_;
         active_ = o.active_;
-        if (has_buf_) {
-            new (&buf_) T(std::move(*reinterpret_cast<T*>(&o.buf_)));
-            chanop_.message = &buf_;
-            reinterpret_cast<T*>(&o.buf_)->~T();
-        }
-        o.chanop_ = {{}, nullptr};
-        o.has_buf_ = false;
+        adopt_storage(std::move(o));
+        o.chanop_ = {{}, nullptr, nullptr, nullptr};
+        o.mode_ = Mode::Empty;
         o.active_ = false;
         return *this;
     }
@@ -391,24 +441,99 @@ public:
         active_ = false;
         internal::AltMatch m;
         internal::prialt_begin(&m, &chanop_, 1, false);
-        if (m.src && m.dst)
-            *static_cast<T *>(m.dst) = std::move(*static_cast<T *>(m.src));
+        if (m.src) transfer(m.src, m.dst, m.eptr_dst);
         internal::alt_end(&m);
+        if (mode_ == Mode::Read && eptr_in_) {
+            auto ep = std::move(eptr_in_);
+            eptr_in_ = nullptr;
+            std::rethrow_exception(ep);
+        }
         return m.result >= 0;
     }
 
-    static void transfer(void * src, void * dst) {
-        *static_cast<T *>(dst) = std::move(*static_cast<T *>(src));
+    // Phase-2 dispatch.  Reads the tag bit on src to decide whether to
+    // deliver a T to the reader's user destination or an exception_ptr
+    // to the reader's eptr destination.  Either dst may be null on
+    // ad-hoc ops that don't care; in that case the exception/value is
+    // silently dropped.
+    static void transfer(void * src, void * dst, void * eptr_dst) {
+        auto isrc = reinterpret_cast<uintptr_t>(src);
+        if (isrc & 1) {
+            if (eptr_dst) {
+                auto * ep_src = reinterpret_cast<std::exception_ptr*>(isrc & ~uintptr_t(1));
+                *static_cast<std::exception_ptr*>(eptr_dst) = *ep_src;
+            }
+        } else if (dst) {
+            *static_cast<T*>(dst) = std::move(*static_cast<T*>(src));
+        }
     }
 
     void disarm() const { active_ = false; }
     internal::ChanOp chanop() const { return chanop_; }
 
+    // Capture an exception delivered into this read op's slot.
+    // Returns null if no exception arrived.  Does not rethrow.  Used
+    // by the buffered-channel filter to forward exceptions in-order
+    // with values rather than rethrow at the filter's call site.
+    std::exception_ptr take_exception() const {
+        std::exception_ptr ep;
+        if (mode_ == Mode::Read && eptr_in_) {
+            ep = std::move(eptr_in_);
+            eptr_in_ = nullptr;
+        }
+        return ep;
+    }
+
 private:
-    internal::ChanOp chanop_ = {{}, nullptr};
-    struct alignas(T) aligned_buf { mutable std::byte data[sizeof(T)]; };
+    enum class Mode : uint8_t { Empty, Vulture, WriteValue, WriteThrow, Read };
+
+    // Writer-side storage.  Sized + aligned to hold either a T or an
+    // exception_ptr.  alignas(2) (or stricter, when alignof(T) > 2)
+    // guarantees the low bit of its address is zero — used as the
+    // value/exception tag on ChanOp::message.
+    static constexpr std::size_t buf_size_ =
+        sizeof(T) > sizeof(std::exception_ptr) ? sizeof(T) : sizeof(std::exception_ptr);
+    static constexpr std::size_t natural_align_ =
+        alignof(T) > alignof(std::exception_ptr) ? alignof(T) : alignof(std::exception_ptr);
+    static constexpr std::size_t buf_align_ =
+        natural_align_ > 2 ? natural_align_ : 2;
+    struct alignas(buf_align_) aligned_buf { mutable std::byte data[buf_size_]; };
+
+    void * buf_addr_() { return &buf_; }
+
+    void destroy_storage() noexcept {
+        if (mode_ == Mode::WriteValue) {
+            reinterpret_cast<T*>(&buf_)->~T();
+        } else if (mode_ == Mode::WriteThrow) {
+            reinterpret_cast<std::exception_ptr*>(&buf_)->~exception_ptr();
+        }
+        // Read mode: eptr_in_ destructs on its own; no manual cleanup.
+    }
+
+    void adopt_storage(chan_op && o) noexcept {
+        if (mode_ == Mode::WriteValue) {
+            new (&buf_) T(std::move(*reinterpret_cast<T*>(&o.buf_)));
+            chanop_.message = buf_addr_();
+            reinterpret_cast<T*>(&o.buf_)->~T();
+        } else if (mode_ == Mode::WriteThrow) {
+            new (&buf_) std::exception_ptr(std::move(
+                *reinterpret_cast<std::exception_ptr*>(&o.buf_)));
+            chanop_.message = reinterpret_cast<void*>(
+                reinterpret_cast<uintptr_t>(buf_addr_()) | 1);
+            reinterpret_cast<std::exception_ptr*>(&o.buf_)->~exception_ptr();
+        } else if (mode_ == Mode::Read) {
+            eptr_in_ = std::move(o.eptr_in_);
+            o.eptr_in_ = nullptr;
+            chanop_.eptr_dst = &eptr_in_;
+            // chanop_.message points to the user's T variable, copied
+            // verbatim from o; no relocation needed.
+        }
+    }
+
+    internal::ChanOp chanop_ = {{}, nullptr, nullptr, nullptr};
     aligned_buf buf_;
-    bool has_buf_ = false;
+    mutable std::exception_ptr eptr_in_;
+    Mode mode_ = Mode::Empty;
     mutable bool active_ = true;
 };
 
@@ -423,9 +548,10 @@ private:
 struct none_t {
     static constexpr int value = INT_MIN;
     constexpr operator int() const { return value; }
-    static internal::ChanOp chanop() { return {{}, nullptr}; }
-    static void transfer(void*, void*) {}
+    static internal::ChanOp chanop() { return {{}, nullptr, nullptr, nullptr}; }
+    static void transfer(void*, void*, void*) {}
     static void disarm() {}
+    static std::exception_ptr take_exception() { return {}; }
 };
 inline constexpr none_t none{};
 
@@ -468,6 +594,14 @@ public:
 
     chan_op<T> operator<<(T const & t) const { return {w_, t}; }
     chan_op<T> operator<<(T && t) const { return {w_, std::move(t)}; }
+
+    // Send an exception in place of a value on the next rendezvous.
+    // The reader observes the exception as if thrown at its `r >> val`
+    // call site; the channel remains live.  Named to disambiguate from
+    // operator<< when T is itself std::exception_ptr.
+    chan_op<T> _throw(std::exception_ptr ep) const {
+        return chan_op<T>(w_, std::move(ep), typename chan_op<T>::throw_tag{});
+    }
 
     chan_op<T> operator~() const {
         return chan_op<T>(internal::ChanOp{internal::wait_dead(w_), nullptr, internal::get_slot(w_.ptr)});
@@ -1241,12 +1375,20 @@ inline int typed_alt(Ops &&... ops) {
     internal::ChanOp chanops[N] = {ops.chanop()...};
     internal::AltMatch m;
     begin_f(&m, chanops, N, has_none);
-    if (m.src && m.dst) {
+    if (m.src) {
         int idx = (m.result >= 0 ? m.result : ~m.result);
-        transfer_at<0>(idx, m.src, m.dst, ops...);
+        transfer_at<0>(idx, m.src, m.dst, m.eptr_dst, ops...);
     }
     internal::alt_end(&m);
     (ops.disarm(), ...);
+    // Pick up any in-band exception delivered into a read op's slot
+    // (matcher side filled it; woken side observes here too).
+    std::exception_ptr ex;
+    auto pickup = [&ex](auto & op) {
+        if (auto e = op.take_exception()) ex = std::move(e);
+    };
+    (pickup(ops), ...);
+    if (ex) std::rethrow_exception(ex);
     return m.result;
 }
 
@@ -1267,10 +1409,15 @@ int typed_alt_vec(std::vector<chan_op<T>> const & ops) {
     for (auto & op : ops) chanops.push_back(op.chanop());
     internal::AltMatch m;
     begin_f(&m, chanops.data(), (int)chanops.size(), 0);
-    if (m.src && m.dst)
-        chan_op<T>::transfer(m.src, m.dst);
+    if (m.src)
+        chan_op<T>::transfer(m.src, m.dst, m.eptr_dst);
     internal::alt_end(&m);
     for (auto & op : ops) op.disarm();
+    std::exception_ptr ex;
+    for (auto & op : ops) {
+        if (auto e = op.take_exception()) ex = std::move(e);
+    }
+    if (ex) std::rethrow_exception(ex);
     return m.result;
 }
 
@@ -1283,10 +1430,15 @@ int typed_alt_vec_none(std::vector<chan_op<T>> const & ops) {
     for (auto & op : ops) chanops.push_back(op.chanop());
     internal::AltMatch m;
     begin_f(&m, chanops.data(), (int)chanops.size(), 1);
-    if (m.src && m.dst)
-        chan_op<T>::transfer(m.src, m.dst);
+    if (m.src)
+        chan_op<T>::transfer(m.src, m.dst, m.eptr_dst);
     internal::alt_end(&m);
     for (auto & op : ops) op.disarm();
+    std::exception_ptr ex;
+    for (auto & op : ops) {
+        if (auto e = op.take_exception()) ex = std::move(e);
+    }
+    if (ex) std::rethrow_exception(ex);
     return m.result;
 }
 
@@ -1364,6 +1516,29 @@ writer<T> operator|(chan<T> ch, writer<T> w) {
 }
 
 // --- buffered channel constructor ---
+//
+// Carries values and exceptions through the buffer in-order.  The
+// internal ring slot is `buffered_slot<T>` (a T plus an optional
+// exception_ptr); on the read side, an exception delivered via the
+// upstream writer is caught and stashed in the slot's exc field; on
+// the write side, slots with non-null exc are forwarded via
+// out._throw, and value slots via out << move.
+
+namespace detail {
+
+template <typename T>
+struct buffered_slot {
+    T value{};
+    std::exception_ptr exc;
+};
+
+template <typename T>
+inline auto write_op_for(writer<T>& out, buffered_slot<T>& slot) {
+    return slot.exc ? out._throw(slot.exc)
+                    : out << std::move(slot.value);
+}
+
+}
 
 template <typename T>
 chan<T>::chan(size_t capacity) {
@@ -1371,15 +1546,45 @@ chan<T>::chan(size_t capacity) {
         throw std::invalid_argument("buffer capacity must be at least 1");
     auto ch = spawn_filter<T>([capacity](reader<T> in, writer<T> out) {
         internal::descr("buffer");
-        detail::RingBuffer<T> buf(capacity);
+        // RingBuffer<T> allocates raw storage; slots are constructed at
+        // push and destructed at pop.  For non-trivial T (here, the slot
+        // holds a std::exception_ptr) we must NOT touch a slot's bytes
+        // before placement-new construction — staging the value or
+        // exception in a local first lets us push via placement-new.
+        detail::RingBuffer<detail::buffered_slot<T>> buf(capacity);
         for (;;) {
-            switch (alt(buf.full()  ? ~in  : in  >> buf.next(),
-                        buf.empty() ? ~out : out << buf.front())) {
-            case 0:  buf.push(); break;
+            detail::buffered_slot<T> staging;
+            int idx;
+            try {
+                idx = alt(
+                    buf.full()  ? ~in  : in  >> staging.value,
+                    buf.empty() ? ~out : detail::write_op_for(out, buf.front()));
+            } catch (...) {
+                // Read fired with an exception payload.  Land it in
+                // staging and push as an exception slot.
+                staging.exc = std::current_exception();
+                new (buf.next()) detail::buffered_slot<T>(std::move(staging));
+                buf.push();
+                continue;
+            }
+            switch (idx) {
+            case 0:
+                new (buf.next()) detail::buffered_slot<T>(std::move(staging));
+                buf.push();
+                break;
             case ~0:
-                while (!buf.empty() && out << std::move(buf.front())) buf.pop();
+                // Upstream died — drain remaining buffered values and
+                // exceptions to downstream before exiting.
+                while (!buf.empty()) {
+                    if (buf.front().exc) {
+                        if (!out._throw(buf.front().exc)) return;
+                    } else {
+                        if (!(out << std::move(buf.front().value))) return;
+                    }
+                    buf.pop();
+                }
                 return;
-            case 1:  buf.pop(); break;
+            case 1: buf.pop(); break;
             case ~1: return;
 #ifdef _MSC_VER
             default: __assume(0);
