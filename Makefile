@@ -70,9 +70,13 @@ endif
 
 DEPFLAGS = -MMD -MP
 
+NGHTTP2_DIR := vendor/github.com/nghttp2/nghttp2/lib
+NGHTTP2_INC := $(NGHTTP2_DIR)/includes
+
 INCLUDES := -I$(CSP_INCLUDE) \
             -Ivendor/include \
-            -Ivendor/github.com/nodejs/llhttp/include
+            -Ivendor/github.com/nodejs/llhttp/include \
+            -I$(NGHTTP2_INC)
 
 # --- TLS support (via PicoTLS + minicrypto) ---
 
@@ -89,6 +93,16 @@ INCLUDES += -I$(PICOTLS_DIR)/include \
             -I$(CIFRA_DIR) \
             -I$(CIFRA_DIR)/ext \
             -I$(UECC_DIR)
+
+# ngtcp2 include paths (part of TLS block — ngtcp2 requires TLS).
+NGTCP2_DIR  := vendor/github.com/ngtcp2/ngtcp2
+NGTCP2_LIB  := $(NGTCP2_DIR)/lib
+NGTCP2_CRYPTO := $(NGTCP2_DIR)/crypto
+
+INCLUDES += -I$(NGTCP2_LIB)/includes \
+            -I$(NGTCP2_CRYPTO)/includes \
+            -I$(NGTCP2_LIB) \
+            -I$(NGTCP2_CRYPTO)
 
 PICOTLS_SRCS := $(PICOTLS_DIR)/lib/picotls.c \
                 $(PICOTLS_DIR)/lib/hpke.c \
@@ -126,6 +140,76 @@ ifneq ($(SANITIZE),)
 PICOTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer \
                   -fno-sanitize=pointer-overflow
 endif
+
+# --- ngtcp2 sources (lib + crypto adapter) ---
+
+NGTCP2_LIB_SRCS := \
+    $(NGTCP2_LIB)/ngtcp2_acktr.c \
+    $(NGTCP2_LIB)/ngtcp2_addr.c \
+    $(NGTCP2_LIB)/ngtcp2_balloc.c \
+    $(NGTCP2_LIB)/ngtcp2_bbr.c \
+    $(NGTCP2_LIB)/ngtcp2_buf.c \
+    $(NGTCP2_LIB)/ngtcp2_callbacks.c \
+    $(NGTCP2_LIB)/ngtcp2_cc.c \
+    $(NGTCP2_LIB)/ngtcp2_cid.c \
+    $(NGTCP2_LIB)/ngtcp2_conn.c \
+    $(NGTCP2_LIB)/ngtcp2_conn_info.c \
+    $(NGTCP2_LIB)/ngtcp2_conv.c \
+    $(NGTCP2_LIB)/ngtcp2_crypto.c \
+    $(NGTCP2_LIB)/ngtcp2_dcidtr.c \
+    $(NGTCP2_LIB)/ngtcp2_err.c \
+    $(NGTCP2_LIB)/ngtcp2_fmt.c \
+    $(NGTCP2_LIB)/ngtcp2_frame_chain.c \
+    $(NGTCP2_LIB)/ngtcp2_gaptr.c \
+    $(NGTCP2_LIB)/ngtcp2_idtr.c \
+    $(NGTCP2_LIB)/ngtcp2_ksl.c \
+    $(NGTCP2_LIB)/ngtcp2_log.c \
+    $(NGTCP2_LIB)/ngtcp2_map.c \
+    $(NGTCP2_LIB)/ngtcp2_mem.c \
+    $(NGTCP2_LIB)/ngtcp2_objalloc.c \
+    $(NGTCP2_LIB)/ngtcp2_opl.c \
+    $(NGTCP2_LIB)/ngtcp2_path.c \
+    $(NGTCP2_LIB)/ngtcp2_pcg.c \
+    $(NGTCP2_LIB)/ngtcp2_pkt.c \
+    $(NGTCP2_LIB)/ngtcp2_pmtud.c \
+    $(NGTCP2_LIB)/ngtcp2_ppe.c \
+    $(NGTCP2_LIB)/ngtcp2_pq.c \
+    $(NGTCP2_LIB)/ngtcp2_pv.c \
+    $(NGTCP2_LIB)/ngtcp2_qlog.c \
+    $(NGTCP2_LIB)/ngtcp2_range.c \
+    $(NGTCP2_LIB)/ngtcp2_ratelim.c \
+    $(NGTCP2_LIB)/ngtcp2_ringbuf.c \
+    $(NGTCP2_LIB)/ngtcp2_rob.c \
+    $(NGTCP2_LIB)/ngtcp2_rst.c \
+    $(NGTCP2_LIB)/ngtcp2_rtb.c \
+    $(NGTCP2_LIB)/ngtcp2_settings.c \
+    $(NGTCP2_LIB)/ngtcp2_str.c \
+    $(NGTCP2_LIB)/ngtcp2_strm.c \
+    $(NGTCP2_LIB)/ngtcp2_transport_params.c \
+    $(NGTCP2_LIB)/ngtcp2_unreachable.c \
+    $(NGTCP2_LIB)/ngtcp2_vec.c \
+    $(NGTCP2_LIB)/ngtcp2_version.c \
+    $(NGTCP2_LIB)/ngtcp2_window_filter.c
+
+NGTCP2_CRYPTO_SRCS := \
+    $(NGTCP2_CRYPTO)/shared.c \
+    $(NGTCP2_CRYPTO)/picotls/picotls_minicrypto.c
+
+NGTCP2_SRCS := $(NGTCP2_LIB_SRCS) $(NGTCP2_CRYPTO_SRCS)
+NGTCP2_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGTCP2_SRCS))
+
+NGTCP2_CFLAGS := -O2 \
+    -I$(NGTCP2_LIB)/includes \
+    -I$(NGTCP2_CRYPTO)/includes \
+    -I$(NGTCP2_LIB) \
+    -I$(NGTCP2_CRYPTO) \
+    -I$(PICOTLS_DIR)/include \
+    -I$(CIFRA_DIR) -I$(CIFRA_DIR)/ext -I$(UECC_DIR) \
+    -DHAVE_ARPA_INET_H=1 -DHAVE_NETINET_IN_H=1
+ifneq ($(SANITIZE),)
+NGTCP2_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
 endif
 
 # --- llhttp (vendored HTTP parser) ---
@@ -139,6 +223,41 @@ LLHTTP_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(LLHTTP_SRCS))
 LLHTTP_CFLAGS := -O2 -I$(LLHTTP_DIR)/include
 ifneq ($(SANITIZE),)
 LLHTTP_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
+# --- nghttp2 (vendored HTTP/2 session management) ---
+
+NGHTTP2_SRCS := $(NGHTTP2_DIR)/nghttp2_alpn.c \
+                $(NGHTTP2_DIR)/nghttp2_buf.c \
+                $(NGHTTP2_DIR)/nghttp2_callbacks.c \
+                $(NGHTTP2_DIR)/nghttp2_debug.c \
+                $(NGHTTP2_DIR)/nghttp2_extpri.c \
+                $(NGHTTP2_DIR)/nghttp2_frame.c \
+                $(NGHTTP2_DIR)/nghttp2_hd.c \
+                $(NGHTTP2_DIR)/nghttp2_hd_huffman.c \
+                $(NGHTTP2_DIR)/nghttp2_hd_huffman_data.c \
+                $(NGHTTP2_DIR)/nghttp2_helper.c \
+                $(NGHTTP2_DIR)/nghttp2_http.c \
+                $(NGHTTP2_DIR)/nghttp2_map.c \
+                $(NGHTTP2_DIR)/nghttp2_mem.c \
+                $(NGHTTP2_DIR)/nghttp2_option.c \
+                $(NGHTTP2_DIR)/nghttp2_outbound_item.c \
+                $(NGHTTP2_DIR)/nghttp2_pq.c \
+                $(NGHTTP2_DIR)/nghttp2_priority_spec.c \
+                $(NGHTTP2_DIR)/nghttp2_queue.c \
+                $(NGHTTP2_DIR)/nghttp2_ratelim.c \
+                $(NGHTTP2_DIR)/nghttp2_rcbuf.c \
+                $(NGHTTP2_DIR)/nghttp2_session.c \
+                $(NGHTTP2_DIR)/nghttp2_stream.c \
+                $(NGHTTP2_DIR)/nghttp2_submit.c \
+                $(NGHTTP2_DIR)/nghttp2_time.c \
+                $(NGHTTP2_DIR)/nghttp2_version.c \
+                $(NGHTTP2_DIR)/sfparse.c
+NGHTTP2_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGHTTP2_SRCS))
+
+NGHTTP2_CFLAGS := -O2 -I$(NGHTTP2_INC) -DBUILDING_NGHTTP2
+ifneq ($(SANITIZE),)
+NGHTTP2_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
 
 # --- fcontext (vendored from Boost.Context) ---
@@ -193,6 +312,7 @@ LIB_SRCS := src/csp.cc \
             src/net.cc \
             src/file.cc
 LIB_SRCS += src/http.cc
+LIB_SRCS += src/http2.cc
 ifeq ($(CSP_TLS),1)
 LIB_SRCS += src/tls.cc
 endif
@@ -210,10 +330,10 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
 ifneq ($(CSP_INCLUDE),dist)
-LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS)
+LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS) $(NGHTTP2_OBJS)
 endif
 ifeq ($(CSP_TLS),1)
-LIB_OBJS   += $(PICOTLS_OBJS)
+LIB_OBJS   += $(PICOTLS_OBJS) $(NGTCP2_OBJS)
 endif
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
@@ -296,6 +416,11 @@ $(BUILDDIR)/$(LLHTTP_DIR)/%.o: $(LLHTTP_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(LLHTTP_CFLAGS) -o $@ $<
 
+# nghttp2 C sources
+$(BUILDDIR)/$(NGHTTP2_DIR)/%.o: $(NGHTTP2_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGHTTP2_CFLAGS) -o $@ $<
+
 # PicoTLS + minicrypto C sources
 ifeq ($(CSP_TLS),1)
 $(BUILDDIR)/$(PICOTLS_DIR)/%.o: $(PICOTLS_DIR)/%.c
@@ -309,6 +434,12 @@ $(BUILDDIR)/$(CIFRA_DIR)/%.o: $(CIFRA_DIR)/%.c
 $(BUILDDIR)/$(UECC_DIR)/%.o: $(UECC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(PICOTLS_CFLAGS) -o $@ $<
+
+# ngtcp2 C sources (lib + crypto adapter)
+$(BUILDDIR)/$(NGTCP2_DIR)/%.o: $(NGTCP2_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGTCP2_CFLAGS) -o $@ $<
+
 endif
 
 # Distribution sources

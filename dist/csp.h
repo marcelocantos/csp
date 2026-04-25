@@ -3556,6 +3556,104 @@ inline response post(
 
 } // namespace csp::http
 
+/* csp/http2.h */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+
+
+// HTTP/2 server and stream types.
+//
+// Uses the same http::request and http::response types as the HTTP/1.1 server.
+// Each HTTP/2 stream appears as a reader<http::request> + the per-request
+// writer<http::response> embedded in http::request::respond.
+//
+// Server push is supported via http2::push_promise on the connection handle.
+// HPACK header compression is handled transparently by nghttp2.
+// Flow control maps naturally to channel backpressure: the imp that reads
+// from data providers blocks until nghttp2 grants flow-control credits.
+//
+// TLS + ALPN: when compiled with CSP_TLS=1, serve_tls() performs a TLS
+// handshake with ALPN negotiation (h2 vs http/1.1) and returns an HTTP/2
+// server. Plain-text serve() is also provided for h2c (HTTP/2 cleartext,
+// useful for testing and trusted networks).
+
+namespace csp::http2 {
+
+// --- Stream endpoint ---
+//
+// Each HTTP/2 stream is delivered as an http::request whose respond writer
+// accepts exactly one http::response.  This is the same interface as the
+// HTTP/1.1 server.
+
+// --- Per-connection handle (for server push) ---
+
+struct connection_handle;
+
+// --- Server push ---
+//
+// Call push() on the connection handle to initiate a server push.
+// Returns false if the client has disabled server push.
+
+bool push(connection_handle& h, http::request promised_request);
+
+// --- Server options ---
+
+struct serve_options {
+    int backlog = 128;
+    bool reuse_addr = true;
+    bool dual_stack = true;
+    size_t read_chunk_size = 16384;
+};
+
+// --- Per-connection endpoint ---
+//
+// Each accepted connection yields one endpoint.  endpoint::streams delivers
+// one request per HTTP/2 stream.  endpoint::handle may be used for server push.
+
+struct endpoint {
+    reader<http::request> streams;  // one per HTTP/2 stream
+    std::string remote_addr;
+};
+
+// --- Server ---
+
+struct server {
+    reader<endpoint> endpoints;  // one per accepted connection
+    uint16_t port;               // actual bound port
+    std::string local_addr;
+};
+
+// Start an HTTP/2 cleartext (h2c) server on the given port.
+// Returns a server whose endpoints reader yields one endpoint per connection.
+// Dropping the reader stops accepting.
+server serve(uint16_t port, serve_options opts = {});
+server serve(const std::string& addr, uint16_t port, serve_options opts = {});
+
+#ifdef CSP_TLS
+
+// Start an HTTP/2 server with TLS + ALPN negotiation.
+// cert_pem and key_pem are paths to PEM-encoded certificate and key files.
+// ALPN: offers "h2" and "http/1.1". Falls back to HTTP/1.1 if negotiated.
+// Clients that negotiate "h2" get HTTP/2; others are served as HTTP/1.1.
+server serve_tls(
+    uint16_t port,
+    const char* cert_pem,
+    const char* key_pem,
+    serve_options opts = {});
+
+server serve_tls(
+    const std::string& addr,
+    uint16_t port,
+    const char* cert_pem,
+    const char* key_pem,
+    serve_options opts = {});
+
+#endif // CSP_TLS
+
+} // namespace csp::http2
+
 /* csp/imp_exit.h */
 
 
@@ -7853,6 +7951,119 @@ auto zip(reader<Ts>... rs) {
 }
 
 }
+
+/* csp/quic.h */
+
+#ifdef CSP_TLS
+
+
+
+namespace csp::quic {
+
+// --- stream_pair: bidirectional QUIC stream channels ---
+//
+// Each QUIC stream is exposed as a pair of CSP channels.
+// The read end delivers byte chunks from the peer.
+// Writing to the write end sends data to the peer.
+// Dropping either end closes that direction of the stream.
+
+struct stream_pair {
+    reader<std::vector<uint8_t>> input;   // bytes from peer
+    writer<std::vector<uint8_t>> output;  // bytes to peer
+};
+
+// --- connection: a QUIC connection bundle ---
+//
+// open_stream() negotiates a new bidirectional stream with the peer
+// and returns a stream_pair.  The call blocks the calling imp until
+// the stream is established.
+//
+// Dropping the connection object signals both sides that the connection
+// is being torn down; in-flight streams are reset.
+
+struct connection {
+    // Open a new bidirectional stream.  Blocks until acknowledged.
+    // Throws csp::error if the connection is closed.
+    stream_pair open_stream();
+
+    // Incoming streams initiated by the peer (for listen-side use).
+    // Read from this to accept peer-initiated bidirectional streams.
+    reader<stream_pair> incoming_streams;
+
+    // Peer address string.
+    std::string remote_addr;
+
+    connection() = default;
+    connection(connection&&) = default;
+    connection& operator=(connection&&) = default;
+    connection(connection const&) = delete;
+    connection& operator=(connection const&) = delete;
+
+    struct impl;
+    std::shared_ptr<impl> impl_;
+};
+
+// --- listen_options ---
+
+struct listen_options {
+    // Maximum number of bidirectional streams a client may open
+    // simultaneously (transport parameter).
+    uint64_t max_streams_bidi = 128;
+
+    // UDP receive buffer size in bytes (0 = OS default).
+    int rcvbuf = 0;
+
+    // PEM file paths for the server certificate and private key.
+    // If empty, a self-signed certificate is generated at runtime
+    // (for testing only — not suitable for production).
+    std::string cert_pem;
+    std::string key_pem;
+};
+
+// --- listener ---
+//
+// quic::listen(port) binds a UDP socket and starts accepting QUIC
+// connections.  It returns a reader of connection bundles; each
+// received value is a fully handshaked connection.
+//
+// Dropping the reader shuts down the listener.
+
+struct listener {
+    reader<connection> connections;  // read to accept
+    uint16_t           port;         // actual bound port
+    std::string        local_addr;
+};
+
+// Create a QUIC listener.  port=0 lets the OS assign an ephemeral port.
+listener listen(uint16_t port, listen_options opts = {});
+
+// --- dial_options ---
+
+struct dial_options {
+    // Maximum number of bidirectional streams this client may open.
+    uint64_t max_streams_bidi = 128;
+
+    // If true, attempt to use TLS session tickets for 0-RTT (deferred).
+    bool enable_0rtt = false;
+
+    // Custom certificate verification callback.  If null, no verification
+    // is performed (acceptable for testing; set a real verifier in
+    // production).
+    // Signature: bool(const char* server_name,
+    //                 const std::vector<std::vector<uint8_t>>& certs)
+    using verify_fn = std::function<bool(
+        const char*, const std::vector<std::vector<uint8_t>>&)>;
+    verify_fn verify;
+};
+
+// Connect to a QUIC server.  Blocks until the TLS handshake completes.
+// Throws csp::error on failure.
+connection dial(const std::string& host, uint16_t port,
+                dial_options opts = {});
+
+} // namespace csp::quic
+
+#endif // CSP_TLS
 
 /* csp/signal.h */
 

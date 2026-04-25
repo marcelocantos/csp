@@ -528,6 +528,69 @@ auto resp = http::post("http://example.com/api",
     {{"Content-Type", "application/json"}});
 ```
 
+## HTTP/2
+
+Channel-native HTTP/2 server. Not in the dist amalgamation — compile
+`src/http2.cc` + nghttp2 separately.
+
+Reuses `http::request` and `http::response` from `<csp/http.h>`.
+Each HTTP/2 stream arrives as one `http::request` with an embedded
+`writer<response> respond`.
+
+```cpp
+#include <csp/http2.h>
+
+namespace csp::http2 {
+
+struct endpoint {
+    reader<http::request> streams;  // one per HTTP/2 stream
+    std::string remote_addr;
+};
+
+struct server {
+    reader<endpoint> endpoints;     // one per TCP connection
+    uint16_t port;
+    std::string local_addr;
+};
+
+// Cleartext h2c (useful for testing and trusted networks):
+server serve(uint16_t port, serve_options opts = {});
+
+// TLS (CSP_TLS=1 required):
+server serve_tls(uint16_t port,
+    const char* cert_pem, const char* key_pem,
+    serve_options opts = {});
+}
+```
+
+Server usage:
+```cpp
+auto srv = http2::serve(8080);
+http2::endpoint ep;
+while (srv.endpoints >> ep) {
+    csp::spawn([ep = std::move(ep)] {
+        http::request req;
+        while (ep.streams >> req) {
+            std::string body = "Hello from HTTP/2!";
+            req.respond << http::response{200,
+                {{"content-type", "text/plain"}},
+                bytes(body.begin(), body.end())};
+        }
+    });
+}
+```
+
+Key differences from HTTP/1.1:
+- `endpoint::streams` vs `endpoint::requests` (same types otherwise)
+- Header names are always lowercase (HTTP/2 requirement; nghttp2 enforces)
+- `request.version_major == 2`, `version_minor == 0`
+- `request.keep_alive == true` (streams are independent; connection lifetime
+  is separate from stream lifetime)
+- HPACK compression is transparent; no application action needed
+- Flow control maps to channel backpressure: slow handler → slow reads
+
+See [docs/reference/http2.md](../docs/reference/http2.md) for full reference.
+
 ## Signals
 
 ```cpp

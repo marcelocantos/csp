@@ -2800,6 +2800,1163 @@ connection dial(const std::string& host, const std::string& service) {
 
 } // namespace csp::net
 
+/* quic.cc */
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+//
+// QUIC transport for CSP — ngtcp2 + PicoTLS (minicrypto backend).
+//
+// Architecture:
+//   - One UDP socket per connection (client) or one UDP socket per
+//     listener (server demuxes by connection ID).
+//   - The reactor's existing kqueue/epoll fd-readiness path handles UDP
+//     socket readability — no protocol-level changes needed.
+//   - Each connection runs an "io imp" that owns the ngtcp2_conn and
+//     drives the protocol state machine:
+//       loop:
+//         prialt(udp_readable | timer_expired | stream_write_pending)
+//         → ngtcp2_conn_read_pkt / ngtcp2_conn_write_pkt
+//   - Each QUIC stream maps to a pair of CSP channels:
+//       incoming bytes → ngtcp2 callback → reader<bytes> channel
+//       writer<bytes> channel → io imp flushes via ngtcp2_conn_writev_stream
+//
+// Threading model: all ngtcp2 state is confined to the io imp; CSP
+// channels provide the safe handoff to other imps.
+
+#ifdef CSP_TLS
+
+
+#include <array>
+#include <functional>
+
+// ---- Platform networking includes ----
+#ifndef _WIN32
+#include <netdb.h>
+#include <sys/types.h>
+#else
+#include <winsock2.h>
+#endif
+
+// ---- ngtcp2 ----
+#include <ngtcp2/ngtcp2.h>
+#include <ngtcp2/ngtcp2_crypto.h>
+#include <ngtcp2/ngtcp2_crypto_picotls.h>
+
+// ---- PicoTLS (minicrypto) ----
+#include <picotls.h>
+#include <picotls/minicrypto.h>
+
+namespace csp::quic {
+
+using bytes = std::vector<uint8_t>;
+
+// ==========================================================================
+// Utility
+// ==========================================================================
+
+namespace {
+
+// Monotonic clock in nanoseconds (as required by ngtcp2_tstamp).
+ngtcp2_tstamp now_ns() {
+    using clock = std::chrono::steady_clock;
+    return static_cast<ngtcp2_tstamp>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            clock::now().time_since_epoch())
+            .count());
+}
+
+// Format a sockaddr as a human-readable string.
+std::string format_addr(const struct sockaddr* sa, socklen_t len) {
+    char host[NI_MAXHOST];
+    char serv[NI_MAXSERV];
+    if (getnameinfo(sa, len, host, sizeof(host), serv, sizeof(serv),
+                    NI_NUMERICHOST | NI_NUMERICSERV) != 0)
+        return "unknown";
+    if (sa->sa_family == AF_INET6)
+        return std::string("[") + host + "]:" + serv;
+    return std::string(host) + ":" + serv;
+}
+
+// Create and bind a UDP socket.  Returns the fd (non-blocking).
+int make_udp_socket(const struct sockaddr* bind_addr, socklen_t bind_len,
+                    int rcvbuf) {
+    int fd = ::socket(bind_addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd < 0) return -1;
+
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&opt), sizeof(opt));
+
+    if (rcvbuf > 0) {
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF,
+                   reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
+    }
+
+    if (::bind(fd, bind_addr, bind_len) < 0) {
+        ::close(fd);
+        return -1;
+    }
+
+#ifndef _WIN32
+    int flags = ::fcntl(fd, F_GETFL);
+    ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#else
+    u_long mode = 1;
+    ioctlsocket(fd, FIONBIO, &mode);
+#endif
+
+    return fd;
+}
+
+// Generate a random connection ID.
+ngtcp2_cid make_random_cid() {
+    ngtcp2_cid cid;
+    cid.datalen = NGTCP2_MIN_INITIAL_DCIDLEN;
+    ptls_minicrypto_random_bytes(cid.data, cid.datalen);
+    return cid;
+}
+
+} // anonymous namespace
+
+// ==========================================================================
+// PicoTLS context helpers
+// ==========================================================================
+
+namespace {
+
+// Cipher suite list for minicrypto — AES-128-GCM-SHA-256 only.
+static ptls_cipher_suite_t* s_cipher_suites[] = {
+    &ptls_minicrypto_aes128gcmsha256,
+    &ptls_minicrypto_aes256gcmsha384,
+    nullptr,
+};
+
+// Key-exchange algorithms: x25519 + secp256r1.
+static ptls_key_exchange_algorithm_t* s_key_exchanges[] = {
+    &ptls_minicrypto_x25519,
+    &ptls_minicrypto_secp256r1,
+    nullptr,
+};
+
+} // anonymous namespace
+
+// ==========================================================================
+// Per-stream state (owned by the io imp)
+// ==========================================================================
+
+struct StreamState {
+    int64_t stream_id = -1;
+
+    // Outgoing data: writer<bytes> owned by the application imp;
+    // reader<bytes> read by the io imp and fed to ngtcp2.
+    chan<bytes> out_ch;
+
+    // Incoming data: written by ngtcp2 callbacks; reader<bytes>
+    // delivered to the application.
+    chan<bytes> in_ch;
+
+    // Poke channel: io imp wakes itself when there is pending outgoing
+    // data to flush.  Written from the chan<bytes> writer side via a
+    // watch imp (see ConnImpl).
+    chan<> flush_poke;
+
+    bool fin_sent = false;
+    bool fin_recv = false;
+};
+
+// ==========================================================================
+// connection::impl
+// ==========================================================================
+
+struct connection::impl {
+    // Channels for the application to receive new incoming streams.
+    chan<stream_pair> incoming_streams_ch;
+
+    // Poke channel: wakes the io imp when a new outgoing stream was
+    // opened or when stream data is available.
+    chan<> io_poke;
+
+    // Populated after construction; read by the io imp.
+    int udp_fd = -1;
+
+    // Written by the io imp on shutdown.
+    chan<> done_ch;
+
+    // All stream state, keyed by stream_id.
+    std::mutex streams_mu;
+    std::unordered_map<int64_t, std::shared_ptr<StreamState>> streams;
+
+    // Pending open-stream requests from application imps.
+    // Each entry is a promise channel: io imp writes the stream_id.
+    std::mutex open_mu;
+    std::vector<chan<stream_pair>> open_requests;
+
+    // Deliver a new peer-initiated stream to the incoming_streams channel.
+    void push_incoming_stream(std::shared_ptr<StreamState> ss) {
+        stream_pair sp;
+        sp.input  = std::move(ss->in_ch.r);
+        sp.output = std::move(ss->out_ch.w);
+        if (!(incoming_streams_ch.w << std::move(sp))) {
+            // listener dropped — close the stream channels.
+        }
+    }
+
+    ~impl() {
+        if (udp_fd >= 0) ::close(udp_fd);
+    }
+};
+
+// ==========================================================================
+// ngtcp2 callbacks (C linkage, plain function pointers)
+// ==========================================================================
+
+namespace {
+
+// Retrieve the per-stream state from the connection impl.
+std::shared_ptr<StreamState> get_stream(connection::impl* ctx,
+                                        int64_t stream_id) {
+    std::lock_guard<std::mutex> lk(ctx->streams_mu);
+    auto it = ctx->streams.find(stream_id);
+    if (it == ctx->streams.end()) return nullptr;
+    return it->second;
+}
+
+// ngtcp2 callback: receive data for a stream.
+int recv_stream_data_cb(ngtcp2_conn* conn, uint32_t flags,
+                        int64_t stream_id, uint64_t offset,
+                        const uint8_t* data, size_t datalen,
+                        void* user_data, void* stream_user_data) {
+    auto* ctx = static_cast<connection::impl*>(user_data);
+    (void)conn;
+    (void)flags;
+    (void)offset;
+    (void)stream_user_data;
+
+    auto ss = get_stream(ctx, stream_id);
+    if (!ss) return 0;
+
+    if (datalen > 0) {
+        bytes chunk(data, data + datalen);
+        if (!(ss->in_ch.w << std::move(chunk))) {
+            // Application dropped the reader — reset the stream.
+            return NGTCP2_ERR_CALLBACK_FAILURE;
+        }
+    }
+
+    if (flags & NGTCP2_STREAM_DATA_FLAG_FIN) {
+        ss->fin_recv = true;
+        // Close the writer to signal EOF to the application reader.
+        ss->in_ch.w = {};
+    }
+
+    return 0;
+}
+
+// ngtcp2 callback: stream is closed by the remote peer.
+int stream_close_cb(ngtcp2_conn* conn, uint32_t flags, int64_t stream_id,
+                    uint64_t app_error_code, void* user_data,
+                    void* stream_user_data) {
+    auto* ctx = static_cast<connection::impl*>(user_data);
+    (void)conn;
+    (void)flags;
+    (void)app_error_code;
+    (void)stream_user_data;
+
+    std::shared_ptr<StreamState> ss;
+    {
+        std::lock_guard<std::mutex> lk(ctx->streams_mu);
+        auto it = ctx->streams.find(stream_id);
+        if (it == ctx->streams.end()) return 0;
+        ss = it->second;
+        ctx->streams.erase(it);
+    }
+
+    // Close channels to unblock any waiting application imps.
+    ss->in_ch.w  = {};
+    ss->out_ch.r = {};
+    return 0;
+}
+
+// ngtcp2 callback: new stream opened by the peer.
+int stream_open_cb(ngtcp2_conn* conn, int64_t stream_id, void* user_data) {
+    auto* ctx = static_cast<connection::impl*>(user_data);
+    (void)conn;
+
+    auto ss = std::make_shared<StreamState>();
+    ss->stream_id = stream_id;
+
+    {
+        std::lock_guard<std::mutex> lk(ctx->streams_mu);
+        ctx->streams.emplace(stream_id, ss);
+    }
+
+    ctx->push_incoming_stream(ss);
+    return 0;
+}
+
+// ngtcp2 callback: install rx key.
+int install_rx_key_cb(ngtcp2_conn* conn, ngtcp2_encryption_level level,
+                      const ngtcp2_crypto_aead* aead,
+                      const ngtcp2_crypto_aead_ctx* aead_ctx,
+                      const ngtcp2_crypto_cipher_ctx* hp_ctx,
+                      void* user_data) {
+    (void)user_data;
+    return ngtcp2_crypto_derive_and_install_rx_key(
+        conn, NULL, NULL, NULL, level, NULL, 0);
+}
+
+// ngtcp2 callback: install tx key.
+int install_tx_key_cb(ngtcp2_conn* conn, ngtcp2_encryption_level level,
+                      const ngtcp2_crypto_aead* aead,
+                      const ngtcp2_crypto_aead_ctx* aead_ctx,
+                      const ngtcp2_crypto_cipher_ctx* hp_ctx,
+                      void* user_data) {
+    (void)user_data;
+    return ngtcp2_crypto_derive_and_install_tx_key(
+        conn, NULL, NULL, NULL, level, NULL, 0);
+}
+
+// ngtcp2 callback: receive QUIC crypto (TLS handshake) data.
+int recv_crypto_data_cb(ngtcp2_conn* conn,
+                        ngtcp2_encryption_level encryption_level,
+                        uint64_t offset, const uint8_t* data,
+                        size_t datalen, void* user_data) {
+    (void)user_data;
+    (void)offset;
+    return ngtcp2_crypto_read_write_crypto_data(conn, encryption_level,
+                                                data, datalen);
+}
+
+// ngtcp2 callback: handshake completed.
+int handshake_completed_cb(ngtcp2_conn* conn, void* user_data) {
+    (void)conn;
+    (void)user_data;
+    return 0;
+}
+
+// ngtcp2 callback: generate random bytes.
+void rand_cb(uint8_t* dest, size_t destlen,
+             const ngtcp2_rand_ctx* rand_ctx) {
+    (void)rand_ctx;
+    ptls_minicrypto_random_bytes(dest, destlen);
+}
+
+// ngtcp2 callback: get a new connection ID.
+int get_new_connection_id_cb(ngtcp2_conn* conn, ngtcp2_cid* cid,
+                             uint8_t* token, size_t cidlen,
+                             void* user_data) {
+    (void)conn;
+    (void)user_data;
+    ptls_minicrypto_random_bytes(cid->data, cidlen);
+    cid->datalen = cidlen;
+    ptls_minicrypto_random_bytes(token, NGTCP2_STATELESS_RESET_TOKENLEN);
+    return 0;
+}
+
+// ngtcp2 callback: remove a connection ID.
+int remove_connection_id_cb(ngtcp2_conn* conn, const ngtcp2_cid* cid,
+                            void* user_data) {
+    (void)conn;
+    (void)cid;
+    (void)user_data;
+    return 0;
+}
+
+// ngtcp2 callback: update key.
+int update_key_cb(ngtcp2_conn* conn, uint8_t* rx_secret, uint8_t* tx_secret,
+                  ngtcp2_crypto_aead_ctx* rx_aead_ctx, uint8_t* rx_iv,
+                  ngtcp2_crypto_aead_ctx* tx_aead_ctx, uint8_t* tx_iv,
+                  const uint8_t* current_rx_secret,
+                  const uint8_t* current_tx_secret, size_t secretlen,
+                  void* user_data) {
+    (void)user_data;
+    return ngtcp2_crypto_update_key(conn, rx_secret, tx_secret,
+                                    rx_aead_ctx, rx_iv,
+                                    tx_aead_ctx, tx_iv,
+                                    current_rx_secret,
+                                    current_tx_secret, secretlen);
+}
+
+// ngtcp2 callback: path validation result (ignored for now).
+int path_validation_cb(ngtcp2_conn* conn, uint32_t flags,
+                       const ngtcp2_path* path,
+                       const ngtcp2_path* old_path,
+                       ngtcp2_path_validation_result res,
+                       void* user_data) {
+    (void)conn;
+    (void)flags;
+    (void)path;
+    (void)old_path;
+    (void)res;
+    (void)user_data;
+    return 0;
+}
+
+// Build the ngtcp2_callbacks struct.
+ngtcp2_callbacks make_callbacks(bool is_server) {
+    ngtcp2_callbacks cb{};
+    cb.recv_crypto_data         = recv_crypto_data_cb;
+    cb.handshake_completed      = handshake_completed_cb;
+    cb.rand                     = rand_cb;
+    cb.get_new_connection_id    = get_new_connection_id_cb;
+    cb.remove_connection_id     = remove_connection_id_cb;
+    cb.update_key               = update_key_cb;
+    cb.path_validation          = path_validation_cb;
+    cb.stream_open              = stream_open_cb;
+    cb.recv_stream_data         = recv_stream_data_cb;
+    cb.stream_close             = stream_close_cb;
+
+    if (is_server) {
+        cb.recv_client_initial =
+            ngtcp2_crypto_recv_client_initial_cb;
+        cb.recv_retry = ngtcp2_crypto_recv_retry_cb;
+    } else {
+        cb.recv_retry = ngtcp2_crypto_recv_retry_cb;
+    }
+
+    cb.encrypt                  = ngtcp2_crypto_encrypt_cb;
+    cb.decrypt                  = ngtcp2_crypto_decrypt_cb;
+    cb.hp_mask                  = ngtcp2_crypto_hp_mask_cb;
+    cb.delete_crypto_aead_ctx   = ngtcp2_crypto_delete_crypto_aead_ctx_cb;
+    cb.delete_crypto_cipher_ctx = ngtcp2_crypto_delete_crypto_cipher_ctx_cb;
+    cb.get_path_challenge_data  = ngtcp2_crypto_get_path_challenge_data_cb;
+    cb.version_negotiation      = ngtcp2_crypto_version_negotiation_cb;
+
+    return cb;
+}
+
+} // anonymous namespace
+
+// ==========================================================================
+// ngtcp2_crypto_conn_ref helper
+// ==========================================================================
+
+namespace {
+
+struct ConnRef {
+    ngtcp2_crypto_conn_ref ref;
+    ngtcp2_conn*           conn = nullptr;
+
+    explicit ConnRef(ngtcp2_conn* c) : conn(c) {
+        ref.get_conn = [](ngtcp2_crypto_conn_ref* r) -> ngtcp2_conn* {
+            return reinterpret_cast<ConnRef*>(r)->conn;
+        };
+    }
+};
+
+} // anonymous namespace
+
+// ==========================================================================
+// IO imp: owns ngtcp2_conn, drives protocol state machine
+// ==========================================================================
+
+namespace {
+
+constexpr size_t kMaxUdpPayload = 1452;
+
+// Write all pending ngtcp2 output to the UDP socket.
+// Returns false if the connection is draining.
+bool flush_ngtcp2(ngtcp2_conn* nconn, int udp_fd,
+                  const struct sockaddr* remote_addr, socklen_t remote_len) {
+    ngtcp2_path_storage ps;
+    ngtcp2_path_storage_zero(&ps);
+
+    uint8_t buf[kMaxUdpPayload];
+    ngtcp2_pkt_info pi{};
+    ngtcp2_tstamp ts = now_ns();
+
+    for (;;) {
+        ngtcp2_ssize n = ngtcp2_conn_write_pkt(nconn, &ps.path, &pi,
+                                               buf, sizeof(buf), ts);
+        if (n == 0) break;
+        if (n < 0) return false;
+
+        ::sendto(udp_fd, reinterpret_cast<const char*>(buf),
+                 static_cast<int>(n), 0, remote_addr, remote_len);
+    }
+    return true;
+}
+
+// Flush pending stream writes from application channel to ngtcp2.
+bool flush_stream_writes(ngtcp2_conn* nconn, int udp_fd,
+                         connection::impl* ctx,
+                         const struct sockaddr* remote_addr,
+                         socklen_t remote_len) {
+    std::vector<std::pair<int64_t, std::shared_ptr<StreamState>>> pending;
+    {
+        std::lock_guard<std::mutex> lk(ctx->streams_mu);
+        for (auto& [id, ss] : ctx->streams) {
+            // Try to read outgoing data without blocking.
+            bytes chunk;
+            int res = prialt(ss->out_ch.r >> chunk, csp::none);
+            if (res == 0) {
+                // Got data — write to ngtcp2.
+                ngtcp2_vec vec;
+                vec.base = chunk.data();
+                vec.len  = chunk.size();
+
+                ngtcp2_ssize nw = ngtcp2_conn_writev_stream(
+                    nconn, nullptr, nullptr,
+                    reinterpret_cast<uint8_t*>(::alloca(kMaxUdpPayload)),
+                    kMaxUdpPayload, nullptr,
+                    NGTCP2_WRITE_STREAM_FLAG_NONE,
+                    id, &vec, 1, now_ns());
+                (void)nw; // best-effort; errors handled by ngtcp2 internally
+            }
+        }
+    }
+    return flush_ngtcp2(nconn, udp_fd, remote_addr, remote_len);
+}
+
+// The io imp body for a single QUIC connection.
+void run_connection_io_imp(std::shared_ptr<connection::impl> ctx,
+                           ngtcp2_conn* nconn,
+                           ngtcp2_crypto_picotls_ctx* cptls_ctx,
+                           ptls_t* ptls,
+                           const struct sockaddr* remote_addr,
+                           socklen_t remote_len) {
+    int fd = ctx->udp_fd;
+
+    // Signal done on exit.
+    auto on_exit = [&ctx, &nconn, cptls_ctx, ptls] {
+        ngtcp2_conn_del(nconn);
+        ngtcp2_crypto_picotls_deconfigure_session(cptls_ctx);
+        ptls_free(ptls);
+        // Close all stream channels.
+        std::lock_guard<std::mutex> lk(ctx->streams_mu);
+        for (auto& [id, ss] : ctx->streams) {
+            ss->in_ch.w  = {};
+            ss->out_ch.r = {};
+        }
+        ctx->streams.clear();
+    };
+
+    // Receive buffer.
+    uint8_t rbuf[65536];
+
+    for (;;) {
+        // Compute next timeout.
+        ngtcp2_tstamp expiry = ngtcp2_conn_get_expiry(nconn);
+        ngtcp2_tstamp cur    = now_ns();
+        int64_t delay_ns     = (expiry != UINT64_MAX && expiry > cur)
+                                   ? static_cast<int64_t>(expiry - cur)
+                                   : (expiry != UINT64_MAX ? 0 : INT64_MAX);
+
+        // Wait for: UDP readable, timer expiry, or io poke.
+        detail::fd_signal udp_sig = detail::create_fd_readable(fd);
+
+        if (delay_ns == INT64_MAX) {
+            // No timer — just wait for UDP or poke.
+            int res = prialt(~udp_sig, ~ctx->io_poke.r);
+            if (res == 1) {
+                // io poke — drain it and flush.
+                flush_stream_writes(nconn, fd, ctx.get(), remote_addr,
+                                    remote_len);
+                continue;
+            }
+            if (res < 0) break; // dead
+        } else if (delay_ns <= 0) {
+            // Timer already expired — handle immediately.
+            ngtcp2_conn_handle_expiry(nconn, now_ns());
+            flush_ngtcp2(nconn, fd, remote_addr, remote_len);
+            continue;
+        } else {
+            detail::timer_signal timer =
+                detail::create_timer_signal(delay_ns);
+            int res = prialt(~udp_sig, ~timer, ~ctx->io_poke.r);
+            if (res == 1) {
+                // Timer fired.
+                ngtcp2_conn_handle_expiry(nconn, now_ns());
+                flush_ngtcp2(nconn, fd, remote_addr, remote_len);
+                continue;
+            }
+            if (res == 2) {
+                // io poke — flush pending stream data.
+                flush_stream_writes(nconn, fd, remote_addr, remote_len);
+                continue;
+            }
+            if (res < 0) break; // dead
+        }
+
+        // UDP socket is readable.
+        for (;;) {
+            struct sockaddr_storage src_addr;
+            socklen_t src_len = sizeof(src_addr);
+            ssize_t n = ::recvfrom(fd, reinterpret_cast<char*>(rbuf),
+                                   sizeof(rbuf), 0,
+                                   reinterpret_cast<struct sockaddr*>(&src_addr),
+                                   &src_len);
+            if (n <= 0) break;
+
+            ngtcp2_path path;
+            ngtcp2_addr_init(&path.local, remote_addr, remote_len);
+            ngtcp2_addr_init(&path.remote,
+                             reinterpret_cast<const struct sockaddr*>(&src_addr),
+                             src_len);
+
+            ngtcp2_pkt_info pi{};
+            int rv = ngtcp2_conn_read_pkt(nconn, &path, &pi, rbuf,
+                                          static_cast<size_t>(n), now_ns());
+            if (rv != 0 && rv != NGTCP2_ERR_DRAINING) {
+                // Connection error.
+                on_exit();
+                return;
+            }
+            if (rv == NGTCP2_ERR_DRAINING) {
+                // Drain any remaining writes then exit.
+                flush_ngtcp2(nconn, fd, remote_addr, remote_len);
+                on_exit();
+                return;
+            }
+        }
+
+        // Write any pending protocol data.
+        if (!flush_ngtcp2(nconn, fd, remote_addr, remote_len)) {
+            break;
+        }
+    }
+
+    on_exit();
+}
+
+} // anonymous namespace
+
+// ==========================================================================
+// connection member functions
+// ==========================================================================
+
+stream_pair connection::open_stream() {
+    if (!impl_) throw csp::error("connection is not open");
+
+    // Send an open request to the io imp.
+    chan<stream_pair> result_ch;
+    {
+        std::lock_guard<std::mutex> lk(impl_->open_mu);
+        impl_->open_requests.push_back(result_ch);
+    }
+    // Poke the io imp.
+    impl_->io_poke.w << poke;
+
+    // Wait for the io imp to deliver the stream pair.
+    stream_pair sp;
+    if (!(result_ch.r >> sp))
+        throw csp::error("connection closed before stream could be opened");
+    return sp;
+}
+
+// ==========================================================================
+// quic::listen
+// ==========================================================================
+
+listener listen(uint16_t port, listen_options opts) {
+    // Resolve bind address.
+    struct addrinfo hints{};
+    hints.ai_family   = AF_INET6;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags    = AI_PASSIVE;
+
+    auto result = io::resolve("::", std::to_string(port), &hints);
+    if (!result)
+        throw csp::error(std::string("quic::listen resolve: ") +
+                         result.message());
+
+    auto* ai = result.info.get();
+    int udp_fd = make_udp_socket(ai->ai_addr, ai->ai_addrlen, opts.rcvbuf);
+    if (udp_fd < 0)
+        throw csp::error("quic::listen: socket/bind failed");
+
+    // Discover actual bound port.
+    struct sockaddr_storage bound_addr;
+    socklen_t bound_len = sizeof(bound_addr);
+    if (getsockname(udp_fd,
+                    reinterpret_cast<struct sockaddr*>(&bound_addr),
+                    &bound_len) < 0) {
+        ::close(udp_fd);
+        throw csp::error("quic::listen: getsockname failed");
+    }
+    uint16_t actual_port =
+        ntohs(reinterpret_cast<struct sockaddr_in6*>(&bound_addr)->sin6_port);
+    std::string local_addr_str = format_addr(
+        reinterpret_cast<const struct sockaddr*>(&bound_addr), bound_len);
+
+    // Build listener output channel.
+    chan<connection> conn_ch;
+
+    // Spawn the server accept loop.
+    spawn([udp_fd, opts, conn_ch = conn_ch.w,
+           bound_addr, bound_len]() mutable {
+        internal::descr("quic::listener");
+
+        // PicoTLS server context.
+        ptls_context_t tls_ctx{};
+        tls_ctx.random_bytes    = ptls_minicrypto_random_bytes;
+        tls_ctx.cipher_suites   = s_cipher_suites;
+        tls_ctx.key_exchanges   = s_key_exchanges;
+        tls_ctx.get_time        = &ptls_get_time;
+
+        // Certificate + key (self-signed test cert if none provided).
+        ptls_minicrypto_secp256r1sha256_sign_certificate_t sign_cert{};
+        std::vector<ptls_iovec_t> cert_vec;
+        std::vector<uint8_t> cert_der;
+        std::vector<uint8_t> key_raw;
+
+        if (opts.cert_pem.empty()) {
+            // Generate an ephemeral secp256r1 key pair.
+            // In production, supply real cert/key files.
+            uint8_t priv_key[32];
+            uint8_t pub_key[65];
+            ptls_minicrypto_random_bytes(priv_key, sizeof(priv_key));
+            // NOTE: minimal self-signed cert is complex to generate from
+            // scratch without OpenSSL.  For the test harness we use a
+            // hard-coded DER test certificate (secp256r1, self-signed).
+            // Real deployments must supply cert_pem + key_pem.
+            //
+            // We leave the cert empty here — the handshake will fail
+            // unless the client sets a permissive verify callback.
+            // The tests use loopback with no verification.
+            tls_ctx.certificates.list  = nullptr;
+            tls_ctx.certificates.count = 0;
+        } else {
+            // Load from PEM (minimal — PicoTLS minicrypto-pem).
+            if (ptls_minicrypto_load_private_key(
+                    &tls_ctx, opts.key_pem.c_str()) != 0) {
+                return; // TODO: propagate error
+            }
+        }
+
+        ngtcp2_crypto_picotls_configure_server_context(&tls_ctx);
+
+        // Map from DCID → per-connection state.
+        struct ServerConn {
+            std::shared_ptr<connection::impl> ctx;
+            ngtcp2_conn*                       nconn = nullptr;
+            ngtcp2_crypto_picotls_ctx          cptls_ctx{};
+            ptls_t*                            ptls  = nullptr;
+            ConnRef                            ref;
+            struct sockaddr_storage            remote_addr{};
+            socklen_t                          remote_len = 0;
+            bool                               handshake_done = false;
+
+            ServerConn() : ref(nullptr) {}
+        };
+
+        std::unordered_map<std::string, std::shared_ptr<ServerConn>> conns;
+
+        uint8_t rbuf[65536];
+
+        for (;;) {
+            // Wait for UDP packet.
+            detail::fd_signal sig = detail::create_fd_readable(udp_fd);
+            if (!prialt(~sig)) break; // listener dropped → shutdown
+
+            struct sockaddr_storage src{};
+            socklen_t src_len = sizeof(src);
+            ssize_t n = ::recvfrom(
+                udp_fd, reinterpret_cast<char*>(rbuf), sizeof(rbuf), 0,
+                reinterpret_cast<struct sockaddr*>(&src), &src_len);
+            if (n <= 0) continue;
+
+            // Decode the DCID from the packet header to demux.
+            ngtcp2_version_cid vcid{};
+            int rv = ngtcp2_pkt_decode_version_cid(
+                &vcid, rbuf, static_cast<size_t>(n),
+                NGTCP2_MIN_INITIAL_DCIDLEN);
+            if (rv != 0) continue;
+
+            std::string dcid_key(
+                reinterpret_cast<const char*>(vcid.dcid), vcid.dcidlen);
+
+            auto it = conns.find(dcid_key);
+            if (it == conns.end()) {
+                // New connection.
+                auto sc  = std::make_shared<ServerConn>();
+                sc->remote_addr = src;
+                sc->remote_len  = src_len;
+
+                sc->ptls = ptls_new(&tls_ctx, /*is_client=*/0);
+                if (!sc->ptls) continue;
+
+                ngtcp2_crypto_picotls_ctx_init(&sc->cptls_ctx);
+                sc->cptls_ctx.ptls = sc->ptls;
+
+                ngtcp2_crypto_picotls_configure_server_session(&sc->cptls_ctx);
+
+                sc->ref = ConnRef(nullptr); // set after ngtcp2 creation
+
+                // SCID = random.
+                ngtcp2_cid scid = make_random_cid();
+
+                // DCID from packet.
+                ngtcp2_cid dcid;
+                dcid.datalen = vcid.dcidlen;
+                memcpy(dcid.data, vcid.dcid, vcid.dcidlen);
+
+                // Local address.
+                struct sockaddr_storage local_ss = bound_addr;
+                ngtcp2_path path{};
+                ngtcp2_addr_init(
+                    &path.local,
+                    reinterpret_cast<const struct sockaddr*>(&local_ss),
+                    bound_len);
+                ngtcp2_addr_init(
+                    &path.remote,
+                    reinterpret_cast<const struct sockaddr*>(&src), src_len);
+
+                ngtcp2_settings settings;
+                ngtcp2_settings_default(&settings);
+                settings.initial_ts = now_ns();
+
+                ngtcp2_transport_params params;
+                ngtcp2_transport_params_default(&params);
+                params.initial_max_streams_bidi = opts.max_streams_bidi;
+                params.initial_max_data         = 1 << 20;
+                params.initial_max_stream_data_bidi_local  = 1 << 16;
+                params.initial_max_stream_data_bidi_remote = 1 << 16;
+
+                auto ctx = std::make_shared<connection::impl>();
+                ctx->udp_fd = -1; // server shares the listener fd
+                sc->ctx = ctx;
+
+                ngtcp2_callbacks cb = make_callbacks(/*is_server=*/true);
+
+                ngtcp2_conn* nconn = nullptr;
+                rv = ngtcp2_conn_server_new(
+                    &nconn, &dcid, &scid, &path,
+                    NGTCP2_PROTO_VER_V1, &cb, &settings, &params,
+                    nullptr, ctx.get());
+                if (rv != 0) {
+                    ptls_free(sc->ptls);
+                    continue;
+                }
+                sc->nconn = nconn;
+                sc->ref   = ConnRef(nconn);
+
+                // Set picotls context.
+                ngtcp2_conn_set_tls_native_handle(
+                    nconn, &sc->cptls_ctx);
+
+                // Set conn_ref on ptls.
+                *ptls_get_data_ptr(sc->ptls) = &sc->ref.ref;
+
+                conns[dcid_key] = sc;
+                it = conns.find(dcid_key);
+            }
+
+            auto& sc = it->second;
+
+            // Feed the packet to ngtcp2.
+            ngtcp2_path path{};
+            struct sockaddr_storage local_ss = bound_addr;
+            ngtcp2_addr_init(
+                &path.local,
+                reinterpret_cast<const struct sockaddr*>(&local_ss),
+                bound_len);
+            ngtcp2_addr_init(
+                &path.remote,
+                reinterpret_cast<const struct sockaddr*>(&src), src_len);
+
+            ngtcp2_pkt_info pi{};
+            rv = ngtcp2_conn_read_pkt(sc->nconn, &path, &pi, rbuf,
+                                      static_cast<size_t>(n), now_ns());
+            if (rv != 0) {
+                // Connection error — tear down.
+                ngtcp2_conn_del(sc->nconn);
+                ngtcp2_crypto_picotls_deconfigure_session(&sc->cptls_ctx);
+                ptls_free(sc->ptls);
+                conns.erase(it);
+                continue;
+            }
+
+            // Flush output.
+            uint8_t wbuf[kMaxUdpPayload];
+            ngtcp2_path_storage ps;
+            ngtcp2_path_storage_zero(&ps);
+            ngtcp2_pkt_info wpi{};
+
+            for (;;) {
+                ngtcp2_ssize nw = ngtcp2_conn_write_pkt(
+                    sc->nconn, &ps.path, &wpi,
+                    wbuf, sizeof(wbuf), now_ns());
+                if (nw <= 0) break;
+                ::sendto(udp_fd, reinterpret_cast<const char*>(wbuf),
+                         static_cast<int>(nw), 0,
+                         reinterpret_cast<const struct sockaddr*>(&sc->remote_addr),
+                         sc->remote_len);
+            }
+
+            // If handshake just completed, deliver the connection.
+            if (!sc->handshake_done &&
+                ngtcp2_conn_get_handshake_completed(sc->nconn)) {
+                sc->handshake_done = true;
+
+                connection conn;
+                conn.impl_          = sc->ctx;
+                conn.incoming_streams = sc->ctx->incoming_streams_ch.r;
+                conn.remote_addr =
+                    format_addr(reinterpret_cast<const struct sockaddr*>(
+                                    &sc->remote_addr),
+                                sc->remote_len);
+
+                if (!(conn_ch << std::move(conn))) {
+                    break; // listener closed
+                }
+            }
+        }
+
+        // Clean up all connections.
+        for (auto& [k, sc] : conns) {
+            ngtcp2_conn_del(sc->nconn);
+            ngtcp2_crypto_picotls_deconfigure_session(&sc->cptls_ctx);
+            ptls_free(sc->ptls);
+        }
+        ::close(udp_fd);
+    });
+
+    listener lst;
+    lst.connections = std::move(conn_ch.r);
+    lst.port        = actual_port;
+    lst.local_addr  = std::move(local_addr_str);
+    return lst;
+}
+
+// ==========================================================================
+// quic::dial
+// ==========================================================================
+
+connection dial(const std::string& host, uint16_t port, dial_options opts) {
+    // Resolve remote address.
+    struct addrinfo hints{};
+    hints.ai_socktype = SOCK_DGRAM;
+    auto result = io::resolve(host, std::to_string(port), &hints);
+    if (!result)
+        throw csp::error(std::string("quic::dial resolve: ") +
+                         result.message());
+
+    auto* ai = result.info.get();
+
+    // Build a wildcard local address for the same family.
+    struct sockaddr_storage local_addr{};
+    socklen_t local_len;
+    if (ai->ai_family == AF_INET6) {
+        auto* a6 = reinterpret_cast<struct sockaddr_in6*>(&local_addr);
+        a6->sin6_family = AF_INET6;
+        a6->sin6_port   = 0;
+        local_len = sizeof(struct sockaddr_in6);
+    } else {
+        auto* a4 = reinterpret_cast<struct sockaddr_in*>(&local_addr);
+        a4->sin_family = AF_INET;
+        a4->sin_port   = 0;
+        local_len = sizeof(struct sockaddr_in);
+    }
+
+    int udp_fd = make_udp_socket(
+        reinterpret_cast<const struct sockaddr*>(&local_addr),
+        local_len, 0);
+    if (udp_fd < 0)
+        throw csp::error("quic::dial: socket/bind failed");
+
+    std::string remote_str = format_addr(ai->ai_addr, ai->ai_addrlen);
+
+    // PicoTLS client context.
+    ptls_context_t tls_ctx{};
+    tls_ctx.random_bytes  = ptls_minicrypto_random_bytes;
+    tls_ctx.cipher_suites = s_cipher_suites;
+    tls_ctx.key_exchanges = s_key_exchanges;
+    tls_ctx.get_time      = &ptls_get_time;
+
+    ngtcp2_crypto_picotls_configure_client_context(&tls_ctx);
+
+    ptls_t* ptls = ptls_new(&tls_ctx, /*is_client=*/1);
+    if (!ptls) {
+        ::close(udp_fd);
+        throw csp::error("quic::dial: ptls_new failed");
+    }
+
+    ptls_set_server_name(ptls, host.c_str());
+
+    ngtcp2_crypto_picotls_ctx cptls_ctx{};
+    ngtcp2_crypto_picotls_ctx_init(&cptls_ctx);
+    cptls_ctx.ptls = ptls;
+
+    // Connection IDs.
+    ngtcp2_cid dcid = make_random_cid();
+    ngtcp2_cid scid = make_random_cid();
+
+    // Discover local bound address.
+    struct sockaddr_storage bound_local{};
+    socklen_t bound_local_len = sizeof(bound_local);
+    getsockname(udp_fd,
+                reinterpret_cast<struct sockaddr*>(&bound_local),
+                &bound_local_len);
+
+    ngtcp2_path path{};
+    ngtcp2_addr_init(
+        &path.local,
+        reinterpret_cast<const struct sockaddr*>(&bound_local),
+        bound_local_len);
+    ngtcp2_addr_init(&path.remote, ai->ai_addr, ai->ai_addrlen);
+
+    ngtcp2_settings settings;
+    ngtcp2_settings_default(&settings);
+    settings.initial_ts = now_ns();
+
+    ngtcp2_transport_params params;
+    ngtcp2_transport_params_default(&params);
+    params.initial_max_streams_bidi = opts.max_streams_bidi;
+    params.initial_max_data         = 1 << 20;
+    params.initial_max_stream_data_bidi_local  = 1 << 16;
+    params.initial_max_stream_data_bidi_remote = 1 << 16;
+
+    auto ctx_impl = std::make_shared<connection::impl>();
+    ctx_impl->udp_fd = udp_fd;
+
+    ngtcp2_callbacks cb = make_callbacks(/*is_server=*/false);
+
+    ngtcp2_conn* nconn = nullptr;
+    int rv = ngtcp2_conn_client_new(
+        &nconn, &dcid, &scid, &path,
+        NGTCP2_PROTO_VER_V1, &cb, &settings, &params,
+        nullptr, ctx_impl.get());
+    if (rv != 0) {
+        ptls_free(ptls);
+        ::close(udp_fd);
+        throw csp::error("quic::dial: ngtcp2_conn_client_new failed");
+    }
+
+    ngtcp2_conn_set_tls_native_handle(nconn, &cptls_ctx);
+
+    // Configure the picotls session (sets transport params extension).
+    rv = ngtcp2_crypto_picotls_configure_client_session(&cptls_ctx, nconn);
+    if (rv != 0) {
+        ngtcp2_conn_del(nconn);
+        ptls_free(ptls);
+        ::close(udp_fd);
+        throw csp::error("quic::dial: configure_client_session failed");
+    }
+
+    // Set conn_ref on ptls.
+    auto* conn_ref = new ConnRef(nconn);
+    *ptls_get_data_ptr(ptls) = &conn_ref->ref;
+
+    // Send the initial handshake packet(s).
+    uint8_t wbuf[kMaxUdpPayload];
+    ngtcp2_path_storage ps;
+    ngtcp2_path_storage_zero(&ps);
+    ngtcp2_pkt_info wpi{};
+
+    rv = ngtcp2_crypto_read_write_crypto_data(
+        nconn, NGTCP2_ENCRYPTION_LEVEL_INITIAL, nullptr, 0);
+    if (rv != 0) {
+        delete conn_ref;
+        ngtcp2_conn_del(nconn);
+        ptls_free(ptls);
+        ::close(udp_fd);
+        throw csp::error("quic::dial: initial crypto data failed");
+    }
+
+    // Flush Initial packets.
+    for (;;) {
+        ngtcp2_ssize nw = ngtcp2_conn_write_pkt(
+            nconn, &ps.path, &wpi, wbuf, sizeof(wbuf), now_ns());
+        if (nw <= 0) break;
+        ::sendto(udp_fd, reinterpret_cast<const char*>(wbuf),
+                 static_cast<int>(nw), 0, ai->ai_addr, ai->ai_addrlen);
+    }
+
+    // Handshake loop — block the calling imp until complete.
+    uint8_t rbuf[65536];
+    struct sockaddr_storage remote_ss{};
+    memcpy(&remote_ss, ai->ai_addr, ai->ai_addrlen);
+    socklen_t remote_len = ai->ai_addrlen;
+
+    while (!ngtcp2_conn_get_handshake_completed(nconn)) {
+        detail::fd_signal sig = detail::create_fd_readable(udp_fd);
+        if (!prialt(~sig)) {
+            delete conn_ref;
+            ngtcp2_conn_del(nconn);
+            ngtcp2_crypto_picotls_deconfigure_session(&cptls_ctx);
+            ptls_free(ptls);
+            ::close(udp_fd);
+            throw csp::error("quic::dial: cancelled during handshake");
+        }
+
+        struct sockaddr_storage src{};
+        socklen_t src_len = sizeof(src);
+        ssize_t n = ::recvfrom(udp_fd, reinterpret_cast<char*>(rbuf),
+                               sizeof(rbuf), 0,
+                               reinterpret_cast<struct sockaddr*>(&src),
+                               &src_len);
+        if (n <= 0) continue;
+
+        ngtcp2_path pkt_path{};
+        ngtcp2_addr_init(
+            &pkt_path.local,
+            reinterpret_cast<const struct sockaddr*>(&bound_local),
+            bound_local_len);
+        ngtcp2_addr_init(
+            &pkt_path.remote,
+            reinterpret_cast<const struct sockaddr*>(&src), src_len);
+
+        ngtcp2_pkt_info pi{};
+        rv = ngtcp2_conn_read_pkt(nconn, &pkt_path, &pi, rbuf,
+                                  static_cast<size_t>(n), now_ns());
+        if (rv != 0) {
+            delete conn_ref;
+            ngtcp2_conn_del(nconn);
+            ngtcp2_crypto_picotls_deconfigure_session(&cptls_ctx);
+            ptls_free(ptls);
+            ::close(udp_fd);
+            throw csp::error(std::string("quic::dial: handshake error: ") +
+                             ngtcp2_strerror(rv));
+        }
+
+        // Flush responses.
+        for (;;) {
+            ngtcp2_ssize nw = ngtcp2_conn_write_pkt(
+                nconn, &ps.path, &wpi, wbuf, sizeof(wbuf), now_ns());
+            if (nw <= 0) break;
+            ::sendto(udp_fd, reinterpret_cast<const char*>(wbuf),
+                     static_cast<int>(nw), 0,
+                     reinterpret_cast<const struct sockaddr*>(&remote_ss),
+                     remote_len);
+        }
+    }
+
+    // Handshake complete — spawn the io imp.
+    auto remote_addr_str = remote_str;
+
+    // Copy remote addr for the io imp.
+    struct sockaddr_storage remote_copy{};
+    memcpy(&remote_copy, &remote_ss, remote_len);
+
+    spawn([ctx_impl, nconn, cptls_ctx, ptls, conn_ref,
+           remote_copy, remote_len]() mutable {
+        internal::descr("quic::client-io");
+        run_connection_io_imp(
+            ctx_impl, nconn,
+            // cptls_ctx is moved into the lambda by value — need addr.
+            // Use a heap copy.
+            [&]() -> ngtcp2_crypto_picotls_ctx* {
+                auto* p = new ngtcp2_crypto_picotls_ctx(cptls_ctx);
+                return p;
+            }(),
+            ptls,
+            reinterpret_cast<const struct sockaddr*>(&remote_copy),
+            remote_len);
+        delete conn_ref;
+    });
+
+    connection conn;
+    conn.impl_            = ctx_impl;
+    conn.incoming_streams = ctx_impl->incoming_streams_ch.r;
+    conn.remote_addr      = std::move(remote_addr_str);
+    return conn;
+}
+
+} // namespace csp::quic
+
+#endif // CSP_TLS
+
 /* reactor.cc */
 
 
@@ -2807,7 +3964,6 @@ connection dial(const std::string& host, const std::string& service) {
 
 // --- Windows reactor: CreateThreadpoolTimer + WSAEventSelect ---
 
-#include <winsock2.h>
 
 namespace csp::detail {
 
@@ -5746,8 +6902,6 @@ reader<time_point> tick(duration interval) {
 
 
 extern "C" {
-#include <picotls.h>
-#include <picotls/minicrypto.h>
 }
 
 
