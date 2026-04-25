@@ -112,6 +112,55 @@ TEST_CASE("Throw---multiple-exceptions-in-sequence") {
     });
 }
 
+TEST_CASE("Throw---buffered-carries-exceptions-in-order") {
+    csp::run([] {
+        chan<int> ch{4};
+        spawn([w = std::move(ch.w)]() mutable {
+            w << 1;
+            w._throw(std::make_exception_ptr(my_error("e1")));
+            w << 2;
+            w._throw(std::make_exception_ptr(my_error("e2")));
+            w << 3;
+        });
+        std::vector<std::string> trace;
+        for (int i = 0; i < 5; ++i) {
+            int n = -1;
+            try {
+                if (ch.r >> n) trace.push_back("v" + std::to_string(n));
+                else { trace.push_back("end"); break; }
+            } catch (my_error const& e) {
+                trace.push_back(std::string("e:") + e.what());
+            }
+        }
+        std::vector<std::string> expect = {"v1", "e:e1", "v2", "e:e2", "v3"};
+        CHECK(expect == trace);
+    });
+}
+
+TEST_CASE("Throw---buffered-drain-on-upstream-death") {
+    csp::run([] {
+        chan<int> ch{4};
+        spawn([w = std::move(ch.w)]() mutable {
+            w << 7;
+            w._throw(std::make_exception_ptr(my_error("buffered-drain")));
+            // writer drops here; buffer must drain remaining slots.
+        });
+        // Read the value, then the exception.
+        int n = 0;
+        REQUIRE(static_cast<bool>(ch.r >> n));
+        CHECK(7 == n);
+        bool caught = false;
+        try { (void)(ch.r >> n); }
+        catch (my_error const& e) {
+            caught = true;
+            CHECK(std::string("buffered-drain") == e.what());
+        }
+        CHECK(caught);
+        // Channel now exhausted.
+        CHECK(!static_cast<bool>(ch.r >> n));
+    });
+}
+
 TEST_CASE("Throw---writer-of-exception_ptr-disambiguates") {
     // When T = exception_ptr, `<<` sends an exception_ptr as a *value*
     // (visible at the reader's `r >> ep` slot, NOT thrown), while

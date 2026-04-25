@@ -1516,6 +1516,29 @@ writer<T> operator|(chan<T> ch, writer<T> w) {
 }
 
 // --- buffered channel constructor ---
+//
+// Carries values and exceptions through the buffer in-order.  The
+// internal ring slot is `buffered_slot<T>` (a T plus an optional
+// exception_ptr); on the read side, an exception delivered via the
+// upstream writer is caught and stashed in the slot's exc field; on
+// the write side, slots with non-null exc are forwarded via
+// out._throw, and value slots via out << move.
+
+namespace detail {
+
+template <typename T>
+struct buffered_slot {
+    T value{};
+    std::exception_ptr exc;
+};
+
+template <typename T>
+inline auto write_op_for(writer<T>& out, buffered_slot<T>& slot) {
+    return slot.exc ? out._throw(slot.exc)
+                    : out << std::move(slot.value);
+}
+
+}
 
 template <typename T>
 chan<T>::chan(size_t capacity) {
@@ -1523,15 +1546,36 @@ chan<T>::chan(size_t capacity) {
         throw std::invalid_argument("buffer capacity must be at least 1");
     auto ch = spawn_filter<T>([capacity](reader<T> in, writer<T> out) {
         internal::descr("buffer");
-        detail::RingBuffer<T> buf(capacity);
+        detail::RingBuffer<detail::buffered_slot<T>> buf(capacity);
         for (;;) {
-            switch (alt(buf.full()  ? ~in  : in  >> buf.next(),
-                        buf.empty() ? ~out : out << buf.front())) {
-            case 0:  buf.push(); break;
+            int idx;
+            try {
+                idx = alt(
+                    buf.full()  ? ~in  : in  >> static_cast<detail::buffered_slot<T>*>(buf.next())->value,
+                    buf.empty() ? ~out : detail::write_op_for(out, buf.front()));
+            } catch (...) {
+                // Read fired with an exception payload.  Stash it in
+                // the slot we were about to fill and push.
+                auto* slot = static_cast<detail::buffered_slot<T>*>(buf.next());
+                slot->exc = std::current_exception();
+                buf.push();
+                continue;
+            }
+            switch (idx) {
+            case 0: buf.push(); break;
             case ~0:
-                while (!buf.empty() && out << std::move(buf.front())) buf.pop();
+                // Upstream died — drain remaining buffered values and
+                // exceptions to downstream before exiting.
+                while (!buf.empty()) {
+                    if (buf.front().exc) {
+                        if (!out._throw(buf.front().exc)) return;
+                    } else {
+                        if (!(out << std::move(buf.front().value))) return;
+                    }
+                    buf.pop();
+                }
                 return;
-            case 1:  buf.pop(); break;
+            case 1: buf.pop(); break;
             case ~1: return;
 #ifdef _MSC_VER
             default: __assume(0);
