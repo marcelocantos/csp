@@ -171,7 +171,6 @@ targets:
     context: 'reader&lt;bytes&gt; is push-based with producer-determined chunk boundaries — the consumer can''t control read size. Real I/O protocols need sized pulls that propagate to the syscall (io::read(fd, buf, n)). Go solves this with io.Reader; CSP needs a channel-native equivalent. Design settled in docs/papers/19-pull-based-sources.md: `writer<request<size_t, bytes>>` as the source type, with EOF via reply-writer death, errors via the channel-exception mechanism (🎯T18). Wide-ranging impact: touches io, net, tls, http layers.'
     depends_on:
     - T18
-    design_doc: docs/papers/19-pull-based-sources.md
     origin: design discussion, session 2026-04-13
     discovered: 2026-04-14
   T18:
@@ -188,9 +187,21 @@ targets:
     - 'Tests: unbuffered, buffered, prialt, `writer<exception_ptr>` disambiguation of `_throw` vs `<<`'
     - Paper 03 (two-phase prialt) updated to describe phase-2 exception branch
     - dist/AGENTS-CSP.md updated
-    context: 'See docs/papers/19-pull-based-sources.md § Target dependency. Channel delivers value OR exception on each rendezvous; analogous to C++ function calls where exceptions propagate without appearing in the type signature. Scope stays small because the rendezvous protocol, scheduler, and lifecycle are unchanged — only phase 2''s typed dispatch branches on a tag bit. Unblocks 🎯T17 (pull-based sources) and eliminates per-seam error wrapping in every `request<Req, Resp>` interaction.'
+    context: See docs/papers/19-pull-based-sources.md § Target dependency. Channel delivers value OR exception on each rendezvous; analogous to C++ function calls where exceptions propagate without appearing in the type signature. Scope stays small because the rendezvous protocol, scheduler, and lifecycle are unchanged — only phase 2's typed dispatch branches on a tag bit. Unblocks 🎯T17 (pull-based sources) and eliminates per-seam error wrapping in every `request<Req, Resp>` interaction.
     origin: session 2026-04-19 design discussion (paper 19)
     discovered: 2026-04-19
+  T19:
+    name: ARM64 sanitizer CI runs are reliable on ubuntu-24.04-arm
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 10 consecutive CI runs on master complete with all `Linux arm64 ASan+UBSan` and `Linux arm64 TSan` jobs in success state (no cancelled, no timed_out)
+    - If runner-level hangs persist after the 30-minute timeout cap, root-cause is identified (ASan shadow-memory init, TSan setup, kernel ASLR, etc.) and either fixed in the build or worked around (e.g., explicit ASLR settings, alternative runner pool, sanitize subset)
+    - Investigation findings recorded in docs/ (paper or audit-log entry)
+    context: 'Two separate 6h hangs observed during the v0.9.0 cycle: PR #24 (HTTP/1.1 client) cancelled `Linux arm64 ASan+UBSan` after 6h with no test output captured; PR #27 (release prep) cancelled `Linux arm64 TSan` similarly. Local repro on macOS arm64 and Docker linux/arm64 both passed; the hang appears specific to GitHub''s `ubuntu-24.04-arm` runners and most likely sanitizer runtime initialisation (shadow memory mapping). PR #29 added `timeout-minutes: 30` so future hangs fail fast — that''s a damage cap, not a fix. The underlying flake remains and will keep retriggering until investigated.'
+    origin: v0.9.0 release cycle observation
+    discovered: 2026-04-25
   T2:
     name: Tier D combinators are implemented
     status: identified
@@ -205,6 +216,19 @@ targets:
     origin: manual
     discovered: 2026-03-09
     achieved: 2026-03-28
+  T20:
+    name: No timer-sensitive tests use real-clock sleeps for synchronisation
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - All tests that depend on relative timing between imps bind a `fake_clock` via `csp::local l{fc.binding()};` and rely on quiescence-driven advancement
+    - Real-clock `csp::sleep` calls remain only where the test is explicitly measuring real time (e.g., the `ChanUtil---Delay` elapsed-time check)
+    - Audit pass over `test/` produces no remaining instances of "sleep(X) then assert timeout fired" patterns on the real clock
+    - No timing-related test failure attributable to runner load reappears in the next 20 CI runs
+    context: '`ChanUtil---Timeout-expiry` failed on the v0.9.0 release PR (PR #27, macOS arm64) because it relied on real 100ms timeout vs 200ms sleep — a margin small enough to lose under runner load. The fix in PR #29 swapped to fake_clock, but other tests in the suite likely have similar patterns waiting to fail. A systematic audit would surface them before they fire on a release-blocking PR.'
+    origin: v0.9.0 release cycle observation
+    discovered: 2026-04-25
   T3:
     name: Runtime is production-ready for I/O workloads
     status: identified
