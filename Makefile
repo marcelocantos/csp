@@ -230,22 +230,32 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 .PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples dist iwyu clean \
        docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye
 
+# Explicit default — keep `make` (no args) running the full test suite.
+# Without this, the `bullseye` rule below would become the default target
+# by virtue of appearing first.
+.DEFAULT_GOAL := test
+
+test: $(TARGET) check-md-links
+	./$(TARGET)
+
 # --- Standing invariants (consumed by `bullseye_convergence`) ---
 # Exit 0 if all green, non-zero on first violation. Stdout is relayed
-# verbatim to the agent. Tests are bounded with a 120s timeout so a
-# flake doesn't wedge convergence checks.
+# verbatim to the agent. Tests are bounded with a portable timeout so a
+# flake doesn't wedge convergence checks. macOS doesn't ship GNU
+# `timeout`, so we prefer `gtimeout` (coreutils) and fall back to a
+# perl alarm wrapper available on every Unix.
 BULLSEYE_TEST_TIMEOUT ?= 120
+BULLSEYE_TIMEOUT_CMD := $(shell command -v timeout 2>/dev/null \
+                            || command -v gtimeout 2>/dev/null \
+                            || echo "perl -e 'alarm shift; exec @ARGV' --")
 bullseye:
 	@$(MAKE) --no-print-directory build && echo "✓ build"
-	@timeout $(BULLSEYE_TEST_TIMEOUT) ./$(TARGET) --no-colors --reporters=console >/dev/null && echo "✓ tests" || \
+	@$(BULLSEYE_TIMEOUT_CMD) $(BULLSEYE_TEST_TIMEOUT) ./$(TARGET) --no-colors --reporters=console >/dev/null && echo "✓ tests" || \
 	 (echo "✗ tests (exit $$? — timeout=$(BULLSEYE_TEST_TIMEOUT)s)"; exit 1)
 	@python3 scripts/check_md_links.py >/dev/null && echo "✓ md-links" || \
 	 (echo "✗ md-links"; python3 scripts/check_md_links.py; exit 1)
 	@test -z "$$(git status --porcelain)" && echo "✓ clean tree" || \
 	 (echo "✗ dirty tree"; git status --short; exit 1)
-
-test: $(TARGET) check-md-links
-	./$(TARGET)
 
 check-md-links: diagrams
 	@python3 scripts/check_md_links.py
