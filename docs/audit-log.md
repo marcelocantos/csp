@@ -242,7 +242,7 @@ None.
 
 ## 2026-04-25 — /release v0.10.0
 
-- **Commit**: `pending`
+- **Commit**: `a5abb74`
 - **Outcome**: Released v0.10.0. Headline change: in-band exception
   delivery on channels (🎯T18). `writer<T>::_throw(exception_ptr)` sends
   an exception in place of a value on the next rendezvous; the reader
