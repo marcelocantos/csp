@@ -228,7 +228,21 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 # --- Rules ---
 
 .PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples dist iwyu clean \
-       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean
+       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye
+
+# --- Standing invariants (consumed by `bullseye_convergence`) ---
+# Exit 0 if all green, non-zero on first violation. Stdout is relayed
+# verbatim to the agent. Tests are bounded with a 120s timeout so a
+# flake doesn't wedge convergence checks.
+BULLSEYE_TEST_TIMEOUT ?= 120
+bullseye:
+	@$(MAKE) --no-print-directory build && echo "✓ build"
+	@timeout $(BULLSEYE_TEST_TIMEOUT) ./$(TARGET) --no-colors --reporters=console >/dev/null && echo "✓ tests" || \
+	 (echo "✗ tests (exit $$? — timeout=$(BULLSEYE_TEST_TIMEOUT)s)"; exit 1)
+	@python3 scripts/check_md_links.py >/dev/null && echo "✓ md-links" || \
+	 (echo "✗ md-links"; python3 scripts/check_md_links.py; exit 1)
+	@test -z "$$(git status --porcelain)" && echo "✓ clean tree" || \
+	 (echo "✗ dirty tree"; git status --short; exit 1)
 
 test: $(TARGET) check-md-links
 	./$(TARGET)
