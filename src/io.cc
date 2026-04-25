@@ -1,6 +1,7 @@
 #include <csp/blocking.h>
 #include <csp/cancel.h>
 #include <csp/io.h>
+#include <csp/part/io.h>
 #include <csp/internal/signal.h>
 #include <csp/internal/reactor.h>
 
@@ -201,6 +202,10 @@ void write_all(fd_t fd, const void* data, size_t len) {
     if (n < 0 || static_cast<size_t>(n) != len) {
         throw csp::error("write_all: incomplete write");
     }
+}
+
+csp::reader<std::string> lines(fd_t fd, size_t chunk_size) {
+    return csp::part::io::lines(fd, chunk_size);
 }
 
 } // namespace csp::io

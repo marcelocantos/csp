@@ -2264,6 +2264,10 @@ void write_all(fd_t fd, const void* data, size_t len) {
     }
 }
 
+csp::reader<std::string> lines(fd_t fd, size_t chunk_size) {
+    return csp::part::io::lines(fd, chunk_size);
+}
+
 } // namespace csp::io
 
 /* log.cc */
