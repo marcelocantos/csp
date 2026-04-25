@@ -1832,23 +1832,32 @@ chan<T>::chan(size_t capacity) {
         throw std::invalid_argument("buffer capacity must be at least 1");
     auto ch = spawn_filter<T>([capacity](reader<T> in, writer<T> out) {
         internal::descr("buffer");
+        // RingBuffer<T> allocates raw storage; slots are constructed at
+        // push and destructed at pop.  For non-trivial T (here, the slot
+        // holds a std::exception_ptr) we must NOT touch a slot's bytes
+        // before placement-new construction — staging the value or
+        // exception in a local first lets us push via placement-new.
         detail::RingBuffer<detail::buffered_slot<T>> buf(capacity);
         for (;;) {
+            detail::buffered_slot<T> staging;
             int idx;
             try {
                 idx = alt(
-                    buf.full()  ? ~in  : in  >> static_cast<detail::buffered_slot<T>*>(buf.next())->value,
+                    buf.full()  ? ~in  : in  >> staging.value,
                     buf.empty() ? ~out : detail::write_op_for(out, buf.front()));
             } catch (...) {
-                // Read fired with an exception payload.  Stash it in
-                // the slot we were about to fill and push.
-                auto* slot = static_cast<detail::buffered_slot<T>*>(buf.next());
-                slot->exc = std::current_exception();
+                // Read fired with an exception payload.  Land it in
+                // staging and push as an exception slot.
+                staging.exc = std::current_exception();
+                new (buf.next()) detail::buffered_slot<T>(std::move(staging));
                 buf.push();
                 continue;
             }
             switch (idx) {
-            case 0: buf.push(); break;
+            case 0:
+                new (buf.next()) detail::buffered_slot<T>(std::move(staging));
+                buf.push();
+                break;
             case ~0:
                 // Upstream died — drain remaining buffered values and
                 // exceptions to downstream before exiting.
