@@ -94,15 +94,6 @@ INCLUDES += -I$(PICOTLS_DIR)/include \
             -I$(CIFRA_DIR)/ext \
             -I$(UECC_DIR)
 
-# ngtcp2 include paths (part of TLS block — ngtcp2 requires TLS).
-NGTCP2_DIR  := vendor/github.com/ngtcp2/ngtcp2
-NGTCP2_LIB  := $(NGTCP2_DIR)/lib
-NGTCP2_CRYPTO := $(NGTCP2_DIR)/crypto
-
-INCLUDES += -I$(NGTCP2_LIB)/includes \
-            -I$(NGTCP2_CRYPTO)/includes \
-            -I$(NGTCP2_LIB) \
-            -I$(NGTCP2_CRYPTO)
 
 PICOTLS_SRCS := $(PICOTLS_DIR)/lib/picotls.c \
                 $(PICOTLS_DIR)/lib/hpke.c \
@@ -139,75 +130,6 @@ PICOTLS_CFLAGS := -O2 -I$(PICOTLS_DIR)/include \
 ifneq ($(SANITIZE),)
 PICOTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer \
                   -fno-sanitize=pointer-overflow
-endif
-
-# --- ngtcp2 sources (lib + crypto adapter) ---
-
-NGTCP2_LIB_SRCS := \
-    $(NGTCP2_LIB)/ngtcp2_acktr.c \
-    $(NGTCP2_LIB)/ngtcp2_addr.c \
-    $(NGTCP2_LIB)/ngtcp2_balloc.c \
-    $(NGTCP2_LIB)/ngtcp2_bbr.c \
-    $(NGTCP2_LIB)/ngtcp2_buf.c \
-    $(NGTCP2_LIB)/ngtcp2_callbacks.c \
-    $(NGTCP2_LIB)/ngtcp2_cc.c \
-    $(NGTCP2_LIB)/ngtcp2_cid.c \
-    $(NGTCP2_LIB)/ngtcp2_conn.c \
-    $(NGTCP2_LIB)/ngtcp2_conn_info.c \
-    $(NGTCP2_LIB)/ngtcp2_conv.c \
-    $(NGTCP2_LIB)/ngtcp2_crypto.c \
-    $(NGTCP2_LIB)/ngtcp2_dcidtr.c \
-    $(NGTCP2_LIB)/ngtcp2_err.c \
-    $(NGTCP2_LIB)/ngtcp2_fmt.c \
-    $(NGTCP2_LIB)/ngtcp2_frame_chain.c \
-    $(NGTCP2_LIB)/ngtcp2_gaptr.c \
-    $(NGTCP2_LIB)/ngtcp2_idtr.c \
-    $(NGTCP2_LIB)/ngtcp2_ksl.c \
-    $(NGTCP2_LIB)/ngtcp2_log.c \
-    $(NGTCP2_LIB)/ngtcp2_map.c \
-    $(NGTCP2_LIB)/ngtcp2_mem.c \
-    $(NGTCP2_LIB)/ngtcp2_objalloc.c \
-    $(NGTCP2_LIB)/ngtcp2_opl.c \
-    $(NGTCP2_LIB)/ngtcp2_path.c \
-    $(NGTCP2_LIB)/ngtcp2_pcg.c \
-    $(NGTCP2_LIB)/ngtcp2_pkt.c \
-    $(NGTCP2_LIB)/ngtcp2_pmtud.c \
-    $(NGTCP2_LIB)/ngtcp2_ppe.c \
-    $(NGTCP2_LIB)/ngtcp2_pq.c \
-    $(NGTCP2_LIB)/ngtcp2_pv.c \
-    $(NGTCP2_LIB)/ngtcp2_qlog.c \
-    $(NGTCP2_LIB)/ngtcp2_range.c \
-    $(NGTCP2_LIB)/ngtcp2_ratelim.c \
-    $(NGTCP2_LIB)/ngtcp2_ringbuf.c \
-    $(NGTCP2_LIB)/ngtcp2_rob.c \
-    $(NGTCP2_LIB)/ngtcp2_rst.c \
-    $(NGTCP2_LIB)/ngtcp2_rtb.c \
-    $(NGTCP2_LIB)/ngtcp2_settings.c \
-    $(NGTCP2_LIB)/ngtcp2_str.c \
-    $(NGTCP2_LIB)/ngtcp2_strm.c \
-    $(NGTCP2_LIB)/ngtcp2_transport_params.c \
-    $(NGTCP2_LIB)/ngtcp2_unreachable.c \
-    $(NGTCP2_LIB)/ngtcp2_vec.c \
-    $(NGTCP2_LIB)/ngtcp2_version.c \
-    $(NGTCP2_LIB)/ngtcp2_window_filter.c
-
-NGTCP2_CRYPTO_SRCS := \
-    $(NGTCP2_CRYPTO)/shared.c \
-    $(NGTCP2_CRYPTO)/picotls/picotls_minicrypto.c
-
-NGTCP2_SRCS := $(NGTCP2_LIB_SRCS) $(NGTCP2_CRYPTO_SRCS)
-NGTCP2_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGTCP2_SRCS))
-
-NGTCP2_CFLAGS := -O2 \
-    -I$(NGTCP2_LIB)/includes \
-    -I$(NGTCP2_CRYPTO)/includes \
-    -I$(NGTCP2_LIB) \
-    -I$(NGTCP2_CRYPTO) \
-    -I$(PICOTLS_DIR)/include \
-    -I$(CIFRA_DIR) -I$(CIFRA_DIR)/ext -I$(UECC_DIR) \
-    -DHAVE_ARPA_INET_H=1 -DHAVE_NETINET_IN_H=1
-ifneq ($(SANITIZE),)
-NGTCP2_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
 
 endif
@@ -254,6 +176,21 @@ NGHTTP2_SRCS := $(NGHTTP2_DIR)/nghttp2_alpn.c \
                 $(NGHTTP2_DIR)/nghttp2_version.c \
                 $(NGHTTP2_DIR)/sfparse.c
 NGHTTP2_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGHTTP2_SRCS))
+
+# nghttp2ver.h is generated from the .in template by autotools/cmake; we
+# substitute the version constants directly so a bare submodule clone builds
+# without running their build system.
+NGHTTP2_VERSION_STR := 1.69.90
+NGHTTP2_VERSION_NUM := 0x01455a
+NGHTTP2_VER_H       := $(NGHTTP2_INC)/nghttp2/nghttp2ver.h
+
+$(NGHTTP2_VER_H): $(NGHTTP2_INC)/nghttp2/nghttp2ver.h.in
+	sed -e 's/@PACKAGE_VERSION@/$(NGHTTP2_VERSION_STR)/' \
+	    -e 's/@PACKAGE_VERSION_NUM@/$(NGHTTP2_VERSION_NUM)/' \
+	    $< > $@
+
+$(NGHTTP2_OBJS): $(NGHTTP2_VER_H)
+$(BUILDDIR)/src/http2.o: $(NGHTTP2_VER_H)
 
 NGHTTP2_CFLAGS := -O2 -I$(NGHTTP2_INC) -DBUILDING_NGHTTP2
 ifneq ($(SANITIZE),)
@@ -333,7 +270,7 @@ ifneq ($(CSP_INCLUDE),dist)
 LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS) $(NGHTTP2_OBJS)
 endif
 ifeq ($(CSP_TLS),1)
-LIB_OBJS   += $(PICOTLS_OBJS) $(NGTCP2_OBJS)
+LIB_OBJS   += $(PICOTLS_OBJS)
 endif
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
