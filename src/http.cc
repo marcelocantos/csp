@@ -255,7 +255,27 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
             auto err = llhttp_execute(&parser, data, len);
 
             if (state.message_complete) {
+                // Bytes that were consumed by the parser beyond the end
+                // of this message (may be non-zero when HPE_PAUSED).
+                size_t consumed = 0;
+                if (err == HPE_PAUSED) {
+                    consumed = static_cast<size_t>(
+                        llhttp_get_error_pos(&parser) - data);
+                } else {
+                    consumed = len;
+                }
+
+                // Collect any leftover bytes the parser has already buffered
+                // but not yet returned (bytes parsed past this message).
+                bytes leftover;
+                leftover.insert(leftover.end(),
+                                reinterpret_cast<const uint8_t*>(data + consumed),
+                                reinterpret_cast<const uint8_t*>(data + len));
+
                 chan<response> resp_ch;
+                // Sync hijack channel: write blocks until handler reads
+                // or handler drops the reader (no hijack).
+                chan<request::hijack_result> hijack_ch;
 
                 request req;
                 req.method = from_llhttp(state.req_method);
@@ -266,6 +286,7 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                 req.body = std::move(state.body);
                 req.keep_alive = state.keep_alive;
                 req.respond = std::move(resp_ch.w);
+                req.hijack  = std::move(hijack_ch.r);
 
                 if (!(req_writer << std::move(req))) goto done;
 
@@ -274,18 +295,23 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                     auto wire = serialize_response(resp);
                     if (io::write(fd, wire.data(), wire.size()) < 0)
                         goto done;
+
+                    // A 101 Switching Protocols response signals a protocol
+                    // upgrade (e.g. WebSocket).  Offer the raw fd to the
+                    // handler via the hijack channel; the handler must be
+                    // waiting on req.hijack.  This write is blocking because
+                    // the WebSocket handler must have already started reading
+                    // from req.hijack (it called ws::upgrade which reads the
+                    // hijack channel synchronously after sending the 101).
+                    if (resp.status == 101) {
+                        hijack_ch.w << request::hijack_result{fd, std::move(leftover)};
+                        // fd ownership transferred — do NOT close.
+                        return;
+                    }
                 }
 
                 bool ka = state.keep_alive;
 
-                if (err == HPE_PAUSED) {
-                    auto consumed = static_cast<size_t>(
-                        llhttp_get_error_pos(&parser) - data);
-                    data += consumed;
-                    len -= consumed;
-                } else {
-                    len = 0;
-                }
                 // Always resume — the parser stays paused even if
                 // HPE_OK is returned (all data consumed at the pause
                 // point).
@@ -293,6 +319,10 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                 state.reset();
 
                 if (!ka) goto done;
+
+                data += consumed;
+                len  -= consumed;
+                if (len == 0) break;
 
             } else if (err != HPE_OK) {
                 response bad{400, {}, {}};

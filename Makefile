@@ -70,9 +70,13 @@ endif
 
 DEPFLAGS = -MMD -MP
 
+WSLAY_DIR := vendor/github.com/tatsuhiro-t/wslay/lib
+
 INCLUDES := -I$(CSP_INCLUDE) \
             -Ivendor/include \
-            -Ivendor/github.com/nodejs/llhttp/include
+            -Ivendor/github.com/nodejs/llhttp/include \
+            -I$(WSLAY_DIR)/includes \
+            -I$(WSLAY_DIR)
 
 # --- TLS support (via PicoTLS + minicrypto) ---
 
@@ -141,6 +145,22 @@ ifneq ($(SANITIZE),)
 LLHTTP_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
 
+# --- wslay (vendored WebSocket frame library, MIT) ---
+
+WSLAY_SRCS := $(WSLAY_DIR)/wslay_frame.c \
+              $(WSLAY_DIR)/wslay_event.c \
+              $(WSLAY_DIR)/wslay_queue.c \
+              $(WSLAY_DIR)/wslay_net.c
+WSLAY_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(WSLAY_SRCS))
+
+# Suppress HAVE_CONFIG_H and avoid config.h dependency.
+# Define the feature macros wslay checks for without autoconf.
+WSLAY_CFLAGS := -O2 -I$(WSLAY_DIR)/includes -I$(WSLAY_DIR) \
+                -DHAVE_ARPA_INET_H -DHAVE_NETINET_IN_H
+ifneq ($(SANITIZE),)
+WSLAY_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
 # --- fcontext (vendored from Boost.Context) ---
 
 UNAME_S := $(shell uname -s)
@@ -193,15 +213,16 @@ LIB_SRCS := src/csp.cc \
             src/net.cc \
             src/file.cc
 LIB_SRCS += src/http.cc
+LIB_SRCS += src/ws.cc
 ifeq ($(CSP_TLS),1)
 LIB_SRCS += src/tls.cc
 endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
-# net.test.cc and http.test.cc depend on headers not in the dist amalgamation.
+# net.test.cc, http.test.cc and ws.test.cc depend on headers not in the dist amalgamation.
 ifeq ($(CSP_INCLUDE),dist)
-TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc,$(TEST_SRCS))
+TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/ws.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)
@@ -210,7 +231,7 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
 ifneq ($(CSP_INCLUDE),dist)
-LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS)
+LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS) $(WSLAY_OBJS)
 endif
 ifeq ($(CSP_TLS),1)
 LIB_OBJS   += $(PICOTLS_OBJS)
@@ -295,6 +316,11 @@ $(BUILDDIR)/fcontext/%.o: $(FCONTEXT_DIR)/%.S
 $(BUILDDIR)/$(LLHTTP_DIR)/%.o: $(LLHTTP_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(LLHTTP_CFLAGS) -o $@ $<
+
+# wslay C sources
+$(BUILDDIR)/$(WSLAY_DIR)/%.o: $(WSLAY_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(WSLAY_CFLAGS) -o $@ $<
 
 # PicoTLS + minicrypto C sources
 ifeq ($(CSP_TLS),1)
