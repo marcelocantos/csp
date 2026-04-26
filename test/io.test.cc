@@ -617,7 +617,7 @@ TEST_CASE("IO---WriteAll") {
     csp::shutdown_runtime();
 }
 
-// --- io::lines (convenience) ---
+// --- io::lines (convenience via part::io) ---
 
 TEST_CASE("IO---Lines-convenience") {
     csp::shutdown_runtime();
@@ -648,6 +648,40 @@ TEST_CASE("IO---Lines-convenience") {
     CHECK("alpha" == result[0]);
     CHECK("beta" == result[1]);
     CHECK("gamma" == result[2]);
+    csp::shutdown_runtime();
+}
+
+// --- csp::io::lines (direct namespace convenience) ---
+
+TEST_CASE("IO---Lines-csp-io-namespace") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    auto [rfd, wfd] = test_pipe();
+
+    csp::spawn([wfd] {
+        const char* data = "one\ntwo\nthree\n";
+        (void)csp::io::write(wfd, data, strlen(data));
+        test_close(wfd);
+    });
+
+    std::vector<std::string> result;
+    std::atomic<bool> done{false};
+
+    csp::spawn([&result, &done, rfd] {
+        auto lr = csp::io::lines(rfd);
+        for (std::string line; lr >> line;) {
+            result.push_back(std::move(line));
+        }
+        done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(done.load());
+    REQUIRE(3 == result.size());
+    CHECK("one" == result[0]);
+    CHECK("two" == result[1]);
+    CHECK("three" == result[2]);
     csp::shutdown_runtime();
 }
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <csp/csp.h>
+
 #include <cassert>
 #include <compare>
 #include <cstddef>
@@ -269,5 +271,10 @@ struct resolve_result {
 // The fd must be non-blocking.
 void write_all(fd_t fd, const std::vector<uint8_t>& data);
 void write_all(fd_t fd, const void* data, size_t len);
+
+// Split fd output into newline-delimited strings. Composes
+// byte_reader | split_lines. Owns the fd and closes it on EOF.
+// The fd must be non-blocking.
+[[nodiscard]] csp::reader<std::string> lines(fd_t fd, size_t chunk_size = 4096);
 
 }

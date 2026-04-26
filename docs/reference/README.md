@@ -23,7 +23,8 @@ state.operation(args) ─┤guard├──➤ effects; result
 | Document | Header | Contents |
 |---|---|---|
 | [Timers](timers.md) | `csp.h` | `sleep`, `sleep_until`, `after`, `tick` |
-| [I/O](io.md) | `csp.h` | `wait_readable`, `wait_writable`, `read`, `write`, `accept`, `connect`, `resolve` (kqueue reactor) |
+| [I/O](io.md) | `csp.h` | `fd_t`, `wait_readable`, `wait_writable`, `read`, `write`, `accept`, `connect`, `resolve`, `read_all`, `write_all`, `lines`; `file::read`, `file::write` |
+| [Networking](net.md) | `csp.h` | `net::connection`, `net::listen`, `net::dial` (TCP) |
 | [Signals](signals.md) | `csp.h` | `signal::notify` (self-pipe trick, reactor-driven) |
 | [Blocking](blocking.md) | `csp.h` | `blocking(fn)` (offload to OS thread pool) |
 

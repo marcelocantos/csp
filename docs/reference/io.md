@@ -1,12 +1,12 @@
 # I/O Reference
 
 Non-blocking I/O primitives that integrate with the imp scheduler via
-a kqueue reactor. All functions live in `namespace csp::io`.
+a kqueue reactor. All functions live in `namespace csp::io` unless noted.
 
 Header: `#include "csp.h"`
 
 All I/O functions must be called from within an imp. The reactor is a
-singleton kqueue event loop running on a dedicated OS thread; when a
+singleton kqueue event loop running on a dedicated OS thread; when an
 imp calls an I/O function and the fd is not ready, the imp
 suspends cooperatively and is woken by the reactor when the fd becomes ready.
 
@@ -14,13 +14,68 @@ suspends cooperatively and is woken by the reactor when the fd becomes ready.
 
 ## Table of Contents
 
-1. [csp::io::wait_readable / csp::io::wait_writable](#cspiowait_readable-cspiowait_writable) -- suspend until fd is ready
-2. [csp::io::set_nonblock](#cspioset_nonblock) -- set fd to non-blocking mode
-3. [csp::io::read](#cspioread) -- non-blocking read
-4. [csp::io::write](#cspiowrite) -- non-blocking write
-5. [csp::io::accept](#cspioaccept) -- accept a connection
-6. [csp::io::connect](#cspioconnect) -- non-blocking connect
-7. [csp::io::resolve](#cspioresolve) -- async DNS resolution
+1. [csp::io::fd_t](#cspiofd_t) — opaque file descriptor wrapper
+2. [csp::io::wait_readable / csp::io::wait_writable](#cspiowait_readable-cspiowait_writable) — suspend until fd is ready
+3. [csp::io::set_nonblock](#cspioset_nonblock) — set fd to non-blocking mode
+4. [csp::io::read](#cspioread) — non-blocking read
+5. [csp::io::write](#cspiowrite) — non-blocking write
+6. [csp::io::accept](#cspioaccept) — accept a connection (returns fd_t)
+7. [csp::io::connect](#cspioconnect) — non-blocking connect
+8. [csp::io::resolve](#cspioresolve) — async DNS resolution
+9. [csp::io::read_all](#cspioread_all) — read all bytes until EOF
+10. [csp::io::write_all](#cspiowrite_all) — write all bytes
+11. [csp::io::lines](#cspiolines) — read newline-delimited strings
+12. [csp::file::read / csp::file::write](#cspfileread-cspfilewrite) — file I/O via blocking pool
+
+---
+
+## csp::io::fd_t
+
+Opaque file descriptor wrapper. No implicit conversion to the underlying
+integer type — all CSP-produced descriptors flow as `fd_t` values.
+
+### Declaration
+
+```cpp
+class fd_t {
+public:
+    constexpr fd_t();                           // default: invalid
+    constexpr explicit fd_t(socket_t fd);       // wrap raw descriptor
+
+    [[nodiscard]] constexpr socket_t raw() const;  // explicit raw access
+    [[nodiscard]] constexpr bool valid() const;
+    constexpr explicit operator bool() const;
+    [[nodiscard]] bool is_nonblock() const;     // query O_NONBLOCK flag
+
+    friend constexpr auto operator<=>(fd_t, fd_t) = default;
+    friend constexpr bool operator==(fd_t, fd_t) = default;
+};
+
+constexpr fd_t invalid_fd{};
+```
+
+### Description
+
+All CSP functions that produce file descriptors (`io::accept`,
+`net::listen`, `net::dial`) return an `fd_t` already set to non-blocking
+mode. `byte_reader` and `byte_writer` accept `fd_t` and assert (not
+silently fix) non-blocking status.
+
+Use `.raw()` only when calling platform APIs directly. For all CSP
+functions, pass `fd_t` directly.
+
+### Example
+
+```cpp
+#include "csp.h"
+
+// Wrap a raw fd (e.g. from open(2)):
+csp::io::fd_t fd{::open("/dev/null", O_RDONLY | O_NONBLOCK)};
+if (!fd) { /* error */ }
+
+// Pass to CSP functions:
+auto data = csp::io::read_all(fd);
+```
 
 ---
 
@@ -32,8 +87,8 @@ or writing.
 ### Signature
 
 ```cpp
-void wait_readable(int fd);
-void wait_writable(int fd);
+void wait_readable(fd_t fd);
+void wait_writable(fd_t fd);
 ```
 
 ### Description
@@ -44,6 +99,9 @@ imp. When the reactor detects that `fd` has data available (or has
 reached EOF or error), it wakes the imp. `wait_writable` does the same
 with `EVFILT_WRITE`.
 
+If a cancellation scope is active, the wait competes with the cancel
+signal in a `prialt`: whichever fires first wins.
+
 The higher-level wrappers (`read`, `write`, `accept`, `connect`) call these
 internally. Use them directly when building custom I/O protocols on raw file
 descriptors.
@@ -53,8 +111,10 @@ descriptors.
 ```
 wait_readable(fd) ─┤fd ready├──➤ return
 wait_readable(fd) ─┤fd not ready├─➤ suspend; reactor wakes imp when readable
+wait_readable(fd) ─┤cancel active, cancel fires first├─➤ throw canceled{}
 wait_writable(fd) ─┤fd ready├──➤ return
 wait_writable(fd) ─┤fd not ready├─➤ suspend; reactor wakes imp when writable
+wait_writable(fd) ─┤cancel active, cancel fires first├─➤ throw canceled{}
 ```
 
 ### Example
@@ -63,11 +123,12 @@ wait_writable(fd) ─┤fd not ready├─➤ suspend; reactor wakes imp when wr
 #include "csp.h"
 
 csp::spawn([] {
-    int fd = /* ... open a non-blocking fd ... */;
+    int raw = ::open("/tmp/fifo", O_RDONLY | O_NONBLOCK);
+    csp::io::fd_t fd{raw};
     csp::io::wait_readable(fd);
     // fd is now ready for reading
     char buf[1024];
-    ssize_t n = ::read(fd, buf, sizeof(buf));
+    ssize_t n = ::read(fd.raw(), buf, sizeof(buf));
 });
 csp::schedule();
 ```
@@ -81,15 +142,18 @@ Set a file descriptor to non-blocking mode.
 ### Signature
 
 ```cpp
-int set_nonblock(int fd);
+int set_nonblock(fd_t fd);
 ```
 
 ### Description
 
 Calls `fcntl` to add `O_NONBLOCK` to the file descriptor's flags. Returns 0
-on success, -1 on error (with `errno` set). This is a utility function -- not
-imp-specific -- but is typically the first thing called after creating
-a socket that will be used with the `csp::io` wrappers.
+on success, -1 on error (with `errno` set). This is a utility function — not
+imp-specific — but is typically the first thing called after wrapping a
+platform-created socket in an `fd_t`.
+
+CSP-produced `fd_t` values (from `io::accept`, `net::dial`) are already
+non-blocking — no need to call `set_nonblock` on them.
 
 ### Transition rules ([syntax](transition-rules.md))
 
@@ -101,8 +165,9 @@ set_nonblock(fd) ─┤error├───➤ return -1; errno set
 ### Example
 
 ```cpp
-int sock = socket(AF_INET, SOCK_STREAM, 0);
-csp::io::set_nonblock(sock);
+int raw = ::socket(AF_INET, SOCK_STREAM, 0);
+csp::io::fd_t fd{raw};
+csp::io::set_nonblock(fd);
 ```
 
 ---
@@ -114,7 +179,7 @@ Non-blocking read from a file descriptor.
 ### Signature
 
 ```cpp
-ssize_t read(int fd, void* buf, size_t len);
+[[nodiscard]] ssize_t read(fd_t fd, void* buf, size_t len);
 ```
 
 ### Description
@@ -125,7 +190,7 @@ imp suspends via `wait_readable` until data is available, then retries.
 Interrupted calls (`EINTR`) are retried automatically.
 
 Returns the number of bytes read on success, 0 on EOF, or -1 on error (with
-`errno` set). A successful call may return fewer than `len` bytes -- this is
+`errno` set). A successful call may return fewer than `len` bytes — this is
 normal for non-blocking reads.
 
 ### Transition rules ([syntax](transition-rules.md))
@@ -143,17 +208,13 @@ read(fd, buf, len) ─┤other error├─────➤ return -1; errno set
 ```cpp
 #include "csp.h"
 
-csp::spawn([] {
-    auto [w, r] = csp::chan<std::string>{};
-
-    csp::spawn([w = std::move(w)](int fd) {
-        char buf[4096];
-        for (;;) {
-            ssize_t n = csp::io::read(fd, buf, sizeof(buf));
-            if (n <= 0) break;
-            w << std::string(buf, static_cast<size_t>(n));
-        }
-    });
+csp::spawn([](csp::io::fd_t fd) {
+    char buf[4096];
+    for (;;) {
+        ssize_t n = csp::io::read(fd, buf, sizeof(buf));
+        if (n <= 0) break;
+        // process buf[0..n-1]
+    }
 });
 csp::schedule();
 ```
@@ -167,7 +228,7 @@ Non-blocking write to a file descriptor. Writes all bytes before returning.
 ### Signature
 
 ```cpp
-ssize_t write(int fd, const void* buf, size_t len);
+[[nodiscard]] ssize_t write(fd_t fd, const void* buf, size_t len);
 ```
 
 ### Description
@@ -196,8 +257,7 @@ write(fd, buf, len) ─┤other error├────➤ return -1; errno set
 ```cpp
 #include "csp.h"
 
-csp::spawn([] {
-    int fd = /* ... connected socket ... */;
+csp::spawn([](csp::io::fd_t fd) {
     const char* msg = "hello, world\n";
     ssize_t n = csp::io::write(fd, msg, strlen(msg));
     // n == strlen(msg) on success, -1 on error
@@ -214,7 +274,7 @@ Accept a connection on a listening socket.
 ### Signature
 
 ```cpp
-int accept(int listen_fd, struct sockaddr* addr, socklen_t* addrlen);
+[[nodiscard]] fd_t accept(fd_t listen_fd, struct sockaddr* addr, socklen_t* addrlen);
 ```
 
 ### Description
@@ -224,17 +284,16 @@ Accepts an incoming connection on `listen_fd`. If no connection is pending
 the reactor signals that a connection is ready. Interrupted calls (`EINTR`)
 are retried automatically.
 
-Returns the new socket fd on success, or -1 on error (with `errno` set). The
-caller is responsible for setting the returned fd to non-blocking mode and
-closing it when done.
+Returns a new `fd_t` already set to non-blocking mode on success, or
+`invalid_fd` on error. The caller is responsible for closing the returned fd.
 
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-accept(fd, addr, len) ─┤connection pending├─➤ return new_fd
+accept(fd, addr, len) ─┤connection pending├─➤ return new fd_t (non-blocking)
 accept(fd, addr, len) ─┤EAGAIN├─────────────➤ suspend until fd readable; retry
 accept(fd, addr, len) ─┤EINTR├──────────────➤ retry immediately
-accept(fd, addr, len) ─┤other error├────────➤ return -1; errno set
+accept(fd, addr, len) ─┤other error├────────➤ return invalid_fd; errno set
 ```
 
 ### Example
@@ -244,30 +303,24 @@ accept(fd, addr, len) ─┤other error├────────➤ return -1;
 #include <netinet/in.h>
 
 csp::spawn([] {
-    int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int raw = socket(AF_INET6, SOCK_STREAM, 0);
+    csp::io::fd_t listen_fd{raw};
     csp::io::set_nonblock(listen_fd);
+    // bind + listen omitted for brevity
 
-    struct sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(8080);
-    bind(listen_fd, (struct sockaddr*)&addr, sizeof(addr));
-    listen(listen_fd, 128);
-
-    // Accept loop -- each connection handled in its own imp
     for (;;) {
-        int client_fd = csp::io::accept(listen_fd, nullptr, nullptr);
-        if (client_fd < 0) break;
-        csp::io::set_nonblock(client_fd);
+        csp::io::fd_t client = csp::io::accept(listen_fd, nullptr, nullptr);
+        if (!client) break;
 
-        csp::spawn([client_fd] {
+        // client is already non-blocking
+        csp::spawn([client] {
             char buf[1024];
-            ssize_t n = csp::io::read(client_fd, buf, sizeof(buf));
-            if (n > 0) csp::io::write(client_fd, buf, static_cast<size_t>(n));
-            close(client_fd);
+            ssize_t n = csp::io::read(client, buf, sizeof(buf));
+            if (n > 0) csp::io::write(client, buf, static_cast<size_t>(n));
+            csp::io::close(client);
         });
     }
-    close(listen_fd);
+    csp::io::close(listen_fd);
 });
 csp::schedule();
 ```
@@ -281,7 +334,7 @@ Initiate a non-blocking TCP connection.
 ### Signature
 
 ```cpp
-int connect(int fd, const struct sockaddr* addr, socklen_t addrlen);
+[[nodiscard]] int connect(fd_t fd, const struct sockaddr* addr, socklen_t addrlen);
 ```
 
 ### Description
@@ -290,8 +343,7 @@ Starts a connection to `addr` on a non-blocking socket `fd`. The fd must
 already be in non-blocking mode (via `set_nonblock`). If the kernel returns
 `EINPROGRESS` (the usual case for non-blocking connect), the imp
 suspends via `wait_writable` until the connection attempt completes. On
-resumption, `getsockopt(SO_ERROR)` is checked to determine whether the
-connection succeeded or failed.
+resumption, `getsockopt(SO_ERROR)` is checked to determine success.
 
 Returns 0 on success, or -1 on error (with `errno` set to the connection
 error).
@@ -301,7 +353,7 @@ error).
 ```
 connect(fd, addr, len) ─┤immediate success├──➤ return 0
 connect(fd, addr, len) ─┤EINPROGRESS├────────➤ suspend until fd writable;
-                                                check SO_ERROR; return 0 or -1
+                                               check SO_ERROR; return 0 or -1
 connect(fd, addr, len) ─┤other error├────────➤ return -1; errno set
 ```
 
@@ -312,7 +364,8 @@ connect(fd, addr, len) ─┤other error├────────➤ return -1
 #include <netinet/in.h>
 
 csp::spawn([] {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int raw = socket(AF_INET, SOCK_STREAM, 0);
+    csp::io::fd_t fd{raw};
     csp::io::set_nonblock(fd);
 
     struct sockaddr_in addr{};
@@ -323,12 +376,9 @@ csp::spawn([] {
     if (csp::io::connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
         const char* msg = "GET / HTTP/1.0\r\n\r\n";
         csp::io::write(fd, msg, strlen(msg));
-
-        char buf[4096];
-        ssize_t n = csp::io::read(fd, buf, sizeof(buf));
-        // process response...
+        auto data = csp::io::read_all(fd);
     }
-    close(fd);
+    csp::io::close(fd);
 });
 csp::schedule();
 ```
@@ -349,9 +399,9 @@ struct resolve_result {
     const char* message() const;           // gai_strerror(error)
 };
 
-resolve_result resolve(const std::string& host,
-                       const std::string& service = {},
-                       const struct addrinfo* hints = nullptr);
+[[nodiscard]] resolve_result resolve(const std::string& host,
+                                     const std::string& service = {},
+                                     const struct addrinfo* hints = nullptr);
 ```
 
 ### Description
@@ -359,18 +409,12 @@ resolve_result resolve(const std::string& host,
 Resolves a hostname and/or service name to a list of socket addresses.
 Internally, `getaddrinfo` is offloaded to the blocking thread pool via
 `csp::blocking`, so the calling imp suspends cooperatively instead
-of blocking its processor. This is important because `getaddrinfo` is a
-blocking system call that can take an unpredictable amount of time (DNS
-lookups, `/etc/hosts` parsing, mDNS).
+of blocking its processor.
 
-On success, the returned `expected` holds an `addrinfo_ptr` (a `unique_ptr`
-with a custom deleter that calls `freeaddrinfo`). On failure, it holds a
-`resolve_error` with the `EAI_*` error code and a `message()` method for a
-human-readable description.
-
-The optional `hints` parameter controls the resolution behavior (address
-family, socket type, protocol, flags) -- same semantics as the `hints`
-argument to `getaddrinfo(3)`.
+On success, `result.info` holds an `addrinfo_ptr` (a `unique_ptr` with a
+custom deleter that calls `freeaddrinfo`). On failure, `result.error` holds
+the `EAI_*` error code and `result.message()` provides a human-readable
+description.
 
 ### Transition rules ([syntax](transition-rules.md))
 
@@ -379,15 +423,14 @@ resolve(host, svc, hints) ──────────➤ offload getaddrinfo 
                                       suspend calling imp;
                                       return resolve_result
 
-result.has_value()        ──────────➤ *result contains addrinfo linked list
-!result.has_value()       ──────────➤ result.error().message() describes failure
+bool(result)              ──────────➤ true: result.info contains addrinfo list
+!bool(result)             ──────────➤ result.message() describes failure
 ```
 
 ### Example
 
 ```cpp
 #include "csp.h"
-#include <netinet/in.h>
 
 csp::spawn([] {
     struct addrinfo hints{};
@@ -396,21 +439,167 @@ csp::spawn([] {
 
     auto result = csp::io::resolve("example.com", "80", &hints);
     if (!result) {
-        // result.error().message() for details
+        fprintf(stderr, "resolve failed: %s\n", result.message());
         return;
     }
 
-    // Connect using the first result
-    int fd = socket((*result)->ai_family,
-                    (*result)->ai_socktype,
-                    (*result)->ai_protocol);
+    auto* ai = result.info.get();
+    int raw = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    csp::io::fd_t fd{raw};
     csp::io::set_nonblock(fd);
+    csp::io::connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen));
+    // ...
+});
+csp::schedule();
+```
 
-    if (csp::io::connect(fd, (*result)->ai_addr,
-                         (*result)->ai_addrlen) == 0) {
-        // connected successfully
+---
+
+## csp::io::read_all
+
+Read all bytes from a file descriptor until EOF.
+
+### Signature
+
+```cpp
+[[nodiscard]] std::vector<uint8_t> read_all(fd_t fd, size_t chunk_size = 4096);
+```
+
+### Description
+
+Calls `csp::io::read` in a loop until EOF (return value 0) or error.
+Suspends cooperatively while waiting for data. Returns all bytes read as
+a contiguous vector.
+
+### Example
+
+```cpp
+#include "csp.h"
+
+csp::spawn([](csp::io::fd_t fd) {
+    auto data = csp::io::read_all(fd);
+    std::string s(data.begin(), data.end());
+});
+csp::schedule();
+```
+
+---
+
+## csp::io::write_all
+
+Write all bytes to a file descriptor.
+
+### Signature
+
+```cpp
+void write_all(fd_t fd, const std::vector<uint8_t>& data);
+void write_all(fd_t fd, const void* data, size_t len);
+```
+
+### Description
+
+Calls `csp::io::write` and throws `csp::error` if the write is
+incomplete (partial write or error). Suspends cooperatively while waiting
+for the fd to accept data.
+
+### Example
+
+```cpp
+#include "csp.h"
+
+csp::spawn([](csp::io::fd_t fd) {
+    std::string msg = "hello\n";
+    csp::io::write_all(fd, msg.data(), msg.size());
+});
+csp::schedule();
+```
+
+---
+
+## csp::io::lines
+
+Read newline-delimited strings from a file descriptor.
+
+### Signature
+
+```cpp
+[[nodiscard]] csp::reader<std::string> lines(fd_t fd, size_t chunk_size = 4096);
+```
+
+### Description
+
+Composes `byte_reader(fd) | split_lines` into a `reader<std::string>`.
+Each read from the returned reader yields one newline-delimited line
+(newline stripped). A partial trailing line (no trailing `\n`) is flushed
+when the fd reaches EOF.
+
+The fd must be non-blocking. `lines` owns the fd and closes it on EOF or
+when the reader is dropped.
+
+See also `part::io::lines` (identical; `csp::io::lines` forwards to it).
+
+### Example
+
+```cpp
+#include "csp.h"
+
+csp::spawn([](csp::io::fd_t fd) {
+    for (std::string line; (csp::io::lines(fd) >> line);) {
+        printf("%s\n", line.c_str());
     }
-    close(fd);
+});
+csp::schedule();
+```
+
+---
+
+## csp::file::read / csp::file::write
+
+Blocking file I/O, offloaded to the blocking thread pool.
+
+Header: `#include "csp.h"` (via `csp/file.h`)
+
+### Signature
+
+```cpp
+namespace csp::file {
+
+[[nodiscard]] std::vector<uint8_t> read(const std::string& path);
+
+void write(const std::string& path, const std::vector<uint8_t>& data);
+void write(const std::string& path, const void* data, size_t len);
+
+}
+```
+
+### Description
+
+`file::read` reads an entire file into memory in one shot.
+`file::write` creates or overwrites a file atomically (truncates on open).
+Both offload the blocking OS calls to the blocking thread pool via
+`csp::blocking`, so the calling imp suspends cooperatively.
+
+Both throw `csp::error` on failure (file not found, permission denied, etc.).
+
+These functions use `std::ifstream` / `std::ofstream` internally and are
+suitable for configuration files, small data files, and test fixtures.
+For large streaming files or fine-grained I/O, use `io::read` / `io::write`
+with an `fd_t` opened with `O_NONBLOCK`.
+
+### Example
+
+```cpp
+#include "csp.h"
+
+csp::spawn([] {
+    // Write then read a file.
+    std::string msg = "hello, file I/O";
+    std::vector<uint8_t> data(msg.begin(), msg.end());
+    csp::file::write("/tmp/demo.txt", data);
+
+    auto result = csp::file::read("/tmp/demo.txt");
+    std::string s(result.begin(), result.end());
+    assert(s == msg);
 });
 csp::schedule();
 ```
