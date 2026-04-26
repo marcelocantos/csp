@@ -26,6 +26,7 @@ suspends cooperatively and is woken by the reactor when the fd becomes ready.
 10. [csp::io::write_all](#cspiowrite_all) — write all bytes
 11. [csp::io::lines](#cspiolines) — read newline-delimited strings
 12. [csp::file::read / csp::file::write](#cspfileread-cspfilewrite) — file I/O via blocking pool
+13. [Pull-based source abstraction](#pull-based-source-abstraction) — consumer-controlled sized reads
 
 ---
 
@@ -603,3 +604,121 @@ csp::spawn([] {
 });
 csp::schedule();
 ```
+
+---
+
+## Pull-based source abstraction
+
+Header: `#include "csp/source.h"` (included by `"csp.h"`)
+
+A **source** inverts the push model: instead of the producer choosing
+chunk sizes, the consumer tells the source how many bytes it wants.  This
+is the CSP-native pull pattern built from `request<Req, Resp>`.
+
+### Type aliases
+
+```cpp
+namespace csp::io {
+
+// A single pull request: ask for up to `value` bytes; the source writes
+// up to that many into the `reply` one-shot channel.
+using read_request = request<size_t, bytes>;
+
+// The consumer-facing handle.  A source is the *write* end of a request
+// channel.  Consumers write requests into it and read replies from the
+// per-request reply channels.
+using source = writer<read_request>;
+
+} // namespace csp::io
+```
+
+### Outcome channels
+
+Three structurally distinct paths carry the three possible outcomes:
+
+| Outcome | Mechanism |
+|---------|-----------|
+| **Success** | The reply channel carries a `bytes` value (`<= n` bytes). |
+| **EOF** | The source imp exits; the reply-writer drops; `reply >> buf` returns `false`. |
+| **Error** | The source calls `req.reply._throw(ep)` before exiting; `reply >> buf` rethrows. |
+
+### fd_source
+
+```cpp
+[[nodiscard]] csp::io::source fd_source(csp::io::fd_t fd);
+```
+
+Spawns an imp that serves `read_request` values from a non-blocking fd.
+Partial reads (fewer bytes than requested) are normal and match `read(2)`
+semantics.  The imp owns the fd and closes it on exit.
+
+**Zero-byte requests** throw `std::invalid_argument` across the reply
+and exit — this is almost always a caller bug.
+
+### errno_error
+
+```cpp
+class csp::io::errno_error : public csp::error {
+public:
+    errno_error(const std::string& syscall, int err);
+    int err() const;
+};
+```
+
+Thrown (via `_throw`) when `io::read` returns a negative value.  Carries
+the syscall name and the `errno` at the time of failure.
+
+### Convenience helpers
+
+```cpp
+// Blocking call: send request, wait for reply, return bytes.
+// Throws errno_error on I/O error; throws channel_closed on EOF.
+bytes source_read(source& s, size_t n);
+
+// Non-blocking call: returns a reader<bytes> for use in prialt.
+reader<bytes> call_source(source& s, size_t n);
+```
+
+### Examples
+
+**Sequential reads:**
+
+```cpp
+#include "csp.h"
+
+auto s = csp::io::fd_source(rfd);
+
+csp::spawn([s = std::move(s)]() mutable {
+    for (;;) {
+        auto reply = csp::io::call_source(s, 4096);
+        csp::bytes chunk;
+        if (!(reply >> chunk)) break;  // EOF
+        // process chunk ...
+    }
+});
+```
+
+**prialt across two sources:**
+
+```cpp
+auto r1 = csp::io::call_source(s1, 4096);
+auto r2 = csp::io::call_source(s2, 4096);
+csp::bytes b1, b2;
+
+switch (csp::prialt(r1 >> b1, r2 >> b2)) {
+case 0: /* b1 ready */ break;
+case 1: /* b2 ready */ break;
+}
+```
+
+**writer::operator() sugar (blocking):**
+
+```cpp
+csp::bytes chunk = s(4096);  // blocks until reply; throws on EOF/error
+```
+
+### See also
+
+- Design paper: `docs/papers/19-pull-based-sources.md`
+- `request<Req, Resp>` and `call()` in [Channels reference](channels.md)
+- [🎯T17](../../bullseye.yaml) — full pull-based source convergence target
