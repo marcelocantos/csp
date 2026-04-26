@@ -95,20 +95,56 @@ namespace csp {
         }
 
         void Runtime::shutdown() {
-            stopping.store(true, std::memory_order_release); // TLA:WorkerParking.ShutdownSetFlag
-            // Acquire-release park_mu to synchronize with workers'
-            // park_cv.wait() — ensures any worker that has already
-            // checked the predicate (seeing stopping==false) has
-            // entered wait() before we notify, preventing lost
-            // notifications.
-            { std::lock_guard<std::mutex> lk(park_mu); } // TLA:WorkerParking.ShutdownAcquireMu TLA:WorkerParking.ShutdownReleaseMu
+            stopping.store(true, std::memory_order_release); // TLA:PerWorkerWake.ShutdownSetFlag
+
+            // Wake every worker via its per-worker Note. Workers that are
+            // sleeping (Note::SLEEPING) get an immediate futex wake; awake
+            // workers get the FLAGGED sentinel so they skip the next sleep
+            // and check stopping immediately.
+            //
+            // We also notify main_loop / quiescent_loop (which still use park_cv).
+            //
+            // Re-read num_procs_ each iteration to capture any surplus workers
+            // that the watchdog added after stopping was set. Stop when the
+            // count is stable (watchdog has also exited by then).
+            {
+                int prev_n = 0;
+                for (;;) {
+                    int n = num_procs_.load(std::memory_order_acquire);
+                    for (int i = prev_n > 0 ? prev_n : 1; i < n; ++i) {
+                        if (procs[i] && procs[i]->alive.load(std::memory_order_acquire)) {
+                            procs[i]->note.wake(); // TLA:PerWorkerWake.ShutdownWakeAll
+                        }
+                    }
+                    if (n == prev_n) break;  // Stable: no new procs added.
+                    prev_n = n;
+                    // Small yield to let the watchdog thread see stopping=true
+                    // and stop adding new procs.
+                    std::this_thread::yield();
+                }
+            }
+            // Synchronize with main_loop / run() / quiescent_loop / await_idle(),
+            // all of which wait on park_cv. Acquire-release park_mu before
+            // notifying so any waiter that has evaluated the predicate as false
+            // (but hasn't entered cv.wait yet) will have entered cv.wait before
+            // we notify. This prevents lost wakeups. // TLA:WorkerParking.ShutdownAcquireMu
+            { std::lock_guard<std::mutex> lk(park_mu); } // TLA:WorkerParking.ShutdownReleaseMu
             park_cv.notify_all(); // TLA:WorkerParking.ShutdownNotify
 
             if (watchdog_.joinable()) {
                 watchdog_.join();
             }
 
+            // After watchdog joins, no more procs can be added.
+            // Wake any remaining sleepers (e.g., surplus workers added just
+            // before the watchdog noticed stopping=true).
             int n = num_procs_.load(std::memory_order_acquire);
+            for (int i = 1; i < n; ++i) {
+                if (procs[i]) procs[i]->note.wake();
+            }
+            { std::lock_guard<std::mutex> lk(park_mu); }
+            park_cv.notify_all();
+
             for (int i = 1; i < n; ++i) {
                 if (procs[i] && procs[i]->worker.joinable()) {
                     procs[i]->worker.join();
@@ -120,6 +156,41 @@ namespace csp {
         }
 
         void Runtime::unpark_one() {
+            // Wake exactly one parked worker. Scan for a sleeping Note and CAS
+            // SLEEPING->AWAKE + futex_wake on the first match. If no worker is
+            // sleeping yet (all awake or in transition), flag one so it skips
+            // its next sleep attempt. This eliminates the thundering herd of
+            // notify_all on the worker path.
+            // TLA:PerWorkerWake.SchedWakeSleeping TLA:PerWorkerWake.SchedFlagAwake
+            int n = num_procs_.load(std::memory_order_acquire);
+            // First pass: find a sleeping worker and wake exactly that one.
+            for (int i = 1; i < n; ++i) {
+                auto* p = procs[i].get();
+                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
+                if (p->note.is_sleeping()) {
+                    p->note.wake();
+                    // Also wake main_loop / run() / quiescent_loop which wait
+                    // on the shared park_cv. They use park_cv.wait with
+                    // has_global_work_ in the predicate and need notification
+                    // when the scheduler adds work.
+                    park_cv.notify_all();
+                    return;
+                }
+            }
+            // Second pass: no sleeper found — flag one awake worker so it
+            // won't sleep on its next park attempt.
+            for (int i = 1; i < n; ++i) {
+                auto* p = procs[i].get();
+                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
+                if (p->parked.load(std::memory_order_acquire)) {
+                    p->note.wake();
+                    park_cv.notify_all();
+                    return;
+                }
+            }
+            // All workers are active — no action needed.
+            // Still notify park_cv: main_loop checks has_global_work_ and
+            // needs to be woken when work is pushed to the global queue.
             park_cv.notify_all();
         }
 
@@ -134,7 +205,7 @@ namespace csp {
 
         void Runtime::worker_loop() {
             auto& p = current_p();
-            // TLA:WorkerParking.WorkerCheckWork
+            // TLA:PerWorkerWake.WorkerCheckWork
             while (!stopping.load(std::memory_order_acquire)) {
                 p.heartbeat.fetch_add(1, std::memory_order_relaxed);
 
@@ -155,32 +226,47 @@ namespace csp {
                     continue;
                 }
 
-                // Park: wait for work or shutdown.
+                // Park: sleep on this worker's per-worker Note.
+                //
+                // Protocol (TLA:PerWorkerWake.WorkerSetParked / WorkerTrySleep):
+                //   1. Set p.parked and notify park_cv so main_loop can observe
+                //      quiescence (main_loop still waits on the shared park_cv).
+                //   2. Sleep on p.note using a platform futex. This is a
+                //      single-word futex with no shared condvar, so only one
+                //      explicit unpark_one() call wakes exactly this worker.
+                //   3. On wake: clear p.parked.
+                //
+                // Note: checking has_work() before sleeping in step 2 avoids a
+                // TOCTOU window: if work arrived between steal_work() returning
+                // false and p.parked being set, unpark_one() will see parked=true
+                // and wake us, OR we see has_work() here and skip the sleep.
+                p.parked.store(true, std::memory_order_release); // TLA:PerWorkerWake.WorkerSetParked
                 {
-                    std::unique_lock<std::mutex> lk(park_mu); // TLA:WorkerParking.WorkerAcquirePark
-                    p.parked.store(true, std::memory_order_release);
-                    park_cv.notify_all();  // wake run() quiescence check
+                    // Notify main_loop / quiescent_loop while holding park_mu
+                    // so they see a consistent parked snapshot.
+                    std::lock_guard<std::mutex> lk(park_mu);
+                    park_cv.notify_all();  // wake main_loop quiescence check
+                }
 
+                // Check for work that arrived after steal_work but before we
+                // set parked. If found, skip the sleep (unpark_one may not have
+                // been called because the work was added before parked=true).
+                if (!stopping.load(std::memory_order_acquire) && !has_work(p)) {
                     // Surplus Ps wind down after 5s idle.
                     using namespace std::chrono;
                     constexpr auto wind_down = seconds(5);
                     bool is_surplus = p.id >= initial_procs_;
 
                     if (is_surplus) {
-                        park_cv.wait_until(lk, steady_clock::now() + wind_down, [this, &p] {
-                            return stopping.load(std::memory_order_acquire)
-                                || has_work(p);
-                        });
+                        // TLA:PerWorkerWake.WorkerTrySleep (timed)
+                        p.note.sleep_for(wind_down);
                     } else {
-                        // TLA:WorkerParking.WorkerEvalPred TLA:WorkerParking.WorkerEnterWait TLA:WorkerParking.WorkerWoken
-                        park_cv.wait(lk, [this, &p] {
-                            return stopping.load(std::memory_order_acquire)
-                                || has_work(p);
-                        });
+                        // TLA:PerWorkerWake.WorkerTrySleep TLA:PerWorkerWake.WorkerWoken
+                        p.note.sleep();
                     }
-
-                    p.parked.store(false, std::memory_order_release); // TLA:WorkerParking.WorkerWake
                 }
+
+                p.parked.store(false, std::memory_order_release); // TLA:PerWorkerWake.WorkerClearParked
 
                 // Surplus P wind-down: exit if still idle after timeout.
                 if (p.id >= initial_procs_
@@ -268,7 +354,10 @@ namespace csp {
                 std::this_thread::sleep_for(interval);
 
                 int n = num_procs_.load(std::memory_order_acquire);
-                for (int i = 0; i < n; ++i) {
+                // Skip P0: it runs main_loop(), not worker_loop(), so its
+                // heartbeat never increments.  Monitoring it would trigger
+                // spurious add_processor() calls that flood max_procs_.
+                for (int i = 1; i < n; ++i) {
                     auto& p = *procs[i];
                     if (!p.alive.load(std::memory_order_acquire)) continue;
                     if (p.parked.load(std::memory_order_acquire)) {

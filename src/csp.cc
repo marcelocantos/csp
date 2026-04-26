@@ -478,7 +478,13 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
             std::lock_guard<std::mutex> lk(rt.global_mu);
             rt.push_to_global(imp);
         }
-        rt.park_cv.notify_all();
+        // Wake a sleeping worker so it picks up the new imp.
+        // On master, unpark_one() == park_cv.notify_all(), so this was
+        // fine there; after the per-worker-wake change workers sleep on
+        // their per-worker Note, not on park_cv, so we must call
+        // unpark_one() explicitly in addition to notifying park_cv
+        // (which wakes main_loop / run() / quiescent_loop).
+        rt.unpark_one();
 
         return 1;
     } catch (std::exception const &) {
