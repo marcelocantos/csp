@@ -29,6 +29,30 @@
  *   3. NoSpuriousExit: workers only exit when stopping=true.
  *   4. MainSeesQuiescence: when all workers are parked, main can observe it.
  *   5. ShutdownWakesAll: after shutdown completes, no worker is stuck sleeping.
+ *
+ * NOTE: Two bugs were found in the initial C++ implementation that this spec
+ * does NOT model (and thus could not catch):
+ *
+ *   Bug 1 — Watchdog monitors P0 (src/runtime.cpp watchdog_loop):
+ *     The watchdog loop started at i=0, which includes P0 (the main thread).
+ *     P0 runs main_loop() / run(), not worker_loop(), so its heartbeat counter
+ *     never increments.  The watchdog repeatedly saw a stale heartbeat and
+ *     called add_processor() until max_procs_ was exhausted, flooding the
+ *     process with surplus workers all sleeping in sleep_for(5s).  The fix:
+ *     start the watchdog scan at i=1.
+ *
+ *   Bug 2 — spawn() does not call unpark_one() (src/csp.cc):
+ *     After the per-worker-wake change, workers sleep on their per-worker Note
+ *     rather than on park_cv.  spawn() pushed the new imp to the global queue
+ *     and called park_cv.notify_all() (which is sufficient on master where
+ *     unpark_one() == park_cv.notify_all()), but did NOT call unpark_one().
+ *     If all workers were already sleeping in note.sleep() when spawn() ran,
+ *     nobody would pick up the new imp — permanent deadlock.  The fix: add
+ *     rt.unpark_one() in spawn() after pushing to the global queue.
+ *
+ *   These bugs were latent on the dev machine (16 cores) because the initial
+ *   procs were always busy when spawn() was called.  On CI (2–4 cores) the
+ *   first inter-test spawn landed with all workers already sleeping.
  ******************************************************************************)
 
 EXTENDS Integers, FiniteSets

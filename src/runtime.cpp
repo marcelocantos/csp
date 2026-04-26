@@ -354,7 +354,10 @@ namespace csp {
                 std::this_thread::sleep_for(interval);
 
                 int n = num_procs_.load(std::memory_order_acquire);
-                for (int i = 0; i < n; ++i) {
+                // Skip P0: it runs main_loop(), not worker_loop(), so its
+                // heartbeat never increments.  Monitoring it would trigger
+                // spurious add_processor() calls that flood max_procs_.
+                for (int i = 1; i < n; ++i) {
                     auto& p = *procs[i];
                     if (!p.alive.load(std::memory_order_acquire)) continue;
                     if (p.parked.load(std::memory_order_acquire)) {
