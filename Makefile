@@ -70,9 +70,13 @@ endif
 
 DEPFLAGS = -MMD -MP
 
+NGHTTP2_DIR := vendor/github.com/nghttp2/nghttp2/lib
+NGHTTP2_INC := $(NGHTTP2_DIR)/includes
+
 INCLUDES := -I$(CSP_INCLUDE) \
             -Ivendor/include \
-            -Ivendor/github.com/nodejs/llhttp/include
+            -Ivendor/github.com/nodejs/llhttp/include \
+            -I$(NGHTTP2_INC)
 
 # --- TLS support (via PicoTLS + minicrypto) ---
 
@@ -89,6 +93,7 @@ INCLUDES += -I$(PICOTLS_DIR)/include \
             -I$(CIFRA_DIR) \
             -I$(CIFRA_DIR)/ext \
             -I$(UECC_DIR)
+
 
 PICOTLS_SRCS := $(PICOTLS_DIR)/lib/picotls.c \
                 $(PICOTLS_DIR)/lib/hpke.c \
@@ -126,6 +131,7 @@ ifneq ($(SANITIZE),)
 PICOTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer \
                   -fno-sanitize=pointer-overflow
 endif
+
 endif
 
 # --- llhttp (vendored HTTP parser) ---
@@ -139,6 +145,56 @@ LLHTTP_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(LLHTTP_SRCS))
 LLHTTP_CFLAGS := -O2 -I$(LLHTTP_DIR)/include
 ifneq ($(SANITIZE),)
 LLHTTP_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
+# --- nghttp2 (vendored HTTP/2 session management) ---
+
+NGHTTP2_SRCS := $(NGHTTP2_DIR)/nghttp2_alpn.c \
+                $(NGHTTP2_DIR)/nghttp2_buf.c \
+                $(NGHTTP2_DIR)/nghttp2_callbacks.c \
+                $(NGHTTP2_DIR)/nghttp2_debug.c \
+                $(NGHTTP2_DIR)/nghttp2_extpri.c \
+                $(NGHTTP2_DIR)/nghttp2_frame.c \
+                $(NGHTTP2_DIR)/nghttp2_hd.c \
+                $(NGHTTP2_DIR)/nghttp2_hd_huffman.c \
+                $(NGHTTP2_DIR)/nghttp2_hd_huffman_data.c \
+                $(NGHTTP2_DIR)/nghttp2_helper.c \
+                $(NGHTTP2_DIR)/nghttp2_http.c \
+                $(NGHTTP2_DIR)/nghttp2_map.c \
+                $(NGHTTP2_DIR)/nghttp2_mem.c \
+                $(NGHTTP2_DIR)/nghttp2_option.c \
+                $(NGHTTP2_DIR)/nghttp2_outbound_item.c \
+                $(NGHTTP2_DIR)/nghttp2_pq.c \
+                $(NGHTTP2_DIR)/nghttp2_priority_spec.c \
+                $(NGHTTP2_DIR)/nghttp2_queue.c \
+                $(NGHTTP2_DIR)/nghttp2_ratelim.c \
+                $(NGHTTP2_DIR)/nghttp2_rcbuf.c \
+                $(NGHTTP2_DIR)/nghttp2_session.c \
+                $(NGHTTP2_DIR)/nghttp2_stream.c \
+                $(NGHTTP2_DIR)/nghttp2_submit.c \
+                $(NGHTTP2_DIR)/nghttp2_time.c \
+                $(NGHTTP2_DIR)/nghttp2_version.c \
+                $(NGHTTP2_DIR)/sfparse.c
+NGHTTP2_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGHTTP2_SRCS))
+
+# nghttp2ver.h is generated from the .in template by autotools/cmake; we
+# substitute the version constants directly so a bare submodule clone builds
+# without running their build system.
+NGHTTP2_VERSION_STR := 1.69.90
+NGHTTP2_VERSION_NUM := 0x01455a
+NGHTTP2_VER_H       := $(NGHTTP2_INC)/nghttp2/nghttp2ver.h
+
+$(NGHTTP2_VER_H): $(NGHTTP2_INC)/nghttp2/nghttp2ver.h.in
+	sed -e 's/@PACKAGE_VERSION@/$(NGHTTP2_VERSION_STR)/' \
+	    -e 's/@PACKAGE_VERSION_NUM@/$(NGHTTP2_VERSION_NUM)/' \
+	    $< > $@
+
+$(NGHTTP2_OBJS): $(NGHTTP2_VER_H)
+$(BUILDDIR)/src/http2.o: $(NGHTTP2_VER_H)
+
+NGHTTP2_CFLAGS := -O2 -I$(NGHTTP2_INC) -DBUILDING_NGHTTP2
+ifneq ($(SANITIZE),)
+NGHTTP2_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
 
 # --- fcontext (vendored from Boost.Context) ---
@@ -193,15 +249,16 @@ LIB_SRCS := src/csp.cc \
             src/net.cc \
             src/file.cc
 LIB_SRCS += src/http.cc
+LIB_SRCS += src/http2.cc
 ifeq ($(CSP_TLS),1)
 LIB_SRCS += src/tls.cc
 endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
-# net.test.cc and http.test.cc depend on headers not in the dist amalgamation.
+# net.test.cc, http.test.cc, http2.test.cc depend on headers not in the dist amalgamation.
 ifeq ($(CSP_INCLUDE),dist)
-TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc,$(TEST_SRCS))
+TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)
@@ -210,7 +267,7 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
 ifneq ($(CSP_INCLUDE),dist)
-LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS)
+LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS) $(NGHTTP2_OBJS)
 endif
 ifeq ($(CSP_TLS),1)
 LIB_OBJS   += $(PICOTLS_OBJS)
@@ -296,6 +353,11 @@ $(BUILDDIR)/$(LLHTTP_DIR)/%.o: $(LLHTTP_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(LLHTTP_CFLAGS) -o $@ $<
 
+# nghttp2 C sources
+$(BUILDDIR)/$(NGHTTP2_DIR)/%.o: $(NGHTTP2_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGHTTP2_CFLAGS) -o $@ $<
+
 # PicoTLS + minicrypto C sources
 ifeq ($(CSP_TLS),1)
 $(BUILDDIR)/$(PICOTLS_DIR)/%.o: $(PICOTLS_DIR)/%.c
@@ -309,6 +371,12 @@ $(BUILDDIR)/$(CIFRA_DIR)/%.o: $(CIFRA_DIR)/%.c
 $(BUILDDIR)/$(UECC_DIR)/%.o: $(UECC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(PICOTLS_CFLAGS) -o $@ $<
+
+# ngtcp2 C sources (lib + crypto adapter)
+$(BUILDDIR)/$(NGTCP2_DIR)/%.o: $(NGTCP2_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGTCP2_CFLAGS) -o $@ $<
+
 endif
 
 # Distribution sources

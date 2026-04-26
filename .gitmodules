@@ -4,3 +4,6 @@
 [submodule "vendor/github.com/h2o/picotls"]
 	path = vendor/github.com/h2o/picotls
 	url = https://github.com/h2o/picotls.git
+[submodule "vendor/github.com/nghttp2/nghttp2"]
+	path = vendor/github.com/nghttp2/nghttp2
+	url = https://github.com/nghttp2/nghttp2.git

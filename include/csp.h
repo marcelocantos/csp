@@ -9,6 +9,7 @@
 #include "csp/fcontext.h"
 #include "csp/file.h"
 #include "csp/http.h"
+#include "csp/http2.h"
 #include "csp/imp_exit.h"
 #include "csp/internal/blocking_pool.h"
 #include "csp/internal/csp_internal.h"

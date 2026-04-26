@@ -420,10 +420,18 @@ def main():
     # http.cc depends on vendored llhttp and is excluded from the dist
     # amalgamation.  Users who need HTTP must compile http.cc + llhttp
     # separately.
+    # http2.cc depends on vendored nghttp2 and is excluded from the dist
+    # amalgamation.  Users who need HTTP/2 must compile http2.cc + nghttp2
+    # separately.
     http_file = src_dir / 'http.cc'
+    http2_file = src_dir / 'http2.cc'
     src_files = sorted(
         p for p in (list(src_dir.glob('*.cc')) + list(src_dir.glob('*.cpp')))
-        if p.resolve() not in {globals_file.resolve(), http_file.resolve()}
+        if p.resolve() not in {
+            globals_file.resolve(),
+            http_file.resolve(),
+            http2_file.resolve(),
+        }
     )
     print('csp.cpp:')
     amalgamate_sources(
