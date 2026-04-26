@@ -230,6 +230,8 @@ if(CSP_BUILD_TESTS)
         list(FILTER TEST_SRCS EXCLUDE REGEX "tls\\.test\\.cc$")
         # HTTP tests not yet verified on Windows
         list(FILTER TEST_SRCS EXCLUDE REGEX "http\\.test\\.cc$")
+        # HTTP/2 not built on Windows (nghttp2 not wired through CMake yet)
+        list(FILTER TEST_SRCS EXCLUDE REGEX "http2\\.test\\.cc$")
     endif()
 
     add_executable(csp_tests test/main.cc ${TEST_SRCS})
