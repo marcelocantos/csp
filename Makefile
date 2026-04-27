@@ -78,8 +78,7 @@ WSLAY_DIR := vendor/github.com/tatsuhiro-t/wslay/lib
 INCLUDES := -I$(CSP_INCLUDE) \
             -Ivendor/include \
             -Ivendor/github.com/nodejs/llhttp/include \
-            -I$(NGHTTP2_INC)
-            -Ivendor/github.com/nodejs/llhttp/include \
+            -I$(NGHTTP2_INC) \
             -I$(WSLAY_DIR)/includes \
             -I$(WSLAY_DIR)
 
