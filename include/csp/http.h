@@ -56,6 +56,22 @@ struct request {
     // Write exactly one response for this request.
     writer<response> respond;
 
+    // WebSocket / protocol-upgrade hijack.
+    //
+    // After writing a 101 Switching Protocols response via `respond`,
+    // read the raw fd from this channel to take ownership of the
+    // connection socket. The HTTP connection loop exits as soon as
+    // the fd is claimed. Any bytes read by the HTTP parser beyond the
+    // upgrade request are delivered in `leftover` so the caller can
+    // replay them.
+    //
+    // Normal (non-upgrade) handlers must not touch this channel.
+    struct hijack_result {
+        io::fd_t  fd;       // connection socket (non-blocking)
+        bytes     leftover; // bytes consumed by HTTP parser but not yet used
+    };
+    reader<hijack_result> hijack;
+
     // Convenience: find first header value by case-insensitive name.
     // Returns empty string if not found.
     std::string header(const std::string& name) const;

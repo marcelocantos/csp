@@ -338,19 +338,16 @@ Uses kqueue reactor (macOS), epoll (Linux), IOCP (Windows).
 ```cpp
 namespace csp::io {
 
-// Opaque fd wrapper. No implicit int/SOCKET conversion.
-// All CSP-produced fds are already non-blocking.
-class fd_t {
-public:
-    constexpr fd_t();                           // default: invalid
-    constexpr explicit fd_t(socket_t raw_fd);   // wrap raw descriptor
-    socket_t raw() const;       // access underlying descriptor (use sparingly)
-    bool valid() const;         // fd != invalid
-    bool is_nonblock() const;   // O_NONBLOCK is set (assertion helper)
+// Opaque fd wrapper. No implicit int conversion.
+struct fd_t {
+    explicit fd_t(int raw_fd = -1);
+    int raw() const;          // access the underlying descriptor
+    bool valid() const;       // raw() >= 0
+    bool is_nonblock() const; // O_NONBLOCK is set
     explicit operator bool() const;  // same as valid()
-    // operator<=> and operator== defined (comparable, sortable)
+    // Comparison operators (==, !=, <, etc.)
+    // Move-only: copy is deleted.
 };
-constexpr fd_t invalid_fd{};    // sentinel for "no fd"
 
 // Layer 1: suspend until fd ready.
 void wait_readable(fd_t fd);
@@ -363,18 +360,13 @@ fd_t accept(fd_t listen_fd, sockaddr* addr, socklen_t* addrlen); // returned fd 
 int connect(fd_t fd, const sockaddr* addr, socklen_t addrlen); // 0=ok
 
 // Convenience: read until EOF.
-std::vector<uint8_t> read_all(fd_t fd, size_t chunk_size = 4096);
+std::vector<uint8_t> read_all(fd_t fd);
 
-// Convenience: write all bytes, throw csp::error on failure.
-void write_all(fd_t fd, const std::vector<uint8_t>& data);
-void write_all(fd_t fd, const void* data, size_t len);
-
-// Convenience: split fd output into LF-delimited strings.
-// Composes byte_reader | split_lines. Returns reader<string>. Owns fd.
-reader<std::string> lines(fd_t fd, size_t chunk_size = 4096);
+// Convenience: write all bytes, throw on failure.
+void write_all(fd_t fd, std::span<const uint8_t> data);
 
 // Utility.
-int set_nonblock(fd_t fd);  // returns 0 on success, -1 on error
+int set_nonblock(fd_t fd);
 
 // DNS (runs on blocking pool).
 // resolve_result { addrinfo_ptr info; int error; explicit operator bool(); const char* message(); }
@@ -389,9 +381,8 @@ namespace csp::file {
 // Read entire file into a vector (runs on blocking pool).
 std::vector<uint8_t> read(const std::string& path);
 
-// Write data to file (runs on blocking pool). Throws csp::error on failure.
-void write(const std::string& path, const std::vector<uint8_t>& data);
-void write(const std::string& path, const void* data, size_t len);
+// Write data to file (runs on blocking pool). Throws on failure.
+void write(const std::string& path, std::span<const uint8_t> data);
 }
 ```
 
@@ -405,9 +396,7 @@ auto r = csp::part::io::byte_reader(fd, 65536).spawn();   // custom size
 auto w = csp::part::io::byte_writer(fd).spawn();
 
 // lines: fd → reader<string> (composes byte_reader | split_lines).
-// Available as both csp::io::lines and csp::part::io::lines.
-auto lr = csp::io::lines(fd);              // csp::io namespace (preferred)
-auto lr = csp::part::io::lines(fd);       // same result
+auto lr = csp::part::io::lines(fd).spawn();
 
 // split_lines: byte stream → string stream (LF-delimited).
 auto lr = csp::part::io::split_lines.spawn(std::move(byte_reader));
@@ -418,65 +407,6 @@ auto fr = csp::part::io::fixed_frames(512).spawn(std::move(byte_reader));
 // Pipeline composition:
 auto lr = csp::part::io::byte_reader(fd) | csp::part::io::split_lines;
 auto line_reader = lr.spawn();
-```
-
-Pull-based source (🎯T17 Stage 1):
-```cpp
-namespace csp::io {
-
-// read_request: consumer asks for up to `value` bytes; source writes the
-// result (up to value bytes) into `reply`.
-using read_request = request<size_t, bytes>;
-
-// source: the consumer-facing handle (write end of a request channel).
-using source = writer<read_request>;
-
-// errno_error: thrown (via _throw) when io::read fails.
-class errno_error : public csp::error {
-public:
-    errno_error(const std::string& syscall, int err);
-    int err() const;
-};
-
-// fd_source: spawns an imp serving read_request values from a non-blocking fd.
-// The imp owns the fd and closes it on exit (EOF, error, or channel death).
-// Partial reads (< n bytes) are normal. Zero-byte requests throw
-// std::invalid_argument across the reply and exit.
-[[nodiscard]] source fd_source(fd_t fd);
-
-// Convenience: blocking call (uses writer::operator()).
-bytes source_read(source& s, size_t n);
-
-// Convenience: non-blocking — returns reply reader for use in prialt.
-reader<bytes> call_source(source& s, size_t n);
-
-} // namespace csp::io
-
-// Outcome model:
-// Success: reply >> chunk  → true; chunk contains 1..n bytes.
-// EOF:     reply >> chunk  → false (source imp exited; reply-writer dropped).
-// Error:   reply >> chunk  → throws errno_error (or other exception).
-
-// Sequential loop:
-auto s = csp::io::fd_source(fd);
-for (;;) {
-    auto reply = csp::io::call_source(s, 4096);
-    csp::bytes chunk;
-    if (!(reply >> chunk)) break;  // EOF
-    // use chunk
-}
-
-// prialt across two sources:
-auto r1 = csp::io::call_source(s1, 4096);
-auto r2 = csp::io::call_source(s2, 4096);
-csp::bytes b1, b2;
-switch (csp::prialt(r1 >> b1, r2 >> b2)) {
-case 0: /* b1 ready */ break;
-case 1: /* b2 ready */ break;
-}
-
-// Blocking sugar (writer::operator()):
-csp::bytes chunk = s(4096);   // throws on EOF/error
 ```
 
 ## Networking
@@ -524,14 +454,17 @@ struct request {
     std::string url;
     uint8_t version_major, version_minor;
     std::vector<std::pair<std::string, std::string>> headers;
-    bytes body;                    // accumulated body; empty until drain() called
+    bytes body;                    // buffered request body
     bool keep_alive;
-    reader<bytes> body_stream;     // stream: one chunk then closes; closed for no-body
     writer<response> respond;      // write exactly one response
 
+    // WebSocket / protocol upgrade: after writing a 101 response via
+    // respond, read the raw fd from this channel (ws::upgrade does this).
+    struct hijack_result { io::fd_t fd; bytes leftover; };
+    reader<hijack_result> hijack;
+
     std::string header(const std::string& name) const;  // case-insensitive
-    int64_t content_length() const;                      // -1 if absent
-    const bytes& drain();           // reads body_stream into body; idempotent
+    int64_t content_length() const;                       // -1 if absent
 };
 
 struct endpoint {
@@ -567,8 +500,6 @@ while (srv.endpoints >> ep) {
     csp::spawn([ep = std::move(ep)] {
         http::request req;
         while (ep.requests >> req) {
-            req.drain();               // buffer body (no-op for GET/HEAD)
-            // req.body is now available, or read req.body_stream directly
             std::string body = "Hello!";
             req.respond << http::response{200,
                 {{"Content-Type", "text/plain"}},
@@ -591,70 +522,71 @@ auto resp = http::post("http://example.com/api",
     {{"Content-Type", "application/json"}});
 ```
 
-See [docs/reference/http.md](../docs/reference/http.md) for full reference.
+## WebSocket
 
-## HTTP/2
-
-Channel-native HTTP/2 server. Not in the dist amalgamation — compile
-`src/http2.cc` + nghttp2 separately.
-
-Reuses `http::request` and `http::response` from `<csp/http.h>`.
-Each HTTP/2 stream arrives as one `http::request` with an embedded
-`writer<response> respond`.
+Channel-native WebSocket (RFC 6455). Not in the dist amalgamation —
+compile `src/ws.cc` + wslay separately.
 
 ```cpp
-#include <csp/http2.h>
+namespace csp::ws {
 
-namespace csp::http2 {
+enum class opcode : uint8_t { text=0x1, binary=0x2, close=0x8, ping=0x9, pong=0xA };
 
-struct endpoint {
-    reader<http::request> streams;  // one per HTTP/2 stream
-    std::string remote_addr;
+struct message {
+    opcode op   = opcode::binary;
+    bytes  data;
 };
 
-struct server {
-    reader<endpoint> endpoints;     // one per TCP connection
-    uint16_t port;
-    std::string local_addr;
+struct conn {
+    reader<message> recv;   // inbound text/binary messages
+    writer<message> send;   // outbound messages; drop to initiate Close
 };
 
-// Cleartext h2c (useful for testing and trusted networks):
-server serve(uint16_t port, serve_options opts = {});
+// Server-side: call inside an HTTP handler when Upgrade: websocket.
+// Validates headers, sends 101, hijacks fd. Throws csp::error on bad headers.
+conn upgrade(http::request& req);
 
-// TLS (CSP_TLS=1 required):
-server serve_tls(uint16_t port,
-    const char* cert_pem, const char* key_pem,
-    serve_options opts = {});
-}
+// Client-side: ws://host[:port]/path only (no wss://).
+// Throws csp::error on failure.
+conn connect(const std::string& url);
+
+} // namespace csp::ws
 ```
 
-Server usage:
+WebSocket upgrade (server):
 ```cpp
-auto srv = http2::serve(8080);
-http2::endpoint ep;
+auto srv = http::serve(8080);
+http::endpoint ep;
 while (srv.endpoints >> ep) {
     csp::spawn([ep = std::move(ep)] {
         http::request req;
-        while (ep.streams >> req) {
-            std::string body = "Hello from HTTP/2!";
-            req.respond << http::response{200,
-                {{"content-type", "text/plain"}},
-                bytes(body.begin(), body.end())};
+        while (ep.requests >> req) {
+            if (req.header("Upgrade") == "websocket") {
+                auto wsc = ws::upgrade(req);
+                ws::message msg;
+                while (wsc.recv >> msg) { wsc.send << std::move(msg); }
+            } else {
+                req.respond << http::response{200, {}, {}};
+            }
         }
     });
 }
 ```
 
-Key differences from HTTP/1.1:
-- `endpoint::streams` vs `endpoint::requests` (same types otherwise)
-- Header names are always lowercase (HTTP/2 requirement; nghttp2 enforces)
-- `request.version_major == 2`, `version_minor == 0`
-- `request.keep_alive == true` (streams are independent; connection lifetime
-  is separate from stream lifetime)
-- HPACK compression is transparent; no application action needed
-- Flow control maps to channel backpressure: slow handler → slow reads
+WebSocket client:
+```cpp
+auto wsc = ws::connect("ws://example.com/chat");
+ws::message out;
+out.op   = ws::opcode::text;
+out.data = bytes{/*...*/};
+wsc.send << std::move(out);
+ws::message in;
+if (wsc.recv >> in) { /* process reply */ }
+// Drop wsc.send to initiate close handshake.
+```
 
-See [docs/reference/http2.md](../docs/reference/http2.md) for full reference.
+Close handshake: drop `conn.send` → writer sends Close frame → peer echoes →
+`conn.recv` closes. Ping/pong handled automatically (not visible to user).
 
 ## Signals
 
@@ -877,7 +809,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `killswitch<T>()` | filter | Forward until keepalive dies |
 | `last<T>(n)` | filter | Buffer; emit last n on close |
 | `latch<T>()` | filter | Serve most recent value on demand |
-| `io::lines(fd)` | function | fd → `reader<string>` via `byte_reader \| split_lines`; also `csp::io::lines(fd)` |
+| `io::lines(fd)` | producer | fd → `reader<string>` via `byte_reader \| split_lines` |
 | `map<In,Out>(f)` | filter | Transform each element |
 | `merge<T>(readers...)` | producer | Non-deterministic merge |
 | `mux(reader<Ts>...)` | producer | Heterogeneous merge into `variant<Ts...>` |

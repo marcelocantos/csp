@@ -35,6 +35,12 @@ state.operation(args) ─┤guard├──➤ effects; result
 |---|---|---|
 | [TLS](tls.md) | `csp.h` | `tls::context`, `tls::conn`, `tls::error` (cancel-aware TLS 1.3 via PicoTLS, `#ifdef CSP_TLS`) |
 
+## Networking
+
+| Document | Header | Contents |
+|---|---|---|
+| [WebSocket](websocket.md) | `csp.h` | `ws::upgrade`, `ws::connect`, `ws::conn`, `ws::message`, `ws::opcode` |
+
 ## Supervision
 
 | Document | Header | Contents |

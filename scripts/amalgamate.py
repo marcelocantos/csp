@@ -425,6 +425,10 @@ def main():
     # separately.
     http_file = src_dir / 'http.cc'
     http2_file = src_dir / 'http2.cc'
+    # ws.cc depends on vendored wslay and is excluded from the dist
+    # amalgamation.  Users who need WebSocket must compile ws.cc + wslay
+    # separately.
+    ws_file = src_dir / 'ws.cc'
     src_files = sorted(
         p for p in (list(src_dir.glob('*.cc')) + list(src_dir.glob('*.cpp')))
         if p.resolve() not in {
@@ -432,6 +436,8 @@ def main():
             http_file.resolve(),
             http2_file.resolve(),
         }
+        if p.resolve() not in {globals_file.resolve(), http_file.resolve(),
+                               ws_file.resolve()}
     )
     print('csp.cpp:')
     amalgamate_sources(

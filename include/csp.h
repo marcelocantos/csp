@@ -109,3 +109,4 @@
 #include "csp/timer.h"
 #include "csp/tls.h"
 #include "csp/win/signal.h"
+#include "csp/ws.h"
