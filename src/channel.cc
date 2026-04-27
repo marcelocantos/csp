@@ -233,8 +233,9 @@ namespace {
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
             if (current_imp()->stk_) {
-                StackPool::instance().maybe_shrink(
-                    current_imp()->stk_, CSP_FRAME_ADDRESS());
+                auto* fp = CSP_FRAME_ADDRESS();
+                check_stack_overflow(current_imp(), fp);
+                StackPool::instance().maybe_shrink(current_imp()->stk_, fp);
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);

@@ -517,8 +517,9 @@ namespace {
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
             if (current_imp()->stk_) {
-                StackPool::instance().maybe_shrink(
-                    current_imp()->stk_, CSP_FRAME_ADDRESS());
+                auto* fp = CSP_FRAME_ADDRESS();
+                check_stack_overflow(current_imp(), fp);
+                StackPool::instance().maybe_shrink(current_imp()->stk_, fp);
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -1447,8 +1448,9 @@ namespace csp {
             }
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
-                StackPool::instance().maybe_shrink(
-                    self->stk_, CSP_FRAME_ADDRESS());
+                auto* fp = CSP_FRAME_ADDRESS();
+                check_stack_overflow(self, fp);
+                StackPool::instance().maybe_shrink(self->stk_, fp);
             }
             Imp* target;
             {
@@ -1555,8 +1557,9 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
     auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
     if (self->stk_) {
-        StackPool::instance().maybe_shrink(
-            self->stk_, CSP_FRAME_ADDRESS());
+        auto* fp = CSP_FRAME_ADDRESS();
+        check_stack_overflow(self, fp);
+        StackPool::instance().maybe_shrink(self->stk_, fp);
     }
     try {
 #if CSP_USE_VM_STACKS
@@ -1597,6 +1600,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto ctx = make_fcontext(imp, usable_size, start);
 #endif
         new (imp) Imp(ctx, region);
+        imp->stack_overflow_limit_ = region.overflow_limit;
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
         auto region = StackPool::instance().allocate();
@@ -5234,8 +5238,10 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
 #endif
 
 /* stack_pool.cc */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
 
-#if CSP_USE_VM_STACKS
+#if CSP_USE_VM_STACKS || CSP_USE_ARENA_STACKS
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -5256,7 +5262,7 @@ StackPool& StackPool::instance() {
 
 StackPool::StackPool()
     : page_size_(
-#if CSP_USE_VM_STACKS
+#if CSP_USE_VM_STACKS || CSP_USE_ARENA_STACKS
 #ifdef _WIN32
         [] {
             SYSTEM_INFO si;
@@ -5270,12 +5276,98 @@ StackPool::StackPool()
         4096
 #endif
     )
-#if CSP_USE_VM_STACKS
+#if CSP_USE_VM_STACKS && !CSP_USE_ARENA_STACKS
     , stack_size_(kDefaultStackSize)
 #endif
 {}
 
-#if CSP_USE_VM_STACKS
+// ============================================================
+// Arena-based allocation (Unix non-sanitizer non-Windows)
+// ============================================================
+#if CSP_USE_ARENA_STACKS
+
+StackRegion StackPool::arena_alloc() {
+    std::lock_guard<std::mutex> lk(mu_);
+
+    // Serve from free list first.
+    if (!free_list_.empty()) {
+        auto region = free_list_.back();
+        free_list_.pop_back();
+        return region;
+    }
+
+    // Allocate a new slab and carve all slots into the free list.
+    int flags = MAP_ANON | MAP_PRIVATE;
+#ifdef MAP_NORESERVE
+    flags |= MAP_NORESERVE;
+#endif
+    void* base = mmap(nullptr, kArenaSlabSize, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (base == MAP_FAILED) {
+        throw std::bad_alloc();
+    }
+
+    arena_slabs_.push_back({base, kArenaSlabSize});
+
+    // Carve the slab into slot StackRegions.
+    // Return slot 0 directly; push slots 1..N-1 onto the free list.
+    auto* p = static_cast<char*>(base);
+    StackRegion first{};
+    for (size_t i = 0; i < kArenaSlotsPerSlab; ++i) {
+        StackRegion r;
+        r.base = p;
+        r.total_size = kArenaSlotSize;
+        r.overflow_limit = p + kArenaSlotGuard;
+        p += kArenaSlotSize;
+        if (i == 0) {
+            first = r;
+        } else {
+            free_list_.push_back(r);
+        }
+    }
+    return first;
+}
+
+void StackPool::arena_free(StackRegion region) {
+    // Hint to the kernel that the usable pages can be reclaimed.
+    char* usable = static_cast<char*>(region.base) + kArenaSlotGuard;
+    size_t usable_len = region.total_size - kArenaSlotGuard;
+#ifdef MADV_FREE
+    madvise(usable, usable_len, MADV_FREE);
+#else
+    madvise(usable, usable_len, MADV_DONTNEED);
+#endif
+
+    std::lock_guard<std::mutex> lk(mu_);
+    free_list_.push_back(region);
+}
+
+StackRegion StackPool::allocate() {
+    return arena_alloc();
+}
+
+void StackPool::release(StackRegion region) {
+    arena_free(region);
+}
+
+void StackPool::maybe_shrink(StackRegion const&, void*) {
+    // No-op for arena stacks: the entire slab is one VMA; we cannot reclaim
+    // individual slot pages without splitting the mapping. The software
+    // overflow limit (overflow_limit) replaces guard-page overflow detection.
+}
+
+void StackPool::drain() {
+    std::lock_guard<std::mutex> lk(mu_);
+    free_list_.clear();
+    for (auto& slab : arena_slabs_) {
+        munmap(slab.base, slab.size);
+    }
+    arena_slabs_.clear();
+}
+
+// ============================================================
+// mmap per-stack — Windows only (non-sanitizer)
+// ============================================================
+#elif CSP_USE_VM_STACKS
 
 #ifdef _WIN32
 
@@ -5320,7 +5412,7 @@ static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
         // switch; if a demand-committed page extends below the current
         // StackLimit, update the TEB so MSVC's C++ exception dispatch
         // (which probes the stack using StackLimit) doesn't fault on
-        // uncommitted pages — a nested ACCESS_VIOLATION during dispatch
+        // uncommitted pages -- a nested ACCESS_VIOLATION during dispatch
         // terminates the process without VEH notification.
         auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
         if (page_base < tib->StackLimit) {
@@ -5350,7 +5442,7 @@ StackRegion StackPool::mmap_new() {
         throw std::bad_alloc();
     }
 
-    // Commit guard page at the bottom (PAGE_NOACCESS after commit — use
+    // Commit guard page at the bottom (PAGE_NOACCESS after commit -- use
     // PAGE_READWRITE then protect, since MEM_COMMIT requires valid protection).
     void* guard = VirtualAlloc(base, page_size_,
                                MEM_COMMIT, PAGE_READWRITE);
@@ -5373,7 +5465,7 @@ StackRegion StackPool::mmap_new() {
         throw std::bad_alloc();
     }
 
-    return {base, stack_size_};
+    return {base, stack_size_, nullptr};
 }
 
 void StackPool::munmap_region(StackRegion region) {
@@ -5415,11 +5507,11 @@ void StackPool::release(StackRegion region) {
 void StackPool::maybe_shrink(StackRegion const&, void*) {
     // No-op on Windows.  Decommitting pages (MEM_DECOMMIT) and raising
     // StackLimit is unsafe because MSVC's C++ exception dispatch
-    // (RtlDispatchException → RtlVirtualUnwind) runs on the current
+    // (RtlDispatchException -> RtlVirtualUnwind) runs on the current
     // stack.  If the dispatch needs more stack than the headroom between
     // RSP and StackLimit, it faults on uncommitted pages.  That nested
     // ACCESS_VIOLATION during exception dispatch is a double-fault that
-    // terminates the process without VEH notification — our
+    // terminates the process without VEH notification -- our
     // demand-commit handler never gets a chance to commit the page.
     //
     // Pages stay committed until the stack is released to the pool,
@@ -5435,9 +5527,16 @@ void StackPool::drain() {
     free_list_.clear();
 }
 
-#else // !_WIN32
+#else // !_WIN32: Unix per-stack mmap (unreachable: CSP_USE_ARENA_STACKS always
+      // takes priority on non-Windows Unix non-sanitizer builds)
 
-// --- Unix: mmap-based stack regions ---
+static int madv_free_flag() {
+#ifdef MADV_FREE
+    return MADV_FREE;
+#else
+    return MADV_DONTNEED;
+#endif
+}
 
 StackRegion StackPool::mmap_new() {
     int flags = MAP_ANON | MAP_PRIVATE;
@@ -5448,24 +5547,15 @@ StackRegion StackPool::mmap_new() {
     if (base == MAP_FAILED) {
         throw std::bad_alloc();
     }
-    // Guard page at the bottom (lowest address).
     if (mprotect(base, page_size_, PROT_NONE) != 0) {
         munmap(base, stack_size_);
         throw std::bad_alloc();
     }
-    return {base, stack_size_};
+    return {base, stack_size_, nullptr};
 }
 
 void StackPool::munmap_region(StackRegion region) {
     munmap(region.base, region.total_size);
-}
-
-static int madv_free_flag() {
-#ifdef MADV_FREE
-    return MADV_FREE;
-#else
-    return MADV_DONTNEED;
-#endif
 }
 
 StackRegion StackPool::allocate() {
@@ -5481,9 +5571,6 @@ StackRegion StackPool::allocate() {
 }
 
 void StackPool::release(StackRegion region) {
-    // MADV_FREE the usable area (above guard page). The kernel reclaims
-    // these pages lazily — if they're reused before reclamation, no
-    // re-fault cost.
     char* usable = static_cast<char*>(region.base) + page_size_;
     size_t usable_len = region.total_size - page_size_;
     madvise(usable, usable_len, madv_free_flag());
@@ -5498,10 +5585,8 @@ void StackPool::release(StackRegion region) {
 
 void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
     char* usable = static_cast<char*>(region.base) + page_size_;
-    // Round SP down to page boundary.
     auto sp_val = reinterpret_cast<uintptr_t>(current_sp);
     char* sp_page = reinterpret_cast<char*>(sp_val & ~(page_size_ - 1));
-    // Keep 2 pages of headroom below SP to avoid thrashing.
     char* shrink_to = sp_page - 2 * page_size_;
     if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
         size_t reclaimable = static_cast<size_t>(shrink_to - usable);
@@ -5519,26 +5604,17 @@ void StackPool::drain() {
 
 #endif // _WIN32
 
-#else // !CSP_USE_VM_STACKS — sanitizer fallback
+#else // !CSP_USE_ARENA_STACKS && !CSP_USE_VM_STACKS -- sanitizer heap fallback
 
 struct alignas(16) StackSlotAlloc { char c[16]; };
 
-StackRegion StackPool::mmap_new() {
-    // Not used under sanitizers.
-    return {};
-}
-
-void StackPool::munmap_region(StackRegion region) {
-    delete[] static_cast<StackSlotAlloc*>(region.base);
-}
-
 StackRegion StackPool::allocate() {
-    // Under sanitizers: use the fixed stack size from Imp.
+    // Under sanitizers: heap-allocate stacks.
     // 128KB under sanitizers = 8192 StackSlotAlloc (16 bytes each).
     static constexpr size_t kSanitStack = 128 << 10;
     static constexpr size_t S = kSanitStack / 16;
     auto* stk = new StackSlotAlloc[S];
-    return {stk, kSanitStack};
+    return {stk, kSanitStack, nullptr};
 }
 
 void StackPool::release(StackRegion region) {
@@ -5553,7 +5629,7 @@ void StackPool::drain() {
     // Nothing pooled under sanitizers.
 }
 
-#endif // CSP_USE_VM_STACKS
+#endif // CSP_USE_ARENA_STACKS / CSP_USE_VM_STACKS
 
 } // namespace csp::detail
 
