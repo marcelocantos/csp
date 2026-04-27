@@ -7,3 +7,6 @@
 [submodule "vendor/github.com/nghttp2/nghttp2"]
 	path = vendor/github.com/nghttp2/nghttp2
 	url = https://github.com/nghttp2/nghttp2.git
+[submodule "vendor/github.com/ngtcp2/nghttp3"]
+	path = vendor/github.com/ngtcp2/nghttp3
+	url = https://github.com/ngtcp2/nghttp3.git
