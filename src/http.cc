@@ -209,6 +209,13 @@ int on_message_complete(llhttp_t* p) {
 //
 // Uses direct I/O on the fd rather than net::connection channels.
 // This avoids inheriting cancel scopes from the accept loop.
+//
+// Body streaming design: the request body is fully buffered before the
+// request is delivered.  The body_stream channel is pre-populated with
+// a single chunk containing the complete body, then closed.  Handlers
+// that only need the full body call req.drain() or use req.body directly;
+// handlers that prefer the streaming interface can read body_stream.
+// True chunk-by-chunk streaming (without buffering) requires 🎯T17.
 
 void handle_connection(io::fd_t fd, std::string remote_addr,
                        writer<endpoint> ep_out) {
@@ -255,6 +262,36 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
             auto err = llhttp_execute(&parser, data, len);
 
             if (state.message_complete) {
+                // Body streaming design:
+                //
+                // The request body is fully accumulated in state.body before
+                // delivery (llhttp buffers it via on_body callbacks).
+                // body_stream is a reader<bytes> backed by a spawn_producer
+                // imp that sends the body as one chunk and exits.
+                //
+                // Lifecycle: when the handler receives the request,
+                // handle_connection blocks on resp_ch.r >> resp.  The
+                // producer imp is then free to run on any OS thread and
+                // deliver the body to whoever reads body_stream.  No more
+                // than 3 imps (handle_connection + producer + handler) are
+                // active at once, but only 2 need CPU simultaneously
+                // (producer exits as soon as the handler receives the chunk).
+                //
+                // True chunk-by-chunk streaming (without buffering) requires
+                // 🎯T17.
+                reader<bytes> body_reader;
+                if (state.body.empty()) {
+                    body_reader = spawn_producer<bytes>(
+                        [](writer<bytes>) {
+                            // No body: exit immediately, closing the stream.
+                        });
+                } else {
+                    body_reader = spawn_producer<bytes>(
+                        [body = std::move(state.body)](writer<bytes> w) mutable {
+                            w << std::move(body);
+                        });
+                }
+
                 chan<response> resp_ch;
 
                 request req;
@@ -263,8 +300,8 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                 req.version_major = state.version_major;
                 req.version_minor = state.version_minor;
                 req.headers = std::move(state.headers);
-                req.body = std::move(state.body);
                 req.keep_alive = state.keep_alive;
+                req.body_stream = std::move(body_reader);
                 req.respond = std::move(resp_ch.w);
 
                 if (!(req_writer << std::move(req))) goto done;
@@ -297,7 +334,7 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
             } else if (err != HPE_OK) {
                 response bad{400, {}, {}};
                 auto wire = serialize_response(bad);
-                io::write(fd, wire.data(), wire.size());
+                (void)io::write(fd, wire.data(), wire.size());
                 goto done;
 
             } else {
@@ -550,6 +587,14 @@ int64_t request::content_length() const {
     auto v = header("Content-Length");
     if (v.empty()) return -1;
     return std::stoll(v);
+}
+
+const bytes& request::drain() {
+    bytes chunk;
+    while (body_stream >> chunk) {
+        body.insert(body.end(), chunk.begin(), chunk.end());
+    }
+    return body;
 }
 
 // --- serve ---

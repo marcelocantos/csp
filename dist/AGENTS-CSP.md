@@ -524,12 +524,14 @@ struct request {
     std::string url;
     uint8_t version_major, version_minor;
     std::vector<std::pair<std::string, std::string>> headers;
-    bytes body;                    // buffered request body
+    bytes body;                    // accumulated body; empty until drain() called
     bool keep_alive;
+    reader<bytes> body_stream;     // stream: one chunk then closes; closed for no-body
     writer<response> respond;      // write exactly one response
 
     std::string header(const std::string& name) const;  // case-insensitive
-    int64_t content_length() const;                       // -1 if absent
+    int64_t content_length() const;                      // -1 if absent
+    const bytes& drain();           // reads body_stream into body; idempotent
 };
 
 struct endpoint {
@@ -565,6 +567,8 @@ while (srv.endpoints >> ep) {
     csp::spawn([ep = std::move(ep)] {
         http::request req;
         while (ep.requests >> req) {
+            req.drain();               // buffer body (no-op for GET/HEAD)
+            // req.body is now available, or read req.body_stream directly
             std::string body = "Hello!";
             req.respond << http::response{200,
                 {{"Content-Type", "text/plain"}},
@@ -586,6 +590,8 @@ auto resp = http::post("http://example.com/api",
     bytes(payload.begin(), payload.end()),
     {{"Content-Type", "application/json"}});
 ```
+
+See [docs/reference/http.md](../docs/reference/http.md) for full reference.
 
 ## HTTP/2
 
