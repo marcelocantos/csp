@@ -423,18 +423,23 @@ def main():
     # http2.cc depends on vendored nghttp2 and is excluded from the dist
     # amalgamation.  Users who need HTTP/2 must compile http2.cc + nghttp2
     # separately.
+    # http3.cc depends on vendored nghttp3 (and ngtcp2 via T3.8) and is
+    # excluded from the dist amalgamation.  Users who need HTTP/3 must compile
+    # http3.cc + nghttp3 + ngtcp2 separately.
     http_file = src_dir / 'http.cc'
     http2_file = src_dir / 'http2.cc'
     # ws.cc depends on vendored wslay and is excluded from the dist
     # amalgamation.  Users who need WebSocket must compile ws.cc + wslay
     # separately.
     ws_file = src_dir / 'ws.cc'
+    http3_file = src_dir / 'http3.cc'
     src_files = sorted(
         p for p in (list(src_dir.glob('*.cc')) + list(src_dir.glob('*.cpp')))
         if p.resolve() not in {
             globals_file.resolve(),
             http_file.resolve(),
             http2_file.resolve(),
+            http3_file.resolve(),
         }
         if p.resolve() not in {globals_file.resolve(), http_file.resolve(),
                                ws_file.resolve()}
