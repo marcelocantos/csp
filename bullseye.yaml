@@ -258,13 +258,14 @@ targets:
     achieved: 2026-04-08
   T3.3:
     name: High-density stack scaling supports 100K+ imps
-    status: identified
+    status: converging
     value: 3.0
     cost: 8.0
     acceptance:
     - 100K+ concurrent imps without kernel memory pressure or `vm.max_map_count` issues
     - Software overflow detection at API checkpoints or arena-based allocation
     - Existing tests still pass (no regression)
+    context: 'Arena-based stack allocation implemented and passing 699 tests. One slab (256 MB mmap) covers 4096 × 64 KB slots; 100K imps requires ~25 VMAs vs ~100K with per-imp mmap. Software overflow detection (check_stack_overflow) added at all CSP suspend checkpoints. StackDensity-10K passes in CI; StackDensity-100K runs in 0.3s on M4 Max. Remaining gaps: Linux CI validation (vm.max_map_count), T3.4 stack analysis integration for variable-slot sizing, dist build CI verification.'
     origin: manual
     discovered: 2026-03-09
   T3.4:
