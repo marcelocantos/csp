@@ -262,7 +262,7 @@ None.
 
 ## 2026-04-27 — /release v0.11.0
 
-- **Commit**: pending
+- **Commit**: `3771f64`
 - **Outcome**: Released v0.11.0. Headline changes: HTTP/2 server
   (🎯T3.7 — nghttp2, h2c + h2-via-ALPN); WebSocket support (🎯T3.5 —
   wslay, `ws://` server-upgrade and client-connect, deadlock-fixed
