@@ -86,6 +86,7 @@ TEST_CASE("serve---post-with-body") {
                 CHECK(req.method == http::method::POST);
                 CHECK(req.url == "/echo");
 
+                req.drain();
                 std::string body_str(req.body.begin(), req.body.end());
                 CHECK(body_str == "request body data");
 
@@ -260,6 +261,72 @@ TEST_CASE("serve---method-name") {
     CHECK(std::string(http::method_name(http::method::DELETE_)) == "DELETE");
 }
 
+TEST_CASE("serve---streaming-body") {
+    // Verifies that body_stream delivers the request body as a readable
+    // stream without the handler calling drain().
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http::serve(0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                CHECK(req.method == http::method::POST);
+                CHECK(req.url == "/stream");
+
+                // Read body_stream directly without calling drain().
+                std::string accumulated;
+                bytes chunk;
+                while (req.body_stream >> chunk) {
+                    accumulated.append(chunk.begin(), chunk.end());
+                }
+                CHECK(accumulated == "streamed body data");
+
+                bytes resp_body(accumulated.begin(), accumulated.end());
+                req.respond << http::response{
+                    200,
+                    {{"Content-Type", "application/octet-stream"}},
+                    std::move(resp_body)};
+            }
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto conn = net::dial("127.0.0.1", port);
+
+        std::string body_str = "streamed body data";
+        std::string req =
+            "POST /stream HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Content-Length: " + std::to_string(body_str.size()) + "\r\n"
+            "Connection: close\r\n"
+            "\r\n" + body_str;
+        bytes req_bytes(req.begin(), req.end());
+        conn.output << req_bytes;
+
+        std::string response;
+        bytes chunk;
+        while (conn.input >> chunk) {
+            response.append(chunk.begin(), chunk.end());
+        }
+
+        CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
+        CHECK(response.find("streamed body data") != std::string::npos);
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
 // --- Client tests ---
 
 TEST_CASE("fetch---basic-get") {
@@ -324,6 +391,7 @@ TEST_CASE("fetch---post-with-body") {
                 CHECK(req.method == http::method::POST);
                 CHECK(req.url == "/echo");
 
+                req.drain();
                 std::string body_str(req.body.begin(), req.body.end());
                 CHECK(body_str == "hello from client");
 

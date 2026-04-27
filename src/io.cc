@@ -144,8 +144,9 @@ fd_t accept(fd_t listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
             set_nonblock(fd);
             return fd;
         }
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        int err = errno;
+        if (err == EINTR) continue;
+        if (err == EAGAIN || err == EWOULDBLOCK) {
             wait_readable(listen_fd);
             continue;
         }

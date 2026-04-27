@@ -25,6 +25,7 @@ state.operation(args) ─┤guard├──➤ effects; result
 | [Timers](timers.md) | `csp.h` | `sleep`, `sleep_until`, `after`, `tick` |
 | [I/O](io.md) | `csp.h` | `fd_t`, `wait_readable`, `wait_writable`, `read`, `write`, `accept`, `connect`, `resolve`, `read_all`, `write_all`, `lines`; `file::read`, `file::write` |
 | [Networking](net.md) | `csp.h` | `net::connection`, `net::listen`, `net::dial` (TCP) |
+| [HTTP/1.1](http.md) | `csp/http.h` | `http::serve`, `http::request`, `http::response`, `http::endpoint`, `http::fetch`, `http::get`, `http::post` |
 | [Signals](signals.md) | `csp.h` | `signal::notify` (self-pipe trick, reactor-driven) |
 | [Blocking](blocking.md) | `csp.h` | `blocking(fn)` (offload to OS thread pool) |
 
@@ -33,6 +34,12 @@ state.operation(args) ─┤guard├──➤ effects; result
 | Document | Header | Contents |
 |---|---|---|
 | [TLS](tls.md) | `csp.h` | `tls::context`, `tls::conn`, `tls::error` (cancel-aware TLS 1.3 via PicoTLS, `#ifdef CSP_TLS`) |
+
+## Networking
+
+| Document | Header | Contents |
+|---|---|---|
+| [WebSocket](websocket.md) | `csp.h` | `ws::upgrade`, `ws::connect`, `ws::conn`, `ws::message`, `ws::opcode` |
 
 ## Supervision
 

@@ -517,8 +517,9 @@ namespace {
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
             // Reclaim unused stack pages at this API boundary.
             if (current_imp()->stk_) {
-                StackPool::instance().maybe_shrink(
-                    current_imp()->stk_, CSP_FRAME_ADDRESS());
+                auto* fp = CSP_FRAME_ADDRESS();
+                check_stack_overflow(current_imp(), fp);
+                StackPool::instance().maybe_shrink(current_imp()->stk_, fp);
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -1447,8 +1448,9 @@ namespace csp {
             }
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
-                StackPool::instance().maybe_shrink(
-                    self->stk_, CSP_FRAME_ADDRESS());
+                auto* fp = CSP_FRAME_ADDRESS();
+                check_stack_overflow(self, fp);
+                StackPool::instance().maybe_shrink(self->stk_, fp);
             }
             Imp* target;
             {
@@ -1555,8 +1557,9 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
     auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
     if (self->stk_) {
-        StackPool::instance().maybe_shrink(
-            self->stk_, CSP_FRAME_ADDRESS());
+        auto* fp = CSP_FRAME_ADDRESS();
+        check_stack_overflow(self, fp);
+        StackPool::instance().maybe_shrink(self->stk_, fp);
     }
     try {
 #if CSP_USE_VM_STACKS
@@ -1597,6 +1600,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto ctx = make_fcontext(imp, usable_size, start);
 #endif
         new (imp) Imp(ctx, region);
+        imp->stack_overflow_limit_ = region.overflow_limit;
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
         auto region = StackPool::instance().allocate();
@@ -2210,8 +2214,9 @@ fd_t accept(fd_t listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
             set_nonblock(fd);
             return fd;
         }
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        int err = errno;
+        if (err == EINTR) continue;
+        if (err == EAGAIN || err == EWOULDBLOCK) {
             wait_readable(listen_fd);
             continue;
         }
@@ -4414,10 +4419,18 @@ public:
 // --- Expression tree (transient IR) ---
 
 struct expr {
-    enum kind_t { CONST, MAX, ADD, CALL_DIRECT, CALL_INDIRECT, BUDGET };
+    enum kind_t {
+        CONST,
+        MAX,
+        ADD,
+        CALL_DIRECT,             // direct call (resolved at walk time)
+        CALL_INDIRECT,           // indirect call through data offset
+        BUDGET,                  // conservative fallback budget
+        CALL_DIRECT_WITH_DATA,   // direct call forwarding a data sub-pointer
+    };
     kind_t kind;
-    size_t value = 0;              // CONST, BUDGET: depth; CALL_INDIRECT: offset
-    const void* target = nullptr;  // CALL_DIRECT: callee address
+    size_t value = 0;              // CONST, BUDGET: depth; CALL_INDIRECT/CALL_DIRECT_WITH_DATA: offset
+    const void* target = nullptr;  // CALL_DIRECT, CALL_DIRECT_WITH_DATA: callee address
     int refcount_ = 0;
     expr_ptr left, right;
 
@@ -4459,6 +4472,15 @@ struct expr {
         e->value = offset;
         return expr_ptr(e);
     }
+    // Direct call that also forwards a data sub-pointer (offset into current data)
+    // as the callee's data argument for interprocedural context propagation.
+    static expr_ptr make_call_direct_with_data(const void* addr, size_t data_off) {
+        auto* e = new expr();
+        e->kind = CALL_DIRECT_WITH_DATA;
+        e->target = addr;
+        e->value = data_off;
+        return expr_ptr(e);
+    }
 };
 
 void expr_ptr::addref() { if (p_) p_->refcount_++; }
@@ -4477,7 +4499,8 @@ bool is_pure(const expr& root) {
         case expr::CONST: break;
         case expr::BUDGET:
         case expr::CALL_INDIRECT:
-        case expr::CALL_DIRECT: return false;
+        case expr::CALL_DIRECT:
+        case expr::CALL_DIRECT_WITH_DATA: return false;
         case expr::MAX:
         case expr::ADD:
             stack.push_back(e->left.get());
@@ -4526,12 +4549,13 @@ size_t eval_pure(const expr& root) {
 // --- Bytecode VM ---
 
 enum opcode : uint8_t {
-    OP_PUSH           = 0x01,
-    OP_MAX            = 0x02,
-    OP_ADD            = 0x03,
-    OP_CALL_DIRECT    = 0x04,
-    OP_CALL_INDIRECT  = 0x05,
-    OP_BUDGET         = 0x06,
+    OP_PUSH                  = 0x01,
+    OP_MAX                   = 0x02,
+    OP_ADD                   = 0x03,
+    OP_CALL_DIRECT           = 0x04,
+    OP_CALL_INDIRECT         = 0x05,
+    OP_BUDGET                = 0x06,
+    OP_CALL_DIRECT_WITH_DATA = 0x07,  // <target_addr:8> <data_offset:8>
 };
 
 void emit_u64(std::vector<uint8_t>& prog, uint64_t v) {
@@ -4580,6 +4604,12 @@ void compile(const expr& root, std::vector<uint8_t>& prog) {
         case expr::CALL_INDIRECT:
             prog.push_back(OP_CALL_INDIRECT);
             emit_u64(prog, f.e->value);
+            stack.pop_back();
+            break;
+        case expr::CALL_DIRECT_WITH_DATA:
+            prog.push_back(OP_CALL_DIRECT_WITH_DATA);
+            emit_ptr(prog, f.e->target);
+            emit_u64(prog, f.e->value);  // data_offset
             stack.pop_back();
             break;
         case expr::MAX:
@@ -4651,9 +4681,18 @@ inline int64_t sign_extend(uint32_t val, int bits) {
 // --- Register tracking ---
 
 struct reg_state {
-    enum origin_t { UNKNOWN, DATA_OFFSET };
+    enum origin_t {
+        UNKNOWN,
+        DATA_OFFSET,   // derived from X0 (data pointer) at a known byte offset
+        PC_RELATIVE,   // resolved ADRP+ADD absolute address (safe to read)
+        CONST,         // known integer constant (enables branch pruning)
+    };
     origin_t origin = UNKNOWN;
-    size_t offset = 0;
+    union {
+        size_t offset;        // DATA_OFFSET: byte offset into data struct
+        const void* address;  // PC_RELATIVE: resolved virtual address
+        int64_t const_value;  // CONST: known integer value
+    } u = {};
 };
 
 struct analysis_state {
@@ -4776,8 +4815,12 @@ std::vector<expr_ptr> walk(
 
                 expr_ptr callee;
                 if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                    callee = expr::make_call_indirect(state.regs[rn].offset);
+                    callee = expr::make_call_indirect(state.regs[rn].u.offset);
                 } else {
+                    // PC_RELATIVE BR targets (GOT/PLT stubs) are deliberately
+                    // not followed: dereferencing a GOT entry and walking the
+                    // resulting external symbol risks walking into unmapped stubs
+                    // or system libraries, causing SIGSEGV.  Fall back to budget.
                     callee = expr::make_budget(opts.indirect_call_budget);
                 }
 
@@ -4795,15 +4838,29 @@ std::vector<expr_ptr> walk(
                 int64_t imm26 = sign_extend(inst & 0x3FFFFFF, 26);
                 const void* target = state.pc + imm26;
 
-                // Always emit CALL_DIRECT — callee depth is resolved
-                // at eval time by the iterative bytecode evaluator.
-                auto callee = over_budget
-                    ? expr::make_budget(opts.indirect_call_budget)
-                    : expr::make_call_direct(target);
+                expr_ptr callee;
+                if (over_budget) {
+                    callee = expr::make_budget(opts.indirect_call_budget);
+                } else if (!over_budget &&
+                           state.regs[0].origin == reg_state::DATA_OFFSET) {
+                    // X0 carries a data-derived pointer — forward data context
+                    // to the callee so it can resolve its own indirect calls.
+                    callee = expr::make_call_direct_with_data(
+                        target, state.regs[0].u.offset);
+                } else {
+                    callee = expr::make_call_direct(target);
+                }
 
                 auto call_expr = expr::make_add(expr::make_const(cur_depth),
                                                 std::move(callee));
                 result = expr::make_max(std::move(result), std::move(call_expr));
+
+                // After a BL, the callee may clobber X0-X7 (caller-saved
+                // argument/result registers per AAPCS64). Mark them unknown so
+                // subsequent loads don't misuse stale provenance.
+                for (int i = 0; i < 8; ++i) {
+                    state.regs[i].origin = reg_state::UNKNOWN;
+                }
 
                 state.pc++;
                 continue;
@@ -4815,14 +4872,24 @@ std::vector<expr_ptr> walk(
 
                 expr_ptr callee;
                 if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                    callee = expr::make_call_indirect(state.regs[rn].offset);
+                    callee = over_budget
+                        ? expr::make_budget(opts.indirect_call_budget)
+                        : expr::make_call_indirect(state.regs[rn].u.offset);
                 } else {
+                    // PC_RELATIVE BLR (GOT/PLT dispatch) is not followed to avoid
+                    // walking into external stubs or system libraries which could
+                    // fault or produce meaningless depth estimates.
                     callee = expr::make_budget(opts.indirect_call_budget);
                 }
 
                 auto call_expr = expr::make_add(expr::make_const(cur_depth),
                                                 std::move(callee));
                 result = expr::make_max(std::move(result), std::move(call_expr));
+
+                // BLR clobbers X0-X7 (caller-saved).
+                for (int i = 0; i < 8; ++i) {
+                    state.regs[i].origin = reg_state::UNKNOWN;
+                }
 
                 state.pc++;
                 continue;
@@ -4868,8 +4935,20 @@ std::vector<expr_ptr> walk(
                     state.pc++;
                     continue;
                 }
+                bool is_cbnz = (inst & 0x01000000) != 0;
+                uint32_t rn = inst & 0x1F;
                 int64_t imm19 = sign_extend((inst >> 5) & 0x7FFFF, 19);
                 const uint32_t* target = state.pc + imm19;
+
+                // Condition evaluation: if rn has a known constant value,
+                // follow only the branch that would be taken.
+                if (rn < 31 && state.regs[rn].origin == reg_state::CONST) {
+                    bool taken = is_cbnz
+                        ? (state.regs[rn].u.const_value != 0)
+                        : (state.regs[rn].u.const_value == 0);
+                    state.pc = taken ? target : state.pc + 1;
+                    continue;
+                }
 
                 path_results.push_back(std::move(result));
 
@@ -4891,8 +4970,19 @@ std::vector<expr_ptr> walk(
                     state.pc++;
                     continue;
                 }
+                bool is_tbnz = (inst & 0x01000000) != 0;
+                uint32_t rn = inst & 0x1F;
+                uint32_t bit_pos = (inst >> 19) & 0x3F;  // b5:b40
                 int64_t imm14 = sign_extend((inst >> 5) & 0x3FFF, 14);
                 const uint32_t* target = state.pc + imm14;
+
+                // Condition evaluation with known constants.
+                if (rn < 31 && state.regs[rn].origin == reg_state::CONST) {
+                    int64_t bit = (state.regs[rn].u.const_value >> bit_pos) & 1;
+                    bool taken = is_tbnz ? (bit != 0) : (bit == 0);
+                    state.pc = taken ? target : state.pc + 1;
+                    continue;
+                }
 
                 path_results.push_back(std::move(result));
 
@@ -4913,7 +5003,7 @@ std::vector<expr_ptr> walk(
                 break;
             }
 
-            // --- Register tracking: LDR Xt, [Xn, #imm] (unsigned offset) ---
+            // --- Register tracking: LDR Xt, [Xn, #imm] (64-bit, unsigned offset) ---
             if (match(inst, 0xFFC00000, 0xF9400000)) {
                 uint32_t rt = inst & 0x1F;
                 uint32_t rn = (inst >> 5) & 0x1F;
@@ -4922,11 +5012,50 @@ std::vector<expr_ptr> walk(
 
                 if (rt < 31) {
                     if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
+                        // Load from data struct: new DATA_OFFSET pointing into it.
                         state.regs[rt].origin = reg_state::DATA_OFFSET;
-                        state.regs[rt].offset = state.regs[rn].offset + byte_offset;
-                    } else if (rn == 31) {
-                        // LDR from SP — not data-derived.
+                        state.regs[rt].u.offset = state.regs[rn].u.offset + byte_offset;
+                    } else if (rn < 31 &&
+                               state.regs[rn].origin == reg_state::PC_RELATIVE) {
+                        // Load from a PC-relative address: produce a new PC_RELATIVE
+                        // register holding the (base + offset) address, not the value
+                        // at that address.  The actual function pointer dereference
+                        // happens lazily in the BLR handler where we know it is safe
+                        // (the register is used as a call target).  Doing a speculative
+                        // dereference here can fault if the ADRP target is a GOT entry
+                        // pointing to a PLT stub or other indirection structure.
+                        const char* base = static_cast<const char*>(
+                            state.regs[rn].u.address);
+                        state.regs[rt].origin = reg_state::PC_RELATIVE;
+                        state.regs[rt].u.address = base + byte_offset;
+                    } else {
+                        // LDR from SP or unknown register — not data-derived.
                         state.regs[rt].origin = reg_state::UNKNOWN;
+                    }
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Register tracking: LDR Wt, [Xn, #imm] (32-bit, unsigned offset) ---
+            // Used for loading integer fields (tags, modes, counts) from closures.
+            if (match(inst, 0xFFC00000, 0xB9400000)) {
+                uint32_t rt = inst & 0x1F;
+                uint32_t rn = (inst >> 5) & 0x1F;
+                uint32_t imm12 = (inst >> 10) & 0xFFF;
+                size_t byte_offset = imm12 * 4; // scaled by 4 for 32-bit LDR
+
+                if (rt < 31) {
+                    if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
+                        // Attempt to read a concrete 32-bit integer from the closure.
+                        // This enables condition evaluation at CBZ/CBNZ/TBZ/TBNZ.
+                        // The walk_work below carries opts but not raw data — we
+                        // store this as a DATA_OFFSET so the evaluator can resolve it.
+                        // For walk-time constant folding, we handle the CONST case
+                        // when data is available (analyze_and_compile passes data=nullptr
+                        // at the program level; the evaluator handles data-driven paths).
+                        state.regs[rt].origin = reg_state::DATA_OFFSET;
+                        state.regs[rt].u.offset = state.regs[rn].u.offset + byte_offset;
                     } else {
                         state.regs[rt].origin = reg_state::UNKNOWN;
                     }
@@ -4948,10 +5077,77 @@ std::vector<expr_ptr> walk(
                 if (rd < 31) {
                     if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
                         state.regs[rd].origin = reg_state::DATA_OFFSET;
-                        state.regs[rd].offset = state.regs[rn].offset + imm;
+                        state.regs[rd].u.offset = state.regs[rn].u.offset + imm;
+                    } else if (rn < 31 &&
+                               state.regs[rn].origin == reg_state::PC_RELATIVE) {
+                        // ADD Xd, ADRP_reg, #pageoff — second half of ADRP+ADD
+                        // to form a symbol address. Refine the page address.
+                        const char* base = static_cast<const char*>(
+                            state.regs[rn].u.address);
+                        state.regs[rd].origin = reg_state::PC_RELATIVE;
+                        state.regs[rd].u.address = base + imm;
                     } else {
                         state.regs[rd].origin = reg_state::UNKNOWN;
                     }
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Register tracking: ADRP Xd, label ---
+            // Forms the page-aligned PC-relative address; subsequent ADD refines it.
+            if (match(inst, 0x9F000000, 0x90000000)) {
+                uint32_t rd = inst & 0x1F;
+                // immhi:immlo = [23:5] cat [30:29], scaled by 4096.
+                uint32_t immlo = (inst >> 29) & 0x3;
+                uint32_t immhi = (inst >> 5) & 0x7FFFF;
+                int64_t imm = sign_extend((immhi << 2) | immlo, 21) << 12;
+                // PC page = PC aligned down to 4KB.
+                uintptr_t pc_page =
+                    reinterpret_cast<uintptr_t>(state.pc) & ~uintptr_t{0xFFF};
+                if (rd < 31) {
+                    state.regs[rd].origin = reg_state::PC_RELATIVE;
+                    state.regs[rd].u.address =
+                        reinterpret_cast<const void*>(
+                            static_cast<uintptr_t>(
+                                static_cast<int64_t>(pc_page) + imm));
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Register tracking: MOVZ Xd, #imm, LSL #shift ---
+            // MOVZ: opc=10, sets register to zero-extended immediate.
+            if (match(inst, 0x7F800000, 0x52800000) || // 32-bit MOVZ
+                match(inst, 0x7F800000, 0xD2800000)) { // 64-bit MOVZ
+                uint32_t rd = inst & 0x1F;
+                uint32_t imm16 = (inst >> 5) & 0xFFFF;
+                uint32_t hw = (inst >> 21) & 0x3;
+                if (rd < 31) {
+                    state.regs[rd].origin = reg_state::CONST;
+                    state.regs[rd].u.const_value =
+                        static_cast<int64_t>(static_cast<uint64_t>(imm16) << (hw * 16));
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Register tracking: MOVK Xd, #imm, LSL #shift ---
+            // MOVK: keep other bits, insert 16-bit field.
+            if (match(inst, 0x7F800000, 0x72800000) || // 32-bit MOVK
+                match(inst, 0x7F800000, 0xF2800000)) { // 64-bit MOVK
+                uint32_t rd = inst & 0x1F;
+                uint32_t imm16 = (inst >> 5) & 0xFFFF;
+                uint32_t hw = (inst >> 21) & 0x3;
+                if (rd < 31 && state.regs[rd].origin == reg_state::CONST) {
+                    // Update the relevant 16-bit field.
+                    uint64_t mask = ~(static_cast<uint64_t>(0xFFFF) << (hw * 16));
+                    uint64_t prev = static_cast<uint64_t>(
+                        state.regs[rd].u.const_value);
+                    state.regs[rd].u.const_value = static_cast<int64_t>(
+                        (prev & mask) | (static_cast<uint64_t>(imm16) << (hw * 16)));
+                } else if (rd < 31) {
+                    state.regs[rd].origin = reg_state::UNKNOWN;
                 }
                 state.pc++;
                 continue;
@@ -4999,7 +5195,7 @@ std::vector<uint8_t> analyze_and_compile(const void* fn,
     initial.sp_delta = 0;
     // X0 = data parameter.
     initial.regs[0].origin = reg_state::DATA_OFFSET;
-    initial.regs[0].offset = 0;
+    initial.regs[0].u.offset = 0;
 
     visit_set visited;
     size_t inst_count = 0;
@@ -5180,6 +5376,44 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
             is_exact = false;
             values[vsp++] = read_u64(ip);
             break;
+        case OP_CALL_DIRECT_WITH_DATA: {
+            // Direct call forwarding a data sub-pointer to the callee.
+            // The callee receives *(current_data + data_off) as its data arg.
+            auto addr = read_ptr(ip);
+            auto data_off = read_u64(ip);
+
+            // Resolve the forwarded data pointer (pointer within the closure).
+            const void* forwarded_data = nullptr;
+            if (current_data) {
+                forwarded_data = *reinterpret_cast<const void* const*>(
+                    static_cast<const char*>(current_data) + data_off);
+            }
+
+            // When no data is forwarded, treat like OP_CALL_DIRECT (cache hit path).
+            if (!forwarded_data) {
+                std::lock_guard<spinlock> lk(g_eval_cache_mu);
+                if (auto* r = g_eval_cache.find(addr)) {
+                    is_exact &= r->is_exact;
+                    values[vsp++] = r->max_depth;
+                    break;
+                }
+            }
+            // Cycle detection.
+            if (on_stack.contains(addr)) {
+                is_exact = false;
+                values[vsp++] = opts.indirect_call_budget;
+                break;
+            }
+            // Compile and enter callee with forwarded data context.
+            prog_store.push_back(get_or_compile(addr, opts));
+            call_stack.push_back({ip, end, addr, is_exact, current_data});
+            on_stack.insert(addr);
+            is_exact = true;
+            current_data = forwarded_data;  // pass sub-pointer to callee
+            ip = prog_store.back().data();
+            end = ip + prog_store.back().size();
+            break;
+        }
         }
     }
 
@@ -5234,8 +5468,10 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
 #endif
 
 /* stack_pool.cc */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
 
-#if CSP_USE_VM_STACKS
+#if CSP_USE_VM_STACKS || CSP_USE_ARENA_STACKS
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -5256,7 +5492,7 @@ StackPool& StackPool::instance() {
 
 StackPool::StackPool()
     : page_size_(
-#if CSP_USE_VM_STACKS
+#if CSP_USE_VM_STACKS || CSP_USE_ARENA_STACKS
 #ifdef _WIN32
         [] {
             SYSTEM_INFO si;
@@ -5270,12 +5506,98 @@ StackPool::StackPool()
         4096
 #endif
     )
-#if CSP_USE_VM_STACKS
+#if CSP_USE_VM_STACKS && !CSP_USE_ARENA_STACKS
     , stack_size_(kDefaultStackSize)
 #endif
 {}
 
-#if CSP_USE_VM_STACKS
+// ============================================================
+// Arena-based allocation (Unix non-sanitizer non-Windows)
+// ============================================================
+#if CSP_USE_ARENA_STACKS
+
+StackRegion StackPool::arena_alloc() {
+    std::lock_guard<std::mutex> lk(mu_);
+
+    // Serve from free list first.
+    if (!free_list_.empty()) {
+        auto region = free_list_.back();
+        free_list_.pop_back();
+        return region;
+    }
+
+    // Allocate a new slab and carve all slots into the free list.
+    int flags = MAP_ANON | MAP_PRIVATE;
+#ifdef MAP_NORESERVE
+    flags |= MAP_NORESERVE;
+#endif
+    void* base = mmap(nullptr, kArenaSlabSize, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (base == MAP_FAILED) {
+        throw std::bad_alloc();
+    }
+
+    arena_slabs_.push_back({base, kArenaSlabSize});
+
+    // Carve the slab into slot StackRegions.
+    // Return slot 0 directly; push slots 1..N-1 onto the free list.
+    auto* p = static_cast<char*>(base);
+    StackRegion first{};
+    for (size_t i = 0; i < kArenaSlotsPerSlab; ++i) {
+        StackRegion r;
+        r.base = p;
+        r.total_size = kArenaSlotSize;
+        r.overflow_limit = p + kArenaSlotGuard;
+        p += kArenaSlotSize;
+        if (i == 0) {
+            first = r;
+        } else {
+            free_list_.push_back(r);
+        }
+    }
+    return first;
+}
+
+void StackPool::arena_free(StackRegion region) {
+    // Hint to the kernel that the usable pages can be reclaimed.
+    char* usable = static_cast<char*>(region.base) + kArenaSlotGuard;
+    size_t usable_len = region.total_size - kArenaSlotGuard;
+#ifdef MADV_FREE
+    madvise(usable, usable_len, MADV_FREE);
+#else
+    madvise(usable, usable_len, MADV_DONTNEED);
+#endif
+
+    std::lock_guard<std::mutex> lk(mu_);
+    free_list_.push_back(region);
+}
+
+StackRegion StackPool::allocate() {
+    return arena_alloc();
+}
+
+void StackPool::release(StackRegion region) {
+    arena_free(region);
+}
+
+void StackPool::maybe_shrink(StackRegion const&, void*) {
+    // No-op for arena stacks: the entire slab is one VMA; we cannot reclaim
+    // individual slot pages without splitting the mapping. The software
+    // overflow limit (overflow_limit) replaces guard-page overflow detection.
+}
+
+void StackPool::drain() {
+    std::lock_guard<std::mutex> lk(mu_);
+    free_list_.clear();
+    for (auto& slab : arena_slabs_) {
+        munmap(slab.base, slab.size);
+    }
+    arena_slabs_.clear();
+}
+
+// ============================================================
+// mmap per-stack — Windows only (non-sanitizer)
+// ============================================================
+#elif CSP_USE_VM_STACKS
 
 #ifdef _WIN32
 
@@ -5320,7 +5642,7 @@ static LONG WINAPI stack_guard_handler(PEXCEPTION_POINTERS ep) {
         // switch; if a demand-committed page extends below the current
         // StackLimit, update the TEB so MSVC's C++ exception dispatch
         // (which probes the stack using StackLimit) doesn't fault on
-        // uncommitted pages — a nested ACCESS_VIOLATION during dispatch
+        // uncommitted pages -- a nested ACCESS_VIOLATION during dispatch
         // terminates the process without VEH notification.
         auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
         if (page_base < tib->StackLimit) {
@@ -5350,7 +5672,7 @@ StackRegion StackPool::mmap_new() {
         throw std::bad_alloc();
     }
 
-    // Commit guard page at the bottom (PAGE_NOACCESS after commit — use
+    // Commit guard page at the bottom (PAGE_NOACCESS after commit -- use
     // PAGE_READWRITE then protect, since MEM_COMMIT requires valid protection).
     void* guard = VirtualAlloc(base, page_size_,
                                MEM_COMMIT, PAGE_READWRITE);
@@ -5373,7 +5695,7 @@ StackRegion StackPool::mmap_new() {
         throw std::bad_alloc();
     }
 
-    return {base, stack_size_};
+    return {base, stack_size_, nullptr};
 }
 
 void StackPool::munmap_region(StackRegion region) {
@@ -5415,11 +5737,11 @@ void StackPool::release(StackRegion region) {
 void StackPool::maybe_shrink(StackRegion const&, void*) {
     // No-op on Windows.  Decommitting pages (MEM_DECOMMIT) and raising
     // StackLimit is unsafe because MSVC's C++ exception dispatch
-    // (RtlDispatchException → RtlVirtualUnwind) runs on the current
+    // (RtlDispatchException -> RtlVirtualUnwind) runs on the current
     // stack.  If the dispatch needs more stack than the headroom between
     // RSP and StackLimit, it faults on uncommitted pages.  That nested
     // ACCESS_VIOLATION during exception dispatch is a double-fault that
-    // terminates the process without VEH notification — our
+    // terminates the process without VEH notification -- our
     // demand-commit handler never gets a chance to commit the page.
     //
     // Pages stay committed until the stack is released to the pool,
@@ -5435,9 +5757,16 @@ void StackPool::drain() {
     free_list_.clear();
 }
 
-#else // !_WIN32
+#else // !_WIN32: Unix per-stack mmap (unreachable: CSP_USE_ARENA_STACKS always
+      // takes priority on non-Windows Unix non-sanitizer builds)
 
-// --- Unix: mmap-based stack regions ---
+static int madv_free_flag() {
+#ifdef MADV_FREE
+    return MADV_FREE;
+#else
+    return MADV_DONTNEED;
+#endif
+}
 
 StackRegion StackPool::mmap_new() {
     int flags = MAP_ANON | MAP_PRIVATE;
@@ -5448,24 +5777,15 @@ StackRegion StackPool::mmap_new() {
     if (base == MAP_FAILED) {
         throw std::bad_alloc();
     }
-    // Guard page at the bottom (lowest address).
     if (mprotect(base, page_size_, PROT_NONE) != 0) {
         munmap(base, stack_size_);
         throw std::bad_alloc();
     }
-    return {base, stack_size_};
+    return {base, stack_size_, nullptr};
 }
 
 void StackPool::munmap_region(StackRegion region) {
     munmap(region.base, region.total_size);
-}
-
-static int madv_free_flag() {
-#ifdef MADV_FREE
-    return MADV_FREE;
-#else
-    return MADV_DONTNEED;
-#endif
 }
 
 StackRegion StackPool::allocate() {
@@ -5481,9 +5801,6 @@ StackRegion StackPool::allocate() {
 }
 
 void StackPool::release(StackRegion region) {
-    // MADV_FREE the usable area (above guard page). The kernel reclaims
-    // these pages lazily — if they're reused before reclamation, no
-    // re-fault cost.
     char* usable = static_cast<char*>(region.base) + page_size_;
     size_t usable_len = region.total_size - page_size_;
     madvise(usable, usable_len, madv_free_flag());
@@ -5498,10 +5815,8 @@ void StackPool::release(StackRegion region) {
 
 void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
     char* usable = static_cast<char*>(region.base) + page_size_;
-    // Round SP down to page boundary.
     auto sp_val = reinterpret_cast<uintptr_t>(current_sp);
     char* sp_page = reinterpret_cast<char*>(sp_val & ~(page_size_ - 1));
-    // Keep 2 pages of headroom below SP to avoid thrashing.
     char* shrink_to = sp_page - 2 * page_size_;
     if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
         size_t reclaimable = static_cast<size_t>(shrink_to - usable);
@@ -5519,26 +5834,17 @@ void StackPool::drain() {
 
 #endif // _WIN32
 
-#else // !CSP_USE_VM_STACKS — sanitizer fallback
+#else // !CSP_USE_ARENA_STACKS && !CSP_USE_VM_STACKS -- sanitizer heap fallback
 
 struct alignas(16) StackSlotAlloc { char c[16]; };
 
-StackRegion StackPool::mmap_new() {
-    // Not used under sanitizers.
-    return {};
-}
-
-void StackPool::munmap_region(StackRegion region) {
-    delete[] static_cast<StackSlotAlloc*>(region.base);
-}
-
 StackRegion StackPool::allocate() {
-    // Under sanitizers: use the fixed stack size from Imp.
+    // Under sanitizers: heap-allocate stacks.
     // 128KB under sanitizers = 8192 StackSlotAlloc (16 bytes each).
     static constexpr size_t kSanitStack = 128 << 10;
     static constexpr size_t S = kSanitStack / 16;
     auto* stk = new StackSlotAlloc[S];
-    return {stk, kSanitStack};
+    return {stk, kSanitStack, nullptr};
 }
 
 void StackPool::release(StackRegion region) {
@@ -5553,7 +5859,7 @@ void StackPool::drain() {
     // Nothing pooled under sanitizers.
 }
 
-#endif // CSP_USE_VM_STACKS
+#endif // CSP_USE_ARENA_STACKS / CSP_USE_VM_STACKS
 
 } // namespace csp::detail
 

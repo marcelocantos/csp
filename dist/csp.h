@@ -2000,11 +2000,25 @@ fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 #define CSP_USE_VM_STACKS 1
 #endif
 
+// Arena-based stack allocation: enabled on Unix non-sanitizer non-Windows
+// builds.  One large mmap per arena; stacks are sub-slots within it.
+// This avoids the Linux vm.max_map_count limit (~65K VMAs) that would be
+// hit with per-imp mmap at 100K+ concurrent imps.
+#if CSP_USE_VM_STACKS && !defined(_WIN32)
+#define CSP_USE_ARENA_STACKS 1
+#else
+#define CSP_USE_ARENA_STACKS 0
+#endif
+
 namespace csp::detail {
 
 struct StackRegion {
     void* base = nullptr;
     size_t total_size = 0;
+    // Software overflow limit: lowest address the SP may touch.
+    // Non-null only for arena-mode stacks (no hardware guard page).
+    // Checked at every CSP API checkpoint via check_stack_overflow().
+    void* overflow_limit = nullptr;
     explicit operator bool() const { return base != nullptr; }
 };
 
@@ -2012,13 +2026,15 @@ class StackPool {
 public:
     static StackPool& instance();
 
-    // Allocate a stack region. Returns a pooled or fresh mmap'd region.
+    // Allocate a stack region. Returns a pooled or fresh region.
     StackRegion allocate();
 
-    // Return a stack to the pool. Reclaims physical pages via madvise.
+    // Return a stack to the pool. Reclaims physical pages via madvise
+    // (non-arena) or marks the slot free (arena).
     void release(StackRegion region);
 
     // Reclaim unused stack pages below the current SP.
+    // No-op for arena stacks (no per-page reclaim supported).
     void maybe_shrink(StackRegion const& region, void* current_sp);
 
     // Unmap all pooled stacks. Called during shutdown.
@@ -2029,19 +2045,46 @@ public:
 private:
     StackPool();
 
+#if CSP_USE_VM_STACKS && !CSP_USE_ARENA_STACKS
     StackRegion mmap_new();
     void munmap_region(StackRegion region);
+#elif CSP_USE_ARENA_STACKS
+    StackRegion arena_alloc();
+    void arena_free(StackRegion region);
+#endif
 
     size_t page_size_;
-#if CSP_USE_VM_STACKS
+#if CSP_USE_VM_STACKS && !CSP_USE_ARENA_STACKS
     size_t stack_size_;     // total VM region size (guard + usable)
 #endif
 
     std::mutex mu_;
     std::vector<StackRegion> free_list_;
 
-    static constexpr size_t kDefaultStackSize = 1 << 20;  // 1MB
+    static constexpr size_t kDefaultStackSize = 1 << 20;  // 1MB (non-arena)
     static constexpr size_t kMaxPooled = 256;
+
+#if CSP_USE_ARENA_STACKS
+    // Arena slab parameters:
+    // Each slab is one large mmap covering kArenaSlotsPerSlab stack slots.
+    // Slot layout (low->high): [guard zone][usable region].
+    // Imp is placed at the top of the usable region (highest address).
+    // One slab = one VMA, so 100K imps needs at most ~25 slabs.
+    static constexpr size_t kArenaSlotGuard  = 4096;          // 4KB software guard zone
+    static constexpr size_t kArenaSlotUsable = 60 << 10;      // 60KB usable stack
+    static constexpr size_t kArenaSlotSize   = kArenaSlotGuard + kArenaSlotUsable;  // 64KB/slot
+    static constexpr size_t kArenaSlotsPerSlab = 4096;         // slots per slab
+    static constexpr size_t kArenaSlabSize = kArenaSlotSize * kArenaSlotsPerSlab;   // 256MB per slab
+
+    struct ArenaSlab {
+        void* base = nullptr;
+        size_t size = 0;
+    };
+
+    std::vector<ArenaSlab> arena_slabs_;  // all allocated slabs (for drain)
+    // free_list_ holds arena StackRegions (with overflow_limit set)
+#endif
+
 public:
     // Initial committed region per stack on Windows (at the top, where RSP
     // starts).  The rest of the 1 MB virtual region is MEM_RESERVE, committed
@@ -2054,6 +2097,10 @@ public:
 
 #include <any>
 #include <unordered_map>
+
+#ifndef _WIN32
+#include <unistd.h>  // write() for stack overflow message
+#endif
 
 // MSVC-compatible replacements for GCC/Clang builtins.
 #ifdef _MSC_VER
@@ -2175,6 +2222,12 @@ struct alignas(16) Imp {
     uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
     std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
 
+    // Software stack overflow limit (arena mode only).
+    // Points to the bottom of the usable region (above the software guard zone).
+    // Null for non-arena stacks (hardware guard page used instead).
+    // Checked at every CSP suspend checkpoint via check_stack_overflow().
+    void* stack_overflow_limit_ = nullptr;
+
     bool in_global_ = false;  // true while in the global run queue
     bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
     class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
@@ -2193,12 +2246,37 @@ struct alignas(16) Imp {
 
 inline
 char const * getfullstatus(Imp const * imp) {
-    return imp ? imp->getfullstatus_() : "Ø";
+    return imp ? imp->getfullstatus_() : "O";
 }
 
 inline
 char const * getstatus(Imp const * imp) {
     return getfullstatus(imp);
+}
+
+// Software stack overflow detection for arena-mode stacks.
+// Called at every CSP API suspend checkpoint (yield, channel ops, spawn).
+// Terminates the process with a descriptive message if the stack pointer
+// has reached below the software guard zone of an arena slot.
+//
+// For non-arena stacks (stack_overflow_limit_ == nullptr), this is a no-op;
+// the hardware guard page handles overflow.
+[[gnu::always_inline]] inline
+void check_stack_overflow(Imp const* imp, void* current_sp) {
+    if (!imp->stack_overflow_limit_) [[likely]] {
+        return;
+    }
+    if (current_sp < imp->stack_overflow_limit_) [[unlikely]] {
+        // Abort immediately -- the stack has corrupted the software guard zone.
+        // Use a low-level write + trap to avoid additional stack use that
+        // might corrupt adjacent imp stacks.
+        static constexpr char msg[] =
+            "csp: stack overflow detected (arena soft guard)\n";
+#ifndef _WIN32
+        (void)::write(2, msg, sizeof(msg) - 1);
+#endif
+        __builtin_trap();
+    }
 }
 
 }
@@ -2721,7 +2799,6 @@ using ssize_t = ptrdiff_t;
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
-#include <unistd.h>
 #endif
 
 namespace csp::internal {
@@ -3466,8 +3543,11 @@ struct response {
 
 // --- Request: a parsed HTTP/1.1 request ---
 //
-// The request body is buffered in memory. For the request body to be
-// streamed, a future API (with a reader<bytes> body) will be added.
+// Delivered to the handler as soon as the request headers are complete.
+// Body chunks arrive via `body_stream` (a reader<bytes> channel that
+// closes at end-of-body).  For no-body requests the channel is already
+// closed when the request is delivered.
+//
 // Each request carries a per-request response channel: write exactly
 // one response to `respond`, then let it drop.
 
@@ -3477,11 +3557,32 @@ struct request {
     uint8_t version_major = 1;
     uint8_t version_minor = 1;
     std::vector<std::pair<std::string, std::string>> headers;
-    bytes body;                 // complete request body
+    bytes body;                 // accumulated body; empty until drain() is called
     bool keep_alive = true;
+
+    // Streaming body: push-based chunks as they arrive from the network.
+    // Closes when the body is complete (EOF).  For no-body requests the
+    // channel is already closed when the request is delivered.
+    reader<bytes> body_stream;
 
     // Write exactly one response for this request.
     writer<response> respond;
+
+    // WebSocket / protocol-upgrade hijack.
+    //
+    // After writing a 101 Switching Protocols response via `respond`,
+    // read the raw fd from this channel to take ownership of the
+    // connection socket. The HTTP connection loop exits as soon as
+    // the fd is claimed. Any bytes read by the HTTP parser beyond the
+    // upgrade request are delivered in `leftover` so the caller can
+    // replay them.
+    //
+    // Normal (non-upgrade) handlers must not touch this channel.
+    struct hijack_result {
+        io::fd_t  fd;       // connection socket (non-blocking)
+        bytes     leftover; // bytes consumed by HTTP parser but not yet used
+    };
+    reader<hijack_result> hijack;
 
     // Convenience: find first header value by case-insensitive name.
     // Returns empty string if not found.
@@ -3489,6 +3590,11 @@ struct request {
 
     // Content-Length, or -1 if absent.
     int64_t content_length() const;
+
+    // Drain body_stream into body.  After this call, body holds the
+    // complete request body and body_stream is closed.  Idempotent:
+    // calling drain() when body_stream is already closed is a no-op.
+    const bytes& drain();
 };
 
 // --- Per-connection endpoint ---
@@ -3653,6 +3759,143 @@ server serve_tls(
 #endif // CSP_TLS
 
 } // namespace csp::http2
+
+/* csp/http3.h */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+// HTTP/3 over QUIC server and client (🎯T3.9).
+//
+// Uses the same http::request and http::response types as the HTTP/1.1 and
+// HTTP/2 servers. Handler code is fully protocol-agnostic: a handler that reads
+// http::request and writes http::response runs unchanged across HTTP/1.1,
+// HTTP/2, and HTTP/3.
+//
+// Layering:
+//   http3::serve/get/post
+//       └── nghttp3  (HTTP/3 framing, QPACK header compression)
+//           └── quic::connection  (QUIC transport — 🎯T3.8 / ngtcp2)
+//               └── PicoTLS      (TLS 1.3 — always required for HTTP/3)
+//
+// HTTP/3 requires TLS. The API is therefore only available when compiled with
+// CSP_TLS=1 (the default). HTTP/3 uses UDP port 443 by convention; the serve()
+// call binds a UDP socket for QUIC.
+//
+// Dependency contract (T3.7 / T3.8):
+//   - http::request and http::response come from <csp/http.h> (T3.7 shared
+//     types). The protocol-agnostic contract is: `reader<http::request>` with
+//     per-request `writer<http::response>` embedded in request::respond.
+//   - QUIC streams come from <csp/quic.h> (T3.8). Each HTTP/3 stream maps to
+//     one quic::stream_pair. The http3 layer reads/writes bytes on those
+//     streams and feeds them to nghttp3_conn for framing.
+//
+// See docs/papers/20-http3-design.md for the full design.
+
+#ifdef CSP_TLS
+
+
+
+namespace csp::http3 {
+
+// --- Per-connection endpoint ---
+//
+// Each accepted QUIC+HTTP/3 connection yields one endpoint.
+// endpoint::streams delivers one http::request per HTTP/3 stream; the
+// per-request respond writer carries exactly one http::response back.
+
+struct endpoint {
+    reader<http::request> streams;  // one per HTTP/3 stream (bidirectional)
+    std::string remote_addr;
+};
+
+// --- Server options ---
+
+struct serve_options {
+    // Maximum number of concurrent bidirectional HTTP/3 streams per connection.
+    uint64_t max_streams = 128;
+
+    // UDP receive buffer size in bytes (0 = OS default).
+    int rcvbuf = 0;
+
+    // PEM file paths for the server TLS certificate and private key.
+    // HTTP/3 always requires TLS; self-signed certs are acceptable for testing.
+    std::string cert_pem;
+    std::string key_pem;
+};
+
+// --- Server ---
+
+struct server {
+    reader<endpoint> endpoints;  // one per accepted QUIC connection
+    uint16_t port;               // actual bound UDP port
+    std::string local_addr;
+};
+
+// Start an HTTP/3 server on the given UDP port.
+// Returns a server whose endpoints reader yields one endpoint per connection.
+// Dropping the reader stops accepting new connections.
+//
+// HTTP/3 always uses TLS 1.3 (QUIC requirement). cert_pem and key_pem must
+// be paths to PEM-encoded ECDSA (secp256r1) certificate and key files, or
+// empty to generate a self-signed certificate at runtime (test use only).
+//
+// TODO(T3.8): Implementation blocked on quic::listen() stabilisation.
+// Stub compiles and links; serve() throws csp::error("http3: not yet
+// implemented") at runtime.
+[[nodiscard]] server serve(uint16_t port, serve_options opts = {});
+[[nodiscard]] server serve(const std::string& addr, uint16_t port,
+                           serve_options opts = {});
+
+// --- Client fetch options ---
+
+struct fetch_options {
+    // Custom certificate verification callback. If null, no verification is
+    // performed (acceptable for testing only).
+    using verify_fn = std::function<bool(
+        const char*, const std::vector<std::vector<uint8_t>>&)>;
+    verify_fn verify;
+};
+
+// --- Client ---
+//
+// Perform an HTTP/3 request. Blocks the calling imp until the full response
+// (headers + body) has been received.
+//
+// url must use the "https" scheme (HTTP/3 is always over TLS).
+// Default port is 443. QUIC connection establishment and TLS handshake happen
+// transparently.
+//
+// Throws csp::error on connection failure, handshake failure, or parse error.
+//
+// TODO(T3.8): Implementation blocked on quic::dial() stabilisation.
+// Stub compiles and links; fetch() throws csp::error("http3: not yet
+// implemented") at runtime.
+http::response fetch(
+    http::method m, const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    bytes body = {},
+    fetch_options opts = {});
+
+// Convenience wrappers.
+inline http::response get(
+    const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    fetch_options opts = {}) {
+    return fetch(http::method::GET, url, std::move(headers), {}, opts);
+}
+
+inline http::response post(
+    const std::string& url, bytes body,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    fetch_options opts = {}) {
+    return fetch(http::method::POST, url, std::move(headers),
+                 std::move(body), opts);
+}
+
+} // namespace csp::http3
+
+#endif // CSP_TLS
 
 /* csp/imp_exit.h */
 
@@ -8308,3 +8551,63 @@ void raise(DWORD event);
 }
 
 #endif // _WIN32
+
+/* csp/ws.h */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+
+
+namespace csp::ws {
+
+// --- Message types ---
+
+enum class opcode : uint8_t {
+    text   = 0x1,
+    binary = 0x2,
+    close  = 0x8,
+    ping   = 0x9,
+    pong   = 0xA,
+};
+
+struct message {
+    opcode  op   = opcode::binary;  // text or binary
+    bytes   data;                   // payload
+};
+
+// --- Endpoint pair returned by upgrade/connect ---
+
+struct conn {
+    reader<message> recv;   // inbound messages (text + binary only)
+    writer<message> send;   // outbound messages
+};
+
+// --- Server-side upgrade ---
+//
+// Call inside an HTTP request handler when you detect
+// "Upgrade: websocket". Performs the HTTP 101 handshake and
+// returns a conn for subsequent message exchange.
+//
+// Internally uses req.respond to send the 101 response, then reads
+// req.hijack to take ownership of the raw socket from the HTTP layer.
+//
+// On error (bad handshake headers), sends 400 Bad Request via
+// req.respond, drops req.hijack (so HTTP loop continues), and
+// throws csp::error.
+//
+// Dropping send triggers a Close handshake (BLO: Close frame is
+// sent to the peer, then recv closes after the peer's Close echo).
+
+conn upgrade(http::request& req);
+
+// --- Client-side connect ---
+//
+// Connects to ws://host[:port]/path and performs the opening
+// handshake. Returns the conn pair. Throws csp::error on failure.
+//
+// url must use the "ws://" scheme (no wss:// in this release).
+
+conn connect(const std::string& url);
+
+} // namespace csp::ws

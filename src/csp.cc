@@ -291,8 +291,9 @@ namespace csp {
             }
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
-                StackPool::instance().maybe_shrink(
-                    self->stk_, CSP_FRAME_ADDRESS());
+                auto* fp = CSP_FRAME_ADDRESS();
+                check_stack_overflow(self, fp);
+                StackPool::instance().maybe_shrink(self->stk_, fp);
             }
             Imp* target;
             {
@@ -399,8 +400,9 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
     auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
     if (self->stk_) {
-        StackPool::instance().maybe_shrink(
-            self->stk_, CSP_FRAME_ADDRESS());
+        auto* fp = CSP_FRAME_ADDRESS();
+        check_stack_overflow(self, fp);
+        StackPool::instance().maybe_shrink(self->stk_, fp);
     }
     try {
 #if CSP_USE_VM_STACKS
@@ -441,6 +443,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto ctx = make_fcontext(imp, usable_size, start);
 #endif
         new (imp) Imp(ctx, region);
+        imp->stack_overflow_limit_ = region.overflow_limit;
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
         auto region = StackPool::instance().allocate();
