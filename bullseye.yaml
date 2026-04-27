@@ -226,7 +226,7 @@ targets:
     discovered: 2026-03-09
   T3.1:
     name: Ergonomic I/O wrappers exist
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
     acceptance:
@@ -239,6 +239,7 @@ targets:
     - Tests and reference docs for each
     origin: manual
     discovered: 2026-03-09
+    achieved: 2026-04-27
   T3.2:
     name: Channel-native HTTP/1.1 server works
     status: identified
