@@ -16,6 +16,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #ifndef _WIN32
@@ -172,22 +173,35 @@ static std::string trim(const std::string& s) {
 }
 
 // ---------------------------------------------------------------------------
-// wslay callbacks — wrap cooperative io::read / io::write
+// Internal control message — sent from reader imp to writer imp.
+//
+// The reader imp never writes to the socket directly; instead it
+// forwards pong and close frames to the writer imp for serialised
+// delivery.  This guarantees the writer imp is the ONLY imp that
+// ever calls io::write on the shared fd, eliminating the reactor
+// write_writers_ insert_or_assign race when both imps try to wait
+// on the same fd for writability simultaneously.
 // ---------------------------------------------------------------------------
 
-struct ws_io {
+struct ctrl_pong  { bytes data; };   // send a PONG frame with this payload
+struct ctrl_close { bytes data; };   // send a CLOSE frame (echo) and stop
+
+using ctrl_msg = std::variant<ctrl_pong, ctrl_close>;
+
+// ---------------------------------------------------------------------------
+// wslay recv callback — wraps cooperative io::read.
+// No send callback needed here: the reader imp never sends.
+// ---------------------------------------------------------------------------
+
+struct ws_io_read {
     io::fd_t fd;
-    // Leftover bytes from the HTTP parser that belong to the WS stream.
-    bytes leftover;
-    size_t leftover_pos = 0;
-    bool close_sent   = false;
-    bool close_rcvd   = false;
+    bytes    leftover;
+    size_t   leftover_pos = 0;
 };
 
-// recv_callback: called by wslay_frame_recv() when it needs more bytes.
 static ssize_t ws_recv_cb(uint8_t* buf, size_t len, int /*flags*/,
-                           void* user_data) {
-    auto* io = static_cast<ws_io*>(user_data);
+                          void* user_data) {
+    auto* io = static_cast<ws_io_read*>(user_data);
 
     // Drain leftover bytes from the HTTP parser first.
     if (io->leftover_pos < io->leftover.size()) {
@@ -203,22 +217,18 @@ static ssize_t ws_recv_cb(uint8_t* buf, size_t len, int /*flags*/,
     return n;
 }
 
-// send_callback: called by wslay_frame_send() when it wants to send bytes.
-static ssize_t ws_send_cb(const uint8_t* buf, size_t len, int /*flags*/,
-                           void* user_data) {
-    auto* io = static_cast<ws_io*>(user_data);
-    ssize_t n = csp::io::write(io->fd, buf, len);
-    if (n <= 0) return WSLAY_ERR_WANT_WRITE;
-    return n;
+// Null send callback for the reader-side wslay context.
+// The reader imp never sends frames; it only receives them.
+static ssize_t ws_null_send_cb(const uint8_t* /*buf*/, size_t len,
+                               int /*flags*/, void* /*user_data*/) {
+    return static_cast<ssize_t>(len); // pretend we sent it (never called)
 }
 
-// genmask_callback: called when the sender needs a masking key (clients only).
+// genmask_callback: called when the sender needs a masking key.
 static int ws_genmask_cb(uint8_t* buf, size_t len, void* /*user_data*/) {
-    // Use arc4random_buf on Apple; /dev/urandom on others.
 #if defined(__APPLE__) || defined(__FreeBSD__)
     arc4random_buf(buf, len);
 #else
-    // Fallback: use rand() seeded with time (good enough for test fixtures).
     for (size_t i = 0; i < len; ++i)
         buf[i] = static_cast<uint8_t>(rand());
 #endif
@@ -226,23 +236,34 @@ static int ws_genmask_cb(uint8_t* buf, size_t len, void* /*user_data*/) {
 }
 
 // ---------------------------------------------------------------------------
-// Low-level frame send helper
+// wslay send callbacks — used by the writer imp.
 // ---------------------------------------------------------------------------
 
-// send_frame: send a complete, single WebSocket frame.
-//
-// wslay_frame_send advances its internal state machine (PREP_HEADER →
-// SEND_HEADER → SEND_PAYLOAD → PREP_HEADER).  The return value is the
-// number of PAYLOAD bytes consumed.  Since our send_callback uses
-// io::write (which is blocking-cooperative and writes all bytes), each
-// call completes its phase fully.
-//
-// For zero-payload frames (e.g. close, ping with no data): one call
-//   PREP_HEADER→SEND_HEADER→SEND_PAYLOAD→PREP_HEADER, returns 0.
-// For payload frames: one call for header+first-chunk, possibly more
-//   calls for remaining payload (data_length is updated on each call).
+struct ws_io_write {
+    io::fd_t fd;
+    bool close_sent = false;
+};
+
+static ssize_t ws_write_recv_cb(uint8_t* /*buf*/, size_t /*len*/,
+                                int /*flags*/, void* /*user_data*/) {
+    // The writer imp never receives frames.
+    return WSLAY_ERR_WANT_READ;
+}
+
+static ssize_t ws_write_send_cb(const uint8_t* buf, size_t len, int /*flags*/,
+                                void* user_data) {
+    auto* io = static_cast<ws_io_write*>(user_data);
+    ssize_t n = csp::io::write(io->fd, buf, len);
+    if (n <= 0) return WSLAY_ERR_WANT_WRITE;
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// Low-level frame send helper (used by writer imp only).
+// ---------------------------------------------------------------------------
+
 static bool send_frame(wslay_frame_context_ptr ctx, uint8_t op,
-                        bool mask, const uint8_t* data, size_t len) {
+                       bool mask, const uint8_t* data, size_t len) {
     wslay_frame_iocb iocb{};
     iocb.fin            = 1;
     iocb.rsv            = 0;
@@ -252,17 +273,19 @@ static bool send_frame(wslay_frame_context_ptr ctx, uint8_t op,
     iocb.data           = data;
     iocb.data_length    = len;
 
+    // The send callback (ws_write_send_cb) calls io::write which already
+    // handles EAGAIN/EWOULDBLOCK by suspending the imp. Any WSLAY_ERR_WANT_WRITE
+    // returned here reflects a permanent I/O failure (EPIPE, EBADF, etc.) —
+    // not a transient would-block. Treat it as a fatal error and return false.
     size_t total_sent = 0;
     for (;;) {
         ssize_t r = wslay_frame_send(ctx, &iocb);
-        if (r == WSLAY_ERR_WANT_WRITE) continue; // transient write failure
-        if (r < 0) return false;
+        if (r < 0) return false;  // includes WSLAY_ERR_WANT_WRITE (fatal here)
 
         total_sent        += static_cast<size_t>(r);
         iocb.data          = data + total_sent;
         iocb.data_length   = (len > total_sent) ? len - total_sent : 0;
 
-        // Frame is done when all payload has been consumed.
         if (total_sent >= len) break;
     }
     return true;
@@ -271,101 +294,74 @@ static bool send_frame(wslay_frame_context_ptr ctx, uint8_t op,
 // ---------------------------------------------------------------------------
 // WebSocket reader imp
 //
-// Reads frames from the fd, handles control frames transparently,
-// and forwards data messages to the user-visible channel.
+// Reads frames from the fd. Never writes to the fd.
+// Control frames are forwarded to the writer imp via ctrl_out:
+//   - PING  → ctrl_pong
+//   - CLOSE → ctrl_close (then reader exits)
+// Data frames are forwarded to the user via data_out.
 // ---------------------------------------------------------------------------
 
 static void ws_reader(io::fd_t fd, bytes leftover,
-                      writer<message> out, bool is_client) {
+                      writer<message>  data_out,
+                      writer<ctrl_msg> ctrl_out) {
     internal::descr("ws/reader");
 
     wslay_frame_callbacks cbs{};
     cbs.recv_callback    = ws_recv_cb;
-    cbs.send_callback    = ws_send_cb;
+    cbs.send_callback    = ws_null_send_cb;   // never called
     cbs.genmask_callback = ws_genmask_cb;
 
-    ws_io io_state;
+    ws_io_read io_state;
     io_state.fd       = fd;
     io_state.leftover = std::move(leftover);
 
     wslay_frame_context_ptr ctx = nullptr;
     if (wslay_frame_context_init(&ctx, &cbs, &io_state) != 0) {
+        io::close(fd);
         return;
     }
 
-    // RAII cleanup for wslay context.
     struct ctx_guard {
         wslay_frame_context_ptr c;
         ~ctx_guard() { if (c) wslay_frame_context_free(c); }
     } guard{ctx};
 
-    // Each wslay_frame_recv call returns a chunk of the current frame's
-    // payload. We accumulate chunks until the frame is fully received
-    // (accumulated bytes == iocb.payload_length), then handle the frame.
-    //
-    // WS message reassembly: text/binary frames start a message; fin=1
-    // means it's the last (or only) fragment. Continuation frames have
-    // opcode=0 and are assembled with the initial fragment.
-    //
-    // This implementation accumulates into `frame_buf` per frame, then
-    // into `msg_data` per message.
-
     message pending;
     bool in_msg          = false;
-    bytes frame_buf;           // accumulates chunks of the current frame
-    uint64_t frame_expected = 0; // total payload bytes for current frame
+    bytes frame_buf;
+    uint64_t frame_expected = 0;
 
     for (;;) {
         wslay_frame_iocb iocb{};
         ssize_t r = wslay_frame_recv(ctx, &iocb);
 
-        if (r == WSLAY_ERR_WANT_READ) {
-            // ws_recv_cb calls io::read which blocks cooperatively.
-            // WANT_READ means io::read returned 0 (EOF) or error.
-            break;
-        }
-        if (r < 0) break;   // protocol error
+        if (r == WSLAY_ERR_WANT_READ) break;  // EOF or error
+        if (r < 0) break;                     // protocol error
 
-        // r bytes of payload are available in iocb.data.
-        // This may be a partial chunk of the frame payload.
-
-        // On first chunk of a new frame, record total payload length.
         if (frame_buf.empty() && frame_expected == 0) {
             frame_expected = iocb.payload_length;
         }
 
-        // Accumulate chunk.
         if (r > 0) {
             frame_buf.insert(frame_buf.end(),
                              iocb.data,
                              iocb.data + static_cast<size_t>(r));
         }
 
-        // Have we received the complete frame payload?
         bool frame_done = (frame_buf.size() >= frame_expected && r >= 0);
-
         if (!frame_done) continue;
 
-        // Frame is complete — process it.
         uint8_t op = iocb.opcode;
 
-        // Control frames must be < 126 bytes and not fragmented.
         if (wslay_is_ctrl_frame(op)) {
             if (op == WSLAY_PING) {
-                // Auto-pong — clients mask, servers don't.
-                send_frame(ctx, WSLAY_PONG, is_client,
-                           frame_buf.data(), frame_buf.size());
+                // Forward to writer for serialised pong reply.
+                ctrl_out << ctrl_msg{ctrl_pong{frame_buf}};
             } else if (op == WSLAY_PONG) {
-                // Unsolicited or solicited pong — ignore.
+                // ignore
             } else if (op == WSLAY_CONNECTION_CLOSE) {
-                // Echo the close frame back if we haven't sent one yet.
-                if (!io_state.close_sent) {
-                    send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client,
-                               frame_buf.data(), frame_buf.size());
-                    io_state.close_sent = true;
-                }
-                io_state.close_rcvd = true;
-                // Fall through to reset frame state, then break below.
+                // Forward close echo to writer, then exit.
+                ctrl_out << ctrl_msg{ctrl_close{frame_buf}};
                 frame_buf.clear();
                 frame_expected = 0;
                 break;
@@ -375,14 +371,12 @@ static void ws_reader(io::fd_t fd, bytes leftover,
             continue;
         }
 
-        // Data frame (text=0x1, binary=0x2) or continuation (0x0).
+        // Data frame or continuation.
         if (op == WSLAY_TEXT_FRAME || op == WSLAY_BINARY_FRAME) {
-            // Start of a new message.
-            in_msg       = true;
-            pending.op   = (op == WSLAY_TEXT_FRAME) ? opcode::text : opcode::binary;
+            in_msg     = true;
+            pending.op = (op == WSLAY_TEXT_FRAME) ? opcode::text : opcode::binary;
             pending.data.clear();
         }
-        // op == 0 is a continuation frame — we're already in_msg.
 
         if (in_msg) {
             pending.data.insert(pending.data.end(),
@@ -392,43 +386,50 @@ static void ws_reader(io::fd_t fd, bytes leftover,
         frame_buf.clear();
         frame_expected = 0;
 
-        // fin=1 means this is the last (or only) fragment.
         if (iocb.fin && in_msg) {
             in_msg = false;
-            if (!(out << std::move(pending))) break;
+            if (!(data_out << std::move(pending))) break;
             pending = {};
         }
     }
 
+    // Close fd here — we own it.  The writer imp will see a write error
+    // (EPIPE/EBADF) on its next io::write and exit cleanly.
     io::close(fd);
 }
 
 // ---------------------------------------------------------------------------
 // WebSocket writer imp
 //
-// Reads messages from the user channel and sends them as WS frames.
-// When the user channel dies, sends a Close frame.
+// The SOLE writer to the fd. Sources:
+//   1. ctrl_in: pong and close-echo frames from the reader imp.
+//   2. user_in: data frames from the user (conn.send channel).
+//
+// Priority: ctrl_in > user_in (control frames are urgent).
+//
+// Lifecycle:
+//   - When ctrl_in delivers ctrl_close → send close echo → exit.
+//   - When user_in dies (send_w dropped by user) → send BLO Close → exit.
+//   - When fd is closed by reader (io::write fails) → exit.
 // ---------------------------------------------------------------------------
 
-// ws_writer takes a non-owning fd view (does NOT close it on exit).
-// The reader imp owns the fd and closes it when it exits.
 static void ws_writer(io::fd_t fd,
-                      reader<message> in, bool is_client,
-                      bool close_already_sent) {
+                      reader<message>  user_in,
+                      reader<ctrl_msg> ctrl_in,
+                      bool is_client) {
     internal::descr("ws/writer");
 
     wslay_frame_callbacks cbs{};
-    cbs.recv_callback    = ws_recv_cb;
-    cbs.send_callback    = ws_send_cb;
+    cbs.recv_callback    = ws_write_recv_cb;
+    cbs.send_callback    = ws_write_send_cb;
     cbs.genmask_callback = ws_genmask_cb;
 
-    ws_io io_state;
-    io_state.fd             = fd;
-    io_state.close_sent     = close_already_sent;
+    ws_io_write io_state;
+    io_state.fd = fd;
 
     wslay_frame_context_ptr ctx = nullptr;
     if (wslay_frame_context_init(&ctx, &cbs, &io_state) != 0) {
-        return; // do NOT close fd — reader owns it
+        return;
     }
 
     struct ctx_guard {
@@ -436,56 +437,94 @@ static void ws_writer(io::fd_t fd,
         ~ctx_guard() { if (c) wslay_frame_context_free(c); }
     } guard{ctx};
 
-    for (;;) {
-        message msg;
-        if (!(in >> msg)) break;
+    bool close_sent = false;
 
-        uint8_t op = (msg.op == opcode::text) ? WSLAY_TEXT_FRAME
-                                               : WSLAY_BINARY_FRAME;
-        if (!send_frame(ctx, op, is_client,
-                        msg.data.data(), msg.data.size())) {
+    for (;;) {
+        // prialt: prefer ctrl_in (urgent control frames) over user_in.
+        message  user_msg;
+        ctrl_msg ctrl;
+
+        switch (prialt(ctrl_in >> ctrl, user_in >> user_msg)) {
+        case 0: {
+            // ctrl_in delivered a control frame.
+            if (std::holds_alternative<ctrl_pong>(ctrl)) {
+                auto& p = std::get<ctrl_pong>(ctrl);
+                send_frame(ctx, WSLAY_PONG, is_client,
+                           p.data.data(), p.data.size());
+            } else {
+                // ctrl_close: echo the close frame and stop.
+                auto& c = std::get<ctrl_close>(ctrl);
+                if (!close_sent) {
+                    send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client,
+                               c.data.data(), c.data.size());
+                    close_sent = true;
+                }
+                return;
+            }
             break;
         }
+        case 1: {
+            // user_in delivered a data message.
+            uint8_t op = (user_msg.op == opcode::text) ? WSLAY_TEXT_FRAME
+                                                       : WSLAY_BINARY_FRAME;
+            if (!send_frame(ctx, op, is_client,
+                            user_msg.data.data(), user_msg.data.size())) {
+                // Write error (fd closed by reader).
+                return;
+            }
+            break;
+        }
+        case ~0:
+            // ctrl_in died without delivering ctrl_close.
+            // This happens when the reader exits cleanly without receiving
+            // a Close frame (e.g., EOF on the socket).  Fall through to
+            // handle user_in death below.
+            if (!close_sent) {
+                send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client, nullptr, 0);
+                close_sent = true;
+            }
+            return;
+        case ~1:
+            // user_in died: BLO — send close frame to initiate close handshake.
+            if (!close_sent) {
+                send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client, nullptr, 0);
+                close_sent = true;
+            }
+            return;
+        }
     }
-
-    // BLO: writer channel died → send Close frame to initiate graceful close.
-    if (!io_state.close_sent) {
-        send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client, nullptr, 0);
-        io_state.close_sent = true;
-    }
-    // Do NOT close fd here — the reader imp owns and will close it.
 }
 
 // ---------------------------------------------------------------------------
-// Shared helper: spawn reader + writer imps from an fd
+// Shared helper: spawn reader + writer imps from an fd.
 //
-// Both imps use the same fd — reads and writes on a socket use different
-// syscall paths so they are safe to call concurrently from different imps
-// (the kernel serializes at the socket layer). The fd is closed by the
-// reader imp when it exits; at that point the writer sees EPIPE/EBADF on
-// its next write and also exits.
+// The writer imp owns no fd handle — it uses the same raw fd number as
+// the reader, which owns and closes the fd.  The writer is the SOLE
+// imp that writes to the fd; the reader only reads.  This eliminates
+// the concurrent-write race on the kqueue reactor's write_writers_ map.
 // ---------------------------------------------------------------------------
 
 static conn make_conn(io::fd_t fd, bytes leftover, bool is_client) {
-    // The reader owns the fd and closes it on exit.
-    // The writer holds the raw fd value (not owning) — it will fail on the
-    // next write after the reader closes it, triggering a clean exit.
-    io::fd_t wfd(fd.raw()); // non-owning view of the same socket
-
     auto [send_w, send_r] = chan<message>{};
     auto [recv_w, recv_r] = chan<message>{};
+    auto [ctrl_w, ctrl_r] = chan<ctrl_msg>{};
 
     // Reader imp: owns fd (closes on exit).
-    csp::spawn([fd, lv = std::move(leftover), w = std::move(recv_w),
-                is_client]() mutable {
-        ws_reader(fd, std::move(lv), std::move(w), is_client);
+    // Forwards data to recv_w; control frames to ctrl_w.
+    csp::spawn([fd, lv = std::move(leftover),
+                dw = std::move(recv_w),
+                cw = std::move(ctrl_w)]() mutable {
+        ws_reader(fd, std::move(lv), std::move(dw), std::move(cw));
     });
 
-    // Writer imp: uses wfd (raw view, does NOT close on exit).
-    csp::spawn([wfd_raw = wfd.raw(), r = std::move(send_r), is_client]() mutable {
-        // Writer uses a raw fd view — does NOT own/close the fd.
-        io::fd_t view(wfd_raw);
-        ws_writer(view, std::move(r), is_client, /*close_already_sent=*/false);
+    // Writer imp: borrows the raw fd value (does NOT close it on exit).
+    // Receives user messages from send_r; control frames from ctrl_r.
+    csp::spawn([fd_raw = fd.raw(),
+                ur = std::move(send_r),
+                cr = std::move(ctrl_r),
+                is_client]() mutable {
+        io::fd_t view(fd_raw);  // non-owning view
+        ws_writer(view, std::move(ur), std::move(cr), is_client);
     });
 
     return conn{std::move(recv_r), std::move(send_w)};
@@ -498,7 +537,6 @@ static conn make_conn(io::fd_t fd, bytes leftover, bool is_client) {
 // ---------------------------------------------------------------------------
 
 conn upgrade(http::request& req) {
-    // Validate the upgrade request.
     auto upgrade_hdr    = req.header("Upgrade");
     auto connection_hdr = req.header("Connection");
     auto ws_key         = req.header("Sec-WebSocket-Key");
@@ -510,7 +548,6 @@ conn upgrade(http::request& req) {
             {{"Connection", "close"}},
             bytes(reason.begin(), reason.end())
         };
-        // Drop req.hijack so http.cc continues (or closes) the connection.
         req.hijack = {};
         throw csp::error("ws::upgrade: " + reason);
     };
@@ -518,7 +555,6 @@ conn upgrade(http::request& req) {
     if (!iequals(trim(upgrade_hdr), "websocket"))
         bad("missing Upgrade: websocket header");
 
-    // Connection: must contain "Upgrade" (case-insensitive, comma-list).
     {
         bool found_upgrade = false;
         std::istringstream ss(connection_hdr);
@@ -532,11 +568,9 @@ conn upgrade(http::request& req) {
     if (ws_key.empty()) bad("missing Sec-WebSocket-Key");
     if (ws_ver != "13") bad("unsupported Sec-WebSocket-Version (need 13)");
 
-    // Compute Sec-WebSocket-Accept.
     static const char* magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     std::string accept = sha1_base64(ws_key + magic);
 
-    // Send 101 Switching Protocols.
     req.respond << http::response{
         101,
         {
@@ -546,7 +580,6 @@ conn upgrade(http::request& req) {
         },
         {}
     };
-    // Claim the raw socket from the HTTP layer.
     http::request::hijack_result hr;
     if (!(req.hijack >> hr)) {
         throw csp::error("ws::upgrade: failed to hijack HTTP connection");
@@ -557,7 +590,6 @@ conn upgrade(http::request& req) {
 
 // ---------------------------------------------------------------------------
 // Raw dial: resolve host, connect, return non-blocking fd.
-// Does NOT create byte_reader/writer imps — we use direct io::read/write.
 // ---------------------------------------------------------------------------
 
 static io::fd_t raw_dial(const std::string& host, uint16_t port) {
@@ -591,7 +623,6 @@ static io::fd_t raw_dial(const std::string& host, uint16_t port) {
 // ---------------------------------------------------------------------------
 
 conn connect(const std::string& url) {
-    // Parse ws://host[:port]/path
     const std::string prefix = "ws://";
     if (url.size() < prefix.size() ||
         !iequals(url.substr(0, prefix.size()), prefix)) {
@@ -630,10 +661,9 @@ conn connect(const std::string& url) {
     }
     if (host.empty()) throw csp::error("ws::connect: empty host");
 
-    // Generate a random base64-encoded 16-byte nonce for Sec-WebSocket-Key.
+    // Generate a random 16-byte nonce for Sec-WebSocket-Key.
     uint8_t nonce[16];
-    ws_genmask_cb(nonce, 16, nullptr);  // reuse our random helper
-    // Base64-encode the nonce directly.
+    ws_genmask_cb(nonce, 16, nullptr);
     static const char* b64 =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string ws_key;
@@ -648,15 +678,11 @@ conn connect(const std::string& url) {
         ws_key += (i + 2 < 16) ? b64[ v       & 0x3F] : '=';
     }
 
-    // Compute expected accept key.
     static const char* magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     std::string expected_accept = sha1_base64(ws_key + magic);
 
-    // Connect via a raw socket (no byte_reader/writer imps — we need
-    // to take exclusive ownership of the fd after the handshake).
     io::fd_t fd = raw_dial(host, port);
 
-    // Build the HTTP Upgrade request.
     std::ostringstream os;
     os << "GET " << path << " HTTP/1.1\r\n"
        << "Host: " << host << "\r\n"
@@ -672,8 +698,7 @@ conn connect(const std::string& url) {
         throw csp::error("ws::connect: failed to send HTTP upgrade request");
     }
 
-    // Read the server's 101 response via direct io::read.
-    // We buffer until we see the end of HTTP headers (\r\n\r\n).
+    // Read the server's 101 response.
     std::string resp_buf;
     resp_buf.reserve(1024);
     constexpr size_t BUF_SIZE = 512;
@@ -695,17 +720,13 @@ conn connect(const std::string& url) {
 
     auto header_end = resp_buf.find("\r\n\r\n");
 
-    // Validate status line.
     if (resp_buf.find("HTTP/1.1 101") == std::string::npos &&
         resp_buf.find("HTTP/1.0 101") == std::string::npos) {
         io::close(fd);
         throw csp::error("ws::connect: server did not return 101");
     }
 
-    // Validate Sec-WebSocket-Accept.
     auto find_hdr = [&](const std::string& name) -> std::string {
-        // Search for "\r\nName:" (case-insensitive would be better but
-        // Sec-WebSocket-Accept is typically exact case).
         std::string needle = "\r\n" + name + ":";
         auto pos = resp_buf.find(needle);
         if (pos == std::string::npos) return {};
@@ -721,7 +742,6 @@ conn connect(const std::string& url) {
         throw csp::error("ws::connect: bad Sec-WebSocket-Accept from server");
     }
 
-    // Leftover bytes after the HTTP headers that belong to the WS stream.
     bytes leftover(
         reinterpret_cast<const uint8_t*>(resp_buf.data() + header_end + 4),
         reinterpret_cast<const uint8_t*>(resp_buf.data() + resp_buf.size()));

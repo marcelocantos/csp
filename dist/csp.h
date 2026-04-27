@@ -3477,6 +3477,22 @@ struct request {
     // Write exactly one response for this request.
     writer<response> respond;
 
+    // WebSocket / protocol-upgrade hijack.
+    //
+    // After writing a 101 Switching Protocols response via `respond`,
+    // read the raw fd from this channel to take ownership of the
+    // connection socket. The HTTP connection loop exits as soon as
+    // the fd is claimed. Any bytes read by the HTTP parser beyond the
+    // upgrade request are delivered in `leftover` so the caller can
+    // replay them.
+    //
+    // Normal (non-upgrade) handlers must not touch this channel.
+    struct hijack_result {
+        io::fd_t  fd;       // connection socket (non-blocking)
+        bytes     leftover; // bytes consumed by HTTP parser but not yet used
+    };
+    reader<hijack_result> hijack;
+
     // Convenience: find first header value by case-insensitive name.
     // Returns empty string if not found.
     std::string header(const std::string& name) const;
@@ -7914,3 +7930,63 @@ void raise(DWORD event);
 }
 
 #endif // _WIN32
+
+/* csp/ws.h */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+
+
+namespace csp::ws {
+
+// --- Message types ---
+
+enum class opcode : uint8_t {
+    text   = 0x1,
+    binary = 0x2,
+    close  = 0x8,
+    ping   = 0x9,
+    pong   = 0xA,
+};
+
+struct message {
+    opcode  op   = opcode::binary;  // text or binary
+    bytes   data;                   // payload
+};
+
+// --- Endpoint pair returned by upgrade/connect ---
+
+struct conn {
+    reader<message> recv;   // inbound messages (text + binary only)
+    writer<message> send;   // outbound messages
+};
+
+// --- Server-side upgrade ---
+//
+// Call inside an HTTP request handler when you detect
+// "Upgrade: websocket". Performs the HTTP 101 handshake and
+// returns a conn for subsequent message exchange.
+//
+// Internally uses req.respond to send the 101 response, then reads
+// req.hijack to take ownership of the raw socket from the HTTP layer.
+//
+// On error (bad handshake headers), sends 400 Bad Request via
+// req.respond, drops req.hijack (so HTTP loop continues), and
+// throws csp::error.
+//
+// Dropping send triggers a Close handshake (BLO: Close frame is
+// sent to the peer, then recv closes after the peer's Close echo).
+
+conn upgrade(http::request& req);
+
+// --- Client-side connect ---
+//
+// Connects to ws://host[:port]/path and performs the opening
+// handshake. Returns the conn pair. Throws csp::error on failure.
+//
+// url must use the "ws://" scheme (no wss:// in this release).
+
+conn connect(const std::string& url);
+
+} // namespace csp::ws
