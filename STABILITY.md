@@ -5,7 +5,7 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
-Snapshot as of v0.10.0.
+Snapshot as of v0.11.0.
 
 ## Interaction surface catalogue
 
@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.10.0"` | Stable |
+| `CSP_VERSION` | `"0.11.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `10` | Stable |
+| `CSP_VERSION_MINOR` | `11` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
@@ -176,6 +176,10 @@ docs/papers/03-two-phase-prialt.md §8 for the wire mechanism.
 | `addrinfo_ptr` | unique_ptr alias | Stable |
 | `resolve_result` | struct (`info`, `error`, `operator bool`, `message`) | Stable |
 | `resolve(string, string, addrinfo*) → resolve_result` | function | Stable |
+| `read_request` | alias `request<size_t, bytes>` (🎯T17 Stage 1) | Fluid |
+| `source` | alias `writer<read_request>` (🎯T17 Stage 1) | Fluid |
+| `errno_error` | class (`csp::error` + `int err()`) | Fluid |
+| `fd_source(fd_t) → source` | factory: imp serves sized reads from a non-blocking fd | Fluid |
 
 ### File I/O (`csp::file`)
 
@@ -241,9 +245,11 @@ project's http-server notes for the rationale.
 | `http::method` | enum class | Fluid |
 | `http::method_name(method)` | function | Fluid |
 | `http::response` | struct (`status`, `headers`, `body`) | Fluid |
-| `http::request` | struct (method, url, version, headers, body, keep_alive, `respond` writer) | Fluid |
+| `http::request` | struct (method, url, version, headers, `body`, `body_stream`, keep_alive, `respond` writer, `hijack` reader) | Fluid |
 | `http::request::header(name)` | case-insensitive header lookup | Fluid |
 | `http::request::content_length()` | convenience accessor | Fluid |
+| `http::request::drain() → const bytes&` | accumulate body_stream into body (idempotent, 🎯T3.2) | Fluid |
+| `http::request::hijack_result` | struct (`fd_t fd`, `bytes leftover`) — protocol-upgrade payload | Fluid |
 | `http::endpoint` | struct (`requests`, `remote_addr`) | Fluid |
 | `http::serve_options` | struct (`listen`, `max_header_size`, `read_chunk_size`) | Fluid |
 | `http::server` | struct (`endpoints`, `port`, `local_addr`) | Fluid |
@@ -253,6 +259,57 @@ project's http-server notes for the rationale.
 | `http::fetch(method, url, headers, body, opts)` | one-shot client call | Fluid |
 | `http::get(url, headers, opts)` | convenience wrapper | Fluid |
 | `http::post(url, body, headers, opts)` | convenience wrapper | Fluid |
+
+### HTTP/2 (`csp::http2`, `include/csp/http2.h`)
+
+HTTP/2 server (h2c plain-text and h2-over-TLS via ALPN). Streams use the
+same `http::request` / `http::response` types as HTTP/1.1 — handler code
+is protocol-agnostic. Built on nghttp2 (vendored). Server push supported
+via `push_promise()` on the per-connection handle.
+
+| Symbol | Kind | Stability |
+|--------|------|-----------|
+| `http2::endpoint` | struct (per-connection `streams` + push handle) | Fluid |
+| `http2::connection_handle` | struct (server push channel) | Fluid |
+| `http2::push_promise(connection_handle&, const http::request&)` | function | Fluid |
+| `http2::serve_options` | struct | Fluid |
+| `http2::server` | struct (`endpoints`, `port`, `local_addr`) | Fluid |
+| `http2::serve(port, opts)` | h2c server factory | Fluid |
+| `http2::serve_tls(port, tls::context&, opts)` | h2/h2c-via-ALPN server factory (behind `#ifdef CSP_TLS`) | Fluid |
+
+### WebSocket (`csp::ws`, `include/csp/ws.h`)
+
+RFC 6455 WebSocket server-upgrade and client-connect. Built on wslay
+(vendored). Currently `ws://` only — `wss://` deferred. Drop the `send`
+writer to trigger a Close handshake (BLO).
+
+| Symbol | Kind | Stability |
+|--------|------|-----------|
+| `ws::opcode` | enum class (`text`, `binary`, `close`, `ping`, `pong`) | Fluid |
+| `ws::message` | struct (`opcode op`, `bytes data`) | Fluid |
+| `ws::conn` | struct (`reader<message> recv`, `writer<message> send`) | Fluid |
+| `ws::upgrade(http::request&) → conn` | server-side: 101 handshake + hijack the fd | Fluid |
+| `ws::connect(const string& url) → conn` | client-side: TCP + opening handshake | Fluid |
+
+### HTTP/3 (`csp::http3`, `include/csp/http3.h`)
+
+**Stage 1 scaffold only — all entry points throw `csp::error("http3: not
+yet implemented")`.** API surface drafted to fix the protocol-agnostic
+handler contract; integration with QUIC (🎯T3.8) and nghttp3 binding
+follow in later stages. Behind `#ifdef CSP_TLS` (HTTP/3 always requires
+TLS).
+
+| Symbol | Kind | Stability |
+|--------|------|-----------|
+| `http3::endpoint` | struct (`reader<http::request> streams`, `string remote_addr`) | Fluid |
+| `http3::serve_options` | struct (`max_streams`, `rcvbuf`, `cert_pem`, `key_pem`) | Fluid |
+| `http3::server` | struct (`endpoints`, `port`, `local_addr`) | Fluid |
+| `http3::serve(port, opts) → server` | factory (stub) | Fluid |
+| `http3::fetch_options` | struct | Fluid |
+| `http3::response` | struct alias for `http::response` | Fluid |
+| `http3::fetch(method, url, headers, body, opts) → response` | one-shot client (stub) | Fluid |
+| `http3::get(url, headers, opts) → response` | convenience wrapper (stub) | Fluid |
+| `http3::post(url, body, headers, opts) → response` | convenience wrapper (stub) | Fluid |
 
 ### Byte reader (`include/csp/byte_reader.h`)
 
@@ -374,10 +431,33 @@ Items that must be addressed before 1.0:
    target, pkg-config, or CMake find-module. Users must manually integrate.
 
 7. **HTTP surface** — Server and client landed in v0.9.0 with buffered
-   bodies only. Streaming request and response bodies, HTTPS (HTTP over
-   `tls::conn`), and the server / client structure are all Fluid until
-   proven in use. Expect refinements around the `response` struct,
-   `serve_options`, and client ergonomics (connection reuse, redirects).
+   bodies only. v0.11.0 added a streaming request body via
+   `request::body_stream` + `drain()` (T3.2), HTTP/2 (T3.7), and the
+   protocol-upgrade `hijack` channel that WebSocket builds on. Streaming
+   response bodies, HTTPS for HTTP/1.1 (over `tls::conn`), HTTP/3
+   (T3.9 — currently scaffold only), HTTP client refinements (connection
+   reuse, redirects), and unification of HTTP/1.1, HTTP/2 and HTTP/3
+   serve-options remain Fluid.
+
+8. **WebSocket surface** — `ws::upgrade` / `ws::connect` landed in
+   v0.11.0 (T3.5). Currently `ws://` only — TLS-secured `wss://` deferred.
+   The `conn{recv, send}` shape and Close-on-writer-death lifecycle need
+   real-world use before freezing.
+
+9. **Pull-based source** — `io::source` / `io::fd_source` (T17 Stage 1)
+   landed in v0.11.0 as the foundation for streaming I/O. Higher layers
+   (`tls_source`, `http_body_source`) and the `source`-consuming side of
+   `http::fetch` / `http::post` are not yet implemented.
+
+10. **HTTP/3** — Stage 1 scaffold in v0.11.0 (nghttp3 vendored, API
+    drafted, stubs throw). Implementation depends on QUIC transport
+    (T3.8) which is not yet started in master.
+
+11. **Windows portability** — v0.11.0 introduces the arena stack
+    allocator (T3.3) which uses `__builtin_trap()` and
+    `[[gnu::always_inline]]` in the suspend-point overflow check. Both
+    are GCC/Clang extensions that don't compile under MSVC. Windows is
+    a known-broken platform in v0.11.0; fix planned for v0.12.0.
 
 ## Out of scope for 1.0
 
