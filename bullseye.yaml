@@ -210,6 +210,7 @@ targets:
     status: identified
     value: 21.0
     cost: 34.0
+    showcase: true
     acceptance:
     - 'Core: T3.1 (I/O wrappers) + T3.2 (HTTP/1.1) + T3.5 (WebSocket) + T3.6 (HTTP client). Full stack: + T3.7 (HTTP/2) + T3.8 (QUIC) + T3.9 (HTTP/3). Infrastructure: T3.3 (stack scaling), T3.4 (stack analysis).'
     depends_on:
@@ -366,6 +367,7 @@ targets:
     status: identified
     value: 5.0
     cost: 4.0
+    showcase: true
     acceptance:
     - all sub-targets achieved
     depends_on:
@@ -430,6 +432,7 @@ targets:
     status: identified
     value: 30.0
     cost: 18.0
+    showcase: true
     acceptance:
     - at least 3 sub-target examples are complete
     depends_on:
