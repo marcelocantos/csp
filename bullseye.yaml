@@ -104,9 +104,10 @@ targets:
     discovered: 2026-04-02
   T13:
     name: Per-worker wake eliminates thundering herd
-    status: identified
+    status: achieved
     value: 3.0
     cost: 8.0
+    actual_cost: 8.0
     acceptance:
     - '`unpark_one()` wakes exactly one sleeping worker, not all'
     - No `notify_all` on shared condvar in the imp scheduling hot path
@@ -115,6 +116,7 @@ targets:
     context: 'Current `unpark_one()` does `park_cv.notify_all()` on a shared condvar, waking all parked workers (thundering herd). Investigation found three approaches and their failure modes: (1) per-P condvar deadlocks with `has_work()` predicate holding `global_mu`; (2) `atomic::wait` avoids deadlock but main_loop quiescence ping-pongs on every park cycle; (3) split worker/main condvar has lost-wakeup race. The proper fix requires either platform-specific futex primitives (`__ulock_wait`/`futex`), Go-style `note` (single-word futex per M), or decoupling main_loop quiescence from the worker parking condvar. See Go runtime (`gopark`/`goready`/`notesleep`) and Tokio''s per-worker deque + atomic searching counter for reference designs.'
     origin: manual
     discovered: 2026-04-02
+    achieved: 2026-04-28
   T14:
     name: Dynamic scoping improvements
     status: identified
@@ -243,9 +245,10 @@ targets:
     achieved: 2026-04-27
   T3.2:
     name: Channel-native HTTP/1.1 server works
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - llhttp vendored in `vendor/` for HTTP/1.1 parsing
     - '`csp::http::serve(port)` returns a reader of per-connection endpoint bundles'
@@ -257,7 +260,7 @@ targets:
     context: Decomposed from original T3.2 which was overloaded. llhttp (Node.js parser) is parser-only, no I/O — integrates cleanly as a filter between byte_reader and structured output. Body streaming deferred to future work (buffered for now).
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-04-08
+    achieved: 2026-04-28
   T3.3:
     name: High-density stack scaling supports 100K+ imps
     status: converging
@@ -283,9 +286,10 @@ targets:
     discovered: 2026-03-09
   T3.5:
     name: WebSocket support (server and client)
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - wslay vendored in `vendor/` for WebSocket frame parsing/serialization
     - 'Server: `ws::upgrade(http_conn)` returns `reader<ws::message>` + `writer<ws::message>`'
@@ -297,11 +301,13 @@ targets:
     context: Partial work preserved on remote branch `feature/T3.5-websocket` (single WIP commit). Includes wslay vendor (~2K LOC, MIT) under `vendor/github.com/tatsuhiro-t/wslay/`, draft `include/csp/ws.h`, `src/ws.cc`, `test/ws.test.cc` (one or more deadlock-prone), Makefile + amalgamate.py wiring, and modifications to `http.h` / `http.cc` / `io.cc` for the upgrade handshake. Doesn't build cleanly. Original agent stopped after retry-looping on a hung `csp_tests --test-suite=ws`. Resume by checking out the branch and attaching with lldb under `CSP_MAXPROCS=2` to identify the deadlocked imp.
     origin: manual
     discovered: 2026-03-28
+    achieved: 2026-04-28
   T3.6:
     name: HTTP client
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - '`csp::http::get(url)` / `post(url, body)` return `reader<http::response>` (non-blocking)'
     - Connection pooling with per-host channels
@@ -313,11 +319,13 @@ targets:
     - T17
     origin: manual
     discovered: 2026-03-28
+    achieved: 2026-04-28
   T3.7:
     name: HTTP/2 support
-    status: identified
+    status: achieved
     value: 5.0
     cost: 8.0
+    actual_cost: 8.0
     acceptance:
     - nghttp2 vendored in `vendor/` for HTTP/2 session management
     - 'Server: `http2::serve(port)` with multiplexed streams as independent channel bundles'
@@ -330,6 +338,7 @@ targets:
     context: nghttp2 has a "bring your own I/O" API (nghttp2_session_mem_recv/send). CSP owns the fds, nghttp2 owns the protocol state. HTTP/2 multiplexing maps naturally to CSP — each stream is an imp with its own channel pair. Depends on 🎯T3.2 (shared HTTP types) and 🎯T3.1 (I/O wrappers).
     origin: manual
     discovered: 2026-03-28
+    achieved: 2026-04-28
   T3.8:
     name: QUIC transport
     status: identified
@@ -349,9 +358,10 @@ targets:
     discovered: 2026-03-28
   T3.9:
     name: HTTP/3 over QUIC
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - nghttp3 vendored in `vendor/` for HTTP/3 framing
     - 'Server: `http3::serve(port)` with same request/response types as HTTP/1.1 and HTTP/2'
@@ -362,6 +372,7 @@ targets:
     context: 'nghttp3 sits on top of ngtcp2 (🎯T3.8) the same way nghttp2 sits on top of TCP. The key design goal is protocol-agnostic handler code: a handler that reads `http::request` and writes `http::response` should work unchanged across HTTP/1.1, HTTP/2, and HTTP/3. The protocol differences are hidden below the channel layer. Depends on ��T3.7 (shared HTTP/2 types) and 🎯T3.8 (QUIC transport).'
     origin: manual
     discovered: 2026-03-28
+    achieved: 2026-04-28
   T4:
     name: API safety gaps are closed
     status: identified
@@ -378,9 +389,10 @@ targets:
     achieved: 2026-03-26
   T4.1:
     name: '`closer<EP>` enforces vulture-only endpoints'
-    status: identified
+    status: achieved
     value: 3.0
     cost: 2.0
+    actual_cost: 2.0
     acceptance:
     - '`closer<EP>` type exists with `operator~`, `operator bool`, and `endpoint()` escape hatch'
     - 'CTAD: `closer(reader<T>)` → `closer<reader<T>>`'
@@ -390,7 +402,7 @@ targets:
     context: 'Original acceptance criteria called for spawn/done to return closer directly. This was revised: spawn must return reader (supervisor reads exceptions), done returns chan_op (no reader to wrap). closer is opt-in via CTAD wrapping, which is the right design — it''s a restriction the caller chooses, not one forced by the API.'
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-26
+    achieved: 2026-04-29
   T4.2:
     name: main() can perform CSP operations
     status: identified
