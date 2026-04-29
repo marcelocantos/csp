@@ -542,3 +542,25 @@ csp::schedule();
 | Isolation | Copy-on-write per scope | Per-imp map |
 | Storage | Persistent HAMT (shared structure) | `unordered_map` per MT |
 | Use case | Request context, trace IDs, config | Counters, caches, scratch state |
+
+## Use outside an imp
+
+All dynamic-scope APIs are storage-attached to the current imp. When
+called from a thread that is not running an imp -- e.g. directly from
+`main()` before any `csp::run` / `csp::spawn`, or from a foreign
+thread that has never been bound to the CSP runtime -- behaviour is
+defined as follows:
+
+| Operation | Outside any imp |
+|-----------|-----------------|
+| `*var`, `var->...` on `dynamic<T>` / `imp_local<T>` | Returns the default value |
+| `csp::local{var = val, ...}` | Throws `csp::error` |
+| `imp_local<T>::operator=(val)` | Throws `csp::error` |
+| `csp::context::current()` | Returns an empty `context` |
+| `csp::context_scope(ctx)` | Throws `csp::error` |
+
+Reads degrade gracefully because no binding can exist on a
+non-existent imp -- the default is the only meaningful answer.
+Scope-binding operations throw a `csp::error` whose message names the
+API and points to `csp::run` / `csp::spawn`, so misuse from `main()`
+fails with a clear diagnostic instead of a segfault.

@@ -2377,6 +2377,17 @@ void hamt_release(uintptr_t p);
 
 namespace csp {
 
+class error;  // defined in csp.h
+
+namespace detail {
+
+// Throw csp::error from a no-imp call site (e.g. main() before any
+// csp::run / spawn). Implemented out-of-line in dynamic.cc to avoid a
+// dependency on the full error definition here.
+[[noreturn]] void throw_no_imp(const char* what);
+
+} // namespace detail
+
 // --- context_key ---
 // Default-constructed instances get a unique ID.
 // Copies compare and hash equal.
@@ -2413,11 +2424,14 @@ public:
 
     uintptr_t root() const { return root_; }
 
-    // Snapshot the current imp's context.
+    // Snapshot the current imp's context. Returns an empty context
+    // when called outside an imp (e.g. directly from main()).
     static context current() {
         context c;
-        c.root_ = detail::current_imp()->dyn_ctx_;
-        if (c.root_) internal::hamt_retain(c.root_);
+        if (auto* imp = detail::current_imp()) {
+            c.root_ = imp->dyn_ctx_;
+            if (c.root_) internal::hamt_retain(c.root_);
+        }
         return c;
     }
 };
@@ -2429,18 +2443,24 @@ public:
 class context_scope {
     uintptr_t saved_;
 public:
-    // Save current context and install a foreign one.
-    explicit context_scope(const context& ctx) : saved_(detail::current_imp()->dyn_ctx_) {
+    // Save current context and install a foreign one. Throws csp::error
+    // if called outside an imp.
+    explicit context_scope(const context& ctx) : saved_(0) {
+        auto* imp = detail::current_imp();
+        if (!imp) detail::throw_no_imp("csp::context_scope");
+        saved_ = imp->dyn_ctx_;
         if (saved_) internal::hamt_retain(saved_);
-        auto old = detail::current_imp()->dyn_ctx_;
-        detail::current_imp()->dyn_ctx_ = ctx.root();
+        auto old = imp->dyn_ctx_;
+        imp->dyn_ctx_ = ctx.root();
         if (ctx.root()) internal::hamt_retain(ctx.root());
         if (old) internal::hamt_release(old);
     }
 
     ~context_scope() {
-        auto current = detail::current_imp()->dyn_ctx_;
-        detail::current_imp()->dyn_ctx_ = saved_;
+        auto* imp = detail::current_imp();
+        if (!imp) return;  // ctor would have thrown; defensive no-op
+        auto current = imp->dyn_ctx_;
+        imp->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -2489,8 +2509,9 @@ class local {
 
     void apply(dynamic_binding&& b) {
         b.consumed_ = true;
-        auto old = detail::current_imp()->dyn_ctx_;
-        detail::current_imp()->dyn_ctx_ = internal::hamt_assoc(
+        auto* imp = detail::current_imp();
+        auto old = imp->dyn_ctx_;
+        imp->dyn_ctx_ = internal::hamt_assoc(
             old, b.key_id_, std::move(b.value_));
         if (old) internal::hamt_release(old);
     }
@@ -2499,14 +2520,24 @@ public:
     template <typename... Bs>
         requires (sizeof...(Bs) >= 1 &&
                   (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...))
-    local(Bs&&... bindings) : saved_(detail::current_imp()->dyn_ctx_) {
+    local(Bs&&... bindings) : saved_(0) {
+        auto* imp = detail::current_imp();
+        if (!imp) {
+            // Mark each binding consumed so its destructor doesn't trip
+            // the "destroyed without csp::local" assert as we unwind.
+            ((bindings.consumed_ = true), ...);
+            detail::throw_no_imp("csp::local");
+        }
+        saved_ = imp->dyn_ctx_;
         if (saved_) internal::hamt_retain(saved_);
         (apply(std::forward<Bs>(bindings)), ...);
     }
 
     ~local() {
-        auto current = detail::current_imp()->dyn_ctx_;
-        detail::current_imp()->dyn_ctx_ = saved_;
+        auto* imp = detail::current_imp();
+        if (!imp) return;  // ctor would have thrown; defensive no-op
+        auto current = imp->dyn_ctx_;
+        imp->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -2532,20 +2563,26 @@ public:
     dynamic(const dynamic&) = delete;
     dynamic& operator=(const dynamic&) = delete;
 
-    // Read by value (safe, no dangling).
+    // Read by value (safe, no dangling). Returns the default outside
+    // an imp context (no binding can exist on a non-existent imp).
     T operator*() const {
-        if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
-            return *std::any_cast<T>(a);
+        if (auto* imp = detail::current_imp()) {
+            if (auto* a = internal::hamt_get(imp->dyn_ctx_, key_.id()))
+                return *std::any_cast<T>(a);
+        }
         assert(default_.has_value());
         return *default_;
     }
 
     // Read by pointer into the HAMT node. Valid as long as the
     // csp::local binding is in scope.  Allows mutation and avoids
-    // copying for non-trivial types.
+    // copying for non-trivial types. Outside an imp, returns a pointer
+    // to the default value.
     T* operator->() const {
-        if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
-            return const_cast<T*>(std::any_cast<T>(a));
+        if (auto* imp = detail::current_imp()) {
+            if (auto* a = internal::hamt_get(imp->dyn_ctx_, key_.id()))
+                return const_cast<T*>(std::any_cast<T>(a));
+        }
         assert(default_.has_value());
         return const_cast<T*>(&*default_);
     }
@@ -2574,21 +2611,26 @@ public:
     imp_local(const imp_local&) = delete;
     imp_local& operator=(const imp_local&) = delete;
 
-    // Read: map lookup + any_cast. Returns by value.
+    // Read: map lookup + any_cast. Returns by value. Returns the
+    // default outside an imp context.
     T operator*() const {
-        auto* m = detail::current_imp()->local_ctx_;
-        if (m) {
-            auto it = m->find(key_.id());
-            if (it != m->end())
-                return *std::any_cast<T>(&it->second);
+        if (auto* imp = detail::current_imp()) {
+            if (auto* m = imp->local_ctx_) {
+                auto it = m->find(key_.id());
+                if (it != m->end())
+                    return *std::any_cast<T>(&it->second);
+            }
         }
         assert(default_.has_value());
         return *default_;
     }
 
-    // Write: direct mutation of per-imp map.
+    // Write: direct mutation of per-imp map. Throws csp::error outside
+    // an imp context (no per-imp storage exists).
     imp_local& operator=(T val) {
-        auto*& m = detail::current_imp()->local_ctx_;
+        auto* imp = detail::current_imp();
+        if (!imp) detail::throw_no_imp("csp::imp_local::operator=");
+        auto*& m = imp->local_ctx_;
         if (!m) m = new std::unordered_map<uint64_t, std::any>();
         (*m)[key_.id()] = std::any(std::move(val));
         return *this;

@@ -30,6 +30,12 @@ namespace csp {
 
     namespace detail {
 
+        [[noreturn]] void throw_no_imp(const char* what) {
+            throw error(std::string(what) +
+                " requires an imp context — "
+                "use csp::run() or csp::spawn() to enter the runtime");
+        }
+
         struct alignas(16) align_16 {
             char c[16];
         };

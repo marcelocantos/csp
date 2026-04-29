@@ -663,6 +663,15 @@ int v = *counter;   // 42
 // Child imps start with default (0), not parent's value.
 ```
 
+**Outside any imp** (e.g. directly from `main()` before `csp::run` /
+`csp::spawn`, or from a foreign thread not bound to the runtime):
+- `*var` and `var->...` on `dynamic<T>` / `imp_local<T>` -- return the
+  default value (no binding can exist on a non-existent imp).
+- `csp::local{...}`, `imp_local::operator=`, `context_scope` -- throw
+  `csp::error` with a message naming the API and pointing to
+  `csp::run` / `csp::spawn`.
+- `context::current()` -- returns an empty context.
+
 ## Cancellation
 
 Cooperative scope-based cancellation via dynamic scoping.
