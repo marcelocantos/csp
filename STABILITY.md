@@ -5,7 +5,7 @@ backwards-incompatible changes to the public API require a new product fork
 (there is no v2.0). The pre-1.0 period exists to get the interaction surface
 right before making that commitment.
 
-Snapshot as of v0.11.0.
+Snapshot as of v0.12.0.
 
 ## Interaction surface catalogue
 
@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.11.0"` | Stable |
+| `CSP_VERSION` | `"0.12.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `11` | Stable |
+| `CSP_VERSION_MINOR` | `12` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
@@ -109,6 +109,7 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 | `prialt(Ops&&...) → int` | Stable |
 | `prialt(vector<chan_op<T>>&) → int` | Stable |
 | `prialt(vector<chan_op<T>>&, none_t) → int` | Stable |
+| `closer<EP>` — vulture-only endpoint wrapper (CTAD, `operator~`, `operator bool`, `endpoint()`) | Stable |
 
 ### In-band exception delivery
 
@@ -198,13 +199,13 @@ docs/papers/03-two-phase-prialt.md §8 for the wire mechanism.
 
 | Symbol | Kind | Stability |
 |--------|------|-----------|
-| `dynamic<T>` | class template | Stable |
+| `dynamic<T>` | class template (main()-safe reads) | Stable |
 | `dynamic_binding` | deferred binding | Stable |
-| `local` | RAII binding scope | Stable |
-| `imp_local<T>` | class template | Stable |
+| `local` | RAII binding scope (throws `csp::error` outside an imp) | Stable |
+| `imp_local<T>` | class template (main()-safe reads; write throws outside an imp) | Stable |
 | `context_key` | unique key type | Stable |
-| `context` | HAMT root handle | Stable |
-| `context_scope` | RAII installer | Stable |
+| `context` | HAMT root handle (`current()` returns empty outside an imp) | Stable |
+| `context_scope` | RAII installer (throws `csp::error` outside an imp) | Stable |
 
 ### Unix signals (`csp::signal`)
 
@@ -453,11 +454,11 @@ Items that must be addressed before 1.0:
     drafted, stubs throw). Implementation depends on QUIC transport
     (T3.8) which is not yet started in master.
 
-11. **Windows portability** — v0.11.0 introduces the arena stack
-    allocator (T3.3) which uses `__builtin_trap()` and
-    `[[gnu::always_inline]]` in the suspend-point overflow check. Both
-    are GCC/Clang extensions that don't compile under MSVC. Windows is
-    a known-broken platform in v0.11.0; fix planned for v0.12.0.
+11. **Windows portability** — v0.12.0 makes the arena overflow check
+    portable (`__debugbreak()` on MSVC, `__builtin_trap()` elsewhere).
+    `[[gnu::always_inline]]` produces a recoverable warning, not an
+    error, on MSVC. Windows CI compiles cleanly; ws/http3 test suites
+    are excluded pending CMake wiring of wslay / nghttp3 / ngtcp2.
 
 ## Out of scope for 1.0
 
