@@ -300,7 +300,7 @@ None.
 
 ## 2026-04-29 — /release v0.12.0
 
-- **Commit**: `pending`
+- **Commit**: `b1cb77f`
 - **Outcome**: Released v0.12.0 (source-only, no binaries). Closes
   🎯T4 (API safety gaps) including 🎯T4.1 `closer<EP>` (vulture-only
   spawn-handle wrapper, docs in `docs/reference/multiplexing.md`) and
