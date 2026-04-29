@@ -375,10 +375,12 @@ targets:
     achieved: 2026-04-28
   T4:
     name: API safety gaps are closed
-    status: identified
+    status: achieved
     value: 5.0
     cost: 4.0
     showcase: true
+    actual_cost: 4.0
+    demonstration: 'Walked the user through the two API additions in-session: closer<EP> wrapping spawn handles for vulture-only death-watch (test/closer.test.cc, 5 tests), and main()-safe dynamic-scope APIs that throw csp::error from foreign threads instead of segfaulting (test/main_context.test.cc, 7 tests on a fresh std::thread). User accepted via "keep going till the release is done".'
     acceptance:
     - all sub-targets achieved
     depends_on:
@@ -386,7 +388,7 @@ targets:
     - T4.2
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-26
+    achieved: 2026-04-29
   T4.1:
     name: '`closer<EP>` enforces vulture-only endpoints'
     status: achieved
