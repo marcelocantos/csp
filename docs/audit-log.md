@@ -297,3 +297,20 @@ None.
   hit a stream-channel reader-move bug under handshake completion
   and was excluded from this release; both targets remain in the
   bullseye frontier for a clean restart.
+
+## 2026-04-29 — /release v0.12.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.12.0 (source-only, no binaries). Closes
+  🎯T4 (API safety gaps) including 🎯T4.1 `closer<EP>` (vulture-only
+  spawn-handle wrapper, docs in `docs/reference/multiplexing.md`) and
+  🎯T4.2 main()-safe dynamic-scope APIs (`csp::local` /
+  `imp_local::operator=` / `context_scope` throw `csp::error` outside
+  any imp; `dynamic<T>` / `imp_local<T>` reads degrade to defaults).
+  Windows portability fix: `__builtin_trap()` → `__debugbreak()` on
+  MSVC; CMake test list now excludes ws/http3 pending wslay/nghttp3
+  CMake wiring. NOTICES updated for llhttp, nghttp2, wslay, nghttp3.
+  Bullseye sweep retired six already-shipped targets (🎯T3.2, 🎯T3.5,
+  🎯T3.6, 🎯T3.7, 🎯T3.9, 🎯T13). One PR since v0.11.0: #42. CI green
+  on all platforms (macOS arm64, Linux x86_64/arm64, ASan/UBSan, TSan,
+  TLA+, Windows x86_64).

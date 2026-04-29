@@ -1,8 +1,8 @@
 #pragma once
 
-#define CSP_VERSION "0.11.0"
+#define CSP_VERSION "0.12.0"
 #define CSP_VERSION_MAJOR 0
-#define CSP_VERSION_MINOR 11
+#define CSP_VERSION_MINOR 12
 #define CSP_VERSION_PATCH 0
 
 #include <csp/internal/log.h>
