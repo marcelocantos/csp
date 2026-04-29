@@ -405,15 +405,16 @@ targets:
     achieved: 2026-04-29
   T4.2:
     name: main() can perform CSP operations
-    status: identified
+    status: achieved
     value: 2.0
     cost: 2.0
+    actual_cost: 2.0
     acceptance:
     - '`csp::local` in `main()` does not crash'
     - Either a lightweight "main imp" context is established automatically, or the limitation is documented with a clear error message
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-26
+    achieved: 2026-04-29
   T5:
     name: Unmodeled concurrent decision points have TLA+ specs
     status: identified
