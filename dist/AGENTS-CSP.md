@@ -253,6 +253,18 @@ holds the endpoint copy; the watcher uses the vulture. **Never** store a copy
 of the watched endpoint inside the watching imp -- the copy keeps it alive,
 creating a reference cycle that prevents the death event from ever firing.
 
+**`closer<EP>` -- vulture-only wrapper.** Restricts an endpoint to
+death-watch + liveness-check. No `>>`, no `<<` -- only `~handle` and
+`bool(handle)`. Useful for spawn handles where the channel value is
+consumed elsewhere (e.g. `reader<exception_ptr>` from `spawn`).
+
+```cpp
+csp::closer handle(csp::spawn([] { do_work(); }));  // CTAD
+if (handle) { /* still running */ }
+auto k = csp::prialt(~handle);                       // matches on imp exit
+handle.endpoint();                                   // escape hatch
+```
+
 ## Spawn Helpers
 
 ```cpp
@@ -650,6 +662,15 @@ counter = 42;       // direct write, no local needed
 int v = *counter;   // 42
 // Child imps start with default (0), not parent's value.
 ```
+
+**Outside any imp** (e.g. directly from `main()` before `csp::run` /
+`csp::spawn`, or from a foreign thread not bound to the runtime):
+- `*var` and `var->...` on `dynamic<T>` / `imp_local<T>` -- return the
+  default value (no binding can exist on a non-existent imp).
+- `csp::local{...}`, `imp_local::operator=`, `context_scope` -- throw
+  `csp::error` with a message naming the API and pointing to
+  `csp::run` / `csp::spawn`.
+- `context::current()` -- returns an empty context.
 
 ## Cancellation
 

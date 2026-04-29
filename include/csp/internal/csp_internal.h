@@ -183,10 +183,12 @@ void check_stack_overflow(Imp const* imp, void* current_sp) {
         // might corrupt adjacent imp stacks.
         static constexpr char msg[] =
             "csp: stack overflow detected (arena soft guard)\n";
-#ifndef _WIN32
+#ifdef _WIN32
+        __debugbreak();
+#else
         (void)::write(2, msg, sizeof(msg) - 1);
-#endif
         __builtin_trap();
+#endif
     }
 }
 

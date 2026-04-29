@@ -25,11 +25,12 @@ death -> [*] : return ~index
 1. [csp::alt](#cspalt) -- fair (randomized) select
 2. [csp::prialt](#cspprialt) -- priority (declaration-order) select
 3. [Death-watch](#death-watch) -- `~reader` / `~writer`
-4. [csp::chan_op\<T\>](#cspchan_opt) -- channel operation descriptors
-5. [chan_op RAII](#chan_op-raii) -- standalone blocking via destructor
-6. [csp::none](#cspnone) -- non-blocking guard (preferred)
-7. [csp::skip](#cspskip) -- non-blocking guard (legacy)
-8. [Interactions](#interactions)
+4. [csp::closer\<EP\>](#cspcloserep) -- vulture-only endpoint wrapper
+5. [csp::chan_op\<T\>](#cspchan_opt) -- channel operation descriptors
+6. [chan_op RAII](#chan_op-raii) -- standalone blocking via destructor
+7. [csp::none](#cspnone) -- non-blocking guard (preferred)
+8. [csp::skip](#cspskip) -- non-blocking guard (legacy)
+9. [Interactions](#interactions)
 
 ---
 
@@ -209,6 +210,83 @@ csp::spawn([r = std::move(ch.r)] {
         }
     }
 });
+```
+
+---
+
+## csp::closer\<EP\>
+
+A vulture-only endpoint wrapper: keeps an endpoint alive for death-watching
+but hides its data interface.
+
+### Signature
+
+```cpp
+template <typename EP>
+class closer {
+public:
+    closer() = default;
+    explicit closer(EP ep);
+
+    explicit operator bool() const;       // alive?
+    auto operator~() const;               // death-watch chan_op
+
+    closer& operator=(std::nullptr_t);    // drop the endpoint
+
+    EP&       endpoint() &;               // escape hatch
+    EP const& endpoint() const &;
+    EP&&      endpoint() &&;
+};
+
+// CTAD: closer(reader<T>) -> closer<reader<T>>.
+template <typename EP> closer(EP) -> closer<EP>;
+```
+
+**Header:** `#include "csp.h"`
+
+### Description
+
+Some endpoints exist purely as lifecycle handles -- the value carried on
+the channel is meaningless and should never be read or written. The
+prototypical example is the `reader<exception_ptr>` returned by `spawn()`:
+holding it keeps the imp's death observable, but the exception_ptr
+delivered on imp exit is consumed by the supervisor, not the holder.
+Wrapping such a handle in `closer` enforces vulture-only access at the
+type level: the wrapped endpoint can be death-watched (`~handle`) and
+checked for liveness (`bool(handle)`), but cannot be read from or written
+to.
+
+`closer` is opt-in. The caller chooses to restrict the interface; the
+underlying APIs continue to return raw `reader<T>` / `writer<T>` so that
+legitimate consumers (like the supervisor) can still access the data.
+
+Dropping a `closer` drops the wrapped endpoint, which signals the peer
+the same as dropping the endpoint directly.
+
+The `endpoint()` accessor exposes the underlying endpoint as an escape
+hatch -- use sparingly, since it defeats the wrapper's purpose.
+
+### Example
+
+```cpp
+// Wrap a spawn handle for lifecycle-only observation.
+csp::closer handle(csp::spawn([] { do_work(); }));
+
+// Death-watch: matches when the imp finishes.
+auto k = csp::prialt(~handle);
+assert(k == ~0);
+
+// Liveness check.
+if (handle) {
+    // imp still running
+}
+```
+
+```cpp
+// Force vulture-only access at an API boundary.
+csp::closer<csp::reader<int>> watch_only(std::move(some_reader));
+// watch_only >> n;  // ill-formed -- no operator>>
+csp::prialt(~watch_only);     // OK -- death-watch only
 ```
 
 ---
