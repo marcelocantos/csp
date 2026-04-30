@@ -249,7 +249,12 @@ TEST_CASE("Branch-with-data---small-path") {
     tag_data d{0};
     auto result = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&branching_caller), &d);
+    // With data, the CBZ on d->which is folded at walk time: only the
+    // small_path branch is explored, giving an exact result.
+    CHECK(result.is_exact);
     CHECK(result.max_depth > 0);
+    // Small path is well under 512 bytes (it only has a tiny local buffer).
+    CHECK(result.max_depth < 512);
     MESSAGE("branching_caller (small) depth: ", result.max_depth,
             ", is_exact: ", result.is_exact);
 }
@@ -258,7 +263,14 @@ TEST_CASE("Branch-with-data---large-path") {
     tag_data d{1};
     auto result = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(&branching_caller), &d);
+    // The large path has a loop (stack canary check) that may exceed the
+    // instruction budget, so is_exact may be false — but the result should
+    // be at least as large as the small path's exact result.
     CHECK(result.max_depth > 0);
+    tag_data d_small{0};
+    auto small_result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&branching_caller), &d_small);
+    CHECK(result.max_depth >= small_result.max_depth);
     MESSAGE("branching_caller (large) depth: ", result.max_depth,
             ", is_exact: ", result.is_exact);
 }
