@@ -4656,16 +4656,24 @@ ptr_map<stack_analysis> g_eval_cache;
 
 // Forward declaration.
 std::vector<uint8_t> analyze_and_compile(const void* fn,
-                                         const stack_analysis_options& opts);
+                                         const stack_analysis_options& opts,
+                                         const void* data);
 
 // Return by value: programs are typically 9-27 bytes, so copies are cheap.
+// When `data` is non-null, a data-specialised program is compiled and
+// returned directly without touching the global cache (the program is only
+// valid for that specific closure value).
 std::vector<uint8_t> get_or_compile(const void* fn,
-                                     const stack_analysis_options& opts) {
+                                     const stack_analysis_options& opts,
+                                     const void* data = nullptr) {
+    if (data) {
+        return analyze_and_compile(fn, opts, data);
+    }
     {
         std::lock_guard<spinlock> lk(g_cache_mu);
         if (auto* p = g_cache.find(fn)) return *p;
     }
-    auto prog = analyze_and_compile(fn, opts);
+    auto prog = analyze_and_compile(fn, opts, nullptr);
     std::lock_guard<spinlock> lk(g_cache_mu);
     g_cache.emplace(fn, prog);
     return prog;
@@ -4719,9 +4727,15 @@ struct walk_work {
 // recursing.  BL instructions always emit CALL_DIRECT — callee resolution
 // is deferred to the bytecode evaluator, keeping walk() completely
 // non-recursive.
+//
+// When `data` is non-null, integer fields loaded from the data struct via
+// LDR Wt/Xt instructions are materialised as CONST register values at walk
+// time.  This allows CBZ/CBNZ/TBZ/TBNZ handlers to prune dead branches
+// statically, producing tighter depth estimates for data-specialised paths.
 std::vector<expr_ptr> walk(
         analysis_state initial_state,
         const stack_analysis_options& opts,
+        const void* data,
         visit_set& visited,
         size_t& inst_count) {
     static constexpr int MAX_BRANCH_DEPTH = 64;
@@ -5053,15 +5067,21 @@ std::vector<expr_ptr> walk(
 
                 if (rt < 31) {
                     if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                        // Attempt to read a concrete 32-bit integer from the closure.
-                        // This enables condition evaluation at CBZ/CBNZ/TBZ/TBNZ.
-                        // The walk_work below carries opts but not raw data — we
-                        // store this as a DATA_OFFSET so the evaluator can resolve it.
-                        // For walk-time constant folding, we handle the CONST case
-                        // when data is available (analyze_and_compile passes data=nullptr
-                        // at the program level; the evaluator handles data-driven paths).
-                        state.regs[rt].origin = reg_state::DATA_OFFSET;
-                        state.regs[rt].u.offset = state.regs[rn].u.offset + byte_offset;
+                        size_t abs_offset = state.regs[rn].u.offset + byte_offset;
+                        if (data) {
+                            // Materialise the field as a CONST so CBZ/CBNZ/TBZ/TBNZ
+                            // can prune dead branches at walk time.
+                            uint32_t val;
+                            std::memcpy(&val,
+                                static_cast<const char*>(data) + abs_offset,
+                                sizeof(val));
+                            state.regs[rt].origin = reg_state::CONST;
+                            state.regs[rt].u.const_value = static_cast<int64_t>(val);
+                        } else {
+                            // Without data, record provenance for the bytecode evaluator.
+                            state.regs[rt].origin = reg_state::DATA_OFFSET;
+                            state.regs[rt].u.offset = abs_offset;
+                        }
                     } else {
                         state.regs[rt].origin = reg_state::UNKNOWN;
                     }
@@ -5194,8 +5214,14 @@ std::vector<expr_ptr> walk(
 // Analyze a single function and compile to bytecode.
 // walk() does not follow calls — it emits CALL_DIRECT for BL instructions,
 // deferring callee resolution to the bytecode evaluator.
+//
+// When `data` is non-null, integer fields are read from the live closure at
+// walk time, allowing branches conditioned on closure data to be pruned
+// statically.  Programs compiled with data are not stored in the global
+// cache (they are data-specific).
 std::vector<uint8_t> analyze_and_compile(const void* fn,
-                                         const stack_analysis_options& opts) {
+                                         const stack_analysis_options& opts,
+                                         const void* data = nullptr) {
     analysis_state initial{};
     initial.pc = static_cast<const uint32_t*>(fn);
     initial.sp_delta = 0;
@@ -5205,7 +5231,7 @@ std::vector<uint8_t> analyze_and_compile(const void* fn,
 
     visit_set visited;
     size_t inst_count = 0;
-    auto results = walk(initial, opts, visited, inst_count);
+    auto results = walk(initial, opts, data, visited, inst_count);
 
     // Constant-fold pure path results.
     for (auto& r : results) {
@@ -5266,8 +5292,12 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
     // Program storage: deque provides stable references on push_back,
     // so ip/end pointers into stored programs remain valid when new
     // programs are added for callees.
+    //
+    // The root function is compiled with data when available so that
+    // integer fields in the closure can be materialised as CONST registers
+    // at walk time, enabling branch pruning (e.g. CBZ on a tag field).
     std::deque<std::vector<uint8_t>> prog_store;
-    prog_store.push_back(get_or_compile(root_fn, opts));
+    prog_store.push_back(get_or_compile(root_fn, opts, data));
 
     const uint8_t* ip = prog_store.back().data();
     const uint8_t* end = ip + prog_store.back().size();
@@ -5411,7 +5441,9 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
                 break;
             }
             // Compile and enter callee with forwarded data context.
-            prog_store.push_back(get_or_compile(addr, opts));
+            // Pass forwarded_data so the callee's walk can materialise
+            // its own closure fields as CONST and prune branches.
+            prog_store.push_back(get_or_compile(addr, opts, forwarded_data));
             call_stack.push_back({ip, end, addr, is_exact, current_data});
             on_stack.insert(addr);
             is_exact = true;
