@@ -2042,6 +2042,18 @@ public:
 
     size_t page_size() const { return page_size_; }
 
+    // Returns the number of arena slabs currently allocated.
+    // Each slab is one VMA, so 100K imps requires at most ~25 slabs.
+    // Returns 0 on non-arena builds (Windows, sanitizers).
+    size_t slab_count() const {
+#if CSP_USE_ARENA_STACKS
+        std::lock_guard<std::mutex> lk(mu_);
+        return arena_slabs_.size();
+#else
+        return 0;
+#endif
+    }
+
 private:
     StackPool();
 
@@ -2058,7 +2070,7 @@ private:
     size_t stack_size_;     // total VM region size (guard + usable)
 #endif
 
-    std::mutex mu_;
+    mutable std::mutex mu_;
     std::vector<StackRegion> free_list_;
 
     static constexpr size_t kDefaultStackSize = 1 << 20;  // 1MB (non-arena)
