@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 3
 last_evaluated: 1ff87e4
 targets:
   T1:
@@ -171,7 +171,6 @@ targets:
     context: 'reader&lt;bytes&gt; is push-based with producer-determined chunk boundaries — the consumer can''t control read size. Real I/O protocols need sized pulls that propagate to the syscall (io::read(fd, buf, n)). Go solves this with io.Reader; CSP needs a channel-native equivalent. Design settled in docs/papers/19-pull-based-sources.md: `writer<request<size_t, bytes>>` as the source type, with EOF via reply-writer death, errors via the channel-exception mechanism (🎯T18). Wide-ranging impact: touches io, net, tls, http layers.'
     depends_on:
     - T18
-    design_doc: docs/papers/19-pull-based-sources.md
     origin: design discussion, session 2026-04-13
     discovered: 2026-04-14
   T18:
@@ -188,7 +187,7 @@ targets:
     - 'Tests: unbuffered, buffered, prialt, `writer<exception_ptr>` disambiguation of `_throw` vs `<<`'
     - Paper 03 (two-phase prialt) updated to describe phase-2 exception branch
     - dist/AGENTS-CSP.md updated
-    context: 'See docs/papers/19-pull-based-sources.md § Target dependency. Channel delivers value OR exception on each rendezvous; analogous to C++ function calls where exceptions propagate without appearing in the type signature. Scope stays small because the rendezvous protocol, scheduler, and lifecycle are unchanged — only phase 2''s typed dispatch branches on a tag bit. Unblocks 🎯T17 (pull-based sources) and eliminates per-seam error wrapping in every `request<Req, Resp>` interaction.'
+    context: See docs/papers/19-pull-based-sources.md § Target dependency. Channel delivers value OR exception on each rendezvous; analogous to C++ function calls where exceptions propagate without appearing in the type signature. Scope stays small because the rendezvous protocol, scheduler, and lifecycle are unchanged — only phase 2's typed dispatch branches on a tag bit. Unblocks 🎯T17 (pull-based sources) and eliminates per-seam error wrapping in every `request<Req, Resp>` interaction.
     origin: session 2026-04-19 design discussion (paper 19)
     discovered: 2026-04-19
     achieved: 2026-04-25
@@ -330,7 +329,7 @@ targets:
     discovered: 2026-03-28
   T3.8:
     name: QUIC transport
-    status: identified
+    status: achieved
     value: 5.0
     cost: 13.0
     acceptance:
@@ -345,6 +344,7 @@ targets:
     context: ngtcp2 (by nghttp2's author) is designed for external event loop integration. QUIC uses UDP (not TCP), so reactor needs to handle UDP socket readability. Each QUIC stream maps to a channel pair — multiplexing is native to both QUIC and CSP. This is the largest networking target. Depends on 🎯T3.1 (I/O wrappers).
     origin: manual
     discovered: 2026-03-28
+    achieved: 2026-05-01
   T3.9:
     name: HTTP/3 over QUIC
     status: identified
