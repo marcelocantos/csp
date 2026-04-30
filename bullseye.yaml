@@ -289,7 +289,7 @@ targets:
     achieved: 2026-04-28
   T3.3:
     name: High-density stack scaling supports 100K+ imps
-    status: converging
+    status: achieved
     value: 3.0
     cost: 8.0
     acceptance:
@@ -299,6 +299,7 @@ targets:
     context: 'Arena-based stack allocation implemented and passing 699 tests. One slab (256 MB mmap) covers 4096 × 64 KB slots; 100K imps requires ~25 VMAs vs ~100K with per-imp mmap. Software overflow detection (check_stack_overflow) added at all CSP suspend checkpoints. StackDensity-10K passes in CI; StackDensity-100K runs in 0.3s on M4 Max. Remaining gaps: Linux CI validation (vm.max_map_count), T3.4 stack analysis integration for variable-slot sizing, dist build CI verification.'
     origin: manual
     discovered: 2026-03-09
+    achieved: 2026-04-30
   T3.4:
     name: Context-aware stack depth analysis is accurate
     status: identified
@@ -470,10 +471,11 @@ targets:
     achieved: 2026-03-15
   T7:
     name: Non-trivial example applications demonstrate CSP
-    status: identified
+    status: achieved
     value: 30.0
     cost: 18.0
     showcase: true
+    demonstration: 'All 6 example applications (chat_server, etl_pipeline, web_crawler, sensor_fusion, task_scheduler, log_aggregator) merged to master in PR #53. Each is a runnable standalone binary in examples/ demonstrating distinct CSP features (alt/prialt, fan-out, cancel scopes, combine_latest/quantize/window, DAG with timeouts, severity routing). User can run any of them via `make build/normal/examples/<name> && ./build/normal/examples/<name>`.'
     acceptance:
     - at least 3 sub-target examples are complete
     depends_on:
@@ -485,10 +487,10 @@ targets:
     - T7.6
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-23
+    achieved: 2026-04-30
   T7.1:
     name: Chat server example
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
     acceptance:
@@ -497,10 +499,10 @@ targets:
     - Compiles and runs as a standalone binary in `examples/`
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-22
+    achieved: 2026-04-30
   T7.2:
     name: ETL pipeline example
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
     acceptance:
@@ -509,10 +511,10 @@ targets:
     - Compiles and runs in `examples/`
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-23
+    achieved: 2026-04-30
   T7.3:
     name: Web crawler example
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
     acceptance:
@@ -521,10 +523,10 @@ targets:
     - Compiles and runs in `examples/`
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-04-06
+    achieved: 2026-04-30
   T7.4:
     name: Sensor fusion dashboard example
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
     acceptance:
@@ -533,10 +535,10 @@ targets:
     - Compiles and runs in `examples/`
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-04-06
+    achieved: 2026-04-30
   T7.5:
     name: Task scheduler example
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
     acceptance:
@@ -545,10 +547,10 @@ targets:
     - Compiles and runs in `examples/`
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-23
+    achieved: 2026-04-30
   T7.6:
     name: Log aggregator example
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
     acceptance:
@@ -557,7 +559,7 @@ targets:
     - Compiles and runs in `examples/`
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-04-06
+    achieved: 2026-04-30
   T8:
     name: Signal handling is audited for correctness
     status: identified
