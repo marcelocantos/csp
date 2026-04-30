@@ -253,6 +253,18 @@ holds the endpoint copy; the watcher uses the vulture. **Never** store a copy
 of the watched endpoint inside the watching imp -- the copy keeps it alive,
 creating a reference cycle that prevents the death event from ever firing.
 
+**`closer<EP>` -- vulture-only wrapper.** Restricts an endpoint to
+death-watch + liveness-check. No `>>`, no `<<` -- only `~handle` and
+`bool(handle)`. Useful for spawn handles where the channel value is
+consumed elsewhere (e.g. `reader<exception_ptr>` from `spawn`).
+
+```cpp
+csp::closer handle(csp::spawn([] { do_work(); }));  // CTAD
+if (handle) { /* still running */ }
+auto k = csp::prialt(~handle);                       // matches on imp exit
+handle.endpoint();                                   // escape hatch
+```
+
 ## Spawn Helpers
 
 ```cpp
@@ -458,6 +470,11 @@ struct request {
     bool keep_alive;
     writer<response> respond;      // write exactly one response
 
+    // WebSocket / protocol upgrade: after writing a 101 response via
+    // respond, read the raw fd from this channel (ws::upgrade does this).
+    struct hijack_result { io::fd_t fd; bytes leftover; };
+    reader<hijack_result> hijack;
+
     std::string header(const std::string& name) const;  // case-insensitive
     int64_t content_length() const;                       // -1 if absent
 };
@@ -516,6 +533,72 @@ auto resp = http::post("http://example.com/api",
     bytes(payload.begin(), payload.end()),
     {{"Content-Type", "application/json"}});
 ```
+
+## WebSocket
+
+Channel-native WebSocket (RFC 6455). Not in the dist amalgamation —
+compile `src/ws.cc` + wslay separately.
+
+```cpp
+namespace csp::ws {
+
+enum class opcode : uint8_t { text=0x1, binary=0x2, close=0x8, ping=0x9, pong=0xA };
+
+struct message {
+    opcode op   = opcode::binary;
+    bytes  data;
+};
+
+struct conn {
+    reader<message> recv;   // inbound text/binary messages
+    writer<message> send;   // outbound messages; drop to initiate Close
+};
+
+// Server-side: call inside an HTTP handler when Upgrade: websocket.
+// Validates headers, sends 101, hijacks fd. Throws csp::error on bad headers.
+conn upgrade(http::request& req);
+
+// Client-side: ws://host[:port]/path only (no wss://).
+// Throws csp::error on failure.
+conn connect(const std::string& url);
+
+} // namespace csp::ws
+```
+
+WebSocket upgrade (server):
+```cpp
+auto srv = http::serve(8080);
+http::endpoint ep;
+while (srv.endpoints >> ep) {
+    csp::spawn([ep = std::move(ep)] {
+        http::request req;
+        while (ep.requests >> req) {
+            if (req.header("Upgrade") == "websocket") {
+                auto wsc = ws::upgrade(req);
+                ws::message msg;
+                while (wsc.recv >> msg) { wsc.send << std::move(msg); }
+            } else {
+                req.respond << http::response{200, {}, {}};
+            }
+        }
+    });
+}
+```
+
+WebSocket client:
+```cpp
+auto wsc = ws::connect("ws://example.com/chat");
+ws::message out;
+out.op   = ws::opcode::text;
+out.data = bytes{/*...*/};
+wsc.send << std::move(out);
+ws::message in;
+if (wsc.recv >> in) { /* process reply */ }
+// Drop wsc.send to initiate close handshake.
+```
+
+Close handshake: drop `conn.send` → writer sends Close frame → peer echoes →
+`conn.recv` closes. Ping/pong handled automatically (not visible to user).
 
 ## Signals
 
@@ -579,6 +662,15 @@ counter = 42;       // direct write, no local needed
 int v = *counter;   // 42
 // Child imps start with default (0), not parent's value.
 ```
+
+**Outside any imp** (e.g. directly from `main()` before `csp::run` /
+`csp::spawn`, or from a foreign thread not bound to the runtime):
+- `*var` and `var->...` on `dynamic<T>` / `imp_local<T>` -- return the
+  default value (no binding can exist on a non-existent imp).
+- `csp::local{...}`, `imp_local::operator=`, `context_scope` -- throw
+  `csp::error` with a message naming the API and pointing to
+  `csp::run` / `csp::spawn`.
+- `context::current()` -- returns an empty context.
 
 ## Cancellation
 

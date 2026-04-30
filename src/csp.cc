@@ -30,6 +30,12 @@ namespace csp {
 
     namespace detail {
 
+        [[noreturn]] void throw_no_imp(const char* what) {
+            throw error(std::string(what) +
+                " requires an imp context — "
+                "use csp::run() or csp::spawn() to enter the runtime");
+        }
+
         struct alignas(16) align_16 {
             char c[16];
         };
@@ -291,8 +297,9 @@ namespace csp {
             }
             // Reclaim unused stack pages before suspending.
             if (self->stk_) {
-                StackPool::instance().maybe_shrink(
-                    self->stk_, CSP_FRAME_ADDRESS());
+                auto* fp = CSP_FRAME_ADDRESS();
+                check_stack_overflow(self, fp);
+                StackPool::instance().maybe_shrink(self->stk_, fp);
             }
             Imp* target;
             {
@@ -399,8 +406,9 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
     auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
     if (self->stk_) {
-        StackPool::instance().maybe_shrink(
-            self->stk_, CSP_FRAME_ADDRESS());
+        auto* fp = CSP_FRAME_ADDRESS();
+        check_stack_overflow(self, fp);
+        StackPool::instance().maybe_shrink(self->stk_, fp);
     }
     try {
 #if CSP_USE_VM_STACKS
@@ -441,6 +449,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto ctx = make_fcontext(imp, usable_size, start);
 #endif
         new (imp) Imp(ctx, region);
+        imp->stack_overflow_limit_ = region.overflow_limit;
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
         auto region = StackPool::instance().allocate();
@@ -478,7 +487,13 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
             std::lock_guard<std::mutex> lk(rt.global_mu);
             rt.push_to_global(imp);
         }
-        rt.park_cv.notify_all();
+        // Wake a sleeping worker so it picks up the new imp.
+        // On master, unpark_one() == park_cv.notify_all(), so this was
+        // fine there; after the per-worker-wake change workers sleep on
+        // their per-worker Note, not on park_cv, so we must call
+        // unpark_one() explicitly in addition to notifying park_cv
+        // (which wakes main_loop / run() / quiescent_loop).
+        rt.unpark_one();
 
         return 1;
     } catch (std::exception const &) {

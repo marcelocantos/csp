@@ -1,6 +1,7 @@
 #include <csp/blocking.h>
 #include <csp/cancel.h>
 #include <csp/io.h>
+#include <csp/part/io.h>
 #include <csp/internal/signal.h>
 #include <csp/internal/reactor.h>
 
@@ -143,8 +144,9 @@ fd_t accept(fd_t listen_fd, struct sockaddr* addr, socklen_t* addrlen) {
             set_nonblock(fd);
             return fd;
         }
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        int err = errno;
+        if (err == EINTR) continue;
+        if (err == EAGAIN || err == EWOULDBLOCK) {
             wait_readable(listen_fd);
             continue;
         }
@@ -201,6 +203,10 @@ void write_all(fd_t fd, const void* data, size_t len) {
     if (n < 0 || static_cast<size_t>(n) != len) {
         throw csp::error("write_all: incomplete write");
     }
+}
+
+csp::reader<std::string> lines(fd_t fd, size_t chunk_size) {
+    return csp::part::io::lines(fd, chunk_size);
 }
 
 } // namespace csp::io

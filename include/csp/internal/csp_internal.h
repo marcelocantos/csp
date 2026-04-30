@@ -9,6 +9,10 @@
 #include <cstddef>
 #include <unordered_map>
 
+#ifndef _WIN32
+#include <unistd.h>  // write() for stack overflow message
+#endif
+
 // MSVC-compatible replacements for GCC/Clang builtins.
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -129,6 +133,12 @@ struct alignas(16) Imp {
     uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
     std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
 
+    // Software stack overflow limit (arena mode only).
+    // Points to the bottom of the usable region (above the software guard zone).
+    // Null for non-arena stacks (hardware guard page used instead).
+    // Checked at every CSP suspend checkpoint via check_stack_overflow().
+    void* stack_overflow_limit_ = nullptr;
+
     bool in_global_ = false;  // true while in the global run queue
     bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
     class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
@@ -147,12 +157,39 @@ struct alignas(16) Imp {
 
 inline
 char const * getfullstatus(Imp const * imp) {
-    return imp ? imp->getfullstatus_() : "Ø";
+    return imp ? imp->getfullstatus_() : "O";
 }
 
 inline
 char const * getstatus(Imp const * imp) {
     return getfullstatus(imp);
+}
+
+// Software stack overflow detection for arena-mode stacks.
+// Called at every CSP API suspend checkpoint (yield, channel ops, spawn).
+// Terminates the process with a descriptive message if the stack pointer
+// has reached below the software guard zone of an arena slot.
+//
+// For non-arena stacks (stack_overflow_limit_ == nullptr), this is a no-op;
+// the hardware guard page handles overflow.
+[[gnu::always_inline]] inline
+void check_stack_overflow(Imp const* imp, void* current_sp) {
+    if (!imp->stack_overflow_limit_) [[likely]] {
+        return;
+    }
+    if (current_sp < imp->stack_overflow_limit_) [[unlikely]] {
+        // Abort immediately -- the stack has corrupted the software guard zone.
+        // Use a low-level write + trap to avoid additional stack use that
+        // might corrupt adjacent imp stacks.
+        static constexpr char msg[] =
+            "csp: stack overflow detected (arena soft guard)\n";
+#ifdef _WIN32
+        __debugbreak();
+#else
+        (void)::write(2, msg, sizeof(msg) - 1);
+        __builtin_trap();
+#endif
+    }
 }
 
 }

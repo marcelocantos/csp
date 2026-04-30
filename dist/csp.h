@@ -7,9 +7,9 @@
 
 /* csp/csp.h */
 
-#define CSP_VERSION "0.10.0"
+#define CSP_VERSION "0.12.0"
 #define CSP_VERSION_MAJOR 0
-#define CSP_VERSION_MINOR 10
+#define CSP_VERSION_MINOR 12
 #define CSP_VERSION_PATCH 0
 
 
@@ -2000,11 +2000,25 @@ fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 #define CSP_USE_VM_STACKS 1
 #endif
 
+// Arena-based stack allocation: enabled on Unix non-sanitizer non-Windows
+// builds.  One large mmap per arena; stacks are sub-slots within it.
+// This avoids the Linux vm.max_map_count limit (~65K VMAs) that would be
+// hit with per-imp mmap at 100K+ concurrent imps.
+#if CSP_USE_VM_STACKS && !defined(_WIN32)
+#define CSP_USE_ARENA_STACKS 1
+#else
+#define CSP_USE_ARENA_STACKS 0
+#endif
+
 namespace csp::detail {
 
 struct StackRegion {
     void* base = nullptr;
     size_t total_size = 0;
+    // Software overflow limit: lowest address the SP may touch.
+    // Non-null only for arena-mode stacks (no hardware guard page).
+    // Checked at every CSP API checkpoint via check_stack_overflow().
+    void* overflow_limit = nullptr;
     explicit operator bool() const { return base != nullptr; }
 };
 
@@ -2012,13 +2026,15 @@ class StackPool {
 public:
     static StackPool& instance();
 
-    // Allocate a stack region. Returns a pooled or fresh mmap'd region.
+    // Allocate a stack region. Returns a pooled or fresh region.
     StackRegion allocate();
 
-    // Return a stack to the pool. Reclaims physical pages via madvise.
+    // Return a stack to the pool. Reclaims physical pages via madvise
+    // (non-arena) or marks the slot free (arena).
     void release(StackRegion region);
 
     // Reclaim unused stack pages below the current SP.
+    // No-op for arena stacks (no per-page reclaim supported).
     void maybe_shrink(StackRegion const& region, void* current_sp);
 
     // Unmap all pooled stacks. Called during shutdown.
@@ -2026,22 +2042,61 @@ public:
 
     size_t page_size() const { return page_size_; }
 
+    // Returns the number of arena slabs currently allocated.
+    // Each slab is one VMA, so 100K imps requires at most ~25 slabs.
+    // Returns 0 on non-arena builds (Windows, sanitizers).
+    size_t slab_count() const {
+#if CSP_USE_ARENA_STACKS
+        std::lock_guard<std::mutex> lk(mu_);
+        return arena_slabs_.size();
+#else
+        return 0;
+#endif
+    }
+
 private:
     StackPool();
 
+#if CSP_USE_VM_STACKS && !CSP_USE_ARENA_STACKS
     StackRegion mmap_new();
     void munmap_region(StackRegion region);
+#elif CSP_USE_ARENA_STACKS
+    StackRegion arena_alloc();
+    void arena_free(StackRegion region);
+#endif
 
     size_t page_size_;
-#if CSP_USE_VM_STACKS
+#if CSP_USE_VM_STACKS && !CSP_USE_ARENA_STACKS
     size_t stack_size_;     // total VM region size (guard + usable)
 #endif
 
-    std::mutex mu_;
+    mutable std::mutex mu_;
     std::vector<StackRegion> free_list_;
 
-    static constexpr size_t kDefaultStackSize = 1 << 20;  // 1MB
+    static constexpr size_t kDefaultStackSize = 1 << 20;  // 1MB (non-arena)
     static constexpr size_t kMaxPooled = 256;
+
+#if CSP_USE_ARENA_STACKS
+    // Arena slab parameters:
+    // Each slab is one large mmap covering kArenaSlotsPerSlab stack slots.
+    // Slot layout (low->high): [guard zone][usable region].
+    // Imp is placed at the top of the usable region (highest address).
+    // One slab = one VMA, so 100K imps needs at most ~25 slabs.
+    static constexpr size_t kArenaSlotGuard  = 4096;          // 4KB software guard zone
+    static constexpr size_t kArenaSlotUsable = 124 << 10;     // 124KB usable stack (QUIC/TLS needs >60KB)
+    static constexpr size_t kArenaSlotSize   = kArenaSlotGuard + kArenaSlotUsable;  // 128KB/slot
+    static constexpr size_t kArenaSlotsPerSlab = 4096;         // slots per slab
+    static constexpr size_t kArenaSlabSize = kArenaSlotSize * kArenaSlotsPerSlab;   // 512MB per slab
+
+    struct ArenaSlab {
+        void* base = nullptr;
+        size_t size = 0;
+    };
+
+    std::vector<ArenaSlab> arena_slabs_;  // all allocated slabs (for drain)
+    // free_list_ holds arena StackRegions (with overflow_limit set)
+#endif
+
 public:
     // Initial committed region per stack on Windows (at the top, where RSP
     // starts).  The rest of the 1 MB virtual region is MEM_RESERVE, committed
@@ -2054,6 +2109,10 @@ public:
 
 #include <any>
 #include <unordered_map>
+
+#ifndef _WIN32
+#include <unistd.h>  // write() for stack overflow message
+#endif
 
 // MSVC-compatible replacements for GCC/Clang builtins.
 #ifdef _MSC_VER
@@ -2175,6 +2234,12 @@ struct alignas(16) Imp {
     uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
     std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
 
+    // Software stack overflow limit (arena mode only).
+    // Points to the bottom of the usable region (above the software guard zone).
+    // Null for non-arena stacks (hardware guard page used instead).
+    // Checked at every CSP suspend checkpoint via check_stack_overflow().
+    void* stack_overflow_limit_ = nullptr;
+
     bool in_global_ = false;  // true while in the global run queue
     bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
     class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
@@ -2193,12 +2258,39 @@ struct alignas(16) Imp {
 
 inline
 char const * getfullstatus(Imp const * imp) {
-    return imp ? imp->getfullstatus_() : "Ø";
+    return imp ? imp->getfullstatus_() : "O";
 }
 
 inline
 char const * getstatus(Imp const * imp) {
     return getfullstatus(imp);
+}
+
+// Software stack overflow detection for arena-mode stacks.
+// Called at every CSP API suspend checkpoint (yield, channel ops, spawn).
+// Terminates the process with a descriptive message if the stack pointer
+// has reached below the software guard zone of an arena slot.
+//
+// For non-arena stacks (stack_overflow_limit_ == nullptr), this is a no-op;
+// the hardware guard page handles overflow.
+[[gnu::always_inline]] inline
+void check_stack_overflow(Imp const* imp, void* current_sp) {
+    if (!imp->stack_overflow_limit_) [[likely]] {
+        return;
+    }
+    if (current_sp < imp->stack_overflow_limit_) [[unlikely]] {
+        // Abort immediately -- the stack has corrupted the software guard zone.
+        // Use a low-level write + trap to avoid additional stack use that
+        // might corrupt adjacent imp stacks.
+        static constexpr char msg[] =
+            "csp: stack overflow detected (arena soft guard)\n";
+#ifdef _WIN32
+        __debugbreak();
+#else
+        (void)::write(2, msg, sizeof(msg) - 1);
+        __builtin_trap();
+#endif
+    }
 }
 
 }
@@ -2299,6 +2391,17 @@ void hamt_release(uintptr_t p);
 
 namespace csp {
 
+class error;  // defined in csp.h
+
+namespace detail {
+
+// Throw csp::error from a no-imp call site (e.g. main() before any
+// csp::run / spawn). Implemented out-of-line in dynamic.cc to avoid a
+// dependency on the full error definition here.
+[[noreturn]] void throw_no_imp(const char* what);
+
+} // namespace detail
+
 // --- context_key ---
 // Default-constructed instances get a unique ID.
 // Copies compare and hash equal.
@@ -2335,11 +2438,14 @@ public:
 
     uintptr_t root() const { return root_; }
 
-    // Snapshot the current imp's context.
+    // Snapshot the current imp's context. Returns an empty context
+    // when called outside an imp (e.g. directly from main()).
     static context current() {
         context c;
-        c.root_ = detail::current_imp()->dyn_ctx_;
-        if (c.root_) internal::hamt_retain(c.root_);
+        if (auto* imp = detail::current_imp()) {
+            c.root_ = imp->dyn_ctx_;
+            if (c.root_) internal::hamt_retain(c.root_);
+        }
         return c;
     }
 };
@@ -2351,18 +2457,24 @@ public:
 class context_scope {
     uintptr_t saved_;
 public:
-    // Save current context and install a foreign one.
-    explicit context_scope(const context& ctx) : saved_(detail::current_imp()->dyn_ctx_) {
+    // Save current context and install a foreign one. Throws csp::error
+    // if called outside an imp.
+    explicit context_scope(const context& ctx) : saved_(0) {
+        auto* imp = detail::current_imp();
+        if (!imp) detail::throw_no_imp("csp::context_scope");
+        saved_ = imp->dyn_ctx_;
         if (saved_) internal::hamt_retain(saved_);
-        auto old = detail::current_imp()->dyn_ctx_;
-        detail::current_imp()->dyn_ctx_ = ctx.root();
+        auto old = imp->dyn_ctx_;
+        imp->dyn_ctx_ = ctx.root();
         if (ctx.root()) internal::hamt_retain(ctx.root());
         if (old) internal::hamt_release(old);
     }
 
     ~context_scope() {
-        auto current = detail::current_imp()->dyn_ctx_;
-        detail::current_imp()->dyn_ctx_ = saved_;
+        auto* imp = detail::current_imp();
+        if (!imp) return;  // ctor would have thrown; defensive no-op
+        auto current = imp->dyn_ctx_;
+        imp->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -2411,8 +2523,9 @@ class local {
 
     void apply(dynamic_binding&& b) {
         b.consumed_ = true;
-        auto old = detail::current_imp()->dyn_ctx_;
-        detail::current_imp()->dyn_ctx_ = internal::hamt_assoc(
+        auto* imp = detail::current_imp();
+        auto old = imp->dyn_ctx_;
+        imp->dyn_ctx_ = internal::hamt_assoc(
             old, b.key_id_, std::move(b.value_));
         if (old) internal::hamt_release(old);
     }
@@ -2421,14 +2534,24 @@ public:
     template <typename... Bs>
         requires (sizeof...(Bs) >= 1 &&
                   (std::is_same_v<std::decay_t<Bs>, dynamic_binding> && ...))
-    local(Bs&&... bindings) : saved_(detail::current_imp()->dyn_ctx_) {
+    local(Bs&&... bindings) : saved_(0) {
+        auto* imp = detail::current_imp();
+        if (!imp) {
+            // Mark each binding consumed so its destructor doesn't trip
+            // the "destroyed without csp::local" assert as we unwind.
+            ((bindings.consumed_ = true), ...);
+            detail::throw_no_imp("csp::local");
+        }
+        saved_ = imp->dyn_ctx_;
         if (saved_) internal::hamt_retain(saved_);
         (apply(std::forward<Bs>(bindings)), ...);
     }
 
     ~local() {
-        auto current = detail::current_imp()->dyn_ctx_;
-        detail::current_imp()->dyn_ctx_ = saved_;
+        auto* imp = detail::current_imp();
+        if (!imp) return;  // ctor would have thrown; defensive no-op
+        auto current = imp->dyn_ctx_;
+        imp->dyn_ctx_ = saved_;
         if (current) internal::hamt_release(current);
     }
 
@@ -2454,20 +2577,26 @@ public:
     dynamic(const dynamic&) = delete;
     dynamic& operator=(const dynamic&) = delete;
 
-    // Read by value (safe, no dangling).
+    // Read by value (safe, no dangling). Returns the default outside
+    // an imp context (no binding can exist on a non-existent imp).
     T operator*() const {
-        if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
-            return *std::any_cast<T>(a);
+        if (auto* imp = detail::current_imp()) {
+            if (auto* a = internal::hamt_get(imp->dyn_ctx_, key_.id()))
+                return *std::any_cast<T>(a);
+        }
         assert(default_.has_value());
         return *default_;
     }
 
     // Read by pointer into the HAMT node. Valid as long as the
     // csp::local binding is in scope.  Allows mutation and avoids
-    // copying for non-trivial types.
+    // copying for non-trivial types. Outside an imp, returns a pointer
+    // to the default value.
     T* operator->() const {
-        if (auto* a = internal::hamt_get(detail::current_imp()->dyn_ctx_, key_.id()))
-            return const_cast<T*>(std::any_cast<T>(a));
+        if (auto* imp = detail::current_imp()) {
+            if (auto* a = internal::hamt_get(imp->dyn_ctx_, key_.id()))
+                return const_cast<T*>(std::any_cast<T>(a));
+        }
         assert(default_.has_value());
         return const_cast<T*>(&*default_);
     }
@@ -2496,21 +2625,26 @@ public:
     imp_local(const imp_local&) = delete;
     imp_local& operator=(const imp_local&) = delete;
 
-    // Read: map lookup + any_cast. Returns by value.
+    // Read: map lookup + any_cast. Returns by value. Returns the
+    // default outside an imp context.
     T operator*() const {
-        auto* m = detail::current_imp()->local_ctx_;
-        if (m) {
-            auto it = m->find(key_.id());
-            if (it != m->end())
-                return *std::any_cast<T>(&it->second);
+        if (auto* imp = detail::current_imp()) {
+            if (auto* m = imp->local_ctx_) {
+                auto it = m->find(key_.id());
+                if (it != m->end())
+                    return *std::any_cast<T>(&it->second);
+            }
         }
         assert(default_.has_value());
         return *default_;
     }
 
-    // Write: direct mutation of per-imp map.
+    // Write: direct mutation of per-imp map. Throws csp::error outside
+    // an imp context (no per-imp storage exists).
     imp_local& operator=(T val) {
-        auto*& m = detail::current_imp()->local_ctx_;
+        auto* imp = detail::current_imp();
+        if (!imp) detail::throw_no_imp("csp::imp_local::operator=");
+        auto*& m = imp->local_ctx_;
         if (!m) m = new std::unordered_map<uint64_t, std::any>();
         (*m)[key_.id()] = std::any(std::move(val));
         return *this;
@@ -2707,6 +2841,7 @@ void write(const std::string& path, const void* data, size_t len);
 /* csp/io.h */
 
 
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -2720,7 +2855,6 @@ using ssize_t = ptrdiff_t;
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
-#include <unistd.h>
 #endif
 
 namespace csp::internal {
@@ -2969,6 +3103,11 @@ struct resolve_result {
 // The fd must be non-blocking.
 void write_all(fd_t fd, const std::vector<uint8_t>& data);
 void write_all(fd_t fd, const void* data, size_t len);
+
+// Split fd output into newline-delimited strings. Composes
+// byte_reader | split_lines. Owns the fd and closes it on EOF.
+// The fd must be non-blocking.
+[[nodiscard]] csp::reader<std::string> lines(fd_t fd, size_t chunk_size = 4096);
 
 }
 
@@ -3460,8 +3599,11 @@ struct response {
 
 // --- Request: a parsed HTTP/1.1 request ---
 //
-// The request body is buffered in memory. For the request body to be
-// streamed, a future API (with a reader<bytes> body) will be added.
+// Delivered to the handler as soon as the request headers are complete.
+// Body chunks arrive via `body_stream` (a reader<bytes> channel that
+// closes at end-of-body).  For no-body requests the channel is already
+// closed when the request is delivered.
+//
 // Each request carries a per-request response channel: write exactly
 // one response to `respond`, then let it drop.
 
@@ -3471,11 +3613,32 @@ struct request {
     uint8_t version_major = 1;
     uint8_t version_minor = 1;
     std::vector<std::pair<std::string, std::string>> headers;
-    bytes body;                 // complete request body
+    bytes body;                 // accumulated body; empty until drain() is called
     bool keep_alive = true;
+
+    // Streaming body: push-based chunks as they arrive from the network.
+    // Closes when the body is complete (EOF).  For no-body requests the
+    // channel is already closed when the request is delivered.
+    reader<bytes> body_stream;
 
     // Write exactly one response for this request.
     writer<response> respond;
+
+    // WebSocket / protocol-upgrade hijack.
+    //
+    // After writing a 101 Switching Protocols response via `respond`,
+    // read the raw fd from this channel to take ownership of the
+    // connection socket. The HTTP connection loop exits as soon as
+    // the fd is claimed. Any bytes read by the HTTP parser beyond the
+    // upgrade request are delivered in `leftover` so the caller can
+    // replay them.
+    //
+    // Normal (non-upgrade) handlers must not touch this channel.
+    struct hijack_result {
+        io::fd_t  fd;       // connection socket (non-blocking)
+        bytes     leftover; // bytes consumed by HTTP parser but not yet used
+    };
+    reader<hijack_result> hijack;
 
     // Convenience: find first header value by case-insensitive name.
     // Returns empty string if not found.
@@ -3483,6 +3646,11 @@ struct request {
 
     // Content-Length, or -1 if absent.
     int64_t content_length() const;
+
+    // Drain body_stream into body.  After this call, body holds the
+    // complete request body and body_stream is closed.  Idempotent:
+    // calling drain() when body_stream is already closed is a no-op.
+    const bytes& drain();
 };
 
 // --- Per-connection endpoint ---
@@ -3549,6 +3717,241 @@ inline response post(
 }
 
 } // namespace csp::http
+
+/* csp/http2.h */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+
+
+// HTTP/2 server and stream types.
+//
+// Uses the same http::request and http::response types as the HTTP/1.1 server.
+// Each HTTP/2 stream appears as a reader<http::request> + the per-request
+// writer<http::response> embedded in http::request::respond.
+//
+// Server push is supported via http2::push_promise on the connection handle.
+// HPACK header compression is handled transparently by nghttp2.
+// Flow control maps naturally to channel backpressure: the imp that reads
+// from data providers blocks until nghttp2 grants flow-control credits.
+//
+// TLS + ALPN: when compiled with CSP_TLS=1, serve_tls() performs a TLS
+// handshake with ALPN negotiation (h2 vs http/1.1) and returns an HTTP/2
+// server. Plain-text serve() is also provided for h2c (HTTP/2 cleartext,
+// useful for testing and trusted networks).
+
+namespace csp::http2 {
+
+// --- Stream endpoint ---
+//
+// Each HTTP/2 stream is delivered as an http::request whose respond writer
+// accepts exactly one http::response.  This is the same interface as the
+// HTTP/1.1 server.
+
+// --- Per-connection handle (for server push) ---
+
+struct connection_handle;
+
+// --- Server push ---
+//
+// Call push() on the connection handle to initiate a server push.
+// Returns false if the client has disabled server push.
+
+bool push(connection_handle& h, http::request promised_request);
+
+// --- Server options ---
+
+struct serve_options {
+    int backlog = 128;
+    bool reuse_addr = true;
+    bool dual_stack = true;
+    size_t read_chunk_size = 16384;
+};
+
+// --- Per-connection endpoint ---
+//
+// Each accepted connection yields one endpoint.  endpoint::streams delivers
+// one request per HTTP/2 stream.  endpoint::handle may be used for server push.
+
+struct endpoint {
+    reader<http::request> streams;  // one per HTTP/2 stream
+    std::string remote_addr;
+};
+
+// --- Server ---
+
+struct server {
+    reader<endpoint> endpoints;  // one per accepted connection
+    uint16_t port;               // actual bound port
+    std::string local_addr;
+};
+
+// Start an HTTP/2 cleartext (h2c) server on the given port.
+// Returns a server whose endpoints reader yields one endpoint per connection.
+// Dropping the reader stops accepting.
+server serve(uint16_t port, serve_options opts = {});
+server serve(const std::string& addr, uint16_t port, serve_options opts = {});
+
+#ifdef CSP_TLS
+
+// Start an HTTP/2 server with TLS + ALPN negotiation.
+// cert_pem and key_pem are paths to PEM-encoded certificate and key files.
+// ALPN: offers "h2" and "http/1.1". Falls back to HTTP/1.1 if negotiated.
+// Clients that negotiate "h2" get HTTP/2; others are served as HTTP/1.1.
+server serve_tls(
+    uint16_t port,
+    const char* cert_pem,
+    const char* key_pem,
+    serve_options opts = {});
+
+server serve_tls(
+    const std::string& addr,
+    uint16_t port,
+    const char* cert_pem,
+    const char* key_pem,
+    serve_options opts = {});
+
+#endif // CSP_TLS
+
+} // namespace csp::http2
+
+/* csp/http3.h */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+// HTTP/3 over QUIC server and client (🎯T3.9).
+//
+// Uses the same http::request and http::response types as the HTTP/1.1 and
+// HTTP/2 servers. Handler code is fully protocol-agnostic: a handler that reads
+// http::request and writes http::response runs unchanged across HTTP/1.1,
+// HTTP/2, and HTTP/3.
+//
+// Layering:
+//   http3::serve/get/post
+//       └── nghttp3  (HTTP/3 framing, QPACK header compression)
+//           └── quic::connection  (QUIC transport — 🎯T3.8 / ngtcp2)
+//               └── PicoTLS      (TLS 1.3 — always required for HTTP/3)
+//
+// HTTP/3 requires TLS. The API is therefore only available when compiled with
+// CSP_TLS=1 (the default). HTTP/3 uses UDP port 443 by convention; the serve()
+// call binds a UDP socket for QUIC.
+//
+// Dependency contract (T3.7 / T3.8):
+//   - http::request and http::response come from <csp/http.h> (T3.7 shared
+//     types). The protocol-agnostic contract is: `reader<http::request>` with
+//     per-request `writer<http::response>` embedded in request::respond.
+//   - QUIC streams come from <csp/quic.h> (T3.8). Each HTTP/3 stream maps to
+//     one quic::stream_pair. The http3 layer reads/writes bytes on those
+//     streams and feeds them to nghttp3_conn for framing.
+//
+// See docs/papers/20-http3-design.md for the full design.
+
+#ifdef CSP_TLS
+
+
+
+namespace csp::http3 {
+
+// --- Per-connection endpoint ---
+//
+// Each accepted QUIC+HTTP/3 connection yields one endpoint.
+// endpoint::streams delivers one http::request per HTTP/3 stream; the
+// per-request respond writer carries exactly one http::response back.
+
+struct endpoint {
+    reader<http::request> streams;  // one per HTTP/3 stream (bidirectional)
+    std::string remote_addr;
+};
+
+// --- Server options ---
+
+struct serve_options {
+    // Maximum number of concurrent bidirectional HTTP/3 streams per connection.
+    uint64_t max_streams = 128;
+
+    // UDP receive buffer size in bytes (0 = OS default).
+    int rcvbuf = 0;
+
+    // PEM file paths for the server TLS certificate and private key.
+    // HTTP/3 always requires TLS; self-signed certs are acceptable for testing.
+    std::string cert_pem;
+    std::string key_pem;
+};
+
+// --- Server ---
+
+struct server {
+    reader<endpoint> endpoints;  // one per accepted QUIC connection
+    uint16_t port;               // actual bound UDP port
+    std::string local_addr;
+};
+
+// Start an HTTP/3 server on the given UDP port.
+// Returns a server whose endpoints reader yields one endpoint per connection.
+// Dropping the reader stops accepting new connections.
+//
+// HTTP/3 always uses TLS 1.3 (QUIC requirement). cert_pem and key_pem must
+// be paths to PEM-encoded ECDSA (secp256r1) certificate and key files, or
+// empty to generate a self-signed certificate at runtime (test use only).
+//
+// TODO(T3.8): Implementation blocked on quic::listen() stabilisation.
+// Stub compiles and links; serve() throws csp::error("http3: not yet
+// implemented") at runtime.
+[[nodiscard]] server serve(uint16_t port, serve_options opts = {});
+[[nodiscard]] server serve(const std::string& addr, uint16_t port,
+                           serve_options opts = {});
+
+// --- Client fetch options ---
+
+struct fetch_options {
+    // Custom certificate verification callback. If null, no verification is
+    // performed (acceptable for testing only).
+    using verify_fn = std::function<bool(
+        const char*, const std::vector<std::vector<uint8_t>>&)>;
+    verify_fn verify;
+};
+
+// --- Client ---
+//
+// Perform an HTTP/3 request. Blocks the calling imp until the full response
+// (headers + body) has been received.
+//
+// url must use the "https" scheme (HTTP/3 is always over TLS).
+// Default port is 443. QUIC connection establishment and TLS handshake happen
+// transparently.
+//
+// Throws csp::error on connection failure, handshake failure, or parse error.
+//
+// TODO(T3.8): Implementation blocked on quic::dial() stabilisation.
+// Stub compiles and links; fetch() throws csp::error("http3: not yet
+// implemented") at runtime.
+http::response fetch(
+    http::method m, const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    bytes body = {},
+    fetch_options opts = {});
+
+// Convenience wrappers.
+inline http::response get(
+    const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    fetch_options opts = {}) {
+    return fetch(http::method::GET, url, std::move(headers), {}, opts);
+}
+
+inline http::response post(
+    const std::string& url, bytes body,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    fetch_options opts = {}) {
+    return fetch(http::method::POST, url, std::move(headers),
+                 std::move(body), opts);
+}
+
+} // namespace csp::http3
+
+#endif // CSP_TLS
 
 /* csp/imp_exit.h */
 
@@ -3905,6 +4308,160 @@ auto apply(F && f, Tuple && t) {
 
 }
 
+/* csp/internal/note.h */
+
+// Per-worker Note: a lightweight binary semaphore that allows exactly-one-wake
+// semantics. Replaces notify_all on a shared condvar (thundering herd).
+//
+// State machine (atomic int32_t):
+//   NOTE_AWAKE   (1) — worker is running; sleep will block
+//   NOTE_SLEEPING (0) — worker is blocked in sleep()
+//   NOTE_FLAGGED  (2) — wakeup posted while worker was awake;
+//                        next sleep() call skips the block
+//
+// API:
+//   sleep()         — park the calling thread until wake() is called.
+//                      If the note is FLAGGED, consume the flag and return
+//                      immediately without blocking.
+//   sleep_for(dur)  — like sleep() but with a timeout. Returns true if
+//                      woken by wake(), false if timeout expired.
+//   wake()          — wake the thread sleeping on this note, or set the
+//                      FLAGGED state if the thread is not sleeping yet.
+//   is_sleeping()   — true if this note is in SLEEPING state.
+//   reset()         — restore to AWAKE; call only from the owning thread
+//                      before it starts its next sleep cycle.
+//
+// Implementation: uses platform futex primitives for low-latency wakeup
+// (macOS __ulock_wait, Linux futex, Windows WaitOnAddress). Falls back to
+// a per-note condvar if the platform support is unavailable.
+
+
+namespace csp::detail {
+
+class Note {
+public:
+    static constexpr int32_t AWAKE    = 1;
+    static constexpr int32_t SLEEPING = 0;
+    static constexpr int32_t FLAGGED  = 2;
+
+    Note() : val_(AWAKE) {}
+
+    // Called by the owning worker thread to park itself.
+    // Returns immediately if the note was FLAGGED (consumes the flag).
+    // Otherwise: transitions AWAKE->SLEEPING and blocks until wake().
+    void sleep() noexcept {
+        // Consume a pending flag.
+        int32_t expected = FLAGGED;
+        if (val_.compare_exchange_strong(expected, AWAKE,
+                std::memory_order_acquire, std::memory_order_relaxed)) {
+            return;
+        }
+
+        // Transition AWAKE -> SLEEPING.
+        expected = AWAKE;
+        if (!val_.compare_exchange_strong(expected, SLEEPING,
+                std::memory_order_acquire, std::memory_order_relaxed)) {
+            if (expected == FLAGGED) {
+                val_.store(AWAKE, std::memory_order_release);
+            }
+            return;
+        }
+
+        // Block until woken (val_ changes from SLEEPING).
+        {
+            std::unique_lock<std::mutex> lk(mu_);
+            cv_.wait(lk, [this] {
+                return val_.load(std::memory_order_acquire) != SLEEPING;
+            });
+        }
+
+        val_.store(AWAKE, std::memory_order_release);
+    }
+
+    // Like sleep(), but with a timeout. Returns true if woken by wake(),
+    // false if the timeout expired.
+    template <class Rep, class Period>
+    bool sleep_for(std::chrono::duration<Rep, Period> dur) noexcept {
+        // Consume flag.
+        int32_t expected = FLAGGED;
+        if (val_.compare_exchange_strong(expected, AWAKE,
+                std::memory_order_acquire, std::memory_order_relaxed)) {
+            return true;
+        }
+
+        // Transition AWAKE -> SLEEPING.
+        expected = AWAKE;
+        if (!val_.compare_exchange_strong(expected, SLEEPING,
+                std::memory_order_acquire, std::memory_order_relaxed)) {
+            if (expected == FLAGGED) {
+                val_.store(AWAKE, std::memory_order_release);
+            }
+            return true;
+        }
+
+        bool woken;
+        {
+            std::unique_lock<std::mutex> lk(mu_);
+            woken = cv_.wait_for(lk, dur, [this] {
+                return val_.load(std::memory_order_acquire) != SLEEPING;
+            });
+        }
+
+        val_.store(AWAKE, std::memory_order_release);
+        return woken;
+    }
+
+    // Called by any thread to wake the note's owner.
+    // If the owner is SLEEPING: transition SLEEPING->AWAKE and notify cv.
+    // If the owner is AWAKE: set FLAGGED so next sleep() returns immediately.
+    // If already FLAGGED: no-op (flag already pending).
+    void wake() noexcept {
+        int32_t expected = SLEEPING;
+        if (val_.compare_exchange_strong(expected, AWAKE,
+                std::memory_order_release, std::memory_order_relaxed)) {
+            // Notify the condvar. The sleeping thread will see val_!=SLEEPING
+            // and return from cv_.wait().
+            //
+            // We must acquire the lock before notify to prevent this race:
+            //   Thread A: CAS SLEEPING->AWAKE (done)
+            //   Thread B: (in cv_.wait_for) predicate true, wakeup pending
+            //   Thread A: notify_one (but thread B hasn't re-blocked yet)
+            // Actually, notify without holding the lock is safe here because:
+            // the predicate checks val_ atomically, and val_ is already AWAKE
+            // before we notify. If the sleeping thread checks the predicate
+            // between our CAS and our notify, it sees AWAKE and exits without
+            // blocking. If it's already blocked in cv_.wait, our notify wakes it.
+            // The key: there is NO window where val_=AWAKE and the thread is
+            // re-entering cv_.wait (it only enters once per sleep() call).
+            std::lock_guard<std::mutex> lk(mu_);
+            cv_.notify_one();
+            return;
+        }
+        // Not SLEEPING. Try to set FLAGGED.
+        expected = AWAKE;
+        val_.compare_exchange_strong(expected, FLAGGED,
+            std::memory_order_release, std::memory_order_relaxed);
+        // If already FLAGGED, the CAS fails benignly.
+    }
+
+    // Returns true if this note is in SLEEPING state (worker is parked on it).
+    bool is_sleeping() const noexcept {
+        return val_.load(std::memory_order_acquire) == SLEEPING;
+    }
+
+    // Reset to AWAKE. Only the owning thread may call this before reuse.
+    void reset() noexcept {
+        val_.store(AWAKE, std::memory_order_relaxed);
+    }
+
+private:
+    std::atomic<int32_t> val_;
+    std::mutex mu_;
+    std::condition_variable cv_;
+};
+
+}  // namespace csp::detail
+
 /* csp/internal/on_scope_exit.h */
 
 #include <cstdlib>
@@ -3983,6 +4540,7 @@ struct Processor {
     std::mutex run_mu;                // Protects busy queue DLL
     Imp* running = nullptr;   // Imp claimed by local_next (steal-safe)
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
+    Note note;                        // Per-worker futex note (park/unpark)
 
     std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
@@ -4007,6 +4565,7 @@ struct Processor {
         running = nullptr;
         parked.store(false, std::memory_order_relaxed);
         heartbeat.store(0, std::memory_order_relaxed);
+        note.reset();
         // alive must be last — steal_work reads it with acquire.
         alive.store(true, std::memory_order_release);
     }
@@ -7848,6 +8407,140 @@ reader<int> notify(std::initializer_list<int> sigs);
 
 #endif // !_WIN32
 
+/* csp/source.h */
+
+// Pull-based sized-read abstraction (🎯T17 Stage 1).
+//
+// A source is a channel into which consumers submit read requests.
+// Each request carries the desired byte count and a one-shot reply
+// channel.  The source imp fills the request (up to N bytes) and writes
+// the result into the reply channel.  EOF, errors, and normal data each
+// travel on structurally distinct paths:
+//
+//   - Success:  the reply channel carries a bytes value.
+//   - EOF:      the source imp exits; the reply-writer drops; the
+//               consumer's reader<bytes> observes peer death (>> returns
+//               false).  Structural — no sentinel value needed.
+//   - Errors:   the source calls req.reply._throw(ep) before exiting;
+//               the consumer's >> rethrows at the call site.
+//
+// This file defines the type aliases and the fd_source factory
+// (Stage 1).  Higher layers (tls_source, http_body_source) are in
+// separate headers.
+
+
+#include <cerrno>
+#include <cstring>
+
+namespace csp::io {
+
+// --- Core type aliases ---
+
+// A single pull request: consumer asks for up to `value` bytes;
+// the source writes up to that many into the `reply` channel.
+using read_request = request<size_t, bytes>;
+
+// The consumer-facing handle.  A source is the *write* end of a
+// request channel — consumers write requests into it and read
+// replies from the one-shot reply channels embedded in each request.
+using source = writer<read_request>;
+
+// --- errno_error: carry a syscall name + errno across channels ---
+
+class errno_error : public csp::error {
+public:
+    errno_error(const std::string& syscall, int err)
+        : csp::error(syscall + ": " + std::strerror(err)), err_(err) {}
+
+    int err() const { return err_; }
+
+private:
+    int err_;
+};
+
+// --- fd_source: TCP / pipe source (Stage 1 concrete implementation) ---
+//
+// Spawns an imp that serves read_request values from a non-blocking fd.
+// Contract: up to N bytes per request, matching read(2) semantics.
+// Partial reads (m < N) are normal; the consumer decides whether to
+// re-request.
+//
+// Lifecycle:
+//   - EOF (io::read returns 0): imp exits without writing a reply.
+//     The reply-writer drops; the consumer's reader sees peer death.
+//   - Error (io::read returns < 0): imp throws errno_error across the
+//     current reply via _throw, then exits.  The consumer's >> rethrows.
+//   - Zero-byte request: imp throws std::invalid_argument and exits.
+//     (Almost always a caller bug; we surface it immediately.)
+//
+// The source owns the fd and closes it when the imp exits (normal,
+// EOF, or error).
+
+[[nodiscard]] inline source fd_source(fd_t fd) {
+    chan<read_request> ch;
+
+    spawn([req_r = std::move(ch.r), fd]() mutable {
+        internal::descr("fd_source");
+        assert(fd.is_nonblock() && "fd_source: fd must be non-blocking");
+
+        read_request req;
+        while (req_r >> req) {
+            if (req.value == 0) {
+                req.reply._throw(
+                    std::make_exception_ptr(
+                        std::invalid_argument("fd_source: zero-byte read request")));
+                csp::io::close(fd);
+                return;
+            }
+
+            bytes buf(req.value);
+            ssize_t n = csp::io::read(fd, buf.data(), buf.size());
+
+            if (n == 0) {
+                // EOF: exit without writing.  The reply-writer drops, and
+                // the consumer's reader<bytes> sees peer death.
+                csp::io::close(fd);
+                return;
+            }
+
+            if (n < 0) {
+                // Error: throw across the reply, then exit.
+                int err = errno;
+                req.reply._throw(
+                    std::make_exception_ptr(errno_error("read", err)));
+                csp::io::close(fd);
+                return;
+            }
+
+            buf.resize(static_cast<size_t>(n));
+            req.reply << std::move(buf);
+        }
+
+        // Request channel closed by consumer — clean shutdown.
+        csp::io::close(fd);
+    });
+
+    return std::move(ch.w);
+}
+
+// --- Convenience helpers for source consumers ---
+
+// Read exactly one request from a source and return the bytes.
+// Throws on error; throws csp::channel_closed on EOF.
+inline bytes source_read(source& s, size_t n) {
+    return s(n);
+}
+
+// Non-blocking form: returns a reader<bytes> for the response.
+// Use in prialt:
+//   auto reply = csp::io::call_source(s, 4096);
+//   prialt(reply >> buf, ~other);
+inline reader<bytes> call_source(source& s, size_t n) {
+    return call(s, n);
+}
+
+} // namespace csp::io
+
 /* csp/stack_analysis.h */
 
 
@@ -8040,3 +8733,63 @@ void raise(DWORD event);
 }
 
 #endif // _WIN32
+
+/* csp/ws.h */
+// Copyright 2025 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+
+
+namespace csp::ws {
+
+// --- Message types ---
+
+enum class opcode : uint8_t {
+    text   = 0x1,
+    binary = 0x2,
+    close  = 0x8,
+    ping   = 0x9,
+    pong   = 0xA,
+};
+
+struct message {
+    opcode  op   = opcode::binary;  // text or binary
+    bytes   data;                   // payload
+};
+
+// --- Endpoint pair returned by upgrade/connect ---
+
+struct conn {
+    reader<message> recv;   // inbound messages (text + binary only)
+    writer<message> send;   // outbound messages
+};
+
+// --- Server-side upgrade ---
+//
+// Call inside an HTTP request handler when you detect
+// "Upgrade: websocket". Performs the HTTP 101 handshake and
+// returns a conn for subsequent message exchange.
+//
+// Internally uses req.respond to send the 101 response, then reads
+// req.hijack to take ownership of the raw socket from the HTTP layer.
+//
+// On error (bad handshake headers), sends 400 Bad Request via
+// req.respond, drops req.hijack (so HTTP loop continues), and
+// throws csp::error.
+//
+// Dropping send triggers a Close handshake (BLO: Close frame is
+// sent to the peer, then recv closes after the peer's Close echo).
+
+conn upgrade(http::request& req);
+
+// --- Client-side connect ---
+//
+// Connects to ws://host[:port]/path and performs the opening
+// handshake. Returns the conn pair. Throws csp::error on failure.
+//
+// url must use the "ws://" scheme (no wss:// in this release).
+
+conn connect(const std::string& url);
+
+} // namespace csp::ws

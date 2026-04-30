@@ -70,9 +70,17 @@ endif
 
 DEPFLAGS = -MMD -MP
 
+NGHTTP2_DIR := vendor/github.com/nghttp2/nghttp2/lib
+NGHTTP2_INC := $(NGHTTP2_DIR)/includes
+
+WSLAY_DIR := vendor/github.com/tatsuhiro-t/wslay/lib
+
 INCLUDES := -I$(CSP_INCLUDE) \
             -Ivendor/include \
-            -Ivendor/github.com/nodejs/llhttp/include
+            -Ivendor/github.com/nodejs/llhttp/include \
+            -I$(NGHTTP2_INC) \
+            -I$(WSLAY_DIR)/includes \
+            -I$(WSLAY_DIR)
 
 # --- TLS support (via PicoTLS + minicrypto) ---
 
@@ -89,6 +97,7 @@ INCLUDES += -I$(PICOTLS_DIR)/include \
             -I$(CIFRA_DIR) \
             -I$(CIFRA_DIR)/ext \
             -I$(UECC_DIR)
+
 
 PICOTLS_SRCS := $(PICOTLS_DIR)/lib/picotls.c \
                 $(PICOTLS_DIR)/lib/hpke.c \
@@ -219,6 +228,7 @@ NGTCP2_CFLAGS := -O2 \
 ifneq ($(SANITIZE),)
 NGTCP2_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
+
 endif
 
 # --- llhttp (vendored HTTP parser) ---
@@ -232,6 +242,141 @@ LLHTTP_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(LLHTTP_SRCS))
 LLHTTP_CFLAGS := -O2 -I$(LLHTTP_DIR)/include
 ifneq ($(SANITIZE),)
 LLHTTP_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
+# --- nghttp2 (vendored HTTP/2 session management) ---
+
+NGHTTP2_SRCS := $(NGHTTP2_DIR)/nghttp2_alpn.c \
+                $(NGHTTP2_DIR)/nghttp2_buf.c \
+                $(NGHTTP2_DIR)/nghttp2_callbacks.c \
+                $(NGHTTP2_DIR)/nghttp2_debug.c \
+                $(NGHTTP2_DIR)/nghttp2_extpri.c \
+                $(NGHTTP2_DIR)/nghttp2_frame.c \
+                $(NGHTTP2_DIR)/nghttp2_hd.c \
+                $(NGHTTP2_DIR)/nghttp2_hd_huffman.c \
+                $(NGHTTP2_DIR)/nghttp2_hd_huffman_data.c \
+                $(NGHTTP2_DIR)/nghttp2_helper.c \
+                $(NGHTTP2_DIR)/nghttp2_http.c \
+                $(NGHTTP2_DIR)/nghttp2_map.c \
+                $(NGHTTP2_DIR)/nghttp2_mem.c \
+                $(NGHTTP2_DIR)/nghttp2_option.c \
+                $(NGHTTP2_DIR)/nghttp2_outbound_item.c \
+                $(NGHTTP2_DIR)/nghttp2_pq.c \
+                $(NGHTTP2_DIR)/nghttp2_priority_spec.c \
+                $(NGHTTP2_DIR)/nghttp2_queue.c \
+                $(NGHTTP2_DIR)/nghttp2_ratelim.c \
+                $(NGHTTP2_DIR)/nghttp2_rcbuf.c \
+                $(NGHTTP2_DIR)/nghttp2_session.c \
+                $(NGHTTP2_DIR)/nghttp2_stream.c \
+                $(NGHTTP2_DIR)/nghttp2_submit.c \
+                $(NGHTTP2_DIR)/nghttp2_time.c \
+                $(NGHTTP2_DIR)/nghttp2_version.c \
+                $(NGHTTP2_DIR)/sfparse.c
+NGHTTP2_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGHTTP2_SRCS))
+
+# nghttp2ver.h is generated from the .in template by autotools/cmake; we
+# substitute the version constants directly so a bare submodule clone builds
+# without running their build system.
+NGHTTP2_VERSION_STR := 1.69.90
+NGHTTP2_VERSION_NUM := 0x01455a
+NGHTTP2_VER_H       := $(NGHTTP2_INC)/nghttp2/nghttp2ver.h
+
+$(NGHTTP2_VER_H): $(NGHTTP2_INC)/nghttp2/nghttp2ver.h.in
+	sed -e 's/@PACKAGE_VERSION@/$(NGHTTP2_VERSION_STR)/' \
+	    -e 's/@PACKAGE_VERSION_NUM@/$(NGHTTP2_VERSION_NUM)/' \
+	    $< > $@
+
+$(NGHTTP2_OBJS): $(NGHTTP2_VER_H)
+$(BUILDDIR)/src/http2.o: $(NGHTTP2_VER_H)
+
+NGHTTP2_CFLAGS := -O2 -I$(NGHTTP2_INC) -DBUILDING_NGHTTP2
+ifneq ($(SANITIZE),)
+NGHTTP2_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
+# --- wslay (vendored WebSocket frame library, MIT) ---
+
+WSLAY_SRCS := $(WSLAY_DIR)/wslay_frame.c \
+              $(WSLAY_DIR)/wslay_event.c \
+              $(WSLAY_DIR)/wslay_queue.c \
+              $(WSLAY_DIR)/wslay_net.c
+WSLAY_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(WSLAY_SRCS))
+
+# Suppress HAVE_CONFIG_H and avoid config.h dependency.
+# Define the feature macros wslay checks for without autoconf.
+WSLAY_CFLAGS := -O2 -I$(WSLAY_DIR)/includes -I$(WSLAY_DIR) \
+                -DHAVE_ARPA_INET_H -DHAVE_NETINET_IN_H
+ifneq ($(SANITIZE),)
+WSLAY_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
+# --- nghttp3 (vendored HTTP/3 framing library, QPACK compression) ---
+#
+# nghttp3 is protocol-agnostic: it frames HTTP/3 streams but has no I/O and
+# no ngtcp2 dependency in its public header. It will be wired to QUIC streams
+# (T3.8) in src/http3.cc once that transport layer is ready.
+
+NGHTTP3_DIR := vendor/github.com/ngtcp2/nghttp3/lib
+NGHTTP3_INC := $(NGHTTP3_DIR)/includes
+
+INCLUDES += -I$(NGHTTP3_INC)
+
+# nghttp3 also bundles sfparse, but nghttp2 already compiles and links it.
+# Both bundles export the same symbols (checked: same upstream repo, minor
+# version drift but compatible ABI). Exclude nghttp3's copy to avoid duplicate
+# symbols at link time; nghttp3's object files resolve sfparse calls against
+# nghttp2's sfparse.o, which is included unconditionally.
+NGHTTP3_SRCS := \
+    $(NGHTTP3_DIR)/nghttp3_rcbuf.c \
+    $(NGHTTP3_DIR)/nghttp3_mem.c \
+    $(NGHTTP3_DIR)/nghttp3_str.c \
+    $(NGHTTP3_DIR)/nghttp3_conv.c \
+    $(NGHTTP3_DIR)/nghttp3_buf.c \
+    $(NGHTTP3_DIR)/nghttp3_ringbuf.c \
+    $(NGHTTP3_DIR)/nghttp3_pq.c \
+    $(NGHTTP3_DIR)/nghttp3_map.c \
+    $(NGHTTP3_DIR)/nghttp3_ksl.c \
+    $(NGHTTP3_DIR)/nghttp3_qpack.c \
+    $(NGHTTP3_DIR)/nghttp3_qpack_huffman.c \
+    $(NGHTTP3_DIR)/nghttp3_qpack_huffman_data.c \
+    $(NGHTTP3_DIR)/nghttp3_err.c \
+    $(NGHTTP3_DIR)/nghttp3_debug.c \
+    $(NGHTTP3_DIR)/nghttp3_conn.c \
+    $(NGHTTP3_DIR)/nghttp3_stream.c \
+    $(NGHTTP3_DIR)/nghttp3_frame.c \
+    $(NGHTTP3_DIR)/nghttp3_tnode.c \
+    $(NGHTTP3_DIR)/nghttp3_vec.c \
+    $(NGHTTP3_DIR)/nghttp3_gaptr.c \
+    $(NGHTTP3_DIR)/nghttp3_idtr.c \
+    $(NGHTTP3_DIR)/nghttp3_range.c \
+    $(NGHTTP3_DIR)/nghttp3_http.c \
+    $(NGHTTP3_DIR)/nghttp3_version.c \
+    $(NGHTTP3_DIR)/nghttp3_balloc.c \
+    $(NGHTTP3_DIR)/nghttp3_opl.c \
+    $(NGHTTP3_DIR)/nghttp3_objalloc.c \
+    $(NGHTTP3_DIR)/nghttp3_unreachable.c \
+    $(NGHTTP3_DIR)/nghttp3_settings.c \
+    $(NGHTTP3_DIR)/nghttp3_callbacks.c \
+    $(NGHTTP3_DIR)/nghttp3_ratelim.c
+NGHTTP3_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGHTTP3_SRCS))
+
+# nghttp3/version.h is generated from version.h.in; substitute version
+# constants directly so a bare submodule clone builds without autotools/cmake.
+NGHTTP3_VERSION_STR := 1.15.0
+NGHTTP3_VERSION_NUM := 0x010f00
+NGHTTP3_VER_H       := $(NGHTTP3_INC)/nghttp3/version.h
+
+$(NGHTTP3_VER_H): $(NGHTTP3_INC)/nghttp3/version.h.in
+	sed -e 's/@PACKAGE_VERSION@/$(NGHTTP3_VERSION_STR)/' \
+	    -e 's/@PACKAGE_VERSION_NUM@/$(NGHTTP3_VERSION_NUM)/' \
+	    $< > $@
+
+$(NGHTTP3_OBJS): $(NGHTTP3_VER_H)
+$(BUILDDIR)/src/http3.o: $(NGHTTP3_VER_H)
+
+NGHTTP3_CFLAGS := -O2 -I$(NGHTTP3_DIR) -I$(NGHTTP3_DIR)/sfparse -I$(NGHTTP3_INC) -DBUILDING_NGHTTP3
+ifneq ($(SANITIZE),)
+NGHTTP3_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
 endif
 
 # --- fcontext (vendored from Boost.Context) ---
@@ -286,6 +431,9 @@ LIB_SRCS := src/csp.cc \
             src/net.cc \
             src/file.cc
 LIB_SRCS += src/http.cc
+LIB_SRCS += src/http2.cc
+LIB_SRCS += src/ws.cc
+LIB_SRCS += src/http3.cc
 ifeq ($(CSP_TLS),1)
 LIB_SRCS += src/tls.cc
 LIB_SRCS += src/quic.cc
@@ -293,9 +441,9 @@ endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
-# net.test.cc, http.test.cc, and quic.test.cc depend on headers not in the dist amalgamation.
+# net.test.cc, http.test.cc, http2.test.cc, http3.test.cc, ws.test.cc, and quic.test.cc depend on headers not in the dist amalgamation.
 ifeq ($(CSP_INCLUDE),dist)
-TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/quic.test.cc,$(TEST_SRCS))
+TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.cc test/http3.test.cc test/ws.test.cc test/quic.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)
@@ -304,7 +452,7 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
 ifneq ($(CSP_INCLUDE),dist)
-LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS)
+LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS) $(NGHTTP2_OBJS) $(WSLAY_OBJS) $(NGHTTP3_OBJS)
 endif
 ifeq ($(CSP_TLS),1)
 LIB_OBJS   += $(PICOTLS_OBJS)
@@ -391,6 +539,21 @@ $(BUILDDIR)/$(LLHTTP_DIR)/%.o: $(LLHTTP_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(LLHTTP_CFLAGS) -o $@ $<
 
+# nghttp2 C sources
+$(BUILDDIR)/$(NGHTTP2_DIR)/%.o: $(NGHTTP2_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGHTTP2_CFLAGS) -o $@ $<
+
+# wslay C sources
+$(BUILDDIR)/$(WSLAY_DIR)/%.o: $(WSLAY_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(WSLAY_CFLAGS) -o $@ $<
+
+# nghttp3 C sources (HTTP/3 framing + QPACK)
+$(BUILDDIR)/$(NGHTTP3_DIR)/%.o: $(NGHTTP3_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGHTTP3_CFLAGS) -o $@ $<
+
 # PicoTLS + minicrypto C sources
 ifeq ($(CSP_TLS),1)
 $(BUILDDIR)/$(PICOTLS_DIR)/%.o: $(PICOTLS_DIR)/%.c
@@ -426,6 +589,7 @@ $(BUILDDIR)/src/ngtcp2_crypto_picotls_minicrypto.o: src/ngtcp2_crypto_picotls_mi
 	    -I$(PICOTLS_DIR)/deps/cifra/src \
 	    -I$(PICOTLS_DIR)/deps/cifra/src/ext \
 	    -o $@ $<
+
 endif
 
 # Distribution sources

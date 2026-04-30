@@ -259,3 +259,58 @@ None.
   `frame.test.cc` is timing-sensitive and may flake on overloaded CI
   runners; tracked separately. 🎯T16 (Linux x86_64 ASan+UBSan dist
   hang) remains open.
+
+## 2026-04-27 — /release v0.11.0
+
+- **Commit**: `3771f64`
+- **Outcome**: Released v0.11.0. Headline changes: HTTP/2 server
+  (🎯T3.7 — nghttp2, h2c + h2-via-ALPN); WebSocket support (🎯T3.5 —
+  wslay, `ws://` server-upgrade and client-connect, deadlock-fixed
+  reactor write race); pull-based source abstraction (🎯T17 Stage 1 —
+  `csp::io::source` / `fd_source` for sized reads with structural EOF
+  via reply-writer death); HTTP/1.1 streaming request body
+  (🎯T3.2 — `request::body_stream` + `drain()` + protocol-upgrade
+  `hijack` channel); arena stack allocator (🎯T3.3 — 100K+ imps in
+  ~0.3s on M4 Max via 256MB / 4096 × 64KB slabs + software overflow
+  check at suspend points); ARM64 stack analyzer improvements
+  (🎯T3.4 — ADRP/CONST register tracking, interprocedural data
+  forwarding, BL/BLR caller-saved clobber); per-worker wake (🎯T13 —
+  eliminates thundering herd on the scheduler condvar); HTTP/3
+  scaffold (🎯T3.9 Stage 1 — nghttp3 vendored, public API drafted,
+  all entry points stub-throw pending T3.8 QUIC). Bullseye graph
+  reshaped for repo-scope distance-to-checkpoint ordering (🎯T3 and
+  🎯T7 marked `showcase: true`). Six PRs since v0.10.0: #34, #35, #36,
+  #37, #38, #39. CSP remains source-distributed (no Homebrew tap, no
+  release binaries).
+- **Known issue (Windows broken)**: 🎯T3.3's stack-overflow check in
+  `csp_internal.h` uses `__builtin_trap()` and `[[gnu::always_inline]]`
+  — both GCC/Clang extensions, neither recognized by MSVC. Windows
+  x86_64 CI is red on master and on this release; macOS arm64, Linux
+  x86_64, Linux arm64, ASan/UBSan, TSan and TLA+ jobs all pass. Fix
+  planned for v0.12.0 (portable wrappers around the trap intrinsic
+  and the always-inline attribute).
+- **Known issue (T3.7 / T3.8 partial)**: HTTP/2 server-push handler
+  delivery hit a re-entrancy deadlock during the parallel batch and
+  was rolled back from the T3.* fan-out PR; current http2.cc in
+  master contains the v0.10.0 push design plus the new ALPN
+  negotiation path only. QUIC transport (T3.8) attempted in parallel
+  hit a stream-channel reader-move bug under handshake completion
+  and was excluded from this release; both targets remain in the
+  bullseye frontier for a clean restart.
+
+## 2026-04-29 — /release v0.12.0
+
+- **Commit**: `b1cb77f`
+- **Outcome**: Released v0.12.0 (source-only, no binaries). Closes
+  🎯T4 (API safety gaps) including 🎯T4.1 `closer<EP>` (vulture-only
+  spawn-handle wrapper, docs in `docs/reference/multiplexing.md`) and
+  🎯T4.2 main()-safe dynamic-scope APIs (`csp::local` /
+  `imp_local::operator=` / `context_scope` throw `csp::error` outside
+  any imp; `dynamic<T>` / `imp_local<T>` reads degrade to defaults).
+  Windows portability fix: `__builtin_trap()` → `__debugbreak()` on
+  MSVC; CMake test list now excludes ws/http3 pending wslay/nghttp3
+  CMake wiring. NOTICES updated for llhttp, nghttp2, wslay, nghttp3.
+  Bullseye sweep retired six already-shipped targets (🎯T3.2, 🎯T3.5,
+  🎯T3.6, 🎯T3.7, 🎯T3.9, 🎯T13). One PR since v0.11.0: #42. CI green
+  on all platforms (macOS arm64, Linux x86_64/arm64, ASan/UBSan, TSan,
+  TLA+, Windows x86_64).

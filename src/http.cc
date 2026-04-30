@@ -209,6 +209,13 @@ int on_message_complete(llhttp_t* p) {
 //
 // Uses direct I/O on the fd rather than net::connection channels.
 // This avoids inheriting cancel scopes from the accept loop.
+//
+// Body streaming design: the request body is fully buffered before the
+// request is delivered.  The body_stream channel is pre-populated with
+// a single chunk containing the complete body, then closed.  Handlers
+// that only need the full body call req.drain() or use req.body directly;
+// handlers that prefer the streaming interface can read body_stream.
+// True chunk-by-chunk streaming (without buffering) requires 🎯T17.
 
 void handle_connection(io::fd_t fd, std::string remote_addr,
                        writer<endpoint> ep_out) {
@@ -255,7 +262,60 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
             auto err = llhttp_execute(&parser, data, len);
 
             if (state.message_complete) {
+                // Body streaming design (🎯T3.2):
+                //
+                // The request body is fully accumulated in state.body before
+                // delivery (llhttp buffers it via on_body callbacks).
+                // body_stream is a reader<bytes> backed by a spawn_producer
+                // imp that sends the body as one chunk and exits.
+                //
+                // Lifecycle: when the handler receives the request,
+                // handle_connection blocks on resp_ch.r >> resp.  The
+                // producer imp is then free to run on any OS thread and
+                // deliver the body to whoever reads body_stream.  No more
+                // than 3 imps (handle_connection + producer + handler) are
+                // active at once, but only 2 need CPU simultaneously
+                // (producer exits as soon as the handler receives the chunk).
+                //
+                // True chunk-by-chunk streaming (without buffering) requires
+                // 🎯T17.
+                reader<bytes> body_reader;
+                if (state.body.empty()) {
+                    body_reader = spawn_producer<bytes>(
+                        [](writer<bytes>) {
+                            // No body: exit immediately, closing the stream.
+                        });
+                } else {
+                    body_reader = spawn_producer<bytes>(
+                        [body = std::move(state.body)](writer<bytes> w) mutable {
+                            w << std::move(body);
+                        });
+                }
+
+                // Bytes that were consumed by the parser beyond the end
+                // of this message (may be non-zero when HPE_PAUSED).
+                size_t consumed = 0;
+                if (err == HPE_PAUSED) {
+                    consumed = static_cast<size_t>(
+                        llhttp_get_error_pos(&parser) - data);
+                } else {
+                    consumed = len;
+                }
+
+                // Collect any leftover bytes the parser has already buffered
+                // but not yet returned (bytes parsed past this message).
+                // Used by the hijack path (🎯T3.5 WebSocket upgrade) to
+                // hand any bytes already past the 101 boundary to the
+                // protocol that takes over the fd.
+                bytes leftover;
+                leftover.insert(leftover.end(),
+                                reinterpret_cast<const uint8_t*>(data + consumed),
+                                reinterpret_cast<const uint8_t*>(data + len));
+
                 chan<response> resp_ch;
+                // Sync hijack channel: write blocks until handler reads
+                // or handler drops the reader (no hijack).
+                chan<request::hijack_result> hijack_ch;
 
                 request req;
                 req.method = from_llhttp(state.req_method);
@@ -263,9 +323,10 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                 req.version_major = state.version_major;
                 req.version_minor = state.version_minor;
                 req.headers = std::move(state.headers);
-                req.body = std::move(state.body);
                 req.keep_alive = state.keep_alive;
+                req.body_stream = std::move(body_reader);
                 req.respond = std::move(resp_ch.w);
+                req.hijack  = std::move(hijack_ch.r);
 
                 if (!(req_writer << std::move(req))) goto done;
 
@@ -274,18 +335,23 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                     auto wire = serialize_response(resp);
                     if (io::write(fd, wire.data(), wire.size()) < 0)
                         goto done;
+
+                    // A 101 Switching Protocols response signals a protocol
+                    // upgrade (e.g. WebSocket).  Offer the raw fd to the
+                    // handler via the hijack channel; the handler must be
+                    // waiting on req.hijack.  This write is blocking because
+                    // the WebSocket handler must have already started reading
+                    // from req.hijack (it called ws::upgrade which reads the
+                    // hijack channel synchronously after sending the 101).
+                    if (resp.status == 101) {
+                        hijack_ch.w << request::hijack_result{fd, std::move(leftover)};
+                        // fd ownership transferred — do NOT close.
+                        return;
+                    }
                 }
 
                 bool ka = state.keep_alive;
 
-                if (err == HPE_PAUSED) {
-                    auto consumed = static_cast<size_t>(
-                        llhttp_get_error_pos(&parser) - data);
-                    data += consumed;
-                    len -= consumed;
-                } else {
-                    len = 0;
-                }
                 // Always resume — the parser stays paused even if
                 // HPE_OK is returned (all data consumed at the pause
                 // point).
@@ -294,10 +360,14 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
 
                 if (!ka) goto done;
 
+                data += consumed;
+                len  -= consumed;
+                if (len == 0) break;
+
             } else if (err != HPE_OK) {
                 response bad{400, {}, {}};
                 auto wire = serialize_response(bad);
-                io::write(fd, wire.data(), wire.size());
+                (void)io::write(fd, wire.data(), wire.size());
                 goto done;
 
             } else {
@@ -550,6 +620,14 @@ int64_t request::content_length() const {
     auto v = header("Content-Length");
     if (v.empty()) return -1;
     return std::stoll(v);
+}
+
+const bytes& request::drain() {
+    bytes chunk;
+    while (body_stream >> chunk) {
+        body.insert(body.end(), chunk.begin(), chunk.end());
+    }
+    return body;
 }
 
 // --- serve ---

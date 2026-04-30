@@ -133,6 +133,148 @@ TEST_CASE("Different-indirect-targets---different-depths") {
             ", w/ deeper_leaf: ", r2.max_depth);
 }
 
+// ---- New tests for T3.4 improvements ----
+
+// A virtual-dispatch-style scenario: object pointer + vtable lookup.
+// The struct stores a function pointer at a known offset (simulating a vtable).
+struct vtable_obj {
+    void (*method)(void*);  // offset 0 — simulates first vtable slot
+};
+
+__attribute__((noinline)) static void vtable_caller(void* data) {
+    volatile char buf[64];
+    buf[0] = 1;
+    auto* obj = static_cast<vtable_obj*>(data);
+    obj->method(nullptr);  // BLR via function pointer from struct
+}
+
+TEST_CASE("Vtable-like-indirect-call---no-data") {
+    // Without data the indirect call falls back to budget.
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&vtable_caller), nullptr);
+    CHECK_FALSE(result.is_exact);
+}
+
+TEST_CASE("Vtable-like-indirect-call---with-data") {
+    vtable_obj obj{&leaf_func};
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&vtable_caller), &obj);
+    CHECK(result.is_exact);
+    CHECK(result.max_depth > 0);
+    MESSAGE("vtable_caller (with data) depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
+// Interprocedural data forwarding: A calls B, passing a sub-pointer from
+// the closure. B calls through a function pointer inside the sub-object.
+struct inner_data {
+    void (*callback)(void*);
+};
+
+struct outer_data {
+    int tag;
+    inner_data* inner;  // sub-pointer at offset 8
+};
+
+__attribute__((noinline, optnone))
+static void inner_caller(void* data) {
+    volatile char buf[128];
+    buf[0] = 1;
+    auto* d = static_cast<inner_data*>(data);
+    d->callback(nullptr);
+}
+
+__attribute__((noinline))
+static void outer_caller(void* data) {
+    volatile char buf[64];
+    buf[0] = 1;
+    auto* d = static_cast<outer_data*>(data);
+    inner_caller(d->inner);  // passes sub-pointer — interprocedural forwarding
+}
+
+TEST_CASE("Interprocedural-data-forwarding---no-data") {
+    // Without data, both levels fall back to budget.
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&outer_caller), nullptr);
+    CHECK_FALSE(result.is_exact);
+}
+
+TEST_CASE("Interprocedural-data-forwarding---with-data") {
+    inner_data inner{&leaf_func};
+    outer_data outer{0, &inner};
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&outer_caller), &outer);
+    // With forwarding, the inner indirect call should be resolved.
+    // At minimum the result should be non-zero and not crash.
+    CHECK(result.max_depth > 0);
+    MESSAGE("outer_caller depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
+// Branch pruning via CBZ/CBNZ: a function with two paths of very different
+// stack depth, dispatched on a boolean captured in the closure.
+struct tag_data {
+    int which;  // 0 = small path, 1 = large path
+};
+
+__attribute__((noinline))
+static void small_path(void*) {
+    volatile char buf[64];
+    buf[0] = 1;
+}
+
+__attribute__((noinline))
+static void large_path(void*) {
+    volatile char buf[512];
+    for (int i = 0; i < 512; ++i) buf[i] = static_cast<char>(i);
+}
+
+// This function is intentionally written to use a conditional branch
+// that the analyzer may or may not be able to prune. We don't assert
+// pruning (it requires the compiler to use CBZ/CBNZ on the loaded tag),
+// but we do assert correctness in both data cases.
+__attribute__((noinline))
+static void branching_caller(void* data) {
+    volatile char buf[32];
+    buf[0] = 1;
+    auto* d = static_cast<tag_data*>(data);
+    if (d->which == 0) {
+        small_path(nullptr);
+    } else {
+        large_path(nullptr);
+    }
+}
+
+TEST_CASE("Branch-with-data---small-path") {
+    tag_data d{0};
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&branching_caller), &d);
+    // With data, the CBZ on d->which is folded at walk time: only the
+    // small_path branch is explored, giving an exact result.
+    CHECK(result.is_exact);
+    CHECK(result.max_depth > 0);
+    // Small path is well under 512 bytes (it only has a tiny local buffer).
+    CHECK(result.max_depth < 512);
+    MESSAGE("branching_caller (small) depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
+TEST_CASE("Branch-with-data---large-path") {
+    tag_data d{1};
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&branching_caller), &d);
+    // The large path has a loop (stack canary check) that may exceed the
+    // instruction budget, so is_exact may be false — but the result should
+    // be at least as large as the small path's exact result.
+    CHECK(result.max_depth > 0);
+    tag_data d_small{0};
+    auto small_result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&branching_caller), &d_small);
+    CHECK(result.max_depth >= small_result.max_depth);
+    MESSAGE("branching_caller (large) depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
 } // TEST_SUITE
 
 #endif // !CSP_SANITIZED
