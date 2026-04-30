@@ -29,7 +29,6 @@
 #include <csp/internal/reactor.h>
 #include <csp/internal/signal.h>
 
-#include <cstdio>
 #include <cassert>
 #include <cerrno>
 #include <chrono>
@@ -90,6 +89,21 @@ std::string format_addr(const struct sockaddr* sa, socklen_t len) {
     return std::string(host) + ":" + serv;
 }
 
+// Send a UDP datagram, retrying on EAGAIN by waiting for write-readiness
+// via the kqueue reactor.  Always called from an imp context.
+static void udp_send(int fd, const void* buf, int len,
+                     const struct sockaddr* peer, socklen_t peer_len) {
+    for (;;) {
+        ssize_t sent = ::sendto(fd, static_cast<const char*>(buf), len, 0,
+                                peer, peer_len);
+        if (sent >= 0) return;
+        if (errno != EAGAIN && errno != EWOULDBLOCK) return; // hard error
+        // Socket send buffer full — wait for write-readiness.
+        detail::fd_signal sig = detail::create_fd_writable(fd);
+        prialt(~sig);
+    }
+}
+
 // Create a non-blocking UDP socket bound to the given address.
 int make_udp_socket(const struct sockaddr* addr, socklen_t addrlen,
                     int rcvbuf) {
@@ -131,18 +145,13 @@ void flush_ngtcp2_out(ngtcp2_conn* nconn, int fd,
     ngtcp2_pkt_info pi{};
     ngtcp2_path_storage_zero(&ps);
 
-    int pkts = 0;
     for (;;) {
         ngtcp2_ssize n =
             ngtcp2_conn_write_pkt(nconn, &ps.path, &pi, buf, sizeof(buf),
                                   now_ns());
-        if (n < 0) { fprintf(stderr, "[flush] write_pkt err=%zd (%s)\n", n, ngtcp2_strerror((int)n)); break; }
-        if (n == 0) break;
-        ssize_t sent = ::sendto(fd, reinterpret_cast<const char*>(buf),
-                 static_cast<int>(n), 0, peer, peer_len);
-        fprintf(stderr, "[flush] sent pkt %d size=%zd sent=%zd\n", ++pkts, n, sent);
+        if (n <= 0) break;
+        udp_send(fd, buf, static_cast<int>(n), peer, peer_len);
     }
-    if (pkts == 0) fprintf(stderr, "[flush] no pkts to send\n");
 }
 
 // Allocate a 2-slot additional_extensions array required by the picotls
@@ -214,13 +223,17 @@ struct StreamState {
     int64_t stream_id = -1;
 
     // Inbound: io imp delivers chunks here for the app to read.
-    // Synchronous (unbuffered) — io imp writes after ngtcp2 callbacks
-    // have returned, so it is safe to block here.
+    // Unbuffered: direct rendezvous between the driving loop and the app.
+    // The driving loop blocks on each write until the app consumes the chunk.
     chan<bytes> in_ch;
 
-    // Outbound: app writes here; relay imp forwards and pokes io imp.
-    // The io imp drains this between ngtcp2 calls (never inside callbacks).
-    chan<bytes> out_ch;
+    // Outbound: relay imp appends here; io imp drains under mutex.
+    // Using a mutex-protected vector (not a CSP channel) avoids buffered-
+    // channel complexity — the relay writes and pokes the wake pipe without
+    // needing the io imp to be waiting.
+    std::mutex out_mu;
+    std::vector<bytes> out_pending;
+    bool out_closed = false; // relay set when app writer closes
 
     // Pending inbound chunks accumulated by recv_stream_data_cb.
     // Held under ConnShared::streams_mu.  Dispatched by the io imp
@@ -232,30 +245,38 @@ struct StreamState {
 };
 
 // Create a writer<bytes> for the app that:
-//   1) forwards each written chunk into out_ch.w (the io imp's inbound side), and
-//   2) writes one byte to wake_wfd to wake the driving loop.
-// The relay imp bridges the app-facing channel to the io imp's out_ch.
-// make_stream_output: create a writer<bytes> that:
-//   1) forwards each written chunk into out_ch (for the io imp to drain), and
+//   1) appends each written chunk into ss->out_pending (under ss->out_mu), and
 //   2) writes one byte to a dup of wake_wfd to wake the driving loop.
-// The relay imp owns its dup'd copy of wake_wfd and closes it on exit.
-static writer<bytes> make_stream_output(writer<bytes> out_w, int wake_wfd) {
+// Using a mutex-protected vector avoids the buffered-channel ambiguity where
+// the drain reads an empty bytes due to a race between the channel's internal
+// buffer filter and the relay imp.
+static writer<bytes> make_stream_output(std::shared_ptr<StreamState> ss, int wake_wfd) {
     chan<bytes> app_ch;
     auto app_r = std::move(app_ch.r);
     auto app_w = std::move(app_ch.w);
 
     int relay_wake_wfd = ::dup(wake_wfd); // relay imp owns this copy
 
-    spawn([app_r   = std::move(app_r),
-           out_w   = std::move(out_w),
+    spawn([app_r        = std::move(app_r),
+           ss,
            relay_wake_wfd]() mutable {
         bytes data;
         while (app_r >> data) {
-            out_w << std::move(data);
+            {
+                std::lock_guard<std::mutex> lk(ss->out_mu);
+                ss->out_pending.push_back(std::move(data));
+            }
             // Poke the driving loop (non-blocking write to pipe).
             char b = 1;
             ::write(relay_wake_wfd, &b, 1);
         }
+        {
+            std::lock_guard<std::mutex> lk(ss->out_mu);
+            ss->out_closed = true;
+        }
+        // Poke the driving loop one final time so it knows this relay is done.
+        char b = 0;
+        ::write(relay_wake_wfd, &b, 1);
         ::close(relay_wake_wfd);
     });
 
@@ -317,8 +338,8 @@ struct ConnShared {
     // Close a detached stream's channels (call after ngtcp2 returns).
     static void close_stream_channels(std::shared_ptr<StreamState>& ss) {
         if (!ss) return;
-        ss->in_ch.w  = {}; // signal EOF to app reader
-        ss->out_ch.r = {}; // stop relay imp
+        ss->in_ch.w = {}; // signal EOF to app reader
+        // out_pending is mutex-protected; no channel to close.
         ss.reset();
     }
 
@@ -487,7 +508,6 @@ bool dispatch_pending_events(std::shared_ptr<ConnShared>& shared, int wake_wfd) 
         std::lock_guard<std::mutex> lk(shared->streams_mu);
         new_streams.swap(shared->pending_new_streams);
     }
-    fprintf(stderr, "[dispatch] new_streams=%zu\n", new_streams.size());
     for (int64_t sid : new_streams) {
         std::shared_ptr<StreamState> ss;
         {
@@ -498,7 +518,7 @@ bool dispatch_pending_events(std::shared_ptr<ConnShared>& shared, int wake_wfd) 
         }
         stream_pair sp;
         sp.input  = std::move(ss->in_ch.r);
-        sp.output = make_stream_output(std::move(ss->out_ch.w), wake_wfd);
+        sp.output = make_stream_output(ss, wake_wfd);
         if (!(shared->incoming_ch.w << std::move(sp)))
             return false; // listener/app dropped the connection
     }
@@ -563,20 +583,81 @@ bool drain_stream_writes(ngtcp2_conn* nconn, std::shared_ptr<ConnShared> shared,
     ngtcp2_pkt_info pi{};
 
     for (auto& [sid, ss] : active) {
-        bytes chunk;
-        int res = prialt(ss->out_ch.r >> chunk, csp::none);
-        if (res != 0) continue; // nothing ready or stream dead
+        // Collect all pending chunks and fin flag under the mutex.
+        std::vector<bytes> chunks;
+        bool closed = false;
+        {
+            std::lock_guard<std::mutex> lk(ss->out_mu);
+            chunks.swap(ss->out_pending);
+            closed = ss->out_closed;
+        }
 
-        ngtcp2_vec vec{chunk.data(), chunk.size()};
-        ngtcp2_ssize nw = ngtcp2_conn_writev_stream(
-            nconn, &ps.path, &pi, buf, sizeof(buf),
-            nullptr /* pdatalen */,
-            NGTCP2_WRITE_STREAM_FLAG_NONE,
-            sid, &vec, 1, now_ns());
-        if (nw < 0) return false;
-        if (nw > 0)
-            ::sendto(fd, reinterpret_cast<const char*>(buf),
-                     static_cast<int>(nw), 0, peer, peer_len);
+        // Determine if we should send FIN with (or immediately after) the last chunk.
+        // Only send FIN once: when the app closed its write end and we've sent all data.
+        bool send_fin = closed && !ss->fin_sent;
+
+        for (size_t ci = 0; ci < chunks.size(); ++ci) {
+            auto& chunk = chunks[ci];
+            if (chunk.empty()) continue; // skip empty writes
+
+            bool is_last = (ci == chunks.size() - 1);
+
+            // Send chunk via ngtcp2.  writev_stream may return pdatalen=0
+            // on the first call for a new stream (stream-open packet consumes
+            // the budget); in that case, keep calling until all bytes are sent.
+            size_t offset = 0;
+            while (offset < chunk.size()) {
+                ngtcp2_vec vec{chunk.data() + offset, chunk.size() - offset};
+                ngtcp2_ssize pdatalen = -1;
+                // Send FIN with the last byte of the last chunk if applicable.
+                uint32_t flags = (send_fin && is_last && (offset + vec.len >= chunk.size()))
+                    ? NGTCP2_WRITE_STREAM_FLAG_FIN
+                    : NGTCP2_WRITE_STREAM_FLAG_NONE;
+                ngtcp2_ssize nw = ngtcp2_conn_writev_stream(
+                    nconn, &ps.path, &pi, buf, sizeof(buf),
+                    &pdatalen,
+                    flags,
+                    sid, &vec, 1, now_ns());
+                if (nw < 0) return false;
+                if (nw > 0) {
+                    udp_send(fd, buf, static_cast<int>(nw), peer, peer_len);
+                    if (pdatalen > 0)
+                        offset += static_cast<size_t>(pdatalen);
+                    // If pdatalen==0, the packet was stream-open with no data;
+                    // loop again to actually send the data bytes.
+                } else {
+                    // nw==0: congestion-controlled, no room right now.
+                    // Flush any pending control packets and try once more.
+                    flush_ngtcp2_out(nconn, fd, peer, peer_len);
+                    ngtcp2_ssize nw2 = ngtcp2_conn_writev_stream(
+                        nconn, &ps.path, &pi, buf, sizeof(buf),
+                        &pdatalen,
+                        flags,
+                        sid, &vec, 1, now_ns());
+                    if (nw2 <= 0) break; // give up for this cycle
+                    udp_send(fd, buf, static_cast<int>(nw2), peer, peer_len);
+                    if (pdatalen > 0)
+                        offset += static_cast<size_t>(pdatalen);
+                    if (offset < chunk.size()) break; // will retry next wake
+                }
+            }
+        }
+
+        // If closed and no chunks to send (or all already drained), send a bare FIN.
+        if (send_fin && chunks.empty() && !ss->fin_sent) {
+            ngtcp2_ssize nw = ngtcp2_conn_writev_stream(
+                nconn, &ps.path, &pi, buf, sizeof(buf),
+                nullptr,
+                NGTCP2_WRITE_STREAM_FLAG_FIN,
+                sid, nullptr, 0, now_ns());
+            if (nw > 0)
+                udp_send(fd, buf, static_cast<int>(nw), peer, peer_len);
+            if (nw >= 0)
+                ss->fin_sent = true;
+        } else if (send_fin && !chunks.empty()) {
+            // FIN was sent (or attempted) along with the last chunk.
+            ss->fin_sent = true;
+        }
     }
     return true;
 }
@@ -592,7 +673,6 @@ bool handle_open_requests(ngtcp2_conn* nconn,
         std::lock_guard<std::mutex> lk(shared->open_mu);
         requests.swap(shared->open_replies);
     }
-    fprintf(stderr, "[handle_open_requests] %zu requests\n", requests.size());
 
     for (auto& reply_w : requests) {
         int64_t stream_id = -1;
@@ -606,7 +686,7 @@ bool handle_open_requests(ngtcp2_conn* nconn,
 
         stream_pair sp;
         sp.input  = std::move(ss->in_ch.r);
-        sp.output = make_stream_output(std::move(ss->out_ch.w), wake_wfd);
+        sp.output = make_stream_output(ss, wake_wfd);
 
         reply_w << std::move(sp);
     }
@@ -619,15 +699,19 @@ bool handle_open_requests(ngtcp2_conn* nconn,
 // wake_rfd/wake_wfd: non-blocking pipe. Relay imps write to wake_wfd to
 // wake this loop; the loop watches wake_rfd alongside the UDP socket fd.
 // The io imp owns the pipe and closes both ends on exit.
+// stop_r: fires (dead channel) when the application drops its connection handle.
 void run_io_imp(ngtcp2_conn* nconn, ConnRef* cref,
                 ngtcp2_crypto_picotls_ctx* cptls,
                 ptls_t* ptls,
                 std::shared_ptr<ConnShared> shared,
                 int fd,
+                struct sockaddr_storage local_ss, socklen_t local_len,
                 struct sockaddr_storage peer_ss, socklen_t peer_len,
-                bool owns_fd, int wake_rfd, int wake_wfd) {
-    fprintf(stderr, "[io_imp] started\n");
+                bool owns_fd, int wake_rfd, int wake_wfd,
+                reader<std::monostate> stop_r) {
     uint8_t rbuf[65536];
+    const struct sockaddr* local =
+        reinterpret_cast<const struct sockaddr*>(&local_ss);
     const struct sockaddr* peer =
         reinterpret_cast<const struct sockaddr*>(&peer_ss);
 
@@ -636,7 +720,7 @@ void run_io_imp(ngtcp2_conn* nconn, ConnRef* cref,
             std::lock_guard<std::mutex> lk(shared->streams_mu);
             for (auto& [id, ss] : shared->streams) {
                 ss->in_ch.w  = {};
-                ss->out_ch.r = {};
+                // out_pending is mutex-protected; no channel to close.
             }
             shared->streams.clear();
         }
@@ -657,85 +741,140 @@ void run_io_imp(ngtcp2_conn* nconn, ConnRef* cref,
                                : (expiry > cur)        ? (int64_t)(expiry - cur)
                                                        : 0;
 
+        // Always try a non-blocking receive first.  This avoids a kqueue
+        // EV_ONESHOT race: a UDP packet may have arrived while we were blocked
+        // in a CSP channel operation (e.g. dispatching to in_ch) and the
+        // previous EV_ONESHOT was already consumed — re-registering a new
+        // EV_ONESHOT does not reliably fire for data already in the buffer.
+        {
+            struct sockaddr_storage src{};
+            socklen_t src_len = sizeof(src);
+            ssize_t n = ::recvfrom(fd, reinterpret_cast<char*>(rbuf),
+                                   sizeof(rbuf), MSG_DONTWAIT,
+                                   reinterpret_cast<struct sockaddr*>(&src),
+                                   &src_len);
+            if (n > 0) {
+                // Drain wake pipe while we're here.
+                { char wb[64]; while (::read(wake_rfd, wb, sizeof(wb)) > 0) {} }
+                ngtcp2_path path;
+                ngtcp2_addr_init(&path.local, local, local_len);
+                ngtcp2_addr_init(
+                    &path.remote,
+                    reinterpret_cast<const struct sockaddr*>(&src), src_len);
+                ngtcp2_pkt_info pi{};
+                int rv = ngtcp2_conn_read_pkt(nconn, &path, &pi, rbuf,
+                                              static_cast<size_t>(n), now_ns());
+                if (!dispatch_pending_events(shared, wake_wfd)) {
+                    cleanup();
+                    return;
+                }
+                if (rv == NGTCP2_ERR_DRAINING || rv != 0) {
+                    if (rv == NGTCP2_ERR_DRAINING)
+                        flush_ngtcp2_out(nconn, fd, peer, peer_len);
+                    cleanup();
+                    return;
+                }
+                flush_ngtcp2_out(nconn, fd, peer, peer_len);
+                if (!handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd)) {
+                    cleanup();
+                    return;
+                }
+                if (!drain_stream_writes(nconn, shared, fd, peer, peer_len)) {
+                    cleanup();
+                    return;
+                }
+                continue;
+            }
+        }
+
         if (delay_ns <= 0) {
-            // Already expired — handle immediately without waiting.
+            // Timer expired — handle immediately.
             ngtcp2_conn_handle_expiry(nconn, now_ns());
             flush_ngtcp2_out(nconn, fd, peer, peer_len);
+            if (!handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd))
+                break;
+            if (!drain_stream_writes(nconn, shared, fd, peer, peer_len))
+                break;
+            // Yield to prevent starving other imps on the M:N scheduler when
+            // the timer keeps expiring (delay_ns <= 0) without blocking.
+            yield();
             continue;
         }
 
-        // Wait for: UDP readable, timer, OR wake pipe (outbound data ready).
+        // Wait for: UDP readable, timer, wake pipe (outbound data ready), OR stop.
+        // ~stop_r fires when conn.impl_ (the app handle) is dropped → exit.
         detail::fd_signal udp_ready  = detail::create_fd_readable(fd);
         detail::fd_signal wake_ready = detail::create_fd_readable(wake_rfd);
 
         int res;
         if (delay_ns == INT64_MAX) {
-            res = prialt(~udp_ready, ~wake_ready);
+            res = prialt(~udp_ready, ~wake_ready, ~stop_r);
         } else {
             detail::timer_signal timer = detail::create_timer_signal(delay_ns);
-            res = prialt(~udp_ready, ~timer, ~wake_ready);
+            res = prialt(~udp_ready, ~timer, ~wake_ready, ~stop_r);
         }
 
-        // ~udp_ready  fires → res = ~0 = -1 (fd became readable)
-        // ~timer      fires → res = ~1 = -2 (timer expired)
-        // ~wake_ready fires → res = ~1 = -2 or ~2 = -3 (relay poked)
-        // If ALL alternatives die simultaneously → res might be INT_MIN or similar.
-        // We check which fired by the specific value.
+        // Without timer:  ~udp_ready → ~0=-1; ~wake_ready → ~1=-2; ~stop_r → ~2=-3
+        // With timer:     ~udp_ready → ~0=-1; ~timer → ~1=-2; ~wake_ready → ~2=-3; ~stop_r → ~3=-4
 
-        bool udp_fired  = (delay_ns == INT64_MAX) ? (res == ~0) : (res == ~0);
         bool timer_fired = (delay_ns != INT64_MAX) && (res == ~1);
-        bool wake_fired = (delay_ns == INT64_MAX)  ? (res == ~1) : (res == ~2);
-        bool all_dead = (res == INT_MIN); // no-wait returned nothing, or all died
+        bool stop_fired  = (delay_ns == INT64_MAX) ? (res == ~2) : (res == ~3);
+        bool all_dead    = (res == INT_MIN);
 
-        if (all_dead) break; // connection closed (shouldn't happen without nowait)
+        if (all_dead || stop_fired) {
+            cleanup();
+            return;
+        }
 
         if (timer_fired) {
             ngtcp2_conn_handle_expiry(nconn, now_ns());
-        } else if (wake_fired) {
-            // Drain the wake pipe and handle open-stream requests.
-            { char buf[64]; while (::read(wake_rfd, buf, sizeof(buf)) > 0) {} }
-            if (!handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd))
-                break;
-        } else if (udp_fired) {
-            // Drain wake pipe too (might have arrived between iterations).
-            { char buf[64]; while (::read(wake_rfd, buf, sizeof(buf)) > 0) {} }
-            // UDP socket readable — drain all pending datagrams.
-            for (;;) {
-                struct sockaddr_storage src{};
-                socklen_t src_len = sizeof(src);
-                ssize_t n = ::recvfrom(fd, reinterpret_cast<char*>(rbuf),
-                                       sizeof(rbuf), 0,
-                                       reinterpret_cast<struct sockaddr*>(&src),
-                                       &src_len);
-                if (n <= 0) break;
+        }
+        // Always drain the wake pipe regardless of which alt fired.
+        { char buf[64]; while (::read(wake_rfd, buf, sizeof(buf)) > 0) {} }
 
-                ngtcp2_path path;
-                ngtcp2_addr_init(&path.local, peer, peer_len);
-                ngtcp2_addr_init(
-                    &path.remote,
-                    reinterpret_cast<const struct sockaddr*>(&src), src_len);
+        // Always drain all pending UDP datagrams regardless of which alt fired.
+        // This handles the kqueue EV_ONESHOT race: a UDP packet may have arrived
+        // between the last nb-recvfrom check and when the prialt EV_ONESHOT was
+        // registered.  If timer or wake fired and a UDP packet is already in the
+        // kernel buffer, kqueue will not fire again for the same data.
+        for (;;) {
+            struct sockaddr_storage src{};
+            socklen_t src_len = sizeof(src);
+            ssize_t n = ::recvfrom(fd, reinterpret_cast<char*>(rbuf),
+                                   sizeof(rbuf), 0,
+                                   reinterpret_cast<struct sockaddr*>(&src),
+                                   &src_len);
+            if (n <= 0) break;
 
-                ngtcp2_pkt_info pi{};
-                int rv = ngtcp2_conn_read_pkt(nconn, &path, &pi, rbuf,
-                                              static_cast<size_t>(n), now_ns());
-                // Dispatch events accumulated during callbacks.
-                if (!dispatch_pending_events(shared, wake_wfd)) {
-                    cleanup();
-                    return;
-                }
-                if (rv == NGTCP2_ERR_DRAINING) {
-                    flush_ngtcp2_out(nconn, fd, peer, peer_len);
-                    cleanup();
-                    return;
-                }
-                if (rv != 0) {
-                    cleanup();
-                    return;
-                }
+            ngtcp2_path path;
+            ngtcp2_addr_init(&path.local, local, local_len);
+            ngtcp2_addr_init(
+                &path.remote,
+                reinterpret_cast<const struct sockaddr*>(&src), src_len);
+
+            ngtcp2_pkt_info pi{};
+            int rv = ngtcp2_conn_read_pkt(nconn, &path, &pi, rbuf,
+                                          static_cast<size_t>(n), now_ns());
+            // Dispatch events accumulated during callbacks.
+            if (!dispatch_pending_events(shared, wake_wfd)) {
+                cleanup();
+                return;
+            }
+            if (rv == NGTCP2_ERR_DRAINING) {
+                flush_ngtcp2_out(nconn, fd, peer, peer_len);
+                cleanup();
+                return;
+            }
+            if (rv != 0) {
+                cleanup();
+                return;
             }
         }
 
-        // After every event: drain pending stream writes and flush.
+        // After every event: handle pending open-stream requests, drain pending
+        // stream writes, and flush.
+        if (!handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd))
+            break;
         if (!drain_stream_writes(nconn, shared, fd, peer, peer_len))
             break;
         flush_ngtcp2_out(nconn, fd, peer, peer_len);
@@ -754,16 +893,17 @@ struct connection::impl {
     std::shared_ptr<ConnShared> shared;
     reader<stream_pair> incoming_streams;
     std::string remote_addr;
-    int wake_wfd = -1; // write end of the io imp's wake pipe
+    int wake_wfd = -1;           // write end of the io imp's wake pipe
+    writer<std::monostate> stop_w; // dropped on destruction → fires stop_r in io_imp
 
     ~impl() {
         if (wake_wfd >= 0)
             ::close(wake_wfd);
+        // stop_w destructs here, firing ~stop_r in run_io_imp.
     }
 };
 
 stream_pair connection::open_stream() {
-    fprintf(stderr, "[open_stream] called\n");
     if (!impl_) throw csp::error("connection is not open");
 
     chan<stream_pair> result_ch;
@@ -777,11 +917,9 @@ stream_pair connection::open_stream() {
         ::write(impl_->wake_wfd, &b, 1);
     }
 
-    fprintf(stderr, "[open_stream] waiting for result\n");
     stream_pair sp;
     if (!(result_ch.r >> sp))
         throw csp::error("connection closed before stream opened");
-    fprintf(stderr, "[open_stream] got result\n");
     return sp;
 }
 
@@ -868,20 +1006,22 @@ listener listen(uint16_t port, listen_options opts) {
 
         uint8_t rbuf[65536];
 
-        fprintf(stderr, "[listener] entering main loop\n");
         for (;;) {
-            // Wait for UDP packet, relay-imp wake poke, OR listener drop.
-            detail::fd_signal udp_sig  = detail::create_fd_readable(udp_fd);
-            detail::fd_signal wake_sig = detail::create_fd_readable(listener_wake_rfd);
-            fprintf(stderr, "[listener] prialt waiting (nconns=%zu)\n", conns.size());
-            int res = prialt(~udp_sig, ~wake_sig, ~stop_r);
-            fprintf(stderr, "[listener] prialt returned res=%d\n", res);
-            // ~udp_sig  fires → res = ~0 = -1 (UDP readable)
-            // ~wake_sig fires → res = ~1 = -2 (relay poked)
-            // ~stop_r   fires → res = ~2 = -3 (listener dropped)
-            if (res == ~1) {
-                // Relay poke — drain wake pipe and flush outbound for all connections.
-                { char buf[64]; while (::read(listener_wake_rfd, buf, sizeof(buf)) > 0) {} }
+            struct sockaddr_storage src{};
+            socklen_t src_len = sizeof(src);
+            ssize_t n;
+
+            // Try non-blocking receive first.  This avoids a race where a UDP
+            // packet arrived while we were blocked in a CSP channel operation
+            // (e.g. conn_w << conn) and the kqueue EV_ONESHOT for that fd was
+            // already consumed — re-registering does not reliably fire for data
+            // that was already present when the new kevent is added.
+            n = ::recvfrom(udp_fd, reinterpret_cast<char*>(rbuf),
+                           sizeof(rbuf), MSG_DONTWAIT,
+                           reinterpret_cast<struct sockaddr*>(&src), &src_len);
+            if (n <= 0) {
+                // No data ready — drain wake pipe first, then wait.
+                { char wb[64]; while (::read(listener_wake_rfd, wb, sizeof(wb)) > 0) {} }
                 for (auto& [k, sc2] : conns) {
                     if (!sc2->nconn) continue;
                     const struct sockaddr* peer2 =
@@ -890,24 +1030,80 @@ listener listen(uint16_t port, listen_options opts) {
                                         udp_fd, peer2, sc2->peer_len);
                     flush_ngtcp2_out(sc2->nconn, udp_fd, peer2, sc2->peer_len);
                 }
-                continue;
-            }
-            if (res != ~0) break; // ~2 (stop) or unexpected — exit
 
-            // res == ~0 (-1): UDP socket readable.
-            struct sockaddr_storage src{};
-            socklen_t src_len = sizeof(src);
-            ssize_t n = ::recvfrom(
-                udp_fd, reinterpret_cast<char*>(rbuf), sizeof(rbuf), 0,
-                reinterpret_cast<struct sockaddr*>(&src), &src_len);
-            fprintf(stderr, "[listener] recvfrom n=%zd errno=%d\n", n, errno);
-            if (n <= 0) continue;
+                // Wait for UDP packet, relay-imp wake poke, OR listener drop.
+                detail::fd_signal udp_sig  = detail::create_fd_readable(udp_fd);
+                detail::fd_signal wake_sig = detail::create_fd_readable(listener_wake_rfd);
+                int res = prialt(~udp_sig, ~wake_sig, ~stop_r);
+                // ~udp_sig  fires → res = ~0 = -1 (UDP readable)
+                // ~wake_sig fires → res = ~1 = -2 (relay poked)
+                // ~stop_r   fires → res = ~2 = -3 (listener dropped)
+                if (res == ~1) {
+                    // Relay poke — drain and continue to check for UDP.
+                    { char wb[64]; while (::read(listener_wake_rfd, wb, sizeof(wb)) > 0) {} }
+                    for (auto& [k, sc2] : conns) {
+                        if (!sc2->nconn) continue;
+                        const struct sockaddr* peer2 =
+                            reinterpret_cast<const struct sockaddr*>(&sc2->peer);
+                        drain_stream_writes(sc2->nconn, sc2->shared,
+                                            udp_fd, peer2, sc2->peer_len);
+                        flush_ngtcp2_out(sc2->nconn, udp_fd, peer2, sc2->peer_len);
+                    }
+                    continue;
+                }
+                if (res != ~0) {
+                    if (res == ~2) {
+                        // Listener stopped — drain pending outbound data before exiting.
+                        // Relay imps may still be racing to push data to out_pending.
+                        // Wait until all relay imps exit (out_closed=true) and all data drained.
+                        for (;;) {
+                            for (auto& [k, sc2] : conns) {
+                                if (!sc2->nconn) continue;
+                                const struct sockaddr* peer2 =
+                                    reinterpret_cast<const struct sockaddr*>(&sc2->peer);
+                                drain_stream_writes(sc2->nconn, sc2->shared,
+                                                    udp_fd, peer2, sc2->peer_len);
+                                flush_ngtcp2_out(sc2->nconn, udp_fd, peer2, sc2->peer_len);
+                            }
+                            bool all_done = true;
+                            for (auto& [k, sc2] : conns) {
+                                if (!sc2->nconn) continue;
+                                std::lock_guard<std::mutex> lk(sc2->shared->streams_mu);
+                                for (auto& [sid, ss] : sc2->shared->streams) {
+                                    std::lock_guard<std::mutex> lk2(ss->out_mu);
+                                    if (!ss->out_closed || !ss->out_pending.empty()) {
+                                        all_done = false;
+                                        break;
+                                    }
+                                }
+                                if (!all_done) break;
+                            }
+                            if (all_done) break;
+                            {
+                                detail::fd_signal wake_sig2 =
+                                    detail::create_fd_readable(listener_wake_rfd);
+                                detail::timer_signal drain_timer =
+                                    detail::create_timer_signal(1'000'000LL); // 1 ms
+                                prialt(~wake_sig2, ~drain_timer);
+                            }
+                            { char wb2[64]; while (::read(listener_wake_rfd, wb2, sizeof(wb2)) > 0) {} }
+                        }
+                    }
+                    break; // stop or unexpected — exit
+                }
+                // res == ~0: UDP socket is now readable.
+                n = ::recvfrom(udp_fd, reinterpret_cast<char*>(rbuf),
+                               sizeof(rbuf), 0,
+                               reinterpret_cast<struct sockaddr*>(&src), &src_len);
+                if (n <= 0) continue;
+            }
 
             // Decode DCID to demultiplex.
             ngtcp2_version_cid vcid{};
-            if (ngtcp2_pkt_decode_version_cid(
+            int vcid_rv = ngtcp2_pkt_decode_version_cid(
                     &vcid, rbuf, static_cast<size_t>(n),
-                    NGTCP2_MIN_INITIAL_DCIDLEN) != 0)
+                    NGTCP2_MIN_INITIAL_DCIDLEN);
+            if (vcid_rv != 0)
                 continue;
 
             std::string key(reinterpret_cast<const char*>(vcid.dcid),
@@ -1009,10 +1205,8 @@ listener listen(uint16_t port, listen_options opts) {
 
             ngtcp2_pkt_info pi{};
             auto shared_sc = it->second->shared; // keep alive across dispatches
-            fprintf(stderr, "[listener] read_pkt n=%zd\n", n);
             int rv = ngtcp2_conn_read_pkt(sc.nconn, &path, &pi, rbuf,
                                           static_cast<size_t>(n), now_ns());
-            fprintf(stderr, "[listener] read_pkt rv=%d (%s)\n", rv, rv == 0 ? "OK" : ngtcp2_strerror(rv));
             // Dispatch events accumulated during callbacks (peer-opened
             // streams, inbound data, closed streams).
             // Pass listener wake pipe so relay imps wake the listener loop.
@@ -1034,8 +1228,6 @@ listener listen(uint16_t port, listen_options opts) {
                              sc.peer_len);
 
             // Deliver connection once handshake completes.
-            fprintf(stderr, "[listener] delivered=%d handshake_completed=%d\n",
-                    sc.delivered, ngtcp2_conn_get_handshake_completed(sc.nconn));
             if (!sc.delivered &&
                 ngtcp2_conn_get_handshake_completed(sc.nconn)) {
                 sc.delivered = true;
@@ -1097,17 +1289,24 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
 
     auto* ai = result.info.get();
 
-    // Wildcard local address, same family as the remote.
+    // Bind to the same IP as the peer so that getsockname() returns a concrete
+    // address that matches what ngtcp2 records as the path local address.
+    // Using 0.0.0.0 would give a wildcard that ngtcp2 cannot match against
+    // subsequent 1-RTT packets ("unknown path" from ngtcp2_conn_read_pkt).
     struct sockaddr_storage local{};
     socklen_t local_len;
     if (ai->ai_family == AF_INET6) {
         auto* a = reinterpret_cast<struct sockaddr_in6*>(&local);
+        auto* p = reinterpret_cast<const struct sockaddr_in6*>(ai->ai_addr);
         a->sin6_family = AF_INET6;
+        a->sin6_addr   = p->sin6_addr; // same IP as peer (e.g. ::1)
         a->sin6_port   = 0;
         local_len = sizeof(struct sockaddr_in6);
     } else {
         auto* a = reinterpret_cast<struct sockaddr_in*>(&local);
+        auto* p = reinterpret_cast<const struct sockaddr_in*>(ai->ai_addr);
         a->sin_family = AF_INET;
+        a->sin_addr   = p->sin_addr; // same IP as peer (e.g. 127.0.0.1)
         a->sin_port   = 0;
         local_len = sizeof(struct sockaddr_in);
     }
@@ -1161,7 +1360,6 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
     ngtcp2_settings settings;
     ngtcp2_settings_default(&settings);
     settings.initial_ts = now_ns();
-
     ngtcp2_transport_params params;
     ngtcp2_transport_params_default(&params);
     params.initial_max_streams_bidi           = opts.max_streams_bidi;
@@ -1207,15 +1405,11 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
     const struct sockaddr* peer = reinterpret_cast<const struct sockaddr*>(&peer_ss);
 
     // Flush Initial packets.
-    fprintf(stderr, "[dial] flushing initial packets\n");
     flush_ngtcp2_out(nconn, fd, peer, peer_len);
-    fprintf(stderr, "[dial] initial packets flushed\n");
 
     // Handshake loop — block the calling imp until done.
     uint8_t rbuf[65536];
-    int hs_iter = 0;
     while (!ngtcp2_conn_get_handshake_completed(nconn)) {
-        fprintf(stderr, "[dial] handshake iter %d, waiting for UDP\n", ++hs_iter);
         detail::fd_signal sig = detail::create_fd_readable(fd);
         if (!prialt(~sig)) {
             delete cref;
@@ -1233,7 +1427,6 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
                                sizeof(rbuf), 0,
                                reinterpret_cast<struct sockaddr*>(&src),
                                &src_len);
-        fprintf(stderr, "[dial] client recvfrom n=%zd errno=%d\n", n, errno);
         if (n <= 0) continue;
 
         ngtcp2_path ppath{};
@@ -1262,7 +1455,6 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
         flush_ngtcp2_out(nconn, fd, peer, peer_len);
     }
 
-    fprintf(stderr, "[dial] handshake completed!\n");
     // Create a self-pipe so relay imps and open_stream() can wake the io imp
     // when outbound data or stream requests are pending.
     // wake_rfd: io imp watches this; wake_wfd_app: app-side copy (dup'd).
@@ -1275,14 +1467,23 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
     int wake_wfd     = wake_fds[1];
     int wake_wfd_app = ::dup(wake_wfd); // app side; closed by connection::impl
 
+    // Stop channel: when conn.impl_ is destroyed, stop_w drops → ~stop_r fires
+    // in run_io_imp, which then shuts down the connection.
+    chan<std::monostate> stop_ch;
+
     // Handshake complete — spawn the io imp.
     // tls_ctx is captured because ptls_t stores a pointer to the context;
     // we must keep it alive until ptls_free is called in the io imp.
-    spawn([nconn, cref, cptls, ptls, tls_ctx, shared, fd, peer_ss, peer_len,
-           wake_rfd, wake_wfd]() mutable {
+    spawn([nconn, cref, cptls, ptls, tls_ctx, shared, fd,
+           bound_local, bound_local_len,
+           peer_ss, peer_len,
+           wake_rfd, wake_wfd,
+           stop_r = std::move(stop_ch.r)]() mutable {
         internal::descr("quic::client-io");
-        run_io_imp(nconn, cref, cptls, ptls, shared, fd, peer_ss, peer_len,
-                   /*owns_fd=*/true, wake_rfd, wake_wfd);
+        run_io_imp(nconn, cref, cptls, ptls, shared, fd,
+                   bound_local, bound_local_len,
+                   peer_ss, peer_len,
+                   /*owns_fd=*/true, wake_rfd, wake_wfd, std::move(stop_r));
         delete tls_ctx;
     });
 
@@ -1290,6 +1491,7 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
     conn.impl_            = std::make_shared<connection::impl>();
     conn.impl_->shared    = shared;
     conn.impl_->wake_wfd  = wake_wfd_app;
+    conn.impl_->stop_w    = std::move(stop_ch.w);
     conn.incoming_streams = std::move(shared->incoming_ch.r);
     conn.remote_addr      = std::move(raddr);
     return conn;

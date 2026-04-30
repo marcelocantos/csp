@@ -188,10 +188,24 @@ NGTCP2_LIB_SRCS := \
 
 NGTCP2_CRYPTO_SRCS := \
     $(NGTCP2_CRYPTO)/shared.c \
-    $(NGTCP2_CRYPTO)/picotls/picotls_minicrypto.c
+    src/ngtcp2_crypto_picotls_minicrypto.c
 
 NGTCP2_SRCS := $(NGTCP2_LIB_SRCS) $(NGTCP2_CRYPTO_SRCS)
 NGTCP2_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGTCP2_SRCS))
+
+# ngtcp2/version.h is generated from version.h.in; substitute version
+# constants directly so a bare submodule clone builds without autotools/cmake.
+NGTCP2_VERSION_STR := 1.22.0
+NGTCP2_VERSION_NUM := 0x011600
+NGTCP2_VER_H       := $(NGTCP2_LIB)/includes/ngtcp2/version.h
+
+$(NGTCP2_VER_H): $(NGTCP2_LIB)/includes/ngtcp2/version.h.in
+	sed -e 's/@PACKAGE_VERSION@/$(NGTCP2_VERSION_STR)/' \
+	    -e 's/@PACKAGE_VERSION_NUM@/$(NGTCP2_VERSION_NUM)/' \
+	    $< > $@
+
+$(NGTCP2_OBJS): $(NGTCP2_VER_H)
+$(BUILDDIR)/src/quic.o: $(NGTCP2_VER_H)
 
 NGTCP2_CFLAGS := -O2 \
     -I$(NGTCP2_LIB)/includes \
@@ -403,6 +417,15 @@ $(BUILDDIR)/$(NGTCP2_CRYPTO)/%.o: $(NGTCP2_CRYPTO)/%.c
 $(BUILDDIR)/$(NGTCP2_CRYPTO)/picotls/%.o: $(NGTCP2_CRYPTO)/picotls/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(NGTCP2_CFLAGS) -o $@ $<
+
+# Our minicrypto-adapted ngtcp2 picotls crypto adapter (a .c file in src/).
+$(BUILDDIR)/src/ngtcp2_crypto_picotls_minicrypto.o: src/ngtcp2_crypto_picotls_minicrypto.c $(NGTCP2_VER_H)
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGTCP2_CFLAGS) \
+	    -I$(PICOTLS_DIR)/include \
+	    -I$(PICOTLS_DIR)/deps/cifra/src \
+	    -I$(PICOTLS_DIR)/deps/cifra/src/ext \
+	    -o $@ $<
 endif
 
 # Distribution sources

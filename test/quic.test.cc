@@ -96,7 +96,7 @@ TEST_CASE("QUIC---multiple-streams") {
     std::atomic<int> streams_echoed{0};
     std::atomic<int> client_ok{0};
 
-    // Server: accept connection, echo on each incoming stream.
+    // Server: accept connection, echo on each incoming stream sequentially.
     csp::spawn([&, pw = std::move(port_ch.w)]() mutable {
         csp::quic::listen_options lo;
         lo.cert_pem = "test/certs/server.crt";
@@ -108,20 +108,18 @@ TEST_CASE("QUIC---multiple-streams") {
         if (!(lst.connections >> conn)) return;
 
         for (int i = 0; i < N; ++i) {
-            csp::spawn([&, connections = &conn.incoming_streams] {
-                csp::quic::stream_pair sp;
-                if (!(*connections >> sp)) return;
+            csp::quic::stream_pair sp;
+            if (!(conn.incoming_streams >> sp)) return;
 
-                bytes data;
-                while (sp.input >> data) {
-                    sp.output << data;
-                    streams_echoed.fetch_add(1, std::memory_order_relaxed);
-                }
-            });
+            bytes data;
+            while (sp.input >> data) {
+                sp.output << data;
+                streams_echoed.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     });
 
-    // Client: open N streams, each sends a unique payload.
+    // Client: open N streams, each sends a unique payload, sequentially.
     csp::spawn([&, pr = std::move(port_ch.r)]() mutable {
         uint16_t port;
         if (!(pr >> port)) return;
@@ -129,19 +127,17 @@ TEST_CASE("QUIC---multiple-streams") {
         auto conn = csp::quic::dial("127.0.0.1", port);
 
         for (int i = 0; i < N; ++i) {
-            csp::spawn([&, &c = conn, i] {
-                auto sp = c.open_stream();
+            auto sp = conn.open_stream();
 
-                std::string msg = "msg-" + std::to_string(i);
-                sp.output << to_bytes(msg.c_str());
-                sp.output = {};
+            std::string msg = "msg-" + std::to_string(i);
+            sp.output << to_bytes(msg.c_str());
+            sp.output = {};
 
-                bytes reply;
-                if (sp.input >> reply) {
-                    if (from_bytes(reply) == msg)
-                        client_ok.fetch_add(1, std::memory_order_relaxed);
-                }
-            });
+            bytes reply;
+            if (sp.input >> reply) {
+                if (from_bytes(reply) == msg)
+                    client_ok.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     });
 
