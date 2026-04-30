@@ -13,7 +13,6 @@
 #include "testscale.h"
 
 #include <doctest/doctest.h>
-#include <csp/internal/stack_pool.h>
 
 #include <atomic>
 
