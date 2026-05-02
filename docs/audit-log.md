@@ -317,7 +317,7 @@ None.
 
 ## 2026-04-30 — /release v0.13.0
 
-- **Commit**: TBD
+- **Commit**: `2771cde`
 - **Outcome**: Released v0.13.0 (source-only, no binaries). Two PRs
   since v0.12.0: #53 (consolidated /cv batch — 8 targets) and #54
   (QUIC). Major additions:
