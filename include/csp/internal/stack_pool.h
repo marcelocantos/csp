@@ -116,6 +116,7 @@ private:
     // free_list_ holds arena StackRegions (with overflow_limit set)
 #endif
 
+
 public:
     // Initial committed region per stack on Windows (at the top, where RSP
     // starts).  The rest of the 1 MB virtual region is MEM_RESERVE, committed
