@@ -753,6 +753,88 @@ not safe for concurrent read+write.
 
 Dist users: `#define CSP_TLS` before `#include "csp.h"`, link own PicoTLS.
 
+## QUIC
+
+QUIC transport over UDP via ngtcp2 + PicoTLS (minicrypto). Available when
+`CSP_TLS` is defined. Not in the dist amalgamation — compile `src/quic.cc`
+and `src/ngtcp2_crypto_picotls_minicrypto.c` together with ngtcp2 and PicoTLS.
+
+```cpp
+#include "csp.h"    // includes quic.h (behind #ifdef CSP_TLS)
+
+namespace csp::quic {
+
+struct stream_pair {
+    reader<std::vector<uint8_t>> input;   // bytes from peer (EOF = FIN)
+    writer<std::vector<uint8_t>> output;  // bytes to peer  (drop = FIN)
+};
+
+struct connection {
+    stream_pair open_stream();           // blocks until stream established
+    reader<stream_pair> incoming_streams; // accept peer-initiated streams
+    std::string remote_addr;
+};
+
+struct listen_options {
+    uint64_t max_streams_bidi = 128;
+    int rcvbuf = 0;
+    std::string cert_pem;  // path to PEM cert file
+    std::string key_pem;   // path to PEM private key file
+};
+
+struct listener {
+    reader<connection> connections;  // one per accepted QUIC connection
+    uint16_t port;
+    std::string local_addr;
+};
+
+listener listen(uint16_t port, listen_options opts = {});
+
+struct dial_options {
+    uint64_t max_streams_bidi = 128;
+};
+
+connection dial(const std::string& host, uint16_t port, dial_options opts = {});
+
+}
+```
+
+**Server pattern:**
+```cpp
+csp::quic::listen_options lo;
+lo.cert_pem = "server.crt";
+lo.key_pem  = "server.key";
+auto lst = csp::quic::listen(0, lo);  // port=0 → OS assigns
+uint16_t port = lst.port;
+
+csp::quic::connection conn;
+lst.connections >> conn;
+
+csp::quic::stream_pair sp;
+conn.incoming_streams >> sp;
+
+std::vector<uint8_t> data;
+while (sp.input >> data) {
+    sp.output << data;  // echo
+}
+```
+
+**Client pattern:**
+```cpp
+auto conn = csp::quic::dial("127.0.0.1", port);
+auto sp   = conn.open_stream();
+
+sp.output << std::vector<uint8_t>{'h','i'};
+sp.output = {};  // send FIN
+
+std::vector<uint8_t> reply;
+sp.input >> reply;
+```
+
+Each accepted QUIC connection is driven by the listener imp (server) or a
+dedicated io imp (client). Streams are unbuffered CSP channels — the driving
+loop blocks per-chunk until the app reads, so keep stream consumers responsive.
+
 ## Parts System
 
 Three wrapper types for composable stream stages:

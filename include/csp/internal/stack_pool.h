@@ -102,10 +102,10 @@ private:
     // Imp is placed at the top of the usable region (highest address).
     // One slab = one VMA, so 100K imps needs at most ~25 slabs.
     static constexpr size_t kArenaSlotGuard  = 4096;          // 4KB software guard zone
-    static constexpr size_t kArenaSlotUsable = 60 << 10;      // 60KB usable stack
-    static constexpr size_t kArenaSlotSize   = kArenaSlotGuard + kArenaSlotUsable;  // 64KB/slot
+    static constexpr size_t kArenaSlotUsable = 124 << 10;     // 124KB usable stack (QUIC/TLS needs >60KB)
+    static constexpr size_t kArenaSlotSize   = kArenaSlotGuard + kArenaSlotUsable;  // 128KB/slot
     static constexpr size_t kArenaSlotsPerSlab = 4096;         // slots per slab
-    static constexpr size_t kArenaSlabSize = kArenaSlotSize * kArenaSlotsPerSlab;   // 256MB per slab
+    static constexpr size_t kArenaSlabSize = kArenaSlotSize * kArenaSlotsPerSlab;   // 512MB per slab
 
     struct ArenaSlab {
         void* base = nullptr;
@@ -115,6 +115,7 @@ private:
     std::vector<ArenaSlab> arena_slabs_;  // all allocated slabs (for drain)
     // free_list_ holds arena StackRegions (with overflow_limit set)
 #endif
+
 
 public:
     // Initial committed region per stack on Windows (at the top, where RSP

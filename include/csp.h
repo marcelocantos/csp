@@ -102,6 +102,7 @@
 #include "csp/part/where.h"
 #include "csp/part/window.h"
 #include "csp/part/zip.h"
+#include "csp/quic.h"
 #include "csp/ringbuffer.h"
 #include "csp/signal.h"
 #include "csp/source.h"

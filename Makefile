@@ -136,6 +136,99 @@ PICOTLS_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer \
                   -fno-sanitize=pointer-overflow
 endif
 
+# --- ngtcp2 (QUIC library, picotls backend) ---
+
+NGTCP2_DIR     := vendor/github.com/ngtcp2/ngtcp2
+NGTCP2_LIB    := $(NGTCP2_DIR)/lib
+NGTCP2_CRYPTO := $(NGTCP2_DIR)/crypto
+
+INCLUDES += -I$(NGTCP2_LIB)/includes \
+            -I$(NGTCP2_CRYPTO)/includes \
+            -I$(NGTCP2_LIB) \
+            -I$(NGTCP2_CRYPTO)
+
+NGTCP2_LIB_SRCS := \
+    $(NGTCP2_LIB)/ngtcp2_acktr.c \
+    $(NGTCP2_LIB)/ngtcp2_addr.c \
+    $(NGTCP2_LIB)/ngtcp2_balloc.c \
+    $(NGTCP2_LIB)/ngtcp2_bbr.c \
+    $(NGTCP2_LIB)/ngtcp2_buf.c \
+    $(NGTCP2_LIB)/ngtcp2_callbacks.c \
+    $(NGTCP2_LIB)/ngtcp2_cc.c \
+    $(NGTCP2_LIB)/ngtcp2_cid.c \
+    $(NGTCP2_LIB)/ngtcp2_conn.c \
+    $(NGTCP2_LIB)/ngtcp2_conn_info.c \
+    $(NGTCP2_LIB)/ngtcp2_conv.c \
+    $(NGTCP2_LIB)/ngtcp2_crypto.c \
+    $(NGTCP2_LIB)/ngtcp2_dcidtr.c \
+    $(NGTCP2_LIB)/ngtcp2_err.c \
+    $(NGTCP2_LIB)/ngtcp2_fmt.c \
+    $(NGTCP2_LIB)/ngtcp2_frame_chain.c \
+    $(NGTCP2_LIB)/ngtcp2_gaptr.c \
+    $(NGTCP2_LIB)/ngtcp2_idtr.c \
+    $(NGTCP2_LIB)/ngtcp2_ksl.c \
+    $(NGTCP2_LIB)/ngtcp2_log.c \
+    $(NGTCP2_LIB)/ngtcp2_map.c \
+    $(NGTCP2_LIB)/ngtcp2_mem.c \
+    $(NGTCP2_LIB)/ngtcp2_objalloc.c \
+    $(NGTCP2_LIB)/ngtcp2_opl.c \
+    $(NGTCP2_LIB)/ngtcp2_path.c \
+    $(NGTCP2_LIB)/ngtcp2_pcg.c \
+    $(NGTCP2_LIB)/ngtcp2_pkt.c \
+    $(NGTCP2_LIB)/ngtcp2_pmtud.c \
+    $(NGTCP2_LIB)/ngtcp2_ppe.c \
+    $(NGTCP2_LIB)/ngtcp2_pq.c \
+    $(NGTCP2_LIB)/ngtcp2_pv.c \
+    $(NGTCP2_LIB)/ngtcp2_qlog.c \
+    $(NGTCP2_LIB)/ngtcp2_range.c \
+    $(NGTCP2_LIB)/ngtcp2_ratelim.c \
+    $(NGTCP2_LIB)/ngtcp2_ringbuf.c \
+    $(NGTCP2_LIB)/ngtcp2_rob.c \
+    $(NGTCP2_LIB)/ngtcp2_rst.c \
+    $(NGTCP2_LIB)/ngtcp2_rtb.c \
+    $(NGTCP2_LIB)/ngtcp2_settings.c \
+    $(NGTCP2_LIB)/ngtcp2_str.c \
+    $(NGTCP2_LIB)/ngtcp2_strm.c \
+    $(NGTCP2_LIB)/ngtcp2_transport_params.c \
+    $(NGTCP2_LIB)/ngtcp2_unreachable.c \
+    $(NGTCP2_LIB)/ngtcp2_vec.c \
+    $(NGTCP2_LIB)/ngtcp2_version.c \
+    $(NGTCP2_LIB)/ngtcp2_window_filter.c
+
+NGTCP2_CRYPTO_SRCS := \
+    $(NGTCP2_CRYPTO)/shared.c \
+    src/ngtcp2_crypto_picotls_minicrypto.c
+
+NGTCP2_SRCS := $(NGTCP2_LIB_SRCS) $(NGTCP2_CRYPTO_SRCS)
+NGTCP2_OBJS := $(patsubst %.c,$(BUILDDIR)/%.o,$(NGTCP2_SRCS))
+
+# ngtcp2/version.h is generated from version.h.in; substitute version
+# constants directly so a bare submodule clone builds without autotools/cmake.
+NGTCP2_VERSION_STR := 1.22.0
+NGTCP2_VERSION_NUM := 0x011600
+NGTCP2_VER_H       := $(NGTCP2_LIB)/includes/ngtcp2/version.h
+
+$(NGTCP2_VER_H): $(NGTCP2_LIB)/includes/ngtcp2/version.h.in
+	sed -e 's/@PACKAGE_VERSION@/$(NGTCP2_VERSION_STR)/' \
+	    -e 's/@PACKAGE_VERSION_NUM@/$(NGTCP2_VERSION_NUM)/' \
+	    $< > $@
+
+$(NGTCP2_OBJS): $(NGTCP2_VER_H)
+$(BUILDDIR)/src/quic.o: $(NGTCP2_VER_H)
+
+NGTCP2_CFLAGS := -O2 \
+    -I$(NGTCP2_LIB)/includes \
+    -I$(NGTCP2_LIB) \
+    -I$(NGTCP2_CRYPTO)/includes \
+    -I$(NGTCP2_CRYPTO) \
+    -I$(PICOTLS_DIR)/include \
+    -DHAVE_ARPA_INET_H=1 \
+    -DHAVE_NETINET_IN_H=1
+
+ifneq ($(SANITIZE),)
+NGTCP2_CFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+endif
+
 endif
 
 # --- llhttp (vendored HTTP parser) ---
@@ -343,17 +436,14 @@ LIB_SRCS += src/ws.cc
 LIB_SRCS += src/http3.cc
 ifeq ($(CSP_TLS),1)
 LIB_SRCS += src/tls.cc
+LIB_SRCS += src/quic.cc
 endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
-# net.test.cc, http.test.cc, http2.test.cc depend on headers not in the dist amalgamation.
-# net.test.cc, http.test.cc and ws.test.cc depend on headers not in the dist amalgamation.
-# net.test.cc, http.test.cc, http2.test.cc, http3.test.cc depend on headers not in the dist amalgamation.
+# net.test.cc, http.test.cc, http2.test.cc, http3.test.cc, ws.test.cc, and quic.test.cc depend on headers not in the dist amalgamation.
 ifeq ($(CSP_INCLUDE),dist)
-TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.cc,$(TEST_SRCS))
-TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/ws.test.cc,$(TEST_SRCS))
-TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.cc test/http3.test.cc,$(TEST_SRCS))
+TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.cc test/http3.test.cc test/ws.test.cc test/quic.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)
@@ -366,6 +456,7 @@ LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS) $(NGHTTP2_OBJS) $(WSLAY_OBJS) $(NG
 endif
 ifeq ($(CSP_TLS),1)
 LIB_OBJS   += $(PICOTLS_OBJS)
+LIB_OBJS   += $(NGTCP2_OBJS)
 endif
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
@@ -477,10 +568,27 @@ $(BUILDDIR)/$(UECC_DIR)/%.o: $(UECC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(PICOTLS_CFLAGS) -o $@ $<
 
-# ngtcp2 C sources (lib + crypto adapter)
-$(BUILDDIR)/$(NGTCP2_DIR)/%.o: $(NGTCP2_DIR)/%.c
+# ngtcp2 C sources
+$(BUILDDIR)/$(NGTCP2_LIB)/%.o: $(NGTCP2_LIB)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) -c $(NGTCP2_CFLAGS) -o $@ $<
+
+$(BUILDDIR)/$(NGTCP2_CRYPTO)/%.o: $(NGTCP2_CRYPTO)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGTCP2_CFLAGS) -o $@ $<
+
+$(BUILDDIR)/$(NGTCP2_CRYPTO)/picotls/%.o: $(NGTCP2_CRYPTO)/picotls/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGTCP2_CFLAGS) -o $@ $<
+
+# Our minicrypto-adapted ngtcp2 picotls crypto adapter (a .c file in src/).
+$(BUILDDIR)/src/ngtcp2_crypto_picotls_minicrypto.o: src/ngtcp2_crypto_picotls_minicrypto.c $(NGTCP2_VER_H)
+	@mkdir -p $(dir $@)
+	$(CC) -c $(NGTCP2_CFLAGS) \
+	    -I$(PICOTLS_DIR)/include \
+	    -I$(PICOTLS_DIR)/deps/cifra/src \
+	    -I$(PICOTLS_DIR)/deps/cifra/src/ext \
+	    -o $@ $<
 
 endif
 
