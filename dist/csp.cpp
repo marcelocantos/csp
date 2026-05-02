@@ -3329,6 +3329,13 @@ reader<> Reactor::create_fd_event(int fd, fd_event event) {
               | EPOLLONESHOT;
     ev.data.fd = fd;
     int rc = epoll_ctl(epfd_, EPOLL_CTL_ADD, fd, &ev);
+    if (rc < 0 && errno == EEXIST) {
+        // After EPOLLONESHOT fires, epoll keeps the fd registered but disabled.
+        // Re-arm it with MOD instead of ADD (epoll(7): EPOLL_CTL_ADD returns
+        // EEXIST for an already-registered fd, even one that has been one-shot
+        // disarmed).  kqueue EV_ADD | EV_ONESHOT is idempotent; epoll is not.
+        rc = epoll_ctl(epfd_, EPOLL_CTL_MOD, fd, &ev);
+    }
     assert(rc == 0);
 
     return std::move(ch.r);

@@ -4,11 +4,10 @@
 // Basic QUIC transport tests: listen/dial handshake, echo over a stream,
 // multiple concurrent streams.
 //
-// QUIC currently works on macOS only.  On Linux the reactor's UDP fd
-// registration hits an assertion in `Reactor::create_fd_event`
-// (src/reactor.cc:523) — tracked by 🎯T21.  Skip Linux until fixed.
+// QUIC works on macOS and Linux.  The reactor's epoll branch handles UDP fd
+// re-registration via EPOLL_CTL_MOD when EEXIST is returned after EPOLLONESHOT.
 
-#if defined(CSP_TLS) && defined(__APPLE__)
+#if defined(CSP_TLS)
 
 #include "testutil.h"
 
@@ -188,4 +187,4 @@ TEST_CASE("QUIC---listener-drop-stops-accept") {
     csp::shutdown_runtime();
 }
 
-#endif // CSP_TLS && __APPLE__
+#endif // CSP_TLS
