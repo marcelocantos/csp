@@ -11,6 +11,7 @@
 #        make SANITIZE=thread              (TSan)
 #        make examples                    (build examples)
 #        make run-examples                (build + run examples)
+#        make run-examples-ci             (build + run finite examples, skip servers)
 #        make docker-test                 (Linux ARM64+x86 in Docker)
 #        make docker-test-arm64           (Linux ARM64 in Docker)
 #        make docker-test-x86             (Linux x86_64 in Docker)
@@ -470,7 +471,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples dist iwyu clean \
+.PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples run-examples-ci dist iwyu clean \
        docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye
 
 # Explicit default — keep `make` (no args) running the full test suite.
@@ -613,6 +614,17 @@ examples: $(EXAMPLE_BINS)
 
 run-examples: $(EXAMPLE_BINS)
 	@for bin in $(EXAMPLE_BINS); do \
+		echo "=== $$(basename $$bin) ==="; \
+		./$$bin; \
+		echo; \
+	done
+
+# Run only examples that terminate on their own. Excluded: chat_server (TCP server).
+EXAMPLE_CI_SKIP := chat_server
+EXAMPLE_CI_BINS := $(filter-out $(patsubst %,$(BUILDDIR)/examples/%,$(EXAMPLE_CI_SKIP)),$(EXAMPLE_BINS))
+
+run-examples-ci: $(EXAMPLE_BINS)
+	@for bin in $(EXAMPLE_CI_BINS); do \
 		echo "=== $$(basename $$bin) ==="; \
 		./$$bin; \
 		echo; \

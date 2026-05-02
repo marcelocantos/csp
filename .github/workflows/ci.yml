@@ -98,6 +98,12 @@ jobs:
               --args ./build/normal/csp_tests 2>&1 || true
           fi
 
+      - name: Build examples
+        run: make examples ${{ matrix.make_cxx || '' }}
+
+      - name: Run examples
+        run: make run-examples-ci ${{ matrix.make_cxx || '' }}
+
       - name: Generate dist
         run: make dist ${{ matrix.make_cxx || '' }}
 
