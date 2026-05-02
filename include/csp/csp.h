@@ -367,6 +367,24 @@ public:
         new (&buf_) T(std::move(t));
     }
 
+    // Write-by-reference: non-owning pointer to an existing T.
+    // The value is NOT moved into the chan_op's internal storage; instead
+    // chanop_.message points directly at t.  transfer() moves from t only
+    // when the alt commits (i.e., the write op is chosen by prialt_begin).
+    // If the alt resolves to a different op, t is left untouched.
+    //
+    // Alignment requirement: alignof(T) >= 2, or T is wrapped in a struct
+    // whose alignment is >= 2 (e.g. buffered_slot<T> which contains an
+    // exception_ptr and is thus >= 8-byte aligned on all platforms).
+    struct ref_tag {};
+    chan_op(internal::WriterRef w, T & t, ref_tag)
+        : chanop_{internal::wait(w), &t, internal::get_slot(w.ptr), nullptr},
+          mode_(Mode::WriteRef)
+    {
+        // Verify the low bit is 0 (value tag, not exception tag).
+        assert((reinterpret_cast<uintptr_t>(&t) & 1) == 0);
+    }
+
     // Throw operation: deliver an exception_ptr at the next rendezvous.
     struct throw_tag {};
     chan_op(internal::WriterRef w, std::exception_ptr ep, throw_tag)
@@ -485,7 +503,12 @@ public:
     }
 
 private:
-    enum class Mode : uint8_t { Empty, Vulture, WriteValue, WriteThrow, Read };
+    // WriteRef: non-owning pointer to an existing T in external storage.
+    // Used by the buffered-channel filter so that the value is not moved
+    // out of the ring-buffer slot until alt_end commits the write op.
+    // destroy_storage and adopt_storage treat this mode as a no-op for
+    // the inline buf_ (the pointer lives in chanop_.message only).
+    enum class Mode : uint8_t { Empty, Vulture, WriteValue, WriteThrow, WriteRef, Read };
 
     // Writer-side storage.  Sized + aligned to hold either a T or an
     // exception_ptr.  alignas(2) (or stricter, when alignof(T) > 2)
@@ -507,6 +530,7 @@ private:
         } else if (mode_ == Mode::WriteThrow) {
             reinterpret_cast<std::exception_ptr*>(&buf_)->~exception_ptr();
         }
+        // WriteRef: external storage; nothing to destroy here.
         // Read mode: eptr_in_ destructs on its own; no manual cleanup.
     }
 
@@ -521,6 +545,10 @@ private:
             chanop_.message = reinterpret_cast<void*>(
                 reinterpret_cast<uintptr_t>(buf_addr_()) | 1);
             reinterpret_cast<std::exception_ptr*>(&o.buf_)->~exception_ptr();
+        } else if (mode_ == Mode::WriteRef) {
+            // chanop_.message already points at the external T (copied
+            // verbatim from o via chanop_(o.chanop_) in the move ctor).
+            // buf_ is uninitialized and must not be touched.
         } else if (mode_ == Mode::Read) {
             eptr_in_ = std::move(o.eptr_in_);
             o.eptr_in_ = nullptr;
@@ -1534,8 +1562,14 @@ struct buffered_slot {
 
 template <typename T>
 inline auto write_op_for(writer<T>& out, buffered_slot<T>& slot) {
+    // Use WriteRef so the value is not moved until alt_end commits the op.
+    // A plain "out << std::move(slot.value)" would move the value into the
+    // chan_op's internal buf_ at construction time — before prialt_begin
+    // determines which arm fires.  If the other arm wins, slot.value is
+    // left moved-from in the ring buffer, causing silent data loss.
     return slot.exc ? out._throw(slot.exc)
-                    : out << std::move(slot.value);
+                    : chan_op<T>(out.internal_writer(), slot.value,
+                                 typename chan_op<T>::ref_tag{});
 }
 
 }
