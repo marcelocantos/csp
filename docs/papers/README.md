@@ -103,3 +103,10 @@ debugging of the CSP imp-based concurrency library.
     channels. Closes the push/pull gap at the `net::connection`
     boundary and the TLS composition gap; enables streaming HTTP
     bodies and a route out of `http::serve`'s direct-fd bypass.
+
+21. **[Distribution Amalgamation for Protocol Implementations](21-dist-protocol-amalgamation.md)** *(design)*
+    — Proposal for including protocol implementations (HTTP, HTTP/2, WebSocket,
+    HTTP/3, QUIC) in the dist bundle. Compares all-in `csp.cpp` (option a)
+    against a separate `csp_protocols.cpp` opt-in file (option b). Recommends
+    option (b) to avoid inflating the core dist with ~93K lines of vendored C.
+    Surfaces four open questions for the user before implementation begins.
