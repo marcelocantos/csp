@@ -314,3 +314,59 @@ None.
   🎯T3.6, 🎯T3.7, 🎯T3.9, 🎯T13). One PR since v0.11.0: #42. CI green
   on all platforms (macOS arm64, Linux x86_64/arm64, ASan/UBSan, TSan,
   TLA+, Windows x86_64).
+
+## 2026-04-30 — /release v0.13.0
+
+- **Commit**: TBD
+- **Outcome**: Released v0.13.0 (source-only, no binaries). Two PRs
+  since v0.12.0: #53 (consolidated /cv batch — 8 targets) and #54
+  (QUIC). Major additions:
+  - 🎯T3.8 QUIC transport: `csp::quic::listen` / `csp::quic::dial`
+    over vendored ngtcp2 + picotls minicrypto. Three tests
+    (echo-single-stream, multiple-streams, listener-drop).
+    **macOS arm64 only** for this release — Linux fails in
+    `Reactor::create_fd_event` for UDP fds (tracked as 🎯T21);
+    `quic.cc` excluded from the dist amalgamation (tracked as 🎯T22,
+    long-term plan: ship a `csp_protocols.cpp` second-TU for the
+    HTTP/WS/QUIC stack, mirroring the existing
+    http/http2/http3/ws exclusion pattern).
+  - 🎯T3.3 high-density stack scaling validated in CI: arena-based
+    allocation (256 MB mmap × 4096 × 64 KB slots), `slab_count()`
+    API, Linux VMA assertion (`<1000` after 100K-imp drain), bumped
+    arena slot to 128 KB for QUIC/TLS stack depth.
+  - 🎯T3.4 stack analyzer walk-time branch pruning via
+    data-specialised compilation. `LDR Wt, [Xn, #imm]` from a
+    DATA_OFFSET register reads the closure field directly, marks the
+    register `CONST`, lets `CBZ`/`CBNZ`/`TBZ`/`TBNZ` prune dead
+    branches at walk time. Measured: `branching_caller(tag{which=0})`
+    went from `depth=7312, is_exact=false` to
+    `depth=16, is_exact=true`. Target now Converging (interprocedural
+    forwarding remains).
+  - 🎯T7.1–7.6 six example applications in `examples/` (chat_server,
+    etl_pipeline, web_crawler, sensor_fusion, task_scheduler,
+    log_aggregator) demonstrating distinct CSP feature sets:
+    fan-out, alt/prialt, bounded concurrency, combine_latest +
+    quantize + sliding-window, DAG with timeouts, severity routing.
+    🎯T7 retired (parent target).
+  - Pre-existing Makefile bug fixed: duplicate `LIB_OBJS +=` lines
+    (FCONTEXT, LLHTTP, NGHTTP2, WSLAY, NGHTTP3) accumulated 3× during
+    HTTP/2/3/WS rollout, causing 544 duplicate-symbol linker errors
+    on `make examples` in fresh worktrees.
+- **Known issues**:
+  - 🎯T20 ring-buffer move-before-commit bug discovered independently
+    by both the T7.2 ETL agent and the T3.8 QUIC agent: buffered
+    `chan<T>(N)` moves data out of a slot before the corresponding
+    `alt`/`prialt` write op confirms it fires, leading to silent
+    data loss / empty values. Workaround: rendezvous (synchronous)
+    channels for hot paths. Fix planned for v0.14.0.
+  - 🎯T19 pre-existing examples (`pipeline.cc`, `rate_limiter.cc`)
+    use an old `buffer<T>(N).spawn(...)` API that no longer exists.
+    Silently masked by the duplicate-vendored-symbols Makefile bug
+    (now fixed); `make examples` exposes them. CI does not run
+    `make examples`, so this doesn't block builds. Fix planned for
+    v0.14.0 alongside adding `make examples` to CI.
+  - 🎯T21 QUIC works on macOS only.
+  - 🎯T22 QUIC excluded from dist amalgamation.
+- **CI**: All 10 jobs green on PR #54 (final release content).
+  Background CI run on master post-merge in progress at release
+  time.
