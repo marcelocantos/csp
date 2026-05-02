@@ -433,16 +433,21 @@ def main():
     # separately.
     ws_file = src_dir / 'ws.cc'
     http3_file = src_dir / 'http3.cc'
+    # quic.cc depends on vendored ngtcp2 and is excluded from the dist
+    # amalgamation.  Users who need QUIC must compile quic.cc + ngtcp2
+    # (and the ngtcp2_crypto_picotls_minicrypto.c adapter) separately.
+    quic_file = src_dir / 'quic.cc'
+    excluded_sources = {
+        globals_file.resolve(),
+        http_file.resolve(),
+        http2_file.resolve(),
+        http3_file.resolve(),
+        ws_file.resolve(),
+        quic_file.resolve(),
+    }
     src_files = sorted(
         p for p in (list(src_dir.glob('*.cc')) + list(src_dir.glob('*.cpp')))
-        if p.resolve() not in {
-            globals_file.resolve(),
-            http_file.resolve(),
-            http2_file.resolve(),
-            http3_file.resolve(),
-        }
-        if p.resolve() not in {globals_file.resolve(), http_file.resolve(),
-                               ws_file.resolve()}
+        if p.resolve() not in excluded_sources
     )
     print('csp.cpp:')
     amalgamate_sources(

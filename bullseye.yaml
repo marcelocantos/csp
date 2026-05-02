@@ -233,6 +233,32 @@ targets:
     context: 'Discovered by the 🎯T7.2 ETL pipeline agent (PR #52, /cv batch 2026-04-30) while building the example. Symptom: when a `chan<T>(N)` (ring-buffer-backed buffered channel) is the writer in an `alt`/`prialt` operation, the ring-buffer imp moves the stored value out of its slot before the write op is confirmed to fire. If the alt resolves to a different op (or is cancelled), the moved-from value remains in the buffer, leading to silent data loss / empty-string emissions. Workaround used in T7.2: rendezvous (synchronous) channels everywhere, no buffered chans. Suspect file: ring-buffer imp inside `src/channel.cc` or wherever buffered-chan dispatch lives. Fix shape: defer the move until `alt_end` / commit phase; or copy-then-erase-on-commit; or restructure the ring-buffer imp''s alt participation so the source slot is only consumed when the write actually transfers.'
     origin: manual
     discovered: 2026-04-30
+  T21:
+    name: QUIC transport works on Linux
+    status: identified
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - '`test/quic.test.cc` runs and passes on Linux x86_64 and Linux arm64 (currently macOS-only — guarded by `#if defined(CSP_TLS) && defined(__APPLE__)`)'
+    - '`Reactor::create_fd_event` (`src/reactor.cc:523`) succeeds for UDP sockets on Linux (epoll-equivalent works correctly for QUIC''s UDP fd registration)'
+    - Once green, remove the `__APPLE__` guard from `test/quic.test.cc`
+    context: 'Initial QUIC implementation (🎯T3.8 / PR #54) was developed and tested on macOS arm64 only. On Linux the `QUIC---echo-single-stream` test crashes with `Assertion ''rc == 0'' failed` in `Reactor::create_fd_event`. The kqueue (BSD/macOS) → epoll (Linux) abstraction in the reactor likely needs adjusting for UDP fd handling. Investigate what `create_fd_event` is rejecting (probably `EPERM` on epoll for non-`O_NONBLOCK` UDP sockets, or a missing edge-vs-level mode), fix in `src/reactor.cc`, drop the `__APPLE__` guard.'
+    origin: manual
+    discovered: 2026-04-30
+  T22:
+    name: QUIC is available in the dist amalgamation
+    status: identified
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - 'Users of the dist (single-`csp.h` + `csp.cpp` + `csp_globals.cpp`) drop in can use `csp::quic` without separately compiling `src/quic.cc`'
+    - '`make test-dist` exercises the QUIC test suite'
+    - Approach is consistent with how http3.cc / http2.cc / ws.cc / http.cc handle their own vendored deps in dist (currently those are *also* excluded — so this target may need to be reframed to "pull all four .cc files into dist" or "ship a separate `csp_extras.cpp` containing the protocol implementations"; decide before starting)
+    context: '🎯T3.8 / PR #54 excludes `src/quic.cc` from `dist/csp.cpp` (mirroring the http3.cc / http2.cc / ws.cc / http.cc exclusion pattern) because the amalgamation cannot include `ngtcp2/ngtcp2.h` without ngtcp2''s generated `version.h`, and shipping all of ngtcp2 in csp.cpp would balloon the dist. Quick interim fix landed; long-term we either (a) generate `version.h` as part of `make dist` and pull quic.cc in, or (b) ship a second amalgamated TU (`csp_protocols.cpp`) containing http/http2/http3/ws/quic that users opt into by linking. (b) is probably right.'
+    origin: manual
+    discovered: 2026-04-30
   T3:
     name: Runtime is production-ready for I/O workloads
     status: identified
