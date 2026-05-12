@@ -298,6 +298,18 @@ targets:
     - T23
     origin: manual
     discovered: 2026-05-09
+  T25:
+    name: task_scheduler example terminates cleanly after DAG completes
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`./build/normal/examples/task_scheduler` exits with status 0 within a few hundred ms of submitting and completing the demo DAG (no Ctrl-C required)'
+    - The example is re-included in `make run-examples-ci` (removed from `EXAMPLE_CI_SKIP` in the Makefile)
+    - 'Root cause documented: the signal-watcher imp blocks on `sig_r >> s` forever and keeps `schedule()` alive after the DAG finishes. Fix shape: make the signal watcher a daemon imp, or close the signal channel when the main work completes, or add an alt arm that watches a `done` rendezvous'
+    context: 'Discovered 2026-05-12 during the 🎯T19 follow-up: two stray `task_scheduler` processes were spinning at 100% CPU for ~73 hours after `make run-examples-ci` wedged on them. The example was designed to finish on its own (it submits a DAG, drops the submit endpoint, and lets the dispatcher/workers/dashboard drain) but the signal-watcher imp spawned at main() startup keeps `schedule()` from quiescing. Workaround: 🎯T19 follow-up commit adds `task_scheduler` to `EXAMPLE_CI_SKIP` and wraps each example with a 60s timeout in run-examples-ci. This target tracks the actual fix to the example so it can be re-included.'
+    origin: manual
+    discovered: 2026-05-12
   T3:
     name: Runtime is production-ready for I/O workloads
     status: identified
