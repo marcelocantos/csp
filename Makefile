@@ -626,12 +626,22 @@ run-examples: $(EXAMPLE_BINS)
 EXAMPLE_CI_SKIP := chat_server task_scheduler
 EXAMPLE_CI_BINS := $(filter-out $(patsubst %,$(BUILDDIR)/examples/%,$(EXAMPLE_CI_SKIP)),$(EXAMPLE_BINS))
 
-# Each example gets a 60-second wall-clock cap so a bug like the
-# task_scheduler one can't wedge CI for hours. Exit 124 = timeout fired.
+# Wall-clock cap per example so a bug like the task_scheduler one can't
+# wedge CI for hours. GNU `timeout` is in Linux coreutils; macOS gets
+# it as `gtimeout` via `brew install coreutils`. If neither is found
+# (rare; macOS local without coreutils), run without — exit 124 if it
+# fires from either tool.
+TIMEOUT_CMD := $(strip $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null))
+ifeq ($(TIMEOUT_CMD),)
+EXAMPLE_RUN := ./$$bin
+else
+EXAMPLE_RUN := $(TIMEOUT_CMD) 60 ./$$bin
+endif
+
 run-examples-ci: $(EXAMPLE_BINS)
 	@for bin in $(EXAMPLE_CI_BINS); do \
 		echo "=== $$(basename $$bin) ==="; \
-		timeout 60 ./$$bin || { rc=$$?; echo "[FAIL] $$(basename $$bin) exit=$$rc"; exit $$rc; }; \
+		$(EXAMPLE_RUN) || { rc=$$?; echo "[FAIL] $$(basename $$bin) exit=$$rc"; exit $$rc; }; \
 		echo; \
 	done
 

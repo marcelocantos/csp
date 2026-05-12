@@ -23,6 +23,7 @@
 #include "csp.h"
 
 #include <arpa/inet.h>
+#include <csignal>
 #include <cstring>
 #include <map>
 #include <mutex>

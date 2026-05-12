@@ -70,6 +70,10 @@ jobs:
           sudo apt-get install -y ${{ matrix.packages }}
           sudo sysctl -w kernel.core_pattern=core.%p
 
+      - name: Install macOS dependencies (coreutils for gtimeout)
+        if: runner.os == 'macOS'
+        run: brew install coreutils
+
       - name: Build and test (source)
         run: |
           ulimit -c unlimited
