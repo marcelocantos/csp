@@ -619,14 +619,19 @@ run-examples: $(EXAMPLE_BINS)
 		echo; \
 	done
 
-# Run only examples that terminate on their own. Excluded: chat_server (TCP server).
-EXAMPLE_CI_SKIP := chat_server
+# Run only examples that terminate on their own.
+#   chat_server    — TCP server, runs until killed.
+#   task_scheduler — signal-watcher imp blocks `schedule()` from returning
+#                    after the DAG finishes (see 🎯T25).
+EXAMPLE_CI_SKIP := chat_server task_scheduler
 EXAMPLE_CI_BINS := $(filter-out $(patsubst %,$(BUILDDIR)/examples/%,$(EXAMPLE_CI_SKIP)),$(EXAMPLE_BINS))
 
+# Each example gets a 60-second wall-clock cap so a bug like the
+# task_scheduler one can't wedge CI for hours. Exit 124 = timeout fired.
 run-examples-ci: $(EXAMPLE_BINS)
 	@for bin in $(EXAMPLE_CI_BINS); do \
 		echo "=== $$(basename $$bin) ==="; \
-		./$$bin; \
+		timeout 60 ./$$bin || { rc=$$?; echo "[FAIL] $$(basename $$bin) exit=$$rc"; exit $$rc; }; \
 		echo; \
 	done
 
