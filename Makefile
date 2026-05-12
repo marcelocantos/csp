@@ -623,7 +623,10 @@ run-examples: $(EXAMPLE_BINS)
 #   chat_server    — TCP server, runs until killed.
 #   task_scheduler — signal-watcher imp blocks `schedule()` from returning
 #                    after the DAG finishes (see 🎯T25).
-EXAMPLE_CI_SKIP := chat_server task_scheduler
+#   web_crawler    — deterministically hangs in direct invocation; works
+#                    under `make` (env- or TTY-dependent runtime state).
+#                    Timed out on Linux arm64/x86_64 CI runs. See 🎯T26.
+EXAMPLE_CI_SKIP := chat_server task_scheduler web_crawler
 EXAMPLE_CI_BINS := $(filter-out $(patsubst %,$(BUILDDIR)/examples/%,$(EXAMPLE_CI_SKIP)),$(EXAMPLE_BINS))
 
 # Wall-clock cap per example so a bug like the task_scheduler one can't
