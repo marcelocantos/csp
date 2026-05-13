@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 last_evaluated: 1ff87e4
 targets:
   T1:
@@ -198,7 +198,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`make examples` succeeds — every `.cc` in `examples/` compiles and links'
     - Each example binary runs to completion without crashing or hanging
@@ -225,7 +224,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`chan<T>(N)`''s ring-buffer imp does not move data out of a slot until the corresponding `alt`/`prialt` write op has been confirmed to fire'
     - Failed/preempted alt write attempts leave the buffered value untouched
@@ -238,7 +236,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`test/quic.test.cc` runs and passes on Linux x86_64 and Linux arm64 (currently macOS-only — guarded by `#if defined(CSP_TLS) && defined(__APPLE__)`)'
     - '`Reactor::create_fd_event` (`src/reactor.cc:523`) succeeds for UDP sockets on Linux (epoll-equivalent works correctly for QUIC''s UDP fd registration)'
@@ -251,7 +248,6 @@ targets:
     status: set_aside
     value: 0.0
     cost: 0.0
-    showcase: true
     set_aside_reason: 'Superseded by 🎯T23 (per-protocol drop-in with linker dead-code elimination) and 🎯T24 (pre-built lib artefacts). The original "single csp_net.cpp amalgamation" approach hit a hard C-vs-C++ wall: `extern "C"` controls linkage, not parsing, so C99 vendored libs (llhttp, nghttp2, nghttp3, ngtcp2, wslay) produce ~600 hard Clang errors in C++20 mode — void*→typed pointer, int→enum, header guard collisions. The redesign splits implementations into per-protocol .cpp files + a factory-function API, letting the linker drop unused protocols (and their third-party deps) automatically. See docs/papers/21-dist-protocol-amalgamation.md (in worktree-agent-af8af3fbf0bdb6b46) for the failure analysis.'
     acceptance:
     - Users of the dist (single-`csp.h` + `csp.cpp` + `csp_globals.cpp`) drop in can use `csp::quic` without separately compiling `src/quic.cc`
@@ -265,7 +261,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - dist/csp_net.h declares the front-door API (csp::net::serve etc.) plus per-protocol enable() factory functions
     - 'Per-protocol implementations live in separate dist/csp_<proto>.cpp files: csp_tls, csp_http, csp_http2, csp_http3, csp_ws, csp_quic'
@@ -284,7 +279,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - Each GitHub Release publishes static (.a) and shared (.dylib/.so) library artefacts for macOS arm64, Linux x86_64, and Linux arm64
     - 'Per platform: libcsp.{a,dylib|so} (core) plus libcsp_<proto>.{a,dylib|so} for tls, http, http2, http3, ws, quic — one library per protocol so users still cherry-pick at link time'
@@ -323,12 +317,23 @@ targets:
     context: 'Discovered 2026-05-12 during the 🎯T19 follow-up. Two CI failures (Linux arm64 and Linux x86_64) hit the 60s timeout on web_crawler after the chat_server `<csignal>` fix landed. Local reproduction: direct invocation (`./build/normal/examples/web_crawler`) deterministically hangs at 99% CPU with zero output; `sample <pid>` shows the main thread spinning in `csp::detail::Runtime::main_loop()`. The exact same binary invoked via `make run-examples-ci` (which adds `gtimeout 60` and chdir but otherwise runs the binary directly) completes cleanly. Possibilities: scheduler busy-loop when stdin/stdout TTY state differs; signal-handler init race; environment-variable-dependent maxprocs (no CSP_MAXPROCS in this shell, but maybe a shell-inherited subtlety). Worth investigating because it''s a real runtime-level flakiness, not just an example-side bug.'
     origin: manual
     discovered: 2026-05-12
+  T27:
+    name: Runtime main_loop does not busy-spin when quiescent without a hook
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - When all worker procs are parked, `has_global_work_` is false, `user_done()` is false, and no quiescence hook is registered, the main thread sleeps in `park_cv.wait` rather than busy-spinning
+    - A regression test asserts CPU usage of the main thread is below ~5% during a 1-second `schedule()` on a deliberately-deadlocked imp graph (e.g. an imp blocked on a never-written channel)
+    - Fake-clock tests that rely on the quiescence hook firing still pass — the hook path is preserved
+    context: 'Diagnosed 2026-05-13 while investigating 🎯T26 (web_crawler example reliability). When CSP programs reach a quiescent-but-not-done state — all workers parked, no global work, no quiescence hook — `Runtime::main_loop` at `src/runtime.cpp:296-324` enters a tight busy-spin at 99% CPU. Root cause: the `park_cv.wait` predicate returns `true` whenever `all_parked()` is true, but the wake exists to fire the test-mode quiescence hook; with no hook installed, the wake leads to an immediate re-evaluation of the still-true predicate. Three fix candidates in docs/papers/22-main-loop-busy-spin.md; recommendation is (A) — guard the quiescence wake on an `atomic<bool>` mirror of `quiescence_hook_`''s registration state. Note: this is the *symptom* in web_crawler; the example also has a separate deadlock cause (🎯T26) — an imp suspended on a never-completing TCP read. Even after this fix, web_crawler will still hang on a wall clock when the deadlock condition arises, but it''ll be silent (no 99% CPU) and the CI timeout safety-net will catch it.'
+    origin: manual
+    discovered: 2026-05-13
   T3:
     name: Runtime is production-ready for I/O workloads
     status: identified
     value: 21.0
     cost: 34.0
-    showcase: true
     acceptance:
     - 'Core: T3.1 (I/O wrappers) + T3.2 (HTTP/1.1) + T3.5 (WebSocket) + T3.6 (HTTP client). Full stack: + T3.7 (HTTP/2) + T3.8 (QUIC) + T3.9 (HTTP/3). Infrastructure: T3.3 (stack scaling), T3.4 (stack analysis).'
     depends_on:
@@ -496,9 +501,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 4.0
-    showcase: true
     actual_cost: 4.0
-    demonstration: 'Walked the user through the two API additions in-session: closer<EP> wrapping spawn handles for vulture-only death-watch (test/closer.test.cc, 5 tests), and main()-safe dynamic-scope APIs that throw csp::error from foreign threads instead of segfaulting (test/main_context.test.cc, 7 tests on a fresh std::thread). User accepted via "keep going till the release is done".'
     acceptance:
     - all sub-targets achieved
     depends_on:
@@ -565,8 +568,6 @@ targets:
     status: achieved
     value: 30.0
     cost: 18.0
-    showcase: true
-    demonstration: 'All 6 example applications (chat_server, etl_pipeline, web_crawler, sensor_fusion, task_scheduler, log_aggregator) merged to master in PR #53. Each is a runnable standalone binary in examples/ demonstrating distinct CSP features (alt/prialt, fan-out, cancel scopes, combine_latest/quantize/window, DAG with timeouts, severity routing). User can run any of them via `make build/normal/examples/<name> && ./build/normal/examples/<name>`.'
     acceptance:
     - at least 3 sub-target examples are complete
     depends_on:
