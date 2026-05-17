@@ -261,7 +261,7 @@ targets:
     discovered: 2026-04-30
   T23:
     name: Per-protocol dist drop-in supports linker dead-code elimination
-    status: identified
+    status: converging
     value: 0.0
     cost: 0.0
     acceptance:
@@ -274,9 +274,99 @@ targets:
     - scripts/vendor-deps.sh fetches and builds known-good versions of llhttp, nghttp2, nghttp3, wslay, ngtcp2, picotls into vendor/ with per-protocol flags (--http, --http2, --quic, --all, etc.)
     - dist/AGENTS-CSP.md and CLAUDE.md distribution sections describe the per-protocol compile/link rules and link to vendor-deps.sh
     - Existing csp.cpp + csp_globals.cpp drop-in remains unchanged (channels-only users feel zero impact)
-    context: 'After the failed monolithic-amalgamation attempt (see retired 🎯T22), the chosen design is per-protocol .cpp files with a factory-function API. Mechanism: C++ static linkers drop .o files (and with -ffunction-sections + --gc-sections, individual functions) when no symbol is referenced. A factory like csp::http2::enable() that returns a type-erased protocol_option struct gives the linker per-symbol granularity — calling it makes the http2 TU live (and its nghttp2 refs); not calling it leaves the TU dead and nghttp2 unreferenced. The five rules above are the contract that makes this work. Preserves the "no build-system lock-in" original vision: users still drop-in source files, just N+1 of them instead of 3. Inter-protocol deps (http3 → quic → tls) are explicit symbol references in the .cpp files, so calling http3::enable() automatically pulls quic + tls. Discovered while investigating the C-vs-C++ wall during 🎯T22 (2026-05-04 to 2026-05-06).'
+    context: |-
+      After the failed monolithic-amalgamation attempt (see retired 🎯T22), the chosen design is per-protocol .cpp files with a factory-function API. Mechanism: C++ static linkers drop .o files (and with -ffunction-sections + --gc-sections, individual functions) when no symbol is referenced. A factory like csp::http2::enable() that returns a type-erased protocol_option struct gives the linker per-symbol granularity — calling it makes the http2 TU live (and its nghttp2 refs); not calling it leaves the TU dead and nghttp2 unreferenced. The five rules above are the contract that makes this work. Preserves the "no build-system lock-in" original vision: users still drop-in source files, just N+1 of them instead of 3. Inter-protocol deps (http3 → quic → tls) are explicit symbol references in the .cpp files, so calling http3::enable() automatically pulls quic + tls. Discovered while investigating the C-vs-C++ wall during 🎯T22 (2026-05-04 to 2026-05-06).
+
+      Progress (2026-05-17, Phase A — file-split landed):
+        - docs/design/per-protocol-dist.md captures the design, the five DCE rules with worked examples of what each forbids, and the migration plan (Phase A file-split + Phase B enable() factory).
+        - scripts/amalgamate.py now generates dist/csp_<proto>.cpp for tls, http, http2, ws, quic, http3 plus a verbatim copy of ngtcp2_crypto_picotls_minicrypto.c (the C99 QUIC adapter).
+        - dist/csp.cpp (the core front-door TU) emits zero references to any csp::tls::, csp::http::, csp::http2::, csp::http3::, csp::ws::, or csp::quic:: symbol — verified by grep. Rule 5 holds.
+        - Makefile wires the dist build to compile every per-protocol .cpp; CSP_TLS=0 still works as a channels-only build (drops csp_tls.cpp + csp_quic.cpp). Both make-test-dist runs (CSP_TLS=0 and CSP_TLS=1) green at 692/692; normal make is 729/729.
+        - dist/AGENTS-CSP.md and CLAUDE.md describe the per-protocol drop-in model + linker DCE flags + worked compile/link recipes.
+
+      Acceptance criterion progress:
+        ✓  Per-protocol implementations live in separate dist/csp_<proto>.cpp files (csp_tls, csp_http, csp_http2, csp_http3, csp_ws, csp_quic).
+        ✓  The five linker-DCE rules are documented with examples (docs/design/per-protocol-dist.md).
+        ✓  dist/AGENTS-CSP.md and CLAUDE.md describe the per-protocol compile/link rules.
+        ✓  Existing csp.cpp + csp_globals.cpp drop-in remains unchanged for channels-only users (drop-in still works without any protocol .cpp file).
+        ◐  Front-door TU emits zero protocol-specific symbol refs — true for dist/csp.cpp today; the "csp_net.cpp" name in the criterion is aspirational (currently the front-door is dist/csp.cpp itself, since csp_net.h has not been factored out from csp.h yet). Decide as part of Phase B whether to split.
+        ✗  dist/csp_net.h front-door header + per-protocol enable() factories — deferred to Phase B sub-target T23.1.
+        ✗  CI matrix for subset configurations + link-line verification — deferred to T23.3.
+        ✗  scripts/vendor-deps.sh — deferred to T23.2.
+
+      Phase A commits (worktree branch worktree-agent-abb73f1966f709182):
+        ec66837  docs(design): per-protocol dist drop-in with linker DCE (🎯T23)
+        ce85ac1  dist: per-protocol drop-in .cpp files (🎯T23 Phase A)
+        0b8dc13  build: wire per-protocol dist .cpp files into Makefile (🎯T23)
+        83defd6  docs: document per-protocol dist drop-in model (🎯T23)
+
+      Follow-up sub-targets filed: T23.1 (enable() factory + csp_net.h front-door), T23.2 (vendor-deps.sh), T23.3 (CI matrix for subset link verification), T23.4 (build-time lint enforcing front-door TU has no protocol-specific symbol refs).
     origin: manual
     discovered: 2026-05-09
+  T23.1:
+    name: Unified csp::net::serve(opts) + per-protocol enable() factory API
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - dist/csp_net.h declares the front-door API (csp::net::serve etc.) and per-protocol enable() factory function declarations (csp::tls::enable, csp::http::enable, …)
+    - Each enable() factory lives in its own protocol .cpp drop-in and returns an opaque csp::net::protocol_option struct (void* config + function-pointer apply)
+    - csp::net::serve(port, std::initializer_list<protocol_option>) is implemented in a front-door TU (either dist/csp_net.cpp split from dist/csp.cpp or kept in dist/csp.cpp) that references no protocol-specific symbol by name — only via the function pointers carried in the protocol_options
+    - A user that includes csp_net.h and calls csp::http::enable() only needs to compile csp.cpp + csp_globals.cpp + csp_net.cpp + csp_http.cpp and link llhttp — no other protocol code or libs pulled in
+    - Existing direct-call APIs (csp::http::serve, csp::tls::context, csp::quic::listen, …) continue to work unchanged so existing users don't migrate
+    - API design covers ALPN negotiation (TLS + ALPN choosing between http2 and http/1.1) and the interaction between enable(tls::cert(...)) and enable(http::route(...)) options
+    context: 'Phase B of 🎯T23. The Phase A file-split (committed in this worktree) gives users per-protocol cherry-picking via the linker today; this sub-target adds the unified-server convenience layer the original T23 acceptance criteria call for. Held back from Phase A because (a) the API needs careful design — what happens when incompatible enable()s are combined, how does ALPN negotiation interact with the option list, does enable(http) imply enable(tls) for serve_tls? — and (b) keeping it separate let Phase A land mechanically and unblock downstream users immediately. Implementation plan: each protocol .cpp defines a free function `csp::<proto>::enable(...)` that constructs a protocol_option holding (void* config_blob, void(*apply)(server_state&, void* config_blob)). The unified csp::net::serve walks the option list, calls each apply() — front-door TU references only the apply function pointer (so its TU contains no name-level reference to the protocol implementation). Discovery: doing both phases in one session would either slip the file split or rush the API design.'
+    depends_on:
+    - T23
+    origin: manual
+    discovered: 2026-05-17
+  T23.2:
+    name: scripts/vendor-deps.sh fetches and builds vendored protocol libraries with per-protocol flags
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - scripts/vendor-deps.sh fetches known-good versions of llhttp, nghttp2, nghttp3, wslay, ngtcp2, picotls into vendor/ matching the layout the dist drop-in expects
+    - 'Flags: --http, --http2, --http3, --ws, --quic, --tls, --all; calling --http only fetches/builds llhttp; calling --all fetches/builds every protocol''s library'
+    - Output is a vendor/ tree that csp.h + the per-protocol .cpp files can compile against without further hand-editing of include paths or version constants
+    - The script handles the auto-generated version.h files (nghttp2ver.h, nghttp3 version.h, ngtcp2 version.h) that today are sed-substituted in the project Makefile
+    - README or comments at the top of the script document the matrix of which library is needed for which protocol drop-in
+    - 'Run end-to-end on a fresh checkout: clone, ./scripts/vendor-deps.sh --all, compile a sample app against the dist + the populated vendor/, the binary builds and runs'
+    context: 'A user that takes the dist drop-in today must separately fetch six C99 libraries and figure out which headers to expose. Automating this is the second-biggest Phase A gap (after the enable() factory). Held back from the Phase A landing because the script needs care: each library has its own build-system mess (autotools/cmake), the version.h substitutions duplicate Makefile logic, and getting the vendor/ layout right enough that csp_<proto>.cpp builds without further hand-edits takes iteration. Prerequisite for the CI matrix in T23.3.'
+    depends_on:
+    - T23
+    origin: manual
+    discovered: 2026-05-17
+  T23.3:
+    name: CI matrix builds subset configurations and verifies link line excludes unselected protocols
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'GitHub Actions matrix builds: channels-only, http-only, http+ws, quic-only, full stack on at least macOS arm64 and Linux x86_64'
+    - Each matrix job links a minimal sample binary and asserts (via nm / objdump / ld -map) that unselected protocols' symbols (e.g. llhttp_*, nghttp2_*, ngtcp2_*) are NOT present in the final binary
+    - The failure mode (a regression in the front-door TU that accidentally references a protocol-specific symbol) trips a clear, actionable CI failure naming the rule violated
+    - Documented in CONTRIBUTING / dist/AGENTS-CSP.md so anyone adding a protocol knows the contract their PR must satisfy
+    context: Verifies the DCE model at CI time, not just by code-review eyeballing. Depends on T23.2 (vendor-deps.sh) because the CI job needs an automated way to fetch only the libraries each subset config requires.
+    depends_on:
+    - T23.2
+    origin: manual
+    discovered: 2026-05-17
+  T23.4:
+    name: Build-time lint enforces front-door TU has no protocol-specific symbol references
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A lint runs as part of `make` (or `make check`, or a pre-commit hook) that greps dist/csp.cpp (and any future front-door TU) for csp::tls::, csp::http::, csp::http2::, csp::http3::, csp::ws::, csp::quic:: references'
+    - Non-zero hits fail the build with a clear message naming the rule violated and pointing at docs/design/per-protocol-dist.md §5 Rule 5
+    - The lint also catches the equivalent on src/ files that get folded into dist/csp.cpp by the amalgamation script (so the violation is caught at source-edit time, not after `make dist`)
+    - 'Test fixture: a deliberately-violating commit fails CI; reverting it passes again'
+    context: 'Rule 5 of the five DCE rules is the easiest to violate accidentally — someone refactoring net.cc adds a TLS-aware fast path guarded by #ifdef CSP_TLS and the front door starts pulling in TLS. A regex lint over the front-door TU + all amalgamated source files catches this at CI time. Cheap; depends on nothing else; can land any time after Phase A.'
+    depends_on:
+    - T23
+    origin: manual
+    discovered: 2026-05-17
   T24:
     name: Pre-built CSP library artefacts published with each GitHub Release
     status: identified
