@@ -216,6 +216,7 @@ $(NGTCP2_VER_H): $(NGTCP2_LIB)/includes/ngtcp2/version.h.in
 
 $(NGTCP2_OBJS): $(NGTCP2_VER_H)
 $(BUILDDIR)/src/quic.o: $(NGTCP2_VER_H)
+$(BUILDDIR)/dist/csp_quic.o: $(NGTCP2_VER_H)
 
 NGTCP2_CFLAGS := -O2 \
     -I$(NGTCP2_LIB)/includes \
@@ -289,6 +290,7 @@ $(NGHTTP2_VER_H): $(NGHTTP2_INC)/nghttp2/nghttp2ver.h.in
 
 $(NGHTTP2_OBJS): $(NGHTTP2_VER_H)
 $(BUILDDIR)/src/http2.o: $(NGHTTP2_VER_H)
+$(BUILDDIR)/dist/csp_http2.o: $(NGHTTP2_VER_H)
 
 NGHTTP2_CFLAGS := -O2 -I$(NGHTTP2_INC) -DBUILDING_NGHTTP2
 ifneq ($(SANITIZE),)
@@ -374,6 +376,7 @@ $(NGHTTP3_VER_H): $(NGHTTP3_INC)/nghttp3/version.h.in
 
 $(NGHTTP3_OBJS): $(NGHTTP3_VER_H)
 $(BUILDDIR)/src/http3.o: $(NGHTTP3_VER_H)
+$(BUILDDIR)/dist/csp_http3.o: $(NGHTTP3_VER_H)
 
 NGHTTP3_CFLAGS := -O2 -I$(NGHTTP3_DIR) -I$(NGHTTP3_DIR)/sfparse -I$(NGHTTP3_INC) -DBUILDING_NGHTTP3
 ifneq ($(SANITIZE),)
@@ -408,8 +411,20 @@ FCONTEXT_OBJS   := $(patsubst $(FCONTEXT_DIR)/%.S,$(BUILDDIR)/fcontext/%.o,$(FCO
 # --- Sources ---
 
 ifeq ($(CSP_INCLUDE),dist)
+# Per-protocol dist drop-in (🎯T23): one .cpp file per protocol so users can
+# cherry-pick. Each per-protocol TU is independent — calling no symbol in it
+# lets the linker drop the TU (and its vendored library deps) entirely with
+# -ffunction-sections + --gc-sections / -dead_strip.
 LIB_SRCS := dist/csp.cpp \
-            dist/csp_globals.cpp
+            dist/csp_globals.cpp \
+            dist/csp_http.cpp \
+            dist/csp_http2.cpp \
+            dist/csp_ws.cpp \
+            dist/csp_http3.cpp
+ifeq ($(CSP_TLS),1)
+LIB_SRCS += dist/csp_tls.cpp
+LIB_SRCS += dist/csp_quic.cpp
+endif
 else
 LIB_SRCS := src/csp.cc \
             src/csp_globals.cpp \
@@ -442,7 +457,13 @@ endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
-# net.test.cc, http.test.cc, http2.test.cc, http3.test.cc, ws.test.cc, and quic.test.cc depend on headers not in the dist amalgamation.
+# The protocol tests (net/http/http2/http3/ws/quic) include per-protocol
+# headers like <csp/net.h> that don't exist in the dist drop-in (everything
+# is folded into the single dist/csp.h). The dist build still compiles each
+# protocol's per-protocol .cpp file (csp_http.cpp etc.), so we verify the
+# implementation TUs build, just not the protocol tests themselves. Fixing
+# the tests to work against both layouts is follow-up work (sub-target of
+# 🎯T23).
 ifeq ($(CSP_INCLUDE),dist)
 TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.cc test/http3.test.cc test/ws.test.cc test/quic.test.cc,$(TEST_SRCS))
 endif
@@ -452,9 +473,16 @@ EXAMPLE_SRCS := $(wildcard examples/*.cc)
 # --- Objects ---
 
 LIB_OBJS   := $(patsubst %.cc,$(BUILDDIR)/%.o,$(patsubst %.cpp,$(BUILDDIR)/%.o,$(LIB_SRCS)))
+# fcontext assembly: in dist mode it's appended to dist/csp.cpp as inline
+# asm() blocks, so no separate .o needed. In normal mode it compiles from
+# the .S files.
 ifneq ($(CSP_INCLUDE),dist)
-LIB_OBJS   += $(FCONTEXT_OBJS) $(LLHTTP_OBJS) $(NGHTTP2_OBJS) $(WSLAY_OBJS) $(NGHTTP3_OBJS)
+LIB_OBJS   += $(FCONTEXT_OBJS)
 endif
+# Vendored protocol libraries: needed in both modes now that dist ships
+# per-protocol .cpp drop-ins (🎯T23). The dist build links these alongside
+# dist/csp_<proto>.cpp; the normal build links them alongside src/<proto>.cc.
+LIB_OBJS   += $(LLHTTP_OBJS) $(NGHTTP2_OBJS) $(WSLAY_OBJS) $(NGHTTP3_OBJS)
 ifeq ($(CSP_TLS),1)
 LIB_OBJS   += $(PICOTLS_OBJS)
 LIB_OBJS   += $(NGTCP2_OBJS)
