@@ -446,8 +446,7 @@ connection dial(const std::string& host, uint16_t port);
 
 ## HTTP
 
-Channel-native HTTP/1.1 server. Not in the dist amalgamation — compile
-`src/http.cc` + llhttp separately.
+Channel-native HTTP/1.1 server. Drop-in: `csp_http.cpp`; link against llhttp.
 
 ```cpp
 namespace csp::http {
@@ -536,8 +535,8 @@ auto resp = http::post("http://example.com/api",
 
 ## WebSocket
 
-Channel-native WebSocket (RFC 6455). Not in the dist amalgamation —
-compile `src/ws.cc` + wslay separately.
+Channel-native WebSocket (RFC 6455). Drop-in: `csp_ws.cpp`; link against wslay
+(plus `csp_http.cpp` + llhttp for the upgrade flow).
 
 ```cpp
 namespace csp::ws {
@@ -756,8 +755,10 @@ Dist users: `#define CSP_TLS` before `#include "csp.h"`, link own PicoTLS.
 ## QUIC
 
 QUIC transport over UDP via ngtcp2 + PicoTLS (minicrypto). Available when
-`CSP_TLS` is defined. Not in the dist amalgamation — compile `src/quic.cc`
-and `src/ngtcp2_crypto_picotls_minicrypto.c` together with ngtcp2 and PicoTLS.
+`CSP_TLS` is defined. Drop-in: `csp_quic.cpp` plus
+`ngtcp2_crypto_picotls_minicrypto.c` (the C99 adapter, compiled with the C
+compiler); link against ngtcp2 + PicoTLS. Calling any `csp::quic::` symbol
+pulls `csp_tls.cpp` in automatically.
 
 ```cpp
 #include "csp.h"    // includes quic.h (behind #ifdef CSP_TLS)
@@ -1004,21 +1005,94 @@ All in `namespace csp::part` (included via `csp.h`).
 
 ## Integration
 
-Copy these files into your project:
+CSP distributes as a small set of vendor-drop-in files. The **core** trio is
+always required:
 
 | File | Purpose |
 |---|---|
 | `csp.h` | Single header (all public API) |
-| `csp.cpp` | Implementation + context-switching assembly |
+| `csp.cpp` | Core implementation + context-switching assembly |
 | `csp_globals.cpp` | Thread-local state (**must** be a separate translation unit — see [docs/tls-caching-bug.md](https://github.com/marcelocantos/csp/blob/master/docs/tls-caching-bug.md)) |
 | `AGENTS-CSP.md` | This file — agent reference for CSP |
 
-Compile with C++20 and libc++:
+Each network protocol ships as its own optional drop-in `.cpp` file. Compile
+**only** the protocols you use:
+
+| File | Protocol | Vendored library required at link |
+|---|---|---|
+| `csp_tls.cpp` | TLS 1.3 | PicoTLS + minicrypto (build with `-DCSP_TLS`) |
+| `csp_http.cpp` | HTTP/1.1 | llhttp |
+| `csp_http2.cpp` | HTTP/2 | nghttp2 (PicoTLS too for `serve_tls`) |
+| `csp_ws.cpp` | WebSocket | wslay (HTTP/1.1 too via `csp_http.cpp` for `upgrade`) |
+| `csp_quic.cpp` | QUIC | ngtcp2 + PicoTLS + `ngtcp2_crypto_picotls_minicrypto.c` |
+| `csp_http3.cpp` | HTTP/3 | nghttp3 + everything QUIC needs |
+
+The single header `csp.h` declares **all** protocol APIs. Per-protocol `.cpp`
+files cherry-pick which implementations the linker keeps. Skip a `.cpp`
+file and its third-party deps drop out of the link (provided you have
+linker dead-code elimination enabled — see below).
+
+Compile with C++20 and libc++. Channels-only:
 
 ```bash
-c++ -std=c++20 -O2 -c csp.cpp -o csp.o
-c++ -std=c++20 -O2 -c csp_globals.cpp -o csp_globals.o
+c++ -std=c++20 -O2 -ffunction-sections -fdata-sections \
+    -c csp.cpp csp_globals.cpp
+c++ -Wl,-dead_strip   csp.o csp_globals.o -o app    # macOS / ld64
+c++ -Wl,--gc-sections csp.o csp_globals.o -o app    # Linux / lld / GNU ld
 ```
+
+Channels + HTTP/1.1:
+
+```bash
+c++ -std=c++20 -O2 -ffunction-sections -fdata-sections \
+    -I vendor/llhttp/include \
+    -c csp.cpp csp_globals.cpp csp_http.cpp \
+       vendor/llhttp/src/{llhttp,api,http}.c
+c++ -Wl,-dead_strip csp.o csp_globals.o csp_http.o llhttp.o api.o http.o -o app
+```
+
+Channels + HTTPS (TLS + HTTP/1.1):
+
+```bash
+c++ -std=c++20 -O2 -DCSP_TLS -ffunction-sections -fdata-sections \
+    -I vendor/picotls/include -I vendor/llhttp/include \
+    -c csp.cpp csp_globals.cpp csp_tls.cpp csp_http.cpp \
+       vendor/picotls/lib/*.c vendor/llhttp/src/{llhttp,api,http}.c
+c++ -Wl,-dead_strip csp.o csp_globals.o csp_tls.o csp_http.o *_picotls*.o *llhttp*.o -o app
+```
+
+QUIC needs the extra C99 adapter:
+
+```bash
+cc  -std=c99 -O2 -I vendor/ngtcp2/lib -I vendor/picotls/include \
+    -c ngtcp2_crypto_picotls_minicrypto.c
+c++ -std=c++20 -O2 -DCSP_TLS -ffunction-sections -fdata-sections \
+    -I vendor/picotls/include -I vendor/ngtcp2/lib/includes \
+    -c csp.cpp csp_globals.cpp csp_tls.cpp csp_quic.cpp \
+       vendor/picotls/lib/*.c vendor/ngtcp2/lib/*.c
+```
+
+### Linker dead-code elimination
+
+The per-protocol model relies on three flags:
+
+* `-ffunction-sections -fdata-sections` (compile-time): emit each function
+  and variable in its own section so the linker can drop them individually.
+* `-Wl,-dead_strip` (macOS / ld64) **or** `-Wl,--gc-sections` (Linux / lld /
+  GNU ld) (link-time): drop sections (and TUs in static archives) that no
+  symbol in the link line references.
+
+With these flags, a binary that calls only `csp::http::serve` keeps only
+the http functions it actually uses; the rest of `csp_http.cpp` and the
+unused parts of `llhttp` are stripped. Protocols you don't compile in
+contribute zero bytes.
+
+The model is contractual on five rules — `csp.cpp` (the core TU) does **not**
+reference any `csp::tls::`, `csp::http::`, `csp::http2::`, `csp::http3::`,
+`csp::ws::`, or `csp::quic::` symbol. Calling a protocol's namespace is the
+only way to make its TU live. See
+[`docs/design/per-protocol-dist.md`](https://github.com/marcelocantos/csp/blob/master/docs/design/per-protocol-dist.md)
+for the full discussion.
 
 Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to
 give coding agents CSP expertise.

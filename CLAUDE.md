@@ -51,16 +51,44 @@ blocking pool, stack pool, HAMT, and other implementation machinery).
 
 ### Distribution
 
-CSP is distributed as three files in `dist/`:
+CSP is distributed as a small set of vendor-drop-in files in `dist/`. The
+**core** trio is always required:
 
 | File | Contents |
 |---|---|
 | `csp.h` | Single header (all public API, combinators, internals) |
-| `csp.cpp` | All implementation source + fcontext inline assembly |
+| `csp.cpp` | Core implementation + fcontext inline assembly (no protocol code) |
 | `csp_globals.cpp` | Thread-local state (must be a separate TU — see `docs/tls-caching-bug.md`) |
 
-These are generated from the development sources by `scripts/amalgamate.py`
-(`make dist`).
+Each network protocol ships as its own optional drop-in `.cpp` (🎯T23):
+
+| File | Protocol | Vendored library | TLS-gated |
+|---|---|---|---|
+| `csp_tls.cpp` | TLS 1.3 | PicoTLS + minicrypto | yes (`CSP_TLS`) |
+| `csp_http.cpp` | HTTP/1.1 | llhttp | no |
+| `csp_http2.cpp` | HTTP/2 | nghttp2 | partial (`serve_tls`) |
+| `csp_ws.cpp` | WebSocket | wslay (+ llhttp via http drop-in) | no |
+| `csp_quic.cpp` | QUIC | ngtcp2 + PicoTLS + `ngtcp2_crypto_picotls_minicrypto.c` | yes |
+| `csp_http3.cpp` | HTTP/3 | nghttp3 (+ ngtcp2, PicoTLS) | yes |
+
+Users cherry-pick the protocols they need: compile `csp.cpp` + `csp_globals.cpp` +
+the chosen `csp_<proto>.cpp` files, and link the corresponding vendored
+libraries. With `-ffunction-sections -fdata-sections` + `-Wl,-dead_strip`
+(macOS) or `-Wl,--gc-sections` (Linux), the linker drops unreferenced TUs and
+functions, including any unused protocol code that ended up in the link by
+accident. See [`docs/design/per-protocol-dist.md`](docs/design/per-protocol-dist.md)
+for the five DCE rules that make this model contractual:
+
+1. No protocol enums in the front door.
+2. No protocol-specific methods on shared types.
+3. No static registration in protocol TUs.
+4. No central virtual base with per-protocol subclasses.
+5. The front-door TU (`csp.cpp`) references no protocol-specific symbols.
+
+All dist files are generated from `src/`/`include/` by `scripts/amalgamate.py`
+(`make dist`). The QUIC adapter `ngtcp2_crypto_picotls_minicrypto.c` is a
+C99 TU; the script copies it verbatim into `dist/` since it cannot be
+amalgamated into C++ alongside the other protocol implementations.
 
 ### Development source layout
 
