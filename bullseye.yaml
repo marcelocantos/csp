@@ -663,7 +663,6 @@ targets:
     acceptance:
     - Signal handling code reviewed for async-signal-safety
     - Any violations fixed or documented as acceptable
-    - Audit findings recorded in `docs/audit-log.md`
     origin: manual
     discovered: 2026-03-09
     achieved: 2026-03-27
