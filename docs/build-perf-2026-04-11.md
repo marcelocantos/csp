@@ -165,4 +165,3 @@ Baseline → post-fix, all with `make clean && make build`:
 
 - Pattern catalog: `~/.claude/skills/build-perf-audit/patterns/make.md`, `patterns/common.md`
 - Skill worker: `~/.claude/skills/build-perf-audit/worker.md`
-- Previous release entries: `docs/audit-log.md`
