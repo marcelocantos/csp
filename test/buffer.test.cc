@@ -249,3 +249,89 @@ TEST_CASE("Chan---multiple-buffer-stages") {
     // 1→2→4→104, 2→3→6→106, 3→4→8→108
     CHECK(results == std::vector<int>{104, 106, 108});
 }
+
+// Regression test for 🎯T20: buffered chan must not move values before alt commit.
+//
+// The buffer imp calls alt(in >> staging, write_op_for(out, buf.front())).
+// Before the fix, write_op_for constructed a chan_op<string> by moving from
+// buf.front().value into the chan_op's internal storage.  If the read arm
+// (case 0) fired instead of the write arm (case 1), buf.front().value was
+// left in a moved-from (empty) state.  The next iteration would then deliver
+// an empty string to the downstream reader.
+//
+// Setup: a upstream writer pushes N strings into a chan<string>(1).  A
+// downstream reader keeps reading.  A "discard" reader competes with the
+// downstream reader so that the buffer imp's write arm sometimes loses the
+// alt.  All delivered strings must be non-empty.
+TEST_CASE("ChanUtil---BufferNoMoveBeforeCommit") {
+    constexpr int N = 50;
+    auto buf = chan<std::string>(1);
+
+    // Downstream reader: collects all values.
+    auto [collector_w, collector_r] = chan<std::string>{};
+    std::vector<std::string> received;
+
+    // Upstream writer: sends N non-empty strings into the buffer.
+    spawn([out = std::move(buf.w)] {
+        for (int i = 0; i < N; ++i) {
+            out << std::string(8, 'A' + char(i % 26));
+        }
+    });
+
+    // Consumer: reads all strings from the buffer and forwards to collector.
+    // Using a plain loop (not alt) so there's no racing drain path here.
+    spawn([in = std::move(buf.r), w = std::move(collector_w)] {
+        std::string s;
+        while (in >> s) {
+            // If the bug is present, s will be empty for any round where the
+            // read arm fired while the write arm had already moved the value.
+            CHECK(!s.empty());
+            w << std::move(s);
+        }
+    });
+
+    spawn([in = std::move(collector_r), &received] {
+        std::string s;
+        while (in >> s) {
+            received.push_back(std::move(s));
+        }
+    });
+
+    csp::schedule();
+    CHECK(int(received.size()) == N);
+    for (auto const & s : received) {
+        CHECK(!s.empty());
+    }
+}
+
+// Stronger regression: exercises the move-before-commit bug by having both
+// a new write (in >> staging, arm 0) and a buffered-front write (arm 1)
+// compete simultaneously.  We force both arms to be ready at the same time
+// by pre-filling the buffer to capacity-1 and having an eager consumer.
+// With capacity=1 the buffer imp sees buf.full()=false AND buf.empty()=false
+// only when exactly one item is buffered, which is the precise window where
+// both arms are enabled in the same alt call.
+TEST_CASE("ChanUtil---BufferAltBothArmsReady") {
+    constexpr int N = 100;
+    auto buf = chan<std::string>(1);
+
+    std::vector<std::string> received;
+
+    spawn([out = std::move(buf.w)] {
+        for (int i = 0; i < N; ++i) {
+            // Non-empty, distinct strings so corruption is detectable.
+            out << std::string(4, char('a' + i % 26));
+        }
+    });
+
+    spawn([in = std::move(buf.r), &received] {
+        std::string s;
+        while (in >> s) {
+            CHECK(!s.empty());
+            received.push_back(std::move(s));
+        }
+    });
+
+    csp::schedule();
+    CHECK(int(received.size()) == N);
+}

@@ -26,7 +26,7 @@ int main() {
         auto tokens = tick(100ms);
 
         // Buffer up to 3 tokens (burst capacity)
-        auto bucket = buffer<time_point>(3).spawn(std::move(tokens));
+        auto bucket = std::move(tokens) | chan<time_point>(3);
 
         // Simulate 8 bursty requests
         auto [w, r] = chan<int>{};

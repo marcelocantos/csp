@@ -11,6 +11,7 @@
 #        make SANITIZE=thread              (TSan)
 #        make examples                    (build examples)
 #        make run-examples                (build + run examples)
+#        make run-examples-ci             (build + run finite examples, skip servers)
 #        make docker-test                 (Linux ARM64+x86 in Docker)
 #        make docker-test-arm64           (Linux ARM64 in Docker)
 #        make docker-test-x86             (Linux x86_64 in Docker)
@@ -470,7 +471,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples dist iwyu clean \
+.PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples run-examples-ci dist iwyu clean \
        docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye
 
 # Explicit default — keep `make` (no args) running the full test suite.
@@ -615,6 +616,35 @@ run-examples: $(EXAMPLE_BINS)
 	@for bin in $(EXAMPLE_BINS); do \
 		echo "=== $$(basename $$bin) ==="; \
 		./$$bin; \
+		echo; \
+	done
+
+# Run only examples that terminate on their own.
+#   chat_server    — TCP server, runs until killed.
+#   task_scheduler — signal-watcher imp blocks `schedule()` from returning
+#                    after the DAG finishes (see 🎯T25).
+#   web_crawler    — deterministically hangs in direct invocation; works
+#                    under `make` (env- or TTY-dependent runtime state).
+#                    Timed out on Linux arm64/x86_64 CI runs. See 🎯T26.
+EXAMPLE_CI_SKIP := chat_server task_scheduler web_crawler
+EXAMPLE_CI_BINS := $(filter-out $(patsubst %,$(BUILDDIR)/examples/%,$(EXAMPLE_CI_SKIP)),$(EXAMPLE_BINS))
+
+# Wall-clock cap per example so a bug like the task_scheduler one can't
+# wedge CI for hours. GNU `timeout` is in Linux coreutils; macOS gets
+# it as `gtimeout` via `brew install coreutils`. If neither is found
+# (rare; macOS local without coreutils), run without — exit 124 if it
+# fires from either tool.
+TIMEOUT_CMD := $(strip $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null))
+ifeq ($(TIMEOUT_CMD),)
+EXAMPLE_RUN := ./$$bin
+else
+EXAMPLE_RUN := $(TIMEOUT_CMD) 60 ./$$bin
+endif
+
+run-examples-ci: $(EXAMPLE_BINS)
+	@for bin in $(EXAMPLE_CI_BINS); do \
+		echo "=== $$(basename $$bin) ==="; \
+		$(EXAMPLE_RUN) || { rc=$$?; echo "[FAIL] $$(basename $$bin) exit=$$rc"; exit $$rc; }; \
 		echo; \
 	done
 

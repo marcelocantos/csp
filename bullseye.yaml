@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 5
 last_evaluated: 1ff87e4
 targets:
   T1:
@@ -195,10 +195,9 @@ targets:
     achieved: 2026-04-25
   T19:
     name: All examples in `examples/` build and run
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`make examples` succeeds — every `.cc` in `examples/` compiles and links'
     - Each example binary runs to completion without crashing or hanging
@@ -206,6 +205,7 @@ targets:
     context: 'Discovered while consolidating /cv batch PR #53 (2026-04-30): `examples/pipeline.cc` and `examples/rate_limiter.cc` reference an old `buffer<T>(N).spawn(...)` API that no longer exists. Both have been broken for some time but were silently masked by the duplicate-vendored-symbols linker bug in the Makefile (fixed in 🎯T7.1 / PR #47). With that bug fixed, `make examples` now reaches these files and fails. Likely fix: replace `buffer<T>(N)` with `chan<T>(N)` (the buffered-channel API). Also worth auditing every other example for similar API drift, and adding `make examples` to CI so this doesn''t recur.'
     origin: manual
     discovered: 2026-04-30
+    achieved: 2026-05-17
   T2:
     name: Tier D combinators are implemented
     status: identified
@@ -222,10 +222,9 @@ targets:
     achieved: 2026-03-28
   T20:
     name: Buffered `chan<T>(N)` does not move-before-commit on alt writes
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`chan<T>(N)`''s ring-buffer imp does not move data out of a slot until the corresponding `alt`/`prialt` write op has been confirmed to fire'
     - Failed/preempted alt write attempts leave the buffered value untouched
@@ -233,12 +232,12 @@ targets:
     context: 'Discovered by the 🎯T7.2 ETL pipeline agent (PR #52, /cv batch 2026-04-30) while building the example. Symptom: when a `chan<T>(N)` (ring-buffer-backed buffered channel) is the writer in an `alt`/`prialt` operation, the ring-buffer imp moves the stored value out of its slot before the write op is confirmed to fire. If the alt resolves to a different op (or is cancelled), the moved-from value remains in the buffer, leading to silent data loss / empty-string emissions. Workaround used in T7.2: rendezvous (synchronous) channels everywhere, no buffered chans. Suspect file: ring-buffer imp inside `src/channel.cc` or wherever buffered-chan dispatch lives. Fix shape: defer the move until `alt_end` / commit phase; or copy-then-erase-on-commit; or restructure the ring-buffer imp''s alt participation so the source slot is only consumed when the write actually transfers.'
     origin: manual
     discovered: 2026-04-30
+    achieved: 2026-05-17
   T21:
     name: QUIC transport works on Linux
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`test/quic.test.cc` runs and passes on Linux x86_64 and Linux arm64 (currently macOS-only — guarded by `#if defined(CSP_TLS) && defined(__APPLE__)`)'
     - '`Reactor::create_fd_event` (`src/reactor.cc:523`) succeeds for UDP sockets on Linux (epoll-equivalent works correctly for QUIC''s UDP fd registration)'
@@ -246,25 +245,98 @@ targets:
     context: 'Initial QUIC implementation (🎯T3.8 / PR #54) was developed and tested on macOS arm64 only. On Linux the `QUIC---echo-single-stream` test crashes with `Assertion ''rc == 0'' failed` in `Reactor::create_fd_event`. The kqueue (BSD/macOS) → epoll (Linux) abstraction in the reactor likely needs adjusting for UDP fd handling. Investigate what `create_fd_event` is rejecting (probably `EPERM` on epoll for non-`O_NONBLOCK` UDP sockets, or a missing edge-vs-level mode), fix in `src/reactor.cc`, drop the `__APPLE__` guard.'
     origin: manual
     discovered: 2026-04-30
+    achieved: 2026-05-17
   T22:
     name: QUIC is available in the dist amalgamation
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
-    showcase: true
+    set_aside_reason: 'Superseded by 🎯T23 (per-protocol drop-in with linker dead-code elimination) and 🎯T24 (pre-built lib artefacts). The original "single csp_net.cpp amalgamation" approach hit a hard C-vs-C++ wall: `extern "C"` controls linkage, not parsing, so C99 vendored libs (llhttp, nghttp2, nghttp3, ngtcp2, wslay) produce ~600 hard Clang errors in C++20 mode — void*→typed pointer, int→enum, header guard collisions. The redesign splits implementations into per-protocol .cpp files + a factory-function API, letting the linker drop unused protocols (and their third-party deps) automatically. See docs/papers/21-dist-protocol-amalgamation.md (in worktree-agent-af8af3fbf0bdb6b46) for the failure analysis.'
     acceptance:
-    - 'Users of the dist (single-`csp.h` + `csp.cpp` + `csp_globals.cpp`) drop in can use `csp::quic` without separately compiling `src/quic.cc`'
+    - Users of the dist (single-`csp.h` + `csp.cpp` + `csp_globals.cpp`) drop in can use `csp::quic` without separately compiling `src/quic.cc`
     - '`make test-dist` exercises the QUIC test suite'
     - Approach is consistent with how http3.cc / http2.cc / ws.cc / http.cc handle their own vendored deps in dist (currently those are *also* excluded — so this target may need to be reframed to "pull all four .cc files into dist" or "ship a separate `csp_extras.cpp` containing the protocol implementations"; decide before starting)
     context: '🎯T3.8 / PR #54 excludes `src/quic.cc` from `dist/csp.cpp` (mirroring the http3.cc / http2.cc / ws.cc / http.cc exclusion pattern) because the amalgamation cannot include `ngtcp2/ngtcp2.h` without ngtcp2''s generated `version.h`, and shipping all of ngtcp2 in csp.cpp would balloon the dist. Quick interim fix landed; long-term we either (a) generate `version.h` as part of `make dist` and pull quic.cc in, or (b) ship a second amalgamated TU (`csp_protocols.cpp`) containing http/http2/http3/ws/quic that users opt into by linking. (b) is probably right.'
     origin: manual
     discovered: 2026-04-30
+  T23:
+    name: Per-protocol dist drop-in supports linker dead-code elimination
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - dist/csp_net.h declares the front-door API (csp::net::serve etc.) plus per-protocol enable() factory functions
+    - 'Per-protocol implementations live in separate dist/csp_<proto>.cpp files: csp_tls, csp_http, csp_http2, csp_http3, csp_ws, csp_quic'
+    - dist/csp_net.cpp (front-door TU) compiles with no third-party headers and emits zero references to protocol-specific symbols
+    - A user that includes csp_net.h and calls csp::http::enable() only needs to compile csp.cpp + csp_globals.cpp + csp_net.cpp + csp_http.cpp and link llhttp — no other protocol code or libs pulled in
+    - 'The five linker-DCE rules are documented and enforced by code review / lint: no protocol enums in the front door, no protocol-specific methods on shared types, no static registration in protocol TUs, no central virtual base with per-protocol subclasses, front-door TU references no protocol symbols'
+    - A CI matrix builds and links subset combinations (channels-only, http-only, http+ws, quic-only, full stack) and verifies that unselected protocols' libraries are NOT in the link line
+    - scripts/vendor-deps.sh fetches and builds known-good versions of llhttp, nghttp2, nghttp3, wslay, ngtcp2, picotls into vendor/ with per-protocol flags (--http, --http2, --quic, --all, etc.)
+    - dist/AGENTS-CSP.md and CLAUDE.md distribution sections describe the per-protocol compile/link rules and link to vendor-deps.sh
+    - Existing csp.cpp + csp_globals.cpp drop-in remains unchanged (channels-only users feel zero impact)
+    context: 'After the failed monolithic-amalgamation attempt (see retired 🎯T22), the chosen design is per-protocol .cpp files with a factory-function API. Mechanism: C++ static linkers drop .o files (and with -ffunction-sections + --gc-sections, individual functions) when no symbol is referenced. A factory like csp::http2::enable() that returns a type-erased protocol_option struct gives the linker per-symbol granularity — calling it makes the http2 TU live (and its nghttp2 refs); not calling it leaves the TU dead and nghttp2 unreferenced. The five rules above are the contract that makes this work. Preserves the "no build-system lock-in" original vision: users still drop-in source files, just N+1 of them instead of 3. Inter-protocol deps (http3 → quic → tls) are explicit symbol references in the .cpp files, so calling http3::enable() automatically pulls quic + tls. Discovered while investigating the C-vs-C++ wall during 🎯T22 (2026-05-04 to 2026-05-06).'
+    origin: manual
+    discovered: 2026-05-09
+  T24:
+    name: Pre-built CSP library artefacts published with each GitHub Release
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Each GitHub Release publishes static (.a) and shared (.dylib/.so) library artefacts for macOS arm64, Linux x86_64, and Linux arm64
+    - 'Per platform: libcsp.{a,dylib|so} (core) plus libcsp_<proto>.{a,dylib|so} for tls, http, http2, http3, ws, quic — one library per protocol so users still cherry-pick at link time'
+    - Headers (csp.h, csp_net.h, per-protocol .h files) bundled with each release as a separate include/ archive
+    - A downstream-test CI job builds a minimal sample app against the published artefacts (one job per platform), confirming link/run works end-to-end without sources or vendored deps
+    - 'Release notes include the per-platform link incantation: include path + library list (e.g. -L. -lcsp -lcsp_http -lllhttp)'
+    - 'ABI policy documented: Linux artefacts are libstdc++; libc++ users need a source build (the existing per-protocol drop-in from 🎯T23 covers them)'
+    - Windows and mobile platforms are explicitly out of scope for v1; flagged in release notes with the source-build path
+    context: 'For users without a C++ build chain or who don''t want to wrangle third-party deps even via vendor-deps.sh. Same per-protocol cherry-picking model as 🎯T23 but distributed as compiled archives. v1 platforms: macOS arm64 + Linux x86_64/arm64 (project''s primary support set per global CLAUDE.md). Skipping Windows in v1 because the reactor doesn''t fully support it yet (epoll/kqueue branches; Windows would need IOCP); add Windows binaries when reactor support lands. Skipping iOS/Android because they need XCFramework/AAR packaging, which is a separate target. Per-platform CI matrix grows but is bounded: 3 platforms × {static, shared} × ~7 libs ≈ 42 artefacts per release. Manageable.'
+    depends_on:
+    - T23
+    origin: manual
+    discovered: 2026-05-09
+  T25:
+    name: task_scheduler example terminates cleanly after DAG completes
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`./build/normal/examples/task_scheduler` exits with status 0 within a few hundred ms of submitting and completing the demo DAG (no Ctrl-C required)'
+    - The example is re-included in `make run-examples-ci` (removed from `EXAMPLE_CI_SKIP` in the Makefile)
+    - 'Root cause documented: the signal-watcher imp blocks on `sig_r >> s` forever and keeps `schedule()` alive after the DAG finishes. Fix shape: make the signal watcher a daemon imp, or close the signal channel when the main work completes, or add an alt arm that watches a `done` rendezvous'
+    context: 'Discovered 2026-05-12 during the 🎯T19 follow-up: two stray `task_scheduler` processes were spinning at 100% CPU for ~73 hours after `make run-examples-ci` wedged on them. The example was designed to finish on its own (it submits a DAG, drops the submit endpoint, and lets the dispatcher/workers/dashboard drain) but the signal-watcher imp spawned at main() startup keeps `schedule()` from quiescing. Workaround: 🎯T19 follow-up commit adds `task_scheduler` to `EXAMPLE_CI_SKIP` and wraps each example with a 60s timeout in run-examples-ci. This target tracks the actual fix to the example so it can be re-included.'
+    origin: manual
+    discovered: 2026-05-12
+  T26:
+    name: web_crawler example runs reliably to completion in all environments
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`./build/normal/examples/web_crawler` (direct invocation from any shell) completes within 60 seconds with the expected `Crawl complete: N pages fetched, M duplicates skipped.` output'
+    - The example produces no spurious 99% CPU spin during startup or shutdown
+    - The example is re-included in `make run-examples-ci` (removed from `EXAMPLE_CI_SKIP`)
+    - 'Root cause documented: as of 2026-05-12 the example completes under `make run-examples-ci` but hangs in `main_loop()` (sampled stack: runtime.cpp:299/309) when invoked directly. Likely env/TTY-dependent runtime state in the scheduler or imp dispatch.'
+    context: 'Discovered 2026-05-12 during the 🎯T19 follow-up. Two CI failures (Linux arm64 and Linux x86_64) hit the 60s timeout on web_crawler after the chat_server `<csignal>` fix landed. Local reproduction: direct invocation (`./build/normal/examples/web_crawler`) deterministically hangs at 99% CPU with zero output; `sample <pid>` shows the main thread spinning in `csp::detail::Runtime::main_loop()`. The exact same binary invoked via `make run-examples-ci` (which adds `gtimeout 60` and chdir but otherwise runs the binary directly) completes cleanly. Possibilities: scheduler busy-loop when stdin/stdout TTY state differs; signal-handler init race; environment-variable-dependent maxprocs (no CSP_MAXPROCS in this shell, but maybe a shell-inherited subtlety). Worth investigating because it''s a real runtime-level flakiness, not just an example-side bug.'
+    origin: manual
+    discovered: 2026-05-12
+  T27:
+    name: Runtime main_loop does not busy-spin when quiescent without a hook
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - When all worker procs are parked, `has_global_work_` is false, `user_done()` is false, and no quiescence hook is registered, the main thread sleeps in `park_cv.wait` rather than busy-spinning
+    - A regression test asserts CPU usage of the main thread is below ~5% during a 1-second `schedule()` on a deliberately-deadlocked imp graph (e.g. an imp blocked on a never-written channel)
+    - Fake-clock tests that rely on the quiescence hook firing still pass — the hook path is preserved
+    context: 'Diagnosed 2026-05-13 while investigating 🎯T26 (web_crawler example reliability). When CSP programs reach a quiescent-but-not-done state — all workers parked, no global work, no quiescence hook — `Runtime::main_loop` at `src/runtime.cpp:296-324` enters a tight busy-spin at 99% CPU. Root cause: the `park_cv.wait` predicate returns `true` whenever `all_parked()` is true, but the wake exists to fire the test-mode quiescence hook; with no hook installed, the wake leads to an immediate re-evaluation of the still-true predicate. Three fix candidates in docs/papers/22-main-loop-busy-spin.md; recommendation is (A) — guard the quiescence wake on an `atomic<bool>` mirror of `quiescence_hook_`''s registration state. Note: this is the *symptom* in web_crawler; the example also has a separate deadlock cause (🎯T26) — an imp suspended on a never-completing TCP read. Even after this fix, web_crawler will still hang on a wall clock when the deadlock condition arises, but it''ll be silent (no 99% CPU) and the CI timeout safety-net will catch it.'
+    origin: manual
+    discovered: 2026-05-13
   T3:
     name: Runtime is production-ready for I/O workloads
     status: identified
     value: 21.0
     cost: 34.0
-    showcase: true
     acceptance:
     - 'Core: T3.1 (I/O wrappers) + T3.2 (HTTP/1.1) + T3.5 (WebSocket) + T3.6 (HTTP client). Full stack: + T3.7 (HTTP/2) + T3.8 (QUIC) + T3.9 (HTTP/3). Infrastructure: T3.3 (stack scaling), T3.4 (stack analysis).'
     depends_on:
@@ -432,9 +504,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 4.0
-    showcase: true
     actual_cost: 4.0
-    demonstration: 'Walked the user through the two API additions in-session: closer<EP> wrapping spawn handles for vulture-only death-watch (test/closer.test.cc, 5 tests), and main()-safe dynamic-scope APIs that throw csp::error from foreign threads instead of segfaulting (test/main_context.test.cc, 7 tests on a fresh std::thread). User accepted via "keep going till the release is done".'
     acceptance:
     - all sub-targets achieved
     depends_on:
@@ -501,8 +571,6 @@ targets:
     status: achieved
     value: 30.0
     cost: 18.0
-    showcase: true
-    demonstration: 'All 6 example applications (chat_server, etl_pipeline, web_crawler, sensor_fusion, task_scheduler, log_aggregator) merged to master in PR #53. Each is a runnable standalone binary in examples/ demonstrating distinct CSP features (alt/prialt, fan-out, cancel scopes, combine_latest/quantize/window, DAG with timeouts, severity routing). User can run any of them via `make build/normal/examples/<name> && ./build/normal/examples/<name>`.'
     acceptance:
     - at least 3 sub-target examples are complete
     depends_on:

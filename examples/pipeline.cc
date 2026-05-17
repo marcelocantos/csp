@@ -32,7 +32,7 @@ int main() {
         }).spawn(std::move(squared));
 
         // buffer: decouple producer/consumer with capacity 4
-        auto buffered = buffer<int>(4).spawn(std::move(filtered));
+        auto buffered = std::move(filtered) | chan<int>(4);
 
         // tee: tap the stream to print what flows through
         auto [tap_w, tap_r] = chan<int>{};

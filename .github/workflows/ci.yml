@@ -70,6 +70,10 @@ jobs:
           sudo apt-get install -y ${{ matrix.packages }}
           sudo sysctl -w kernel.core_pattern=core.%p
 
+      - name: Install macOS dependencies (coreutils for gtimeout)
+        if: runner.os == 'macOS'
+        run: brew install coreutils
+
       - name: Build and test (source)
         run: |
           ulimit -c unlimited
@@ -97,6 +101,12 @@ jobs:
               -ex "thread apply all bt full" \
               --args ./build/normal/csp_tests 2>&1 || true
           fi
+
+      - name: Build examples
+        run: make examples ${{ matrix.make_cxx || '' }}
+
+      - name: Run examples
+        run: make run-examples-ci ${{ matrix.make_cxx || '' }}
 
       - name: Generate dist
         run: make dist ${{ matrix.make_cxx || '' }}

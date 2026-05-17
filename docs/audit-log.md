@@ -370,3 +370,42 @@ None.
 - **CI**: All 10 jobs green on PR #54 (final release content).
   Background CI run on master post-merge in progress at release
   time.
+
+## 2026-05-13 — /release v0.14.0
+
+- **Commit**: TBD
+- **Outcome**: Released v0.14.0 (source-only, no binaries). Bug-fix
+  release shipping the three "known issues" carried at v0.13.0
+  (🎯T19 broken examples, 🎯T20 buffered-chan move-before-commit,
+  🎯T21 QUIC on Linux). Two PRs since v0.13.0: #57 (QUIC Linux fix)
+  and #59 (consolidated /cv batch).
+  - 🎯T19 fixed broken examples (`pipeline.cc`, `rate_limiter.cc`)
+    by replacing the obsolete `buffer<T>(N).spawn(...)` API with
+    `chan<T>(N)`, and wired `make run-examples-ci` into CI so
+    regressions are caught. Follow-up: `task_scheduler` and
+    `web_crawler` carry pre-existing wedge bugs (🎯T25, 🎯T26) and
+    are excluded from `make run-examples-ci`; each example wrapped
+    in a 60s timeout as a safety net.
+  - 🎯T20 fixed the buffered-chan move-before-commit race: ring-
+    buffer imp no longer moves data out of a slot until the
+    corresponding `alt`/`prialt` write op confirms it fires.
+    Regression test added; dist regenerated.
+  - 🎯T21 QUIC now works on Linux. Root cause: kqueue's one-shot
+    UDP fd registration needed `EPOLL_CTL_MOD` to re-arm, not
+    `EPOLL_CTL_ADD`. `__APPLE__` guard removed from
+    `test/quic.test.cc`; QUIC tests pass on all three platforms.
+  - Diagnostic-only docs landed for two newly-raised runtime
+    targets: 🎯T26 (web_crawler example reliability) and 🎯T27
+    (Runtime `main_loop` busy-spin when quiescent without a hook).
+    See `docs/papers/22-main-loop-busy-spin.md` for the analysis.
+    Neither bug is fixed in v0.14.0; they remain on the frontier.
+- **Known issues**:
+  - 🎯T25 task_scheduler example hangs on signal-watcher imp after
+    DAG completes. Excluded from `make run-examples-ci`.
+  - 🎯T26 web_crawler example hangs at 99% CPU when invoked
+    directly outside `make run-examples-ci`. Excluded from CI.
+    Sample shows main thread spinning in `Runtime::main_loop()`.
+  - 🎯T27 `Runtime::main_loop` busy-spins (99% CPU) when all
+    workers are parked, no global work, no quiescence hook
+    registered. Fix candidates documented; not yet implemented.
+- **CI**: All 10 jobs green on PR #59 (final release content).
