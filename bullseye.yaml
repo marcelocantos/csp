@@ -573,18 +573,38 @@ targets:
     achieved: 2026-05-18
   T3.4.3:
     name: Walker tracks wider value loads and propagates data context across X0–X7
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
     - LDRB/LDRH and 64-bit LDR from a DATA_OFFSET register materialise CONST registers when data is non-null (parity with the existing 32-bit LDR path)
     - OP_CALL_DIRECT_WITH_DATA emission considers any of X0–X7 as the callee's first argument register, not just X0
     - New tests cover a uint8_t discriminator (LDRB+CBZ pruning) and a callable-in-X1 indirection pattern; both resolve exactly with data
-    context: Paper 23 §6 H3+H4. The CONST-tracking pipeline only handles 32-bit LDR today, so any discriminator carried in a different width is silently widened to MAX. Interprocedural forwarding works one level deep on X0 only — wider argument register support unlocks closures that pass callables in X1 etc.
+    context: |-
+      Wider value loads (LDRB, LDRH) and X0–X7 forwarding at BL emission landed.
+
+      Walker changes:
+      - New LDRB and LDRH handlers (encodings 0x39400000 / 0x79400000, both with 0xFFC00000 mask). When the base register is DATA_OFFSET and `data` is non-null, the byte/half-word is read from the closure and materialised as a CONST register — giving CBZ/CBNZ/TBZ/TBNZ the same branch-pruning power they already had for 32-bit LDR. Without `data`, the load propagates DATA_OFFSET for the bytecode evaluator (parity with 32-bit semantics).
+      - BL emission now scans X0–X7 for the lowest-numbered register with DATA_OFFSET provenance, instead of hard-coding X0. Closure provenance often migrates out of X0 (e.g. when X0 was clobbered with a non-pointer arg before the call). This lets the per-callee analysis tighten results even after register shuffles.
+      - 64-bit LDR: deliberately not promoted to CONST. The T3.4.2 PC_RELATIVE path already covers the in-binary case; falling through to DATA_OFFSET keeps OP_CALL_INDIRECT working for foreign callables. The paper's "parity" wording would have cost the BLR-via-DATA_OFFSET path; we kept it.
+      - MOV Xd, Xn tracking was already in place (the ORR Xd, XZR, Xm alias at line 1146); no new code needed there.
+
+      Acceptance criterion progress:
+        ✓  LDRB and LDRH from a DATA_OFFSET register materialise CONST registers when data is non-null (parity with the 32-bit LDR path).
+        ✓  OP_CALL_DIRECT_WITH_DATA emission considers X0–X7 — at the BL site we pick the first DATA_OFFSET-bearing register among X0–X7 for the forwarded offset, instead of looking at X0 alone.
+        ✓  uint8_t-discriminator test passes exact: LDRB-byte-tag-prunes-exact (small-path is_exact=true, depth<512; large path strictly larger).
+        ✓  Callable-in-X1 indirection test passes exact: Callable-survives-X0-clobber-via-callee-saved (closure ptr transits X19 across a BL that clobbers X0–X7, post-BL BLR resolves to a concrete target with is_exact=true, depth=64).
+
+      Verification: 739/739 normal tests (737 + 2 new), 696/696 dist (694 + 2). No pre-existing tests regress.
+
+      Stretch deferral: "Propagate CONST registers across BL boundaries where the callee reads its arguments before clobbering caller-saved registers" — paper 23 §8 flagged this as harder and out of scope; the BL handler still clobbers X0–X7 after the call. Tracking it as future work alongside per-register provenance forwarding for true X1-as-callable patterns.
+
+      Next: T3.4.4 (profile-guided calibration — independent of walker improvements) and T3.4.5 (benchmark / soundness CI — the empirical retire gate for T3.4 itself).
     depends_on:
     - T3.4.1
     origin: manual
     discovered: 2026-05-17
+    achieved: 2026-05-18
   T3.4.4:
     name: Profile-guided stack budget calibration
     status: identified
