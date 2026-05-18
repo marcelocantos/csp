@@ -497,11 +497,17 @@ targets:
     - ARM64 instruction walker resolves nested function pointers, vtables, parameter-driven paths
     - Interprocedural data flow and profile-guided calibration
     - Stack allocations are tight without overflows on real workloads
+    depends_on:
+    - T3.4.1
+    - T3.4.2
+    - T3.4.3
+    - T3.4.4
+    - T3.4.5
     origin: manual
     discovered: 2026-03-09
   T3.4.1:
     name: Stack analyser output drives spawn-time allocation
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -509,11 +515,28 @@ targets:
     - StackPool offers a second small slot class (e.g. 8-16 KB) selected when the analyser returns is_exact && max_depth + headroom fits
     - Gated behind CSP_ANALYSE_STACKS for staged rollout; off by default until 🎯T3.4.5 benchmark is green
     - Existing 124 KB slot remains the fallback for inexact results and oversize estimates
-    context: The unblocker for 🎯T3.4. The analyser exists and has tests, but no runtime path consumes its output — src/csp.cc allocates a fixed slot regardless of F. Until this is wired, no walker improvement reduces a single byte of allocated stack. See docs/papers/23-stack-analysis-gaps.md §8 (T3.4.1).
-    depends_on:
-    - T3.4
+    context: |-
+      The unblocker for 🎯T3.4. Wired analyse_stack_depth_cached(F, data) into spawn() via a CSP_ANALYSE_STACKS compile-time gate (off by default). StackPool grew a second slot class:
+
+      - StackClass::Default — 124 KB usable (unchanged 128 KB arena slot).
+      - StackClass::Small   — 16 KB usable + 4 KB guard, served from a separate arena+free-list keyed off the slot class flag on StackRegion.
+
+      spawn() picks Small when CSP_ANALYSE_STACKS is set AND analyse_stack_depth_cached returns is_exact AND `max_depth * 2 + 2048 + sizeof(Imp) <= small_slot_usable_bytes()` — i.e. 2× headroom plus a 2 KB ABI floor. Otherwise it falls back to Default, so behaviour is unchanged unless callers opt in.
+
+      On non-arena builds (Windows VM, sanitizers) StackPool::small_slot_usable_bytes() returns 0, which naturally fails the gate without any architecture-specific code in spawn(). On non-ARM64 builds the analyser already returns is_exact=false, same result.
+
+      Acceptance criterion progress:
+        ✓  spawn() consults analyze_stack_depth_cached(F, data) at allocation time (src/csp.cc).
+        ✓  StackPool offers a small slot class (16 KB usable) selected when is_exact && depth + headroom fits.
+        ✓  Gated behind CSP_ANALYSE_STACKS for staged rollout; off by default.
+        ✓  Existing 124 KB slot remains the fallback for inexact results and oversize estimates.
+
+      Verification: 735/735 normal tests pass (729 baseline + 6 new StackPool tests). 692/692 dist tests pass. csp.cc syntax-checks cleanly with -DCSP_ANALYSE_STACKS=1. test/stack_pool.test.cc covers default+small alloc/release roundtrip, pool recycling, the small_allocations counter, distinct pools, and the gate value. dist build skips the white-box test (internal header not shipped) but still compiles the dual-class pool from src/stack_pool.cc.
+
+      Next: T3.4.4 (profile-guided calibration — independent of walker) and T3.4.2 (PC-relative + vtables — biggest tightness win) are now unblocked.
     origin: manual
     discovered: 2026-05-17
+    achieved: 2026-05-18
   T3.4.2:
     name: Walker resolves PC-relative dispatch and vtables
     status: identified
@@ -526,7 +549,7 @@ targets:
     - New test cases in test/stack_analysis.test.cc cover (a) a static const fn-ptr table dispatched via ADRP+LDR+BLR and (b) a virtual call through a closure-held object pointer, both achieving is_exact == true
     context: Paper 08 §11.2 designed this and paper 23 §8 (T3.4.2) sequences it after T3.4.1. Today PC_RELATIVE registers propagate through ADRP+ADD+LDR but BLR/BR refuse to dereference them, citing GOT/PLT stub risk. The segment guard is the standard mitigation. Largest single tightness win once T3.4.1 lands.
     depends_on:
-    - T3.4
+    - T3.4.1
     origin: manual
     discovered: 2026-05-17
   T3.4.3:
@@ -540,7 +563,7 @@ targets:
     - New tests cover a uint8_t discriminator (LDRB+CBZ pruning) and a callable-in-X1 indirection pattern; both resolve exactly with data
     context: Paper 23 §6 H3+H4. The CONST-tracking pipeline only handles 32-bit LDR today, so any discriminator carried in a different width is silently widened to MAX. Interprocedural forwarding works one level deep on X0 only — wider argument register support unlocks closures that pass callables in X1 etc.
     depends_on:
-    - T3.4
+    - T3.4.1
     origin: manual
     discovered: 2026-05-17
   T3.4.4:
@@ -554,8 +577,6 @@ targets:
     - is_exact remains false; only the magnitude of the inexact fallback improves
     - In-memory only (reset on process restart); no persistence required
     context: Paper 08 §6 and paper 23 §8 (T3.4.4). The runtime already samples SP at every suspend; recording the high-water keyed by entry function is a single comparison + map write. Tightens the inexact fallback without touching the walker — useful even before T3.4.2/T3.4.3 land.
-    depends_on:
-    - T3.4
     origin: manual
     discovered: 2026-05-17
   T3.4.5:
@@ -570,7 +591,10 @@ targets:
     - Benchmark output included in release notes for releases that touch stack analysis
     context: Paper 23 §8 (T3.4.5). The acceptance criterion 'tight without overflows on real workloads' is currently un-measurable — no benchmark connects analyser output to observed depth. Becomes the empirical retire gate for 🎯T3.4 once the walker improvements land.
     depends_on:
-    - T3.4
+    - T3.4.1
+    - T3.4.2
+    - T3.4.3
+    - T3.4.4
     origin: manual
     discovered: 2026-05-17
   T3.5:
