@@ -700,9 +700,13 @@ TEST_CASE("MN---Watchdog-rescues-timers-from-stalled-P") {
     std::atomic<bool> timer_fired{false};
     std::atomic<bool> stall_done{false};
 
-    // Stall one P with a busy-loop for 300ms.
+    // Stall one P with a busy-loop. The stall must outlast the time it takes
+    // for the watchdog to (a) detect the stalled P (one 10ms heartbeat miss),
+    // (b) spin up a replacement P, and (c) work-steal the timer-sleeping imp
+    // onto the new P. On loaded GHA macOS arm64 runners that whole cycle can
+    // take a second or more, so we use 2s for headroom.
     csp::spawn([&stall_done] {
-        auto end = std::chrono::steady_clock::now() + 300ms;
+        auto end = std::chrono::steady_clock::now() + 2000ms;
         while (std::chrono::steady_clock::now() < end) { }
         stall_done.store(true, std::memory_order_relaxed);
     });
@@ -711,9 +715,9 @@ TEST_CASE("MN---Watchdog-rescues-timers-from-stalled-P") {
     // fire the timer even though the P is stalled.
     csp::spawn([&timer_fired, &stall_done] {
         csp::sleep(50ms);
-        // The timer must fire before the 300ms stall completes. If the
-        // scheduler failed to migrate the sleeping imp away from the
-        // stalled P, it would be blocked until the stall finishes.
+        // The timer must fire before the stall completes. If the scheduler
+        // failed to migrate the sleeping imp away from the stalled P, it
+        // would be blocked until the stall finishes.
         CHECK(!stall_done.load(std::memory_order_relaxed));
         timer_fired.store(true, std::memory_order_relaxed);
     });
