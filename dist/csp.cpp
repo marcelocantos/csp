@@ -4706,6 +4706,124 @@ std::vector<uint8_t> get_or_compile(const void* fn,
     return prog;
 }
 
+// --- Segment bounds (🎯T3.4.2) ---
+//
+// To safely follow PC-relative function pointer tables and vtable dispatch,
+// the walker needs to know:
+//   1. Whether an address is in our binary's executable code section
+//      (so we can emit OP_CALL_DIRECT pointing at it).
+//   2. Whether an address is in our binary's read-only data (so we can
+//      dereference it once to load a function pointer).
+//
+// Anything outside these bounds is treated as "unknown" and falls back to
+// the budget — this rejects GOT/PLT stubs, foreign-library targets, and
+// arbitrary heap/stack pointers.
+//
+// macOS: discovered via _dyld_get_image_header(0) + getsectiondata for the
+// __TEXT,__text and __DATA_CONST,__const sections. Reading the section
+// (rather than the segment) naturally excludes __stubs, which is the
+// requirement called out in paper 23 §8 (T3.4.2).
+//
+// Linux: discovered via dl_iterate_phdr enumerating PT_LOAD segments of
+// the main executable. PF_X segments contribute to "text"; non-PF_W
+// segments contribute to "readonly". PLT is in its own section and would
+// land in a PF_X segment but with a distinct ELF section name; we
+// approximate by accepting all PF_X bytes — the secondary check on the
+// loaded function pointer (must itself be in PF_X) catches misreads.
+//
+// Other platforms (Windows, BSDs): both ranges remain empty and the
+// PC_RELATIVE → direct-call promotion is skipped, falling back to the
+// pre-T3.4.2 budget behaviour.
+
+struct addr_range {
+    const char* lo = nullptr;
+    const char* hi = nullptr;
+    bool contains(const void* p) const {
+        auto cp = static_cast<const char*>(p);
+        return lo && cp >= lo && cp < hi;
+    }
+};
+
+struct segment_bounds {
+    addr_range text;      // executable code (excluding stubs/PLT where possible)
+    addr_range readonly;  // read-only data (vtables, fn-ptr tables, etc.)
+};
+
+const segment_bounds& binary_bounds();
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
+
+const segment_bounds& binary_bounds() {
+    static segment_bounds bounds = [] {
+        segment_bounds b;
+        auto* h = reinterpret_cast<const struct mach_header_64*>(
+            _dyld_get_image_header(0));
+        if (!h) return b;
+        unsigned long sz = 0;
+        if (auto* p = getsectiondata(h, "__TEXT", "__text", &sz); p && sz) {
+            b.text.lo = reinterpret_cast<const char*>(p);
+            b.text.hi = b.text.lo + sz;
+        }
+        if (auto* p = getsectiondata(h, "__DATA_CONST", "__const", &sz); p && sz) {
+            b.readonly.lo = reinterpret_cast<const char*>(p);
+            b.readonly.hi = b.readonly.lo + sz;
+        }
+        return b;
+    }();
+    return bounds;
+}
+
+#elif defined(__linux__)
+#include <link.h>
+
+const segment_bounds& binary_bounds() {
+    static segment_bounds bounds = [] {
+        segment_bounds b;
+        dl_iterate_phdr(
+            [](struct dl_phdr_info* info, size_t, void* arg) -> int {
+                if (info->dlpi_name[0] != '\0') return 0;  // not main exe
+                auto& out = *static_cast<segment_bounds*>(arg);
+                for (int i = 0; i < info->dlpi_phnum; ++i) {
+                    const auto& ph = info->dlpi_phdr[i];
+                    if (ph.p_type != PT_LOAD) continue;
+                    auto lo = reinterpret_cast<const char*>(
+                        info->dlpi_addr + ph.p_vaddr);
+                    auto hi = lo + ph.p_memsz;
+                    if (ph.p_flags & PF_X) {
+                        if (!out.text.lo || lo < out.text.lo) out.text.lo = lo;
+                        if (!out.text.hi || hi > out.text.hi) out.text.hi = hi;
+                    } else if (!(ph.p_flags & PF_W)) {
+                        if (!out.readonly.lo || lo < out.readonly.lo) out.readonly.lo = lo;
+                        if (!out.readonly.hi || hi > out.readonly.hi) out.readonly.hi = hi;
+                    }
+                }
+                return 1;  // stop after main exe
+            },
+            &b);
+        return b;
+    }();
+    return bounds;
+}
+
+#else
+
+const segment_bounds& binary_bounds() {
+    static segment_bounds empty;
+    return empty;
+}
+
+#endif
+
+// Read a function pointer from `addr`. The caller is responsible for
+// having verified that `addr` is in a safely-dereferenceable region.
+inline const void* deref_fnptr(const void* addr) {
+    const void* v;
+    std::memcpy(&v, addr, sizeof(v));
+    return v;
+}
+
 // --- ARM64 instruction decoding ---
 
 // Instruction matching helpers.
@@ -4863,6 +4981,23 @@ std::vector<expr_ptr> walk(
                 expr_ptr callee;
                 if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
                     callee = expr::make_call_indirect(state.regs[rn].u.offset);
+                } else if (rn < 31 &&
+                           state.regs[rn].origin == reg_state::PC_RELATIVE) {
+                    // 🎯T3.4.2: resolve PC_RELATIVE BR targets via segment
+                    // bounds. The same shape as BLR below — see the rationale
+                    // there.
+                    const void* a = state.regs[rn].u.address;
+                    const auto& bb = binary_bounds();
+                    if (bb.text.contains(a)) {
+                        callee = expr::make_call_direct(a);
+                    } else if (bb.readonly.contains(a)) {
+                        auto* fn = deref_fnptr(a);
+                        callee = bb.text.contains(fn)
+                            ? expr::make_call_direct(fn)
+                            : expr::make_budget(opts.indirect_call_budget);
+                    } else {
+                        callee = expr::make_budget(opts.indirect_call_budget);
+                    }
                 } else {
                     // PC_RELATIVE BR targets (GOT/PLT stubs) are deliberately
                     // not followed: dereferencing a GOT entry and walking the
@@ -4922,6 +5057,38 @@ std::vector<expr_ptr> walk(
                     callee = over_budget
                         ? expr::make_budget(opts.indirect_call_budget)
                         : expr::make_call_indirect(state.regs[rn].u.offset);
+                } else if (rn < 31 &&
+                           state.regs[rn].origin == reg_state::PC_RELATIVE) {
+                    // 🎯T3.4.2: resolve PC_RELATIVE BLR targets via segment
+                    // bounds. Two shapes we accept:
+                    //   1. Xn holds a code address (ADRP+ADD on a function
+                    //      symbol — the address itself is in __TEXT,__text).
+                    //   2. Xn holds the address of a function pointer slot
+                    //      (ADRP+ADD on a static-const table, optionally
+                    //      followed by LDR that propagated PC_RELATIVE with
+                    //      a byte offset). The slot is in __DATA_CONST,
+                    //      __const; one dereference yields a code address
+                    //      that should itself land in __TEXT,__text.
+                    // GOT/PLT stubs and foreign-library targets fall outside
+                    // both ranges and naturally route to the budget fallback.
+                    const void* a = state.regs[rn].u.address;
+                    const auto& bb = binary_bounds();
+                    if (bb.text.contains(a)) {
+                        callee = over_budget
+                            ? expr::make_budget(opts.indirect_call_budget)
+                            : expr::make_call_direct(a);
+                    } else if (bb.readonly.contains(a)) {
+                        auto* fn = deref_fnptr(a);
+                        if (bb.text.contains(fn)) {
+                            callee = over_budget
+                                ? expr::make_budget(opts.indirect_call_budget)
+                                : expr::make_call_direct(fn);
+                        } else {
+                            callee = expr::make_budget(opts.indirect_call_budget);
+                        }
+                    } else {
+                        callee = expr::make_budget(opts.indirect_call_budget);
+                    }
                 } else {
                     // PC_RELATIVE BLR (GOT/PLT dispatch) is not followed to avoid
                     // walking into external stubs or system libraries which could
@@ -5059,9 +5226,32 @@ std::vector<expr_ptr> walk(
 
                 if (rt < 31) {
                     if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
+                        size_t abs_offset = state.regs[rn].u.offset + byte_offset;
+                        // 🎯T3.4.2: when data is provided, try reading the
+                        // 64-bit value through the closure. If it lands in
+                        // our binary's text or read-only data, promote to
+                        // PC_RELATIVE — this unlocks vtable dispatch
+                        // (closure → vptr → method) and direct-via-closure
+                        // function-pointer fields. Otherwise fall through to
+                        // the legacy DATA_OFFSET propagation, which keeps the
+                        // OP_CALL_INDIRECT path intact for plain function-
+                        // pointer-in-closure dispatch.
+                        if (data) {
+                            const void* v;
+                            std::memcpy(&v,
+                                static_cast<const char*>(data) + abs_offset,
+                                sizeof(v));
+                            const auto& bb = binary_bounds();
+                            if (bb.text.contains(v) || bb.readonly.contains(v)) {
+                                state.regs[rt].origin = reg_state::PC_RELATIVE;
+                                state.regs[rt].u.address = v;
+                                state.pc++;
+                                continue;
+                            }
+                        }
                         // Load from data struct: new DATA_OFFSET pointing into it.
                         state.regs[rt].origin = reg_state::DATA_OFFSET;
-                        state.regs[rt].u.offset = state.regs[rn].u.offset + byte_offset;
+                        state.regs[rt].u.offset = abs_offset;
                     } else if (rn < 31 &&
                                state.regs[rn].origin == reg_state::PC_RELATIVE) {
                         // Load from a PC-relative address: produce a new PC_RELATIVE

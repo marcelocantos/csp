@@ -275,6 +275,73 @@ TEST_CASE("Branch-with-data---large-path") {
             ", is_exact: ", result.is_exact);
 }
 
+// ---- 🎯T3.4.2: PC-relative dispatch + vtables ----
+
+// Case (a): static const function-pointer table dispatched via ADRP+LDR+BLR.
+// The table lives in __DATA_CONST,__const; the walker should follow the
+// PC_RELATIVE register through the LDR, dereference once at the BLR, and
+// emit a direct call to the resolved target.
+//
+// Using an inline asm trampoline isn't necessary — the natural C codegen
+// for `(*pc_relative_table[idx])(arg)` already produces the ADRP+ADD+LDR+BLR
+// sequence the walker now resolves.
+__attribute__((noinline)) static void table_target_a(void*) {
+    volatile char buf[64];
+    buf[0] = 1;
+}
+
+// Index 0 of the table — the walker only sees a compile-time-constant
+// LDR offset, so resolution is deterministic.
+static void (*const pc_relative_table[])(void*) = {
+    &table_target_a,
+};
+
+__attribute__((noinline)) static void pc_table_caller(void* arg) {
+    volatile char buf[80];
+    buf[0] = 1;
+    pc_relative_table[0](arg);
+}
+
+TEST_CASE("PC-relative-fn-ptr-table-resolves-exact") {
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&pc_table_caller));
+    CHECK(result.is_exact);
+    CHECK(result.max_depth > 0);
+    MESSAGE("pc_table_caller depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
+// Case (b): virtual call through a closure-held object pointer.
+// The closure holds a function-pointer-as-first-field — codegen reads
+// closure[0] then BLRs through it. With data, the LDR-from-DATA_OFFSET=0
+// path reads `*(void**)data` at walk time; if that lands in __TEXT the
+// walker promotes to PC_RELATIVE and the BLR emits a direct call.
+struct vptr_closure {
+    void (*method)(void*);  // offset 0 — emulates vtable slot 0
+};
+
+__attribute__((noinline)) static void vptr_target_b(void*) {
+    volatile char buf[48];
+    buf[0] = 1;
+}
+
+__attribute__((noinline)) static void vptr_caller(void* data) {
+    volatile char buf[72];
+    buf[0] = 1;
+    auto* c = static_cast<vptr_closure*>(data);
+    c->method(nullptr);
+}
+
+TEST_CASE("Vtable-via-closure-resolves-exact") {
+    vptr_closure c{&vptr_target_b};
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&vptr_caller), &c);
+    CHECK(result.is_exact);
+    CHECK(result.max_depth > 0);
+    MESSAGE("vptr_caller depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
 } // TEST_SUITE
 
 #endif // !CSP_SANITIZED
