@@ -770,14 +770,30 @@ std::vector<expr_ptr> walk(
                 expr_ptr callee;
                 if (over_budget) {
                     callee = expr::make_budget(opts.indirect_call_budget);
-                } else if (!over_budget &&
-                           state.regs[0].origin == reg_state::DATA_OFFSET) {
-                    // X0 carries a data-derived pointer — forward data context
-                    // to the callee so it can resolve its own indirect calls.
-                    callee = expr::make_call_direct_with_data(
-                        target, state.regs[0].u.offset);
                 } else {
-                    callee = expr::make_call_direct(target);
+                    // 🎯T3.4.3: scan X0–X7 for a DATA_OFFSET register. AAPCS64
+                    // puts the callee's first parameter in X0, but the closure-
+                    // derived pointer may still live in X1–X7 at the BL site
+                    // (e.g. when X0 was clobbered with a non-pointer arg).
+                    // Prefer X0 if it carries DATA_OFFSET; otherwise pick the
+                    // lowest-numbered register that does. The forwarded value
+                    // becomes the callee's data context — the callee's analyser
+                    // walks with X0 = DATA_OFFSET=0 pointing at the forwarded
+                    // sub-pointer, which lets per-callee analysis tighten
+                    // results even when the parent's BL site shuffled args.
+                    int fwd = -1;
+                    for (int i = 0; i < 8; ++i) {
+                        if (state.regs[i].origin == reg_state::DATA_OFFSET) {
+                            fwd = i;
+                            break;
+                        }
+                    }
+                    if (fwd >= 0) {
+                        callee = expr::make_call_direct_with_data(
+                            target, state.regs[fwd].u.offset);
+                    } else {
+                        callee = expr::make_call_direct(target);
+                    }
                 }
 
                 auto call_expr = expr::make_add(expr::make_const(cur_depth),
@@ -1043,6 +1059,69 @@ std::vector<expr_ptr> walk(
                             state.regs[rt].u.const_value = static_cast<int64_t>(val);
                         } else {
                             // Without data, record provenance for the bytecode evaluator.
+                            state.regs[rt].origin = reg_state::DATA_OFFSET;
+                            state.regs[rt].u.offset = abs_offset;
+                        }
+                    } else {
+                        state.regs[rt].origin = reg_state::UNKNOWN;
+                    }
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Register tracking: LDRB Wt, [Xn, #imm] (8-bit, unsigned offset) ---
+            // 🎯T3.4.3: parity with the 32-bit LDR path for byte-width
+            // discriminators (uint8_t tags, bools). Without this, a closure
+            // field loaded as a byte was silently widened to MAX.
+            if (match(inst, 0xFFC00000, 0x39400000)) {
+                uint32_t rt = inst & 0x1F;
+                uint32_t rn = (inst >> 5) & 0x1F;
+                uint32_t imm12 = (inst >> 10) & 0xFFF;
+                size_t byte_offset = imm12; // unscaled for 8-bit LDR
+
+                if (rt < 31) {
+                    if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
+                        size_t abs_offset = state.regs[rn].u.offset + byte_offset;
+                        if (data) {
+                            uint8_t val;
+                            std::memcpy(&val,
+                                static_cast<const char*>(data) + abs_offset,
+                                sizeof(val));
+                            state.regs[rt].origin = reg_state::CONST;
+                            state.regs[rt].u.const_value = static_cast<int64_t>(val);
+                        } else {
+                            state.regs[rt].origin = reg_state::DATA_OFFSET;
+                            state.regs[rt].u.offset = abs_offset;
+                        }
+                    } else {
+                        state.regs[rt].origin = reg_state::UNKNOWN;
+                    }
+                }
+                state.pc++;
+                continue;
+            }
+
+            // --- Register tracking: LDRH Wt, [Xn, #imm] (16-bit, unsigned offset) ---
+            // 🎯T3.4.3: parity for half-word discriminators (uint16_t,
+            // small enum tags).
+            if (match(inst, 0xFFC00000, 0x79400000)) {
+                uint32_t rt = inst & 0x1F;
+                uint32_t rn = (inst >> 5) & 0x1F;
+                uint32_t imm12 = (inst >> 10) & 0xFFF;
+                size_t byte_offset = imm12 * 2; // scaled by 2 for 16-bit LDR
+
+                if (rt < 31) {
+                    if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
+                        size_t abs_offset = state.regs[rn].u.offset + byte_offset;
+                        if (data) {
+                            uint16_t val;
+                            std::memcpy(&val,
+                                static_cast<const char*>(data) + abs_offset,
+                                sizeof(val));
+                            state.regs[rt].origin = reg_state::CONST;
+                            state.regs[rt].u.const_value = static_cast<int64_t>(val);
+                        } else {
                             state.regs[rt].origin = reg_state::DATA_OFFSET;
                             state.regs[rt].u.offset = abs_offset;
                         }

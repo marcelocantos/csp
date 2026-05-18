@@ -342,6 +342,96 @@ TEST_CASE("Vtable-via-closure-resolves-exact") {
             ", is_exact: ", result.is_exact);
 }
 
+// ---- 🎯T3.4.3: wider value loads + X0–X7 forwarding ----
+
+// Case (R-TAG8): uint8_t discriminator branching to two paths of different
+// stack depth. Before T3.4.3 the LDRB went to UNKNOWN and the analyser had
+// to take both paths; with byte-load CONST materialisation, the CBZ folds
+// at walk time and the result is exact and matches the chosen path.
+struct tag8_closure {
+    uint8_t which;  // offset 0
+};
+
+__attribute__((noinline)) static void tag8_small_path(void*) {
+    volatile char buf[40];
+    buf[0] = 1;
+}
+
+__attribute__((noinline)) static void tag8_large_path(void*) {
+    volatile char buf[512];
+    for (int i = 0; i < 512; ++i) buf[i] = static_cast<char>(i);
+}
+
+__attribute__((noinline)) static void tag8_caller(void* data) {
+    volatile char buf[24];
+    buf[0] = 1;
+    auto* c = static_cast<tag8_closure*>(data);
+    if (c->which == 0) {
+        tag8_small_path(nullptr);
+    } else {
+        tag8_large_path(nullptr);
+    }
+}
+
+TEST_CASE("LDRB-byte-tag-prunes-exact") {
+    tag8_closure c_small{0};
+    auto r_small = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&tag8_caller), &c_small);
+    CHECK(r_small.is_exact);
+    CHECK(r_small.max_depth > 0);
+    // Small path stays well under the large path's 512-byte buffer.
+    CHECK(r_small.max_depth < 512);
+
+    tag8_closure c_large{1};
+    auto r_large = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&tag8_caller), &c_large);
+    CHECK(r_large.max_depth > r_small.max_depth);
+    MESSAGE("tag8_caller (small) depth: ", r_small.max_depth,
+            ", is_exact: ", r_small.is_exact,
+            "; (large) depth: ", r_large.max_depth,
+            ", is_exact: ", r_large.is_exact);
+}
+
+// Case (R-X1): a callable-in-X1 indirection pattern. The closure stores the
+// callable; the caller routes the closure pointer through a callee-saved
+// register across a BL boundary that clobbers X0–X7, then reloads it. The
+// MOV X_to_X tracking (pre-existing) + T3.4.2's PC_RELATIVE promotion let
+// the post-BL BLR resolve to a concrete target. This exercises the
+// "provenance survives X0 clobber" arm of T3.4.3's H4 fix.
+__attribute__((noinline)) static void x1_callable_target(void*) {
+    volatile char buf[40];
+    buf[0] = 1;
+}
+
+__attribute__((noinline)) static void x1_aux(void) {
+    volatile char buf[24];
+    buf[0] = 1;
+}
+
+struct x1_closure { void (*cb)(void*); };
+
+__attribute__((noinline)) static void x1_caller(void* data) {
+    volatile char buf[32];
+    buf[0] = 1;
+    auto* c = static_cast<x1_closure*>(data);
+    x1_aux();        // BL — clobbers X0–X7; closure ptr must transit X19.
+    c->cb(nullptr);  // call through closure-held callable
+    // Add a trailing statement so the codegen uses BLR (not BR tail-call)
+    // for the indirect dispatch — exercises the same handler shape as a
+    // mid-function virtual call.
+    buf[1] = 2;
+}
+
+TEST_CASE("Callable-survives-X0-clobber-via-callee-saved") {
+    x1_closure c{&x1_callable_target};
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&x1_caller), &c);
+    CHECK(result.is_exact);
+    CHECK(result.max_depth > 0);
+    MESSAGE("x1_caller depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
 } // TEST_SUITE
 
 #endif // !CSP_SANITIZED
