@@ -539,7 +539,7 @@ targets:
     achieved: 2026-05-18
   T3.4.2:
     name: Walker resolves PC-relative dispatch and vtables
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -547,11 +547,30 @@ targets:
     - Segment bounds discovered once via _dyld_get_image_header (macOS) / dl_iterate_phdr (Linux)
     - Vtable dispatch pattern (LDR [X0,#0] then LDR [vt,#idx] then BLR) resolves to a concrete vmethod at walk time when the closure pointer is known
     - New test cases in test/stack_analysis.test.cc cover (a) a static const fn-ptr table dispatched via ADRP+LDR+BLR and (b) a virtual call through a closure-held object pointer, both achieving is_exact == true
-    context: Paper 08 §11.2 designed this and paper 23 §8 (T3.4.2) sequences it after T3.4.1. Today PC_RELATIVE registers propagate through ADRP+ADD+LDR but BLR/BR refuse to dereference them, citing GOT/PLT stub risk. The segment guard is the standard mitigation. Largest single tightness win once T3.4.1 lands.
+    context: |-
+      Walker now resolves PC-relative function pointer dispatch and vtable-style calls at walk time.
+
+      Mechanism:
+      - One-time segment_bounds discovery via _dyld_get_image_header + getsectiondata on macOS (capturing __TEXT,__text and __DATA_CONST,__const) and dl_iterate_phdr on Linux (PT_LOAD scan filtered by PF_X / read-only flags). Using the __text *section* rather than the __TEXT *segment* on macOS naturally excludes __stubs, satisfying paper 23 §8 (T3.4.2)'s requirement.
+      - BLR/BR handlers extended: when Xn is PC_RELATIVE, the address is checked against the text and readonly ranges. In-text means the register itself is a direct function address (ADRP+ADD on a function symbol) → emit OP_CALL_DIRECT. In-readonly-data means it's the address of a function-pointer slot → dereference once, check the result against text, emit OP_CALL_DIRECT or fall back. Outside both ranges → unchanged budget fallback (preserves the GOT/PLT-stub safety net).
+      - LDR 64-bit handler extended: when Xn is DATA_OFFSET and `data` is non-null, the walker reads `*(void**)(data + offset)` and promotes the result to PC_RELATIVE if it lands in our binary's text or readonly data. This is what unlocks vtable dispatch (closure → vptr at offset 0 → method pointer in vtable → call).
+
+      Acceptance criterion progress:
+        ✓  BLR/BR handlers dereference PC_RELATIVE registers after a __TEXT segment-bounds check (excluding __stubs).
+        ✓  Segment bounds discovered once via _dyld_get_image_header (macOS) / dl_iterate_phdr (Linux).
+        ✓  Vtable dispatch pattern resolves to a concrete vmethod at walk time when the closure pointer is known.
+        ✓  New test cases in test/stack_analysis.test.cc cover (a) PC-relative-fn-ptr-table-resolves-exact and (b) Vtable-via-closure-resolves-exact, both achieving is_exact == true.
+
+      Verification: 737/737 normal tests pass (735 baseline + 2 new), 694/694 dist tests pass (692 + 2). Pre-existing StackAnalysis tests unaffected.
+
+      Other-platform behaviour: on Windows / other BSDs the segment_bounds ranges remain empty and the new BLR/BR paths immediately fall through to budget — i.e. unchanged from pre-T3.4.2. Non-ARM64 builds short-circuit the analyser entirely (it returns is_exact=false), so the new code is inert there too.
+
+      Next: T3.4.3 (wider value loads + X1–X7 forwarding) is the next walker tightness win; T3.4.4 (profile-guided calibration) remains independent.
     depends_on:
     - T3.4.1
     origin: manual
     discovered: 2026-05-17
+    achieved: 2026-05-18
   T3.4.3:
     name: Walker tracks wider value loads and propagates data context across X0–X7
     status: identified
