@@ -1,6 +1,8 @@
 #include <csp/internal/runtime.h>
 #include <csp/internal/reactor.h>
 #include <csp/internal/hamt.h>
+#include <csp/internal/stack_pool.h>
+#include <csp/stack_analysis.h>
 
 #ifndef _WIN32
 #include <pthread.h>
@@ -410,10 +412,30 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         check_stack_overflow(self, fp);
         StackPool::instance().maybe_shrink(self->stk_, fp);
     }
+
+    // Pick a slot class for the new imp's stack. Default everywhere unless
+    // the analyser is enabled (CSP_ANALYSE_STACKS), the cached estimate is
+    // exact, and depth + headroom fits in a Small slot (🎯T3.4.1).
+    StackClass slot_cls = StackClass::Default;
+#ifdef CSP_ANALYSE_STACKS
+    if (constexpr size_t kSmallUsable = StackPool::small_slot_usable_bytes();
+        kSmallUsable > 0) {
+        auto sa = ::csp::analyze_stack_depth_cached(
+            reinterpret_cast<const void*>(start_f), data);
+        // 2× headroom + 2 KB absolute floor (ABI spill / signal frame).
+        // sizeof(Imp) is also paid out of the usable region — leave room.
+        constexpr size_t kHeadroomFloor = 2 * 1024;
+        size_t needed = sa.max_depth * 2 + kHeadroomFloor + sizeof(Imp);
+        if (sa.is_exact && needed <= kSmallUsable) {
+            slot_cls = StackClass::Small;
+        }
+    }
+#endif
+
     try {
 #if CSP_USE_VM_STACKS
         auto& pool = StackPool::instance();
-        auto region = pool.allocate();
+        auto region = pool.allocate(slot_cls);
         auto page_sz = pool.page_size();
         auto* top = static_cast<char*>(region.base) + region.total_size;
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
@@ -452,7 +474,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         imp->stack_overflow_limit_ = region.overflow_limit;
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
-        auto region = StackPool::instance().allocate();
+        auto region = StackPool::instance().allocate(slot_cls);
         size_t S = region.total_size / 16;
         auto* stk = static_cast<Imp::StackSlot*>(region.base);
         auto* imp = reinterpret_cast<Imp*>(stk + S) - 1;

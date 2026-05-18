@@ -466,6 +466,11 @@ TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
 # 🎯T23).
 ifeq ($(CSP_INCLUDE),dist)
 TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.cc test/http3.test.cc test/ws.test.cc test/quic.test.cc,$(TEST_SRCS))
+# stack_pool.test.cc exercises csp::detail::StackPool directly via
+# <csp/internal/stack_pool.h>, which isn't shipped in dist (everything is
+# folded into dist/csp.h). The pool itself is still compiled into dist via
+# csp.cpp; this just skips the white-box unit test in the dist build.
+TEST_SRCS    := $(filter-out test/stack_pool.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)

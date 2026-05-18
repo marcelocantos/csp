@@ -1567,10 +1567,30 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         check_stack_overflow(self, fp);
         StackPool::instance().maybe_shrink(self->stk_, fp);
     }
+
+    // Pick a slot class for the new imp's stack. Default everywhere unless
+    // the analyser is enabled (CSP_ANALYSE_STACKS), the cached estimate is
+    // exact, and depth + headroom fits in a Small slot (🎯T3.4.1).
+    StackClass slot_cls = StackClass::Default;
+#ifdef CSP_ANALYSE_STACKS
+    if (constexpr size_t kSmallUsable = StackPool::small_slot_usable_bytes();
+        kSmallUsable > 0) {
+        auto sa = ::csp::analyze_stack_depth_cached(
+            reinterpret_cast<const void*>(start_f), data);
+        // 2× headroom + 2 KB absolute floor (ABI spill / signal frame).
+        // sizeof(Imp) is also paid out of the usable region — leave room.
+        constexpr size_t kHeadroomFloor = 2 * 1024;
+        size_t needed = sa.max_depth * 2 + kHeadroomFloor + sizeof(Imp);
+        if (sa.is_exact && needed <= kSmallUsable) {
+            slot_cls = StackClass::Small;
+        }
+    }
+#endif
+
     try {
 #if CSP_USE_VM_STACKS
         auto& pool = StackPool::instance();
-        auto region = pool.allocate();
+        auto region = pool.allocate(slot_cls);
         auto page_sz = pool.page_size();
         auto* top = static_cast<char*>(region.base) + region.total_size;
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
@@ -1609,7 +1629,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         imp->stack_overflow_limit_ = region.overflow_limit;
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
-        auto region = StackPool::instance().allocate();
+        auto region = StackPool::instance().allocate(slot_cls);
         size_t S = region.total_size / 16;
         auto* stk = static_cast<Imp::StackSlot*>(region.base);
         auto* imp = reinterpret_cast<Imp*>(stk + S) - 1;
@@ -5592,6 +5612,7 @@ StackRegion StackPool::arena_alloc() {
         r.base = p;
         r.total_size = kArenaSlotSize;
         r.overflow_limit = p + kArenaSlotGuard;
+        r.cls = StackClass::Default;
         p += kArenaSlotSize;
         if (i == 0) {
             first = r;
@@ -5616,12 +5637,73 @@ void StackPool::arena_free(StackRegion region) {
     free_list_.push_back(region);
 }
 
-StackRegion StackPool::allocate() {
+// Small-class arena (🎯T3.4.1): same layout as the default arena, with a
+// tighter slot and separate free list / slab vector. spawn() opts into this
+// class when the stack analyser confirms the imp fits.
+StackRegion StackPool::arena_alloc_small() {
+    std::lock_guard<std::mutex> lk(mu_);
+
+    if (!small_free_list_.empty()) {
+        auto region = small_free_list_.back();
+        small_free_list_.pop_back();
+        small_allocations_.fetch_add(1, std::memory_order_relaxed);
+        return region;
+    }
+
+    int flags = MAP_ANON | MAP_PRIVATE;
+#ifdef MAP_NORESERVE
+    flags |= MAP_NORESERVE;
+#endif
+    void* base = mmap(nullptr, kArenaSmallSlabSize, PROT_READ | PROT_WRITE, flags, -1, 0);
+    if (base == MAP_FAILED) {
+        throw std::bad_alloc();
+    }
+
+    small_arena_slabs_.push_back({base, kArenaSmallSlabSize});
+
+    auto* p = static_cast<char*>(base);
+    StackRegion first{};
+    for (size_t i = 0; i < kArenaSmallSlotsPerSlab; ++i) {
+        StackRegion r;
+        r.base = p;
+        r.total_size = kArenaSmallSlotSize;
+        r.overflow_limit = p + kArenaSmallSlotGuard;
+        r.cls = StackClass::Small;
+        p += kArenaSmallSlotSize;
+        if (i == 0) {
+            first = r;
+        } else {
+            small_free_list_.push_back(r);
+        }
+    }
+    small_allocations_.fetch_add(1, std::memory_order_relaxed);
+    return first;
+}
+
+void StackPool::arena_free_small(StackRegion region) {
+    char* usable = static_cast<char*>(region.base) + kArenaSmallSlotGuard;
+    size_t usable_len = region.total_size - kArenaSmallSlotGuard;
+#ifdef MADV_FREE
+    madvise(usable, usable_len, MADV_FREE);
+#else
+    madvise(usable, usable_len, MADV_DONTNEED);
+#endif
+
+    std::lock_guard<std::mutex> lk(mu_);
+    small_free_list_.push_back(region);
+}
+
+StackRegion StackPool::allocate(StackClass cls) {
+    if (cls == StackClass::Small) return arena_alloc_small();
     return arena_alloc();
 }
 
 void StackPool::release(StackRegion region) {
-    arena_free(region);
+    if (region.cls == StackClass::Small) {
+        arena_free_small(region);
+    } else {
+        arena_free(region);
+    }
 }
 
 void StackPool::maybe_shrink(StackRegion const&, void*) {
@@ -5633,10 +5715,15 @@ void StackPool::maybe_shrink(StackRegion const&, void*) {
 void StackPool::drain() {
     std::lock_guard<std::mutex> lk(mu_);
     free_list_.clear();
+    small_free_list_.clear();
     for (auto& slab : arena_slabs_) {
         munmap(slab.base, slab.size);
     }
     arena_slabs_.clear();
+    for (auto& slab : small_arena_slabs_) {
+        munmap(slab.base, slab.size);
+    }
+    small_arena_slabs_.clear();
 }
 
 // ============================================================
@@ -5747,7 +5834,11 @@ void StackPool::munmap_region(StackRegion region) {
     VirtualFree(region.base, 0, MEM_RELEASE);
 }
 
-StackRegion StackPool::allocate() {
+StackRegion StackPool::allocate(StackClass /*cls*/) {
+    // Windows VM mode: no distinct small slot — demand-commit makes the 1 MB
+    // MEM_RESERVE region effectively cheap, so the slot-class hint is
+    // ignored here. The Small caller still benefits from analyser-driven
+    // gating on arena builds.
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (!free_list_.empty()) {
@@ -5833,7 +5924,9 @@ void StackPool::munmap_region(StackRegion region) {
     munmap(region.base, region.total_size);
 }
 
-StackRegion StackPool::allocate() {
+StackRegion StackPool::allocate(StackClass /*cls*/) {
+    // Per-stack mmap mode (unreachable in practice — arena takes priority on
+    // non-Windows Unix builds). Slot-class hint ignored.
     {
         std::lock_guard<std::mutex> lk(mu_);
         if (!free_list_.empty()) {
@@ -5883,9 +5976,10 @@ void StackPool::drain() {
 
 struct alignas(16) StackSlotAlloc { char c[16]; };
 
-StackRegion StackPool::allocate() {
-    // Under sanitizers: heap-allocate stacks.
-    // 128KB under sanitizers = 8192 StackSlotAlloc (16 bytes each).
+StackRegion StackPool::allocate(StackClass /*cls*/) {
+    // Under sanitizers: heap-allocate stacks. Sanitizer instrumentation
+    // already adds significant overhead; the analyser-driven small-slot
+    // path is not exercised here, so the cls hint is ignored.
     static constexpr size_t kSanitStack = 128 << 10;
     static constexpr size_t S = kSanitStack / 16;
     auto* stk = new StackSlotAlloc[S];
