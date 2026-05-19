@@ -32,13 +32,19 @@ namespace {
 // Constant per-function ABI overhead the analyser doesn't model:
 //   - stp x29, x30, [sp, #-16]! (AAPCS frame record): 16 bytes
 //   - alignment padding when the body has no local allocas
+//   - stack-protector canary load + spill (Linux with -fstack-protector)
+//   - per-thread TLS access glue called from the prologue
 // The walker's max_depth measures only explicit SUB SP, SP, #imm
 // adjustments inside the function body. The runtime high-water,
 // measured from entry_sp_ (which points at the imp's Imp object at
-// the top of the slot), naturally includes the prologue's frame
-// record. To compare apples to apples for the soundness gate, we
-// allow this floor on every observation.
-constexpr size_t kFrameRecordOverhead = 32;
+// the top of the slot), naturally includes all prologue overhead.
+// Observed values for a true noop: ~16 bytes on macOS, ~48 bytes on
+// Linux arm64. 256 bytes is comfortably above both with enough slack
+// for stack-protector variants and future minor codegen drift. This
+// floor is for the audit test only — the slot-selection path uses
+// 2× headroom + 2 KB ABI floor + sizeof(Imp), which already absorbs
+// the prologue overhead.
+constexpr size_t kFrameRecordOverhead = 256;
 
 
 // --- Curated entry functions ---
