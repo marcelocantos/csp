@@ -471,6 +471,10 @@ TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.
 # folded into dist/csp.h). The pool itself is still compiled into dist via
 # csp.cpp; this just skips the white-box unit test in the dist build.
 TEST_SRCS    := $(filter-out test/stack_pool.test.cc,$(TEST_SRCS))
+# stack_profile.test.cc also uses <csp/internal/csp_internal.h>; same
+# story — the runtime profile code is compiled into dist, but the
+# white-box test reaches into the internal header.
+TEST_SRCS    := $(filter-out test/stack_profile.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)

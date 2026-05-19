@@ -1451,10 +1451,16 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
             }
             break;
         }
-        case OP_BUDGET:
+        case OP_BUDGET: {
+            // 🎯T3.4.4: the u64 baked at walk time is consumed but
+            // discarded — we use opts.indirect_call_budget at eval time so
+            // callers (notably spawn() with profile-derived budgets) can
+            // refine the magnitude without invalidating the cached program.
+            (void)read_u64(ip);
             is_exact = false;
-            values[vsp++] = read_u64(ip);
+            values[vsp++] = opts.indirect_call_budget;
             break;
+        }
         case OP_CALL_DIRECT_WITH_DATA: {
             // Direct call forwarding a data sub-pointer to the callee.
             // The callee receives *(current_data + data_off) as its data arg.

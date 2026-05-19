@@ -139,6 +139,13 @@ struct alignas(16) Imp {
     // Checked at every CSP suspend checkpoint via check_stack_overflow().
     void* stack_overflow_limit_ = nullptr;
 
+    // 🎯T3.4.4: entry function and stack top recorded at spawn time so
+    // suspend checkpoints can compute the running depth and update the
+    // per-entry high-water table. entry_fn_ is null for the main thread's
+    // synthetic imp (no spawn() called).
+    ::csp::internal::EntryFn entry_fn_ = nullptr;
+    void* entry_sp_ = nullptr;
+
     bool in_global_ = false;  // true while in the global run queue
     bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
     class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
@@ -172,6 +179,15 @@ char const * getstatus(Imp const * imp) {
 //
 // For non-arena stacks (stack_overflow_limit_ == nullptr), this is a no-op;
 // the hardware guard page handles overflow.
+// 🎯T3.4.4: per-entry-function stack high-water table. Recording happens at
+// every suspend checkpoint where check_stack_overflow already samples SP.
+// Lookup is consulted at spawn time to pick a tight slot when the analyser
+// is inexact but we have empirical evidence of how deep this entry function
+// goes. The 50% margin is applied at the spawn-time consumer, not here, so
+// this layer reports raw observed bytes.
+void record_stack_high_water(::csp::internal::EntryFn fn, size_t depth_bytes);
+size_t get_stack_high_water(::csp::internal::EntryFn fn);
+
 [[gnu::always_inline]] inline
 void check_stack_overflow(Imp const* imp, void* current_sp) {
     if (!imp->stack_overflow_limit_) [[likely]] {
