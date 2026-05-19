@@ -607,7 +607,7 @@ targets:
     achieved: 2026-05-18
   T3.4.4:
     name: Profile-guided stack budget calibration
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -615,9 +615,30 @@ targets:
     - Next spawn of the same entry function uses recorded high-water + 50% margin as the indirect_call_budget instead of the flat 2 KB default
     - is_exact remains false; only the magnitude of the inexact fallback improves
     - In-memory only (reset on process restart); no persistence required
-    context: Paper 08 §6 and paper 23 §8 (T3.4.4). The runtime already samples SP at every suspend; recording the high-water keyed by entry function is a single comparison + map write. Tightens the inexact fallback without touching the walker — useful even before T3.4.2/T3.4.3 land.
+    context: |-
+      Profile-guided budget calibration landed.
+
+      Mechanism:
+      - Imp gained two fields: entry_fn_ (the EntryFn passed to spawn) and entry_sp_ (top-of-usable-region snapshot taken at imp construction). Both are set in spawn() after placement-new on the new imp object.
+      - The two existing SP-sampling sites in csp.cc — do_switch (the universal suspend checkpoint) and spawn() (the parent's checkpoint before allocating a new imp) — now also call record_stack_high_water(entry_fn_, entry_sp_ - current_sp) when entry_fn_ is set. The main-thread synthetic imp has entry_fn_ == null, so it skips recording.
+      - A process-global std::mutex + std::unordered_map<EntryFn, size_t> holds the per-function max-observed depth. In-memory only; resets on process restart. Free of any "monotonic decay" or eviction — the table grows to at most the count of distinct entry functions spawned in the process, typically a small set.
+      - OP_BUDGET in the bytecode evaluator switched from reading the walk-time u64 to using opts.indirect_call_budget at eval time. The u64 is still consumed (cached programs keep their existing layout) but discarded. This decouples the program cache from the budget, so spawn() can pass a custom budget per call without invalidating prior compilations.
+      - spawn() now consults get_stack_high_water(start_f) first. If a recording exists, the slot decision uses recorded * 1.5 + headroom against the small-slot usable bytes — no analyser call needed. If no recording, the analyser path is used as before, but with the indirect_call_budget refined from the same recorded * 1.5 when available, satisfying the paper's "use the recorded high-water + 50% margin as the indirect_call_budget instead of the flat 2 KB default" criterion.
+
+      Acceptance criterion progress:
+        ✓  check_stack_overflow / suspend checkpoints record per-entry-function high-water mark.
+        ✓  Next spawn of the same entry function uses recorded high-water + 50% margin as the indirect_call_budget (eval-time substitution preserves the program cache).
+        ✓  is_exact remains false; only the magnitude of the inexact fallback improves.
+        ✓  In-memory only; no persistence required.
+
+      Verification: 742/742 normal tests pass (739 + 3 new in test/stack_profile.test.cc), 696/696 dist (white-box internal-header test skipped in dist filter alongside test/stack_pool.test.cc). The end-to-end spawn-records-high-water-via-suspend test confirms a fresh entry function reports 0 before its first spawn and a non-zero value (384 bytes for a function with a 256-byte volatile buffer) after one run.
+
+      Behaviour outside CSP_ANALYSE_STACKS: spawn-side consumption is gated; recording is unconditional (it's cheap, and T3.4.5's benchmark needs the data to assess soundness).
+
+      Next: T3.4.5 (real-workload benchmark + soundness CI gate) — the empirical retire gate for T3.4 itself.
     origin: manual
     discovered: 2026-05-17
+    achieved: 2026-05-19
   T3.4.5:
     name: Real-workload stack-tightness benchmark and soundness CI
     status: identified
