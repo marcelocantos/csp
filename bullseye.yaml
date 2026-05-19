@@ -422,6 +422,28 @@ targets:
     context: 'Diagnosed 2026-05-13 while investigating 🎯T26 (web_crawler example reliability). When CSP programs reach a quiescent-but-not-done state — all workers parked, no global work, no quiescence hook — `Runtime::main_loop` at `src/runtime.cpp:296-324` enters a tight busy-spin at 99% CPU. Root cause: the `park_cv.wait` predicate returns `true` whenever `all_parked()` is true, but the wake exists to fire the test-mode quiescence hook; with no hook installed, the wake leads to an immediate re-evaluation of the still-true predicate. Three fix candidates in docs/papers/22-main-loop-busy-spin.md; recommendation is (A) — guard the quiescence wake on an `atomic<bool>` mirror of `quiescence_hook_`''s registration state. Note: this is the *symptom* in web_crawler; the example also has a separate deadlock cause (🎯T26) — an imp suspended on a never-completing TCP read. Even after this fix, web_crawler will still hang on a wall clock when the deadlock condition arises, but it''ll be silent (no 99% CPU) and the CI timeout safety-net will catch it.'
     origin: manual
     discovered: 2026-05-13
+  T28:
+    name: All docs csp-flow blocks have rendered SVG references
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`python3 scripts/gen_diagrams.py docs/` (or the equivalent invocation used by CI / make diagrams) emits no `WARNING: ... csp-flow block has no ![](*.svg) ref` lines.'
+    - Every `<!-- csp-flow ... -->` block in docs/ is followed within 200 characters by its rendered `![alt](diagrams/<name>.svg)` reference.
+    - 'Current known offender: docs/reference/http2.md (the http2 dispatch flow block). Any others surfaced by the scan are fixed in the same pass.'
+    - CI runs gen_diagrams.py / the diagram check on every PR — the warning, once cleared, must not silently reappear.
+    context: |-
+      User flagged this during PR #61's CI run: `WARNING: /home/runner/work/csp/csp/docs/reference/http2.md: csp-flow block has no ![](*.svg) ref`. The warning comes from scripts/gen_diagrams.py, which scans .md files for `<!-- csp-flow ... -->` comment blocks (an ASCII-art DSL the project uses for flow diagrams) and expects each to be immediately followed by an `![alt](diagrams/<name>.svg)` image reference linking to the rendered version.
+
+      The http2.md block at line 168–173 has the comment but no SVG reference — was introduced by PR #38 (HTTP/2 server, 2026-03-?) and overlooked at the time. CI doesn't fail on it (warning only), but the docs site renders the comment-block-without-diagram as a missing visual.
+
+      Fix shape: pick a name (e.g., `http2-dispatch-flow.svg`), add the `![alt](diagrams/http2-dispatch-flow.svg)` line after the closing `-->`, run `make diagrams` (or whatever target generates SVGs) to produce the file, commit both. The scan should then come back clean.
+
+      Trivial; could ride any docs-touching PR. Filed as its own target so it doesn't keep appearing on follow-up lists without resolution.
+
+      Filed 2026-05-19, after v0.15.0 release flagged the warning was still pending.
+    origin: manual
+    discovered: 2026-05-19
   T3:
     name: Runtime is production-ready for I/O workloads
     status: identified
@@ -457,6 +479,36 @@ targets:
     origin: manual
     discovered: 2026-03-09
     achieved: 2026-04-27
+  T3.10:
+    name: Walker propagates register provenance across BL boundaries
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - The OP_CALL_DIRECT_WITH_DATA opcode (or a sibling) carries per-register provenance, so a callable arriving in a callee's X1–X7 (not X0) can be resolved by the callee's analyser without requiring the parent's codegen to normalise it into X0.
+    - 'Test ''R-X1 literal pattern'' passes is_exact=true: a caller that does `f(int n, void(*cb)(void*))` where cb arrives in the callee''s X1 and is later invoked via X19 after a MOV X19, X1 in the prologue — currently inexact, must become exact with data forwarded.'
+    - Stack-analysis soundness+tightness audit (test/stack_analysis_audit.test.cc) reports at least 4 of 6 curated cases meeting the tightness target (is_exact && analyser_estimate < 2 × high_water + 4 KB). Currently 2/6 — gated by csp::spawn(lambda) chains where the closure arrives via type-erased EntryFn through indirect dispatch.
+    - CONST registers in the parent's frame are propagated across BL boundaries when the callee provably reads its argument registers before any inner BL clobbers caller-saved state. Paper 23 §8 flagged this as a stretch deferral from T3.4.3; the full design has acceptance criteria here.
+    - All existing stack-analysis tests continue to pass; the audit's soundness gate stays 6/6 sound.
+    context: |-
+      Deferred stretch goal from 🎯T3.4.3 (paper 23 §8). T3.4.3 implemented LDRB/LDRH discriminator tracking and BL emission's X0–X7 scan, but stopped short of the harder pieces:
+
+      (1) Per-register provenance forwarding into the callee. The current OP_CALL_DIRECT_WITH_DATA forwards a single offset that the callee's analyser injects into its X0 = DATA_OFFSET=0 initial state. When the closure pointer arrives in the callee's X1 (because the callee's signature is `f(int n, void* closure)` per AAPCS64), the callee's analyser can't see it — X1 stays UNKNOWN, and any BLR through a register sourced from X1 falls back to budget.
+
+      (2) CONST propagation across BL boundaries. After a BL, the walker clobbers X0–X7 to UNKNOWN. If the callee's prologue reads an arg register before any nested BL, the CONST established by the parent's LDRB/LDRH/LDR pruning is lost.
+
+      The audit's tightness numbers (2/6 = 33% on the curated set) are bounded by this gap. The 4 currently-inexact cases (volatile_buffer_1k, channel_send_recv, alt_two_chans, yield_loop) all bottom out at the budget fallback inside csp::spawn(lambda)'s type-erased trampoline — paths the walker can't follow without per-register forwarding.
+
+      Design space (sketched, not settled):
+        - Encode (register_index, offset) in a 64-bit field by reserving the top few bits for the register index (offsets are typically small).
+        - The callee's analyser, when invoked through OP_CALL_DIRECT_WITH_DATA, starts with state.regs[register_index] = DATA_OFFSET=0 instead of (or in addition to) X0. AAPCS64 says the closure's actual landing register is determined by the callee's signature, which the walker doesn't know — but the parent's BL site does know which of its X0–X7 carried the DATA_OFFSET, and by symmetry the callee receives it in the same register.
+        - For CONST propagation: at BL, record state.regs[0..7] in a "pending callee" structure indexed by target address. When the callee's analyser starts, consult the structure. This needs caching discipline because the cache currently keys on fn alone; mixing in per-call register state means either a richer cache key or per-call no-cache emissions.
+
+      Out of scope here: vtable resolution beyond the closure → vptr → method pattern (already handled by T3.4.2), and indirect recursion fixed-point iteration (T3.4 paper 23 §8 H5 — a separate target if it gets prioritised).
+
+      Filed 2026-05-19, after v0.15.0 retired the parent T3.4. The next step is a design paper (paper 24 or extending paper 23 §6) before writing code.
+    origin: manual
+    discovered: 2026-05-19
   T3.2:
     name: Channel-native HTTP/1.1 server works
     status: achieved
