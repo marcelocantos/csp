@@ -475,6 +475,9 @@ TEST_SRCS    := $(filter-out test/stack_pool.test.cc,$(TEST_SRCS))
 # story — the runtime profile code is compiled into dist, but the
 # white-box test reaches into the internal header.
 TEST_SRCS    := $(filter-out test/stack_profile.test.cc,$(TEST_SRCS))
+# stack_analysis_audit.test.cc is the T3.4.5 soundness gate; also reaches
+# into <csp/internal/csp_internal.h> for get_stack_high_water.
+TEST_SRCS    := $(filter-out test/stack_analysis_audit.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)
