@@ -1032,6 +1032,26 @@ files cherry-pick which implementations the linker keeps. Skip a `.cpp`
 file and its third-party deps drop out of the link (provided you have
 linker dead-code elimination enabled — see below).
 
+### Fetching the vendored libraries
+
+CSP ships
+[`scripts/vendor-deps.sh`](https://github.com/marcelocantos/csp/blob/master/scripts/vendor-deps.sh)
+to fetch known-good versions of the third-party libraries the per-protocol
+drop-ins need. Drop the script into your project alongside `dist/` and run:
+
+```bash
+./scripts/vendor-deps.sh --all                 # every library
+./scripts/vendor-deps.sh --http --ws           # HTTP/1.1 + WebSocket
+./scripts/vendor-deps.sh --http3               # HTTP/3 (pulls QUIC + TLS)
+```
+
+The script clones each library to `vendor/<name>/` at a pinned commit and
+generates the version headers (`nghttp2ver.h`, `version.h`, `wslayver.h`)
+that are normally produced by autotools/cmake. The include paths in the
+compile recipes below match what the script produces.
+
+### Compile recipes
+
 Compile with C++20 and libc++. Channels-only:
 
 ```bash
