@@ -405,7 +405,7 @@ def main():
         skip_pred=lambda p: False,
     )
 
-    # --- csp.cpp: all source files except csp_globals.cpp ---
+    # --- csp.cpp: core implementation (no protocol-specific code) ---
     # csp_globals.cpp MUST be a separate TU.  It defines the
     # thread_local variable g_imp.  When the definition and the
     # extern declaration (from csp_internal.h) are in the same TU,
@@ -417,34 +417,31 @@ def main():
     # Keeping csp_globals.cpp separate forces the wrapper-call
     # pattern, which re-resolves the TLS address on every access.
     globals_file = src_dir / 'csp_globals.cpp'
-    # http.cc depends on vendored llhttp and is excluded from the dist
-    # amalgamation.  Users who need HTTP must compile http.cc + llhttp
-    # separately.
-    # http2.cc depends on vendored nghttp2 and is excluded from the dist
-    # amalgamation.  Users who need HTTP/2 must compile http2.cc + nghttp2
-    # separately.
-    # http3.cc depends on vendored nghttp3 (and ngtcp2 via T3.8) and is
-    # excluded from the dist amalgamation.  Users who need HTTP/3 must compile
-    # http3.cc + nghttp3 + ngtcp2 separately.
-    http_file = src_dir / 'http.cc'
-    http2_file = src_dir / 'http2.cc'
-    # ws.cc depends on vendored wslay and is excluded from the dist
-    # amalgamation.  Users who need WebSocket must compile ws.cc + wslay
-    # separately.
-    ws_file = src_dir / 'ws.cc'
-    http3_file = src_dir / 'http3.cc'
-    # quic.cc depends on vendored ngtcp2 and is excluded from the dist
-    # amalgamation.  Users who need QUIC must compile quic.cc + ngtcp2
-    # (and the ngtcp2_crypto_picotls_minicrypto.c adapter) separately.
-    quic_file = src_dir / 'quic.cc'
-    excluded_sources = {
-        globals_file.resolve(),
-        http_file.resolve(),
-        http2_file.resolve(),
-        http3_file.resolve(),
-        ws_file.resolve(),
-        quic_file.resolve(),
-    }
+
+    # Per-protocol drop-ins (🎯T23).  Each protocol implementation lives
+    # in its own dist/csp_<proto>.cpp file so users can cherry-pick: the
+    # linker (with -ffunction-sections + --gc-sections / -dead_strip)
+    # drops unreferenced TUs and functions, leaving the user's link with
+    # only the protocols they actually call into.  Inter-protocol deps
+    # (http3 → quic → tls, http2/ws optional-tls) resolve through the
+    # public csp::<proto>:: API.  See docs/design/per-protocol-dist.md
+    # for the five DCE rules that make this work.
+    protocol_specs = [
+        # (dist filename,       src filename, banner)
+        ('csp_tls.cpp',         'tls.cc',     'CSP — TLS 1.3 (PicoTLS)'),
+        ('csp_http.cpp',        'http.cc',    'CSP — HTTP/1.1 (llhttp)'),
+        ('csp_http2.cpp',       'http2.cc',   'CSP — HTTP/2 (nghttp2)'),
+        ('csp_ws.cpp',          'ws.cc',      'CSP — WebSocket (wslay)'),
+        ('csp_quic.cpp',        'quic.cc',    'CSP — QUIC (ngtcp2 + PicoTLS)'),
+        ('csp_http3.cpp',       'http3.cc',   'CSP — HTTP/3 (nghttp3 over QUIC)'),
+    ]
+
+    # Source files folded into the core dist/csp.cpp.  Everything except
+    # csp_globals.cpp and the per-protocol implementations.
+    excluded_sources = {globals_file.resolve()}
+    for _, src_name, _ in protocol_specs:
+        excluded_sources.add((src_dir / src_name).resolve())
+
     src_files = sorted(
         p for p in (list(src_dir.glob('*.cc')) + list(src_dir.glob('*.cpp')))
         if p.resolve() not in excluded_sources
@@ -452,7 +449,7 @@ def main():
     print('csp.cpp:')
     amalgamate_sources(
         src_files, out_dir / 'csp.cpp', 'csp.h',
-        'CSP — implementation source',
+        'CSP — core implementation source',
     )
 
     # --- csp_globals.cpp: thread-local state (separate TU) ---
@@ -461,6 +458,25 @@ def main():
         [globals_file], out_dir / 'csp_globals.cpp', 'csp.h',
         'CSP — globals (separate TU for TLS correctness)',
     )
+
+    # --- Per-protocol .cpp files (🎯T23) ---
+    for dist_name, src_name, banner in protocol_specs:
+        src_path = src_dir / src_name
+        if not src_path.exists():
+            continue
+        print(f'{dist_name}:')
+        amalgamate_sources(
+            [src_path], out_dir / dist_name, 'csp.h', banner,
+        )
+
+    # --- Copy the QUIC picotls adapter (C99, not amalgamated) ---
+    # The ngtcp2 crypto picotls adapter is a C99 TU; copy verbatim so
+    # users compile it alongside csp_quic.cpp with the C compiler.
+    quic_adapter_src = src_dir / 'ngtcp2_crypto_picotls_minicrypto.c'
+    if quic_adapter_src.exists():
+        quic_adapter_dst = out_dir / 'ngtcp2_crypto_picotls_minicrypto.c'
+        quic_adapter_dst.write_text(quic_adapter_src.read_text())
+        print(f'  {quic_adapter_dst}  (copied verbatim, C99 TU)')
 
     # --- Append fcontext inline assembly to csp.cpp ---
     fcontext_dir = root / 'vendor' / 'github.com' / 'boostorg' / 'context' / 'src' / 'asm'

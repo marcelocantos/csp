@@ -2018,6 +2018,7 @@ fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 
 /* csp/internal/stack_pool.h */
 
+#include <cstdint>
 
 // Sanitizer detection: under ASan/TSan, shadow memory scales with mapped VA,
 // so we fall back to heap allocation (new[]/delete[]).
@@ -2046,6 +2047,17 @@ fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 
 namespace csp::detail {
 
+// Slot size class for stack allocation. Default is the conservative 124 KB
+// slot used for any imp whose stack depth is unknown or large. Small is a
+// tighter slot (≈16 KB usable) selected by spawn() when the stack analyser
+// returns an exact estimate that fits with headroom (🎯T3.4.1). The choice
+// is recorded on the StackRegion so release() can route back to the right
+// free list.
+enum class StackClass : uint8_t {
+    Default = 0,
+    Small   = 1,
+};
+
 struct StackRegion {
     void* base = nullptr;
     size_t total_size = 0;
@@ -2053,6 +2065,7 @@ struct StackRegion {
     // Non-null only for arena-mode stacks (no hardware guard page).
     // Checked at every CSP API checkpoint via check_stack_overflow().
     void* overflow_limit = nullptr;
+    StackClass cls = StackClass::Default;
     explicit operator bool() const { return base != nullptr; }
 };
 
@@ -2061,10 +2074,13 @@ public:
     static StackPool& instance();
 
     // Allocate a stack region. Returns a pooled or fresh region.
-    StackRegion allocate();
+    // `cls == Small` returns a tight slot when the build supports two slot
+    // classes (arena mode); otherwise falls back to the Default slot.
+    StackRegion allocate(StackClass cls = StackClass::Default);
 
     // Return a stack to the pool. Reclaims physical pages via madvise
-    // (non-arena) or marks the slot free (arena).
+    // (non-arena) or marks the slot free (arena). The slot class is read
+    // from region.cls.
     void release(StackRegion region);
 
     // Reclaim unused stack pages below the current SP.
@@ -2082,7 +2098,31 @@ public:
     size_t slab_count() const {
 #if CSP_USE_ARENA_STACKS
         std::lock_guard<std::mutex> lk(mu_);
-        return arena_slabs_.size();
+        return arena_slabs_.size() + small_arena_slabs_.size();
+#else
+        return 0;
+#endif
+    }
+
+    // Usable bytes available in a Small-class slot for the current build.
+    // Returns 0 on builds that do not support distinct small slots — spawn()
+    // uses this to gate the analyser-driven path so the check naturally
+    // fails outside arena mode.
+    static constexpr size_t small_slot_usable_bytes() {
+#if CSP_USE_ARENA_STACKS
+        return kArenaSmallSlotUsable;
+#else
+        return 0;
+#endif
+    }
+
+    // Total allocations served from the Small free list since process start.
+    // Lock-free read intended for tests and observability; not exact under
+    // concurrent allocation. Returns 0 on builds without distinct small
+    // slots.
+    size_t small_allocations() const {
+#if CSP_USE_ARENA_STACKS
+        return small_allocations_.load(std::memory_order_relaxed);
 #else
         return 0;
 #endif
@@ -2097,6 +2137,8 @@ private:
 #elif CSP_USE_ARENA_STACKS
     StackRegion arena_alloc();
     void arena_free(StackRegion region);
+    StackRegion arena_alloc_small();
+    void arena_free_small(StackRegion region);
 #endif
 
     size_t page_size_;
@@ -2122,13 +2164,26 @@ private:
     static constexpr size_t kArenaSlotsPerSlab = 4096;         // slots per slab
     static constexpr size_t kArenaSlabSize = kArenaSlotSize * kArenaSlotsPerSlab;   // 512MB per slab
 
+    // Small slot parameters (🎯T3.4.1): selected by spawn() when the stack
+    // analyser returns is_exact with depth + headroom that fits here. Same
+    // layout shape as default — [guard][usable] — just tighter usable. Slab
+    // size is correspondingly smaller (≈80 MB per slab × few slabs).
+    static constexpr size_t kArenaSmallSlotGuard       = 4096;             // 4KB software guard
+    static constexpr size_t kArenaSmallSlotUsable      = 16u << 10;        // 16KB usable
+    static constexpr size_t kArenaSmallSlotSize        = kArenaSmallSlotGuard + kArenaSmallSlotUsable;
+    static constexpr size_t kArenaSmallSlotsPerSlab    = 4096;             // slots per small slab
+    static constexpr size_t kArenaSmallSlabSize        = kArenaSmallSlotSize * kArenaSmallSlotsPerSlab;
+
     struct ArenaSlab {
         void* base = nullptr;
         size_t size = 0;
     };
 
-    std::vector<ArenaSlab> arena_slabs_;  // all allocated slabs (for drain)
-    // free_list_ holds arena StackRegions (with overflow_limit set)
+    std::vector<ArenaSlab> arena_slabs_;        // default-class slabs (for drain)
+    std::vector<ArenaSlab> small_arena_slabs_;  // small-class slabs (for drain)
+    std::vector<StackRegion> small_free_list_;  // small-class free list
+    std::atomic<size_t> small_allocations_{0};
+    // free_list_ holds default-class arena StackRegions (with overflow_limit set)
 #endif
 
 
@@ -2275,6 +2330,13 @@ struct alignas(16) Imp {
     // Checked at every CSP suspend checkpoint via check_stack_overflow().
     void* stack_overflow_limit_ = nullptr;
 
+    // 🎯T3.4.4: entry function and stack top recorded at spawn time so
+    // suspend checkpoints can compute the running depth and update the
+    // per-entry high-water table. entry_fn_ is null for the main thread's
+    // synthetic imp (no spawn() called).
+    ::csp::internal::EntryFn entry_fn_ = nullptr;
+    void* entry_sp_ = nullptr;
+
     bool in_global_ = false;  // true while in the global run queue
     bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
     class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
@@ -2308,6 +2370,15 @@ char const * getstatus(Imp const * imp) {
 //
 // For non-arena stacks (stack_overflow_limit_ == nullptr), this is a no-op;
 // the hardware guard page handles overflow.
+// 🎯T3.4.4: per-entry-function stack high-water table. Recording happens at
+// every suspend checkpoint where check_stack_overflow already samples SP.
+// Lookup is consulted at spawn time to pick a tight slot when the analyser
+// is inexact but we have empirical evidence of how deep this entry function
+// goes. The 50% margin is applied at the spawn-time consumer, not here, so
+// this layer reports raw observed bytes.
+void record_stack_high_water(::csp::internal::EntryFn fn, size_t depth_bytes);
+size_t get_stack_high_water(::csp::internal::EntryFn fn);
+
 [[gnu::always_inline]] inline
 void check_stack_overflow(Imp const* imp, void* current_sp) {
     if (!imp->stack_overflow_limit_) [[likely]] {
@@ -2340,7 +2411,6 @@ void check_stack_overflow(Imp const* imp, void* current_sp) {
 // BLR-free read path: hamt_get uses only integer arithmetic,
 // std::popcount, and pointer chasing.
 
-#include <cstdint>
 
 namespace csp::internal {
 

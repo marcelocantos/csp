@@ -124,6 +124,11 @@ set(LIB_SRCS
 if(WIN32)
     list(APPEND LIB_SRCS
         src/win_signal.cc
+        # stack_analysis_arm64.cc has a portable #else branch that returns
+        # conservative defaults on non-ARM64. Include it on Windows so the
+        # csp::analyze_stack_depth symbol resolves for callers (notably the
+        # T3.4.4 spawn-time consultation and the T3.4.5 audit test).
+        src/stack_analysis_arm64.cc
     )
 else()
     list(APPEND LIB_SRCS

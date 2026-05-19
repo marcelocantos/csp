@@ -1,6 +1,8 @@
 #include <csp/internal/runtime.h>
 #include <csp/internal/reactor.h>
 #include <csp/internal/hamt.h>
+#include <csp/internal/stack_pool.h>
+#include <csp/stack_analysis.h>
 
 #ifndef _WIN32
 #include <pthread.h>
@@ -24,6 +26,41 @@ static void main_loop_scheduler() {
 }
 
 static std::function<void()> g_scheduler = main_loop_scheduler;
+
+// 🎯T3.4.4: per-entry-function stack high-water table. Process-global,
+// in-memory only — resets on process restart. The acceptance criterion
+// requires no persistence and a 50% margin applied at the consumer; this
+// store keeps the raw maximum so future spawns can decide independently
+// how much headroom to add.
+//
+// Synchronisation: a mutex + std::unordered_map is sufficient because
+// updates happen at suspend checkpoints (already a relatively rare
+// boundary compared to runtime hot paths) and the table never grows
+// beyond the count of distinct entry functions spawned in the process —
+// typically a small set. Lock contention is not a concern at the
+// expected scale.
+namespace {
+    std::mutex g_high_water_mu;
+    std::unordered_map<csp::internal::EntryFn, size_t> g_high_water;
+}
+
+namespace csp::detail {
+
+void record_stack_high_water(::csp::internal::EntryFn fn, size_t depth_bytes) {
+    if (!fn) return;
+    std::lock_guard<std::mutex> lk(g_high_water_mu);
+    auto& slot = g_high_water[fn];
+    if (depth_bytes > slot) slot = depth_bytes;
+}
+
+size_t get_stack_high_water(::csp::internal::EntryFn fn) {
+    if (!fn) return 0;
+    std::lock_guard<std::mutex> lk(g_high_water_mu);
+    auto it = g_high_water.find(fn);
+    return it == g_high_water.end() ? 0 : it->second;
+}
+
+}  // namespace csp::detail
 
 
 namespace csp {
@@ -299,6 +336,18 @@ namespace csp {
             if (self->stk_) {
                 auto* fp = CSP_FRAME_ADDRESS();
                 check_stack_overflow(self, fp);
+                // 🎯T3.4.4: profile this suspend's depth into the per-entry
+                // high-water table. The recorded value drives slot-class
+                // selection and budget refinement on the next spawn() of
+                // the same entry function.
+                if (self->entry_fn_ && self->entry_sp_) {
+                    auto* top = static_cast<char*>(self->entry_sp_);
+                    auto* cur = static_cast<char*>(fp);
+                    if (top > cur) {
+                        record_stack_high_water(
+                            self->entry_fn_, static_cast<size_t>(top - cur));
+                    }
+                }
                 StackPool::instance().maybe_shrink(self->stk_, fp);
             }
             Imp* target;
@@ -410,10 +459,58 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         check_stack_overflow(self, fp);
         StackPool::instance().maybe_shrink(self->stk_, fp);
     }
+
+    // Pick a slot class for the new imp's stack. Default everywhere unless
+    // the analyser is enabled (CSP_ANALYSE_STACKS) and either the cached
+    // analyser estimate is exact (🎯T3.4.1) or the per-entry-fn high-water
+    // table holds a recorded observation (🎯T3.4.4) — both with margin.
+    StackClass slot_cls = StackClass::Default;
+#ifdef CSP_ANALYSE_STACKS
+    if (constexpr size_t kSmallUsable = StackPool::small_slot_usable_bytes();
+        kSmallUsable > 0) {
+        constexpr size_t kHeadroomFloor = 2 * 1024;
+
+        // First check the empirical high-water table. If we have observed
+        // this entry function before, the recorded depth plus a 50% margin
+        // is more authoritative than any inexact analyser estimate.
+        if (size_t hw = ::csp::detail::get_stack_high_water(start_f); hw > 0) {
+            size_t profile_needed = hw + hw / 2 + kHeadroomFloor + sizeof(Imp);
+            if (profile_needed <= kSmallUsable) {
+                slot_cls = StackClass::Small;
+            }
+        }
+
+        // Fall back to the analyser when there's no observation yet, or to
+        // tighten further when the analyser produces an exact estimate.
+        if (slot_cls == StackClass::Default) {
+            ::csp::stack_analysis_options opts;
+            // Profile-derived budget refines the magnitude of OP_BUDGET
+            // results when the walker can't resolve an indirect call.
+            // Recorded high-water + 50% margin replaces the flat 2 KB
+            // default; this is the indirect_call_budget surface promised
+            // by 🎯T3.4.4 (eval-time consumption keeps the program cache
+            // budget-agnostic).
+            if (size_t hw = ::csp::detail::get_stack_high_water(start_f); hw > 0) {
+                size_t refined = hw + hw / 2;
+                if (refined > opts.indirect_call_budget) {
+                    opts.indirect_call_budget = refined;
+                }
+            }
+            auto sa = ::csp::analyze_stack_depth_cached(
+                reinterpret_cast<const void*>(start_f), data, opts);
+            // 2× headroom + 2 KB absolute floor (ABI spill / signal frame).
+            size_t needed = sa.max_depth * 2 + kHeadroomFloor + sizeof(Imp);
+            if (sa.is_exact && needed <= kSmallUsable) {
+                slot_cls = StackClass::Small;
+            }
+        }
+    }
+#endif
+
     try {
 #if CSP_USE_VM_STACKS
         auto& pool = StackPool::instance();
-        auto region = pool.allocate();
+        auto region = pool.allocate(slot_cls);
         auto page_sz = pool.page_size();
         auto* top = static_cast<char*>(region.base) + region.total_size;
         auto* imp = reinterpret_cast<Imp*>(top) - 1;
@@ -450,15 +547,21 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 #endif
         new (imp) Imp(ctx, region);
         imp->stack_overflow_limit_ = region.overflow_limit;
+        // 🎯T3.4.4: stash entry function + stack top so suspend
+        // checkpoints can compute depth = (entry_sp - current_sp).
+        imp->entry_fn_ = start_f;
+        imp->entry_sp_ = static_cast<void*>(imp);
 #else
         // Under sanitizers: heap-allocate with stack analyzer right-sizing.
-        auto region = StackPool::instance().allocate();
+        auto region = StackPool::instance().allocate(slot_cls);
         size_t S = region.total_size / 16;
         auto* stk = static_cast<Imp::StackSlot*>(region.base);
         auto* imp = reinterpret_cast<Imp*>(stk + S) - 1;
         assert(((uintptr_t)imp % 16) == 0);
         auto ctx = make_fcontext(imp, (char*)imp - (char*)stk, start);
         new (imp) Imp(ctx, region);
+        imp->entry_fn_ = start_f;
+        imp->entry_sp_ = static_cast<void*>(imp);
 #endif
 #if CSP_TSAN
         imp->tsan_fiber_ = __tsan_create_fiber(0);

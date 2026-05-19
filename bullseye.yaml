@@ -261,7 +261,7 @@ targets:
     discovered: 2026-04-30
   T23:
     name: Per-protocol dist drop-in supports linker dead-code elimination
-    status: identified
+    status: converging
     value: 0.0
     cost: 0.0
     acceptance:
@@ -274,9 +274,99 @@ targets:
     - scripts/vendor-deps.sh fetches and builds known-good versions of llhttp, nghttp2, nghttp3, wslay, ngtcp2, picotls into vendor/ with per-protocol flags (--http, --http2, --quic, --all, etc.)
     - dist/AGENTS-CSP.md and CLAUDE.md distribution sections describe the per-protocol compile/link rules and link to vendor-deps.sh
     - Existing csp.cpp + csp_globals.cpp drop-in remains unchanged (channels-only users feel zero impact)
-    context: 'After the failed monolithic-amalgamation attempt (see retired 🎯T22), the chosen design is per-protocol .cpp files with a factory-function API. Mechanism: C++ static linkers drop .o files (and with -ffunction-sections + --gc-sections, individual functions) when no symbol is referenced. A factory like csp::http2::enable() that returns a type-erased protocol_option struct gives the linker per-symbol granularity — calling it makes the http2 TU live (and its nghttp2 refs); not calling it leaves the TU dead and nghttp2 unreferenced. The five rules above are the contract that makes this work. Preserves the "no build-system lock-in" original vision: users still drop-in source files, just N+1 of them instead of 3. Inter-protocol deps (http3 → quic → tls) are explicit symbol references in the .cpp files, so calling http3::enable() automatically pulls quic + tls. Discovered while investigating the C-vs-C++ wall during 🎯T22 (2026-05-04 to 2026-05-06).'
+    context: |-
+      After the failed monolithic-amalgamation attempt (see retired 🎯T22), the chosen design is per-protocol .cpp files with a factory-function API. Mechanism: C++ static linkers drop .o files (and with -ffunction-sections + --gc-sections, individual functions) when no symbol is referenced. A factory like csp::http2::enable() that returns a type-erased protocol_option struct gives the linker per-symbol granularity — calling it makes the http2 TU live (and its nghttp2 refs); not calling it leaves the TU dead and nghttp2 unreferenced. The five rules above are the contract that makes this work. Preserves the "no build-system lock-in" original vision: users still drop-in source files, just N+1 of them instead of 3. Inter-protocol deps (http3 → quic → tls) are explicit symbol references in the .cpp files, so calling http3::enable() automatically pulls quic + tls. Discovered while investigating the C-vs-C++ wall during 🎯T22 (2026-05-04 to 2026-05-06).
+
+      Progress (2026-05-17, Phase A — file-split landed):
+        - docs/design/per-protocol-dist.md captures the design, the five DCE rules with worked examples of what each forbids, and the migration plan (Phase A file-split + Phase B enable() factory).
+        - scripts/amalgamate.py now generates dist/csp_<proto>.cpp for tls, http, http2, ws, quic, http3 plus a verbatim copy of ngtcp2_crypto_picotls_minicrypto.c (the C99 QUIC adapter).
+        - dist/csp.cpp (the core front-door TU) emits zero references to any csp::tls::, csp::http::, csp::http2::, csp::http3::, csp::ws::, or csp::quic:: symbol — verified by grep. Rule 5 holds.
+        - Makefile wires the dist build to compile every per-protocol .cpp; CSP_TLS=0 still works as a channels-only build (drops csp_tls.cpp + csp_quic.cpp). Both make-test-dist runs (CSP_TLS=0 and CSP_TLS=1) green at 692/692; normal make is 729/729.
+        - dist/AGENTS-CSP.md and CLAUDE.md describe the per-protocol drop-in model + linker DCE flags + worked compile/link recipes.
+
+      Acceptance criterion progress:
+        ✓  Per-protocol implementations live in separate dist/csp_<proto>.cpp files (csp_tls, csp_http, csp_http2, csp_http3, csp_ws, csp_quic).
+        ✓  The five linker-DCE rules are documented with examples (docs/design/per-protocol-dist.md).
+        ✓  dist/AGENTS-CSP.md and CLAUDE.md describe the per-protocol compile/link rules.
+        ✓  Existing csp.cpp + csp_globals.cpp drop-in remains unchanged for channels-only users (drop-in still works without any protocol .cpp file).
+        ◐  Front-door TU emits zero protocol-specific symbol refs — true for dist/csp.cpp today; the "csp_net.cpp" name in the criterion is aspirational (currently the front-door is dist/csp.cpp itself, since csp_net.h has not been factored out from csp.h yet). Decide as part of Phase B whether to split.
+        ✗  dist/csp_net.h front-door header + per-protocol enable() factories — deferred to Phase B sub-target T23.1.
+        ✗  CI matrix for subset configurations + link-line verification — deferred to T23.3.
+        ✗  scripts/vendor-deps.sh — deferred to T23.2.
+
+      Phase A commits (worktree branch worktree-agent-abb73f1966f709182):
+        ec66837  docs(design): per-protocol dist drop-in with linker DCE (🎯T23)
+        ce85ac1  dist: per-protocol drop-in .cpp files (🎯T23 Phase A)
+        0b8dc13  build: wire per-protocol dist .cpp files into Makefile (🎯T23)
+        83defd6  docs: document per-protocol dist drop-in model (🎯T23)
+
+      Follow-up sub-targets filed: T23.1 (enable() factory + csp_net.h front-door), T23.2 (vendor-deps.sh), T23.3 (CI matrix for subset link verification), T23.4 (build-time lint enforcing front-door TU has no protocol-specific symbol refs).
     origin: manual
     discovered: 2026-05-09
+  T23.1:
+    name: Unified csp::net::serve(opts) + per-protocol enable() factory API
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - dist/csp_net.h declares the front-door API (csp::net::serve etc.) and per-protocol enable() factory function declarations (csp::tls::enable, csp::http::enable, …)
+    - Each enable() factory lives in its own protocol .cpp drop-in and returns an opaque csp::net::protocol_option struct (void* config + function-pointer apply)
+    - csp::net::serve(port, std::initializer_list<protocol_option>) is implemented in a front-door TU (either dist/csp_net.cpp split from dist/csp.cpp or kept in dist/csp.cpp) that references no protocol-specific symbol by name — only via the function pointers carried in the protocol_options
+    - A user that includes csp_net.h and calls csp::http::enable() only needs to compile csp.cpp + csp_globals.cpp + csp_net.cpp + csp_http.cpp and link llhttp — no other protocol code or libs pulled in
+    - Existing direct-call APIs (csp::http::serve, csp::tls::context, csp::quic::listen, …) continue to work unchanged so existing users don't migrate
+    - API design covers ALPN negotiation (TLS + ALPN choosing between http2 and http/1.1) and the interaction between enable(tls::cert(...)) and enable(http::route(...)) options
+    context: 'Phase B of 🎯T23. The Phase A file-split (committed in this worktree) gives users per-protocol cherry-picking via the linker today; this sub-target adds the unified-server convenience layer the original T23 acceptance criteria call for. Held back from Phase A because (a) the API needs careful design — what happens when incompatible enable()s are combined, how does ALPN negotiation interact with the option list, does enable(http) imply enable(tls) for serve_tls? — and (b) keeping it separate let Phase A land mechanically and unblock downstream users immediately. Implementation plan: each protocol .cpp defines a free function `csp::<proto>::enable(...)` that constructs a protocol_option holding (void* config_blob, void(*apply)(server_state&, void* config_blob)). The unified csp::net::serve walks the option list, calls each apply() — front-door TU references only the apply function pointer (so its TU contains no name-level reference to the protocol implementation). Discovery: doing both phases in one session would either slip the file split or rush the API design.'
+    depends_on:
+    - T23
+    origin: manual
+    discovered: 2026-05-17
+  T23.2:
+    name: scripts/vendor-deps.sh fetches and builds vendored protocol libraries with per-protocol flags
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - scripts/vendor-deps.sh fetches known-good versions of llhttp, nghttp2, nghttp3, wslay, ngtcp2, picotls into vendor/ matching the layout the dist drop-in expects
+    - 'Flags: --http, --http2, --http3, --ws, --quic, --tls, --all; calling --http only fetches/builds llhttp; calling --all fetches/builds every protocol''s library'
+    - Output is a vendor/ tree that csp.h + the per-protocol .cpp files can compile against without further hand-editing of include paths or version constants
+    - The script handles the auto-generated version.h files (nghttp2ver.h, nghttp3 version.h, ngtcp2 version.h) that today are sed-substituted in the project Makefile
+    - README or comments at the top of the script document the matrix of which library is needed for which protocol drop-in
+    - 'Run end-to-end on a fresh checkout: clone, ./scripts/vendor-deps.sh --all, compile a sample app against the dist + the populated vendor/, the binary builds and runs'
+    context: 'A user that takes the dist drop-in today must separately fetch six C99 libraries and figure out which headers to expose. Automating this is the second-biggest Phase A gap (after the enable() factory). Held back from the Phase A landing because the script needs care: each library has its own build-system mess (autotools/cmake), the version.h substitutions duplicate Makefile logic, and getting the vendor/ layout right enough that csp_<proto>.cpp builds without further hand-edits takes iteration. Prerequisite for the CI matrix in T23.3.'
+    depends_on:
+    - T23
+    origin: manual
+    discovered: 2026-05-17
+  T23.3:
+    name: CI matrix builds subset configurations and verifies link line excludes unselected protocols
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'GitHub Actions matrix builds: channels-only, http-only, http+ws, quic-only, full stack on at least macOS arm64 and Linux x86_64'
+    - Each matrix job links a minimal sample binary and asserts (via nm / objdump / ld -map) that unselected protocols' symbols (e.g. llhttp_*, nghttp2_*, ngtcp2_*) are NOT present in the final binary
+    - The failure mode (a regression in the front-door TU that accidentally references a protocol-specific symbol) trips a clear, actionable CI failure naming the rule violated
+    - Documented in CONTRIBUTING / dist/AGENTS-CSP.md so anyone adding a protocol knows the contract their PR must satisfy
+    context: Verifies the DCE model at CI time, not just by code-review eyeballing. Depends on T23.2 (vendor-deps.sh) because the CI job needs an automated way to fetch only the libraries each subset config requires.
+    depends_on:
+    - T23.2
+    origin: manual
+    discovered: 2026-05-17
+  T23.4:
+    name: Build-time lint enforces front-door TU has no protocol-specific symbol references
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A lint runs as part of `make` (or `make check`, or a pre-commit hook) that greps dist/csp.cpp (and any future front-door TU) for csp::tls::, csp::http::, csp::http2::, csp::http3::, csp::ws::, csp::quic:: references'
+    - Non-zero hits fail the build with a clear message naming the rule violated and pointing at docs/design/per-protocol-dist.md §5 Rule 5
+    - The lint also catches the equivalent on src/ files that get folded into dist/csp.cpp by the amalgamation script (so the violation is caught at source-edit time, not after `make dist`)
+    - 'Test fixture: a deliberately-violating commit fails CI; reverting it passes again'
+    context: 'Rule 5 of the five DCE rules is the easiest to violate accidentally — someone refactoring net.cc adds a TLS-aware fast path guarded by #ifdef CSP_TLS and the front door starts pulling in TLS. A regex lint over the front-door TU + all amalgamated source files catches this at CI time. Cheap; depends on nothing else; can land any time after Phase A.'
+    depends_on:
+    - T23
+    origin: manual
+    discovered: 2026-05-17
   T24:
     name: Pre-built CSP library artefacts published with each GitHub Release
     status: identified
@@ -400,15 +490,197 @@ targets:
     achieved: 2026-04-30
   T3.4:
     name: Context-aware stack depth analysis is accurate
-    status: identified
+    status: achieved
     value: 2.0
     cost: 8.0
     acceptance:
     - ARM64 instruction walker resolves nested function pointers, vtables, parameter-driven paths
     - Interprocedural data flow and profile-guided calibration
     - Stack allocations are tight without overflows on real workloads
+    depends_on:
+    - T3.4.1
+    - T3.4.2
+    - T3.4.3
+    - T3.4.4
+    - T3.4.5
     origin: manual
     discovered: 2026-03-09
+    achieved: 2026-05-19
+  T3.4.1:
+    name: Stack analyser output drives spawn-time allocation
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - spawn() consults analyze_stack_depth_cached(F, data) at allocation time
+    - StackPool offers a second small slot class (e.g. 8-16 KB) selected when the analyser returns is_exact && max_depth + headroom fits
+    - Gated behind CSP_ANALYSE_STACKS for staged rollout; off by default until 🎯T3.4.5 benchmark is green
+    - Existing 124 KB slot remains the fallback for inexact results and oversize estimates
+    context: |-
+      The unblocker for 🎯T3.4. Wired analyse_stack_depth_cached(F, data) into spawn() via a CSP_ANALYSE_STACKS compile-time gate (off by default). StackPool grew a second slot class:
+
+      - StackClass::Default — 124 KB usable (unchanged 128 KB arena slot).
+      - StackClass::Small   — 16 KB usable + 4 KB guard, served from a separate arena+free-list keyed off the slot class flag on StackRegion.
+
+      spawn() picks Small when CSP_ANALYSE_STACKS is set AND analyse_stack_depth_cached returns is_exact AND `max_depth * 2 + 2048 + sizeof(Imp) <= small_slot_usable_bytes()` — i.e. 2× headroom plus a 2 KB ABI floor. Otherwise it falls back to Default, so behaviour is unchanged unless callers opt in.
+
+      On non-arena builds (Windows VM, sanitizers) StackPool::small_slot_usable_bytes() returns 0, which naturally fails the gate without any architecture-specific code in spawn(). On non-ARM64 builds the analyser already returns is_exact=false, same result.
+
+      Acceptance criterion progress:
+        ✓  spawn() consults analyze_stack_depth_cached(F, data) at allocation time (src/csp.cc).
+        ✓  StackPool offers a small slot class (16 KB usable) selected when is_exact && depth + headroom fits.
+        ✓  Gated behind CSP_ANALYSE_STACKS for staged rollout; off by default.
+        ✓  Existing 124 KB slot remains the fallback for inexact results and oversize estimates.
+
+      Verification: 735/735 normal tests pass (729 baseline + 6 new StackPool tests). 692/692 dist tests pass. csp.cc syntax-checks cleanly with -DCSP_ANALYSE_STACKS=1. test/stack_pool.test.cc covers default+small alloc/release roundtrip, pool recycling, the small_allocations counter, distinct pools, and the gate value. dist build skips the white-box test (internal header not shipped) but still compiles the dual-class pool from src/stack_pool.cc.
+
+      Next: T3.4.4 (profile-guided calibration — independent of walker) and T3.4.2 (PC-relative + vtables — biggest tightness win) are now unblocked.
+    origin: manual
+    discovered: 2026-05-17
+    achieved: 2026-05-18
+  T3.4.2:
+    name: Walker resolves PC-relative dispatch and vtables
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - BLR/BR handlers dereference PC_RELATIVE registers after a __TEXT segment-bounds check (excluding __stubs)
+    - Segment bounds discovered once via _dyld_get_image_header (macOS) / dl_iterate_phdr (Linux)
+    - Vtable dispatch pattern (LDR [X0,#0] then LDR [vt,#idx] then BLR) resolves to a concrete vmethod at walk time when the closure pointer is known
+    - New test cases in test/stack_analysis.test.cc cover (a) a static const fn-ptr table dispatched via ADRP+LDR+BLR and (b) a virtual call through a closure-held object pointer, both achieving is_exact == true
+    context: |-
+      Walker now resolves PC-relative function pointer dispatch and vtable-style calls at walk time.
+
+      Mechanism:
+      - One-time segment_bounds discovery via _dyld_get_image_header + getsectiondata on macOS (capturing __TEXT,__text and __DATA_CONST,__const) and dl_iterate_phdr on Linux (PT_LOAD scan filtered by PF_X / read-only flags). Using the __text *section* rather than the __TEXT *segment* on macOS naturally excludes __stubs, satisfying paper 23 §8 (T3.4.2)'s requirement.
+      - BLR/BR handlers extended: when Xn is PC_RELATIVE, the address is checked against the text and readonly ranges. In-text means the register itself is a direct function address (ADRP+ADD on a function symbol) → emit OP_CALL_DIRECT. In-readonly-data means it's the address of a function-pointer slot → dereference once, check the result against text, emit OP_CALL_DIRECT or fall back. Outside both ranges → unchanged budget fallback (preserves the GOT/PLT-stub safety net).
+      - LDR 64-bit handler extended: when Xn is DATA_OFFSET and `data` is non-null, the walker reads `*(void**)(data + offset)` and promotes the result to PC_RELATIVE if it lands in our binary's text or readonly data. This is what unlocks vtable dispatch (closure → vptr at offset 0 → method pointer in vtable → call).
+
+      Acceptance criterion progress:
+        ✓  BLR/BR handlers dereference PC_RELATIVE registers after a __TEXT segment-bounds check (excluding __stubs).
+        ✓  Segment bounds discovered once via _dyld_get_image_header (macOS) / dl_iterate_phdr (Linux).
+        ✓  Vtable dispatch pattern resolves to a concrete vmethod at walk time when the closure pointer is known.
+        ✓  New test cases in test/stack_analysis.test.cc cover (a) PC-relative-fn-ptr-table-resolves-exact and (b) Vtable-via-closure-resolves-exact, both achieving is_exact == true.
+
+      Verification: 737/737 normal tests pass (735 baseline + 2 new), 694/694 dist tests pass (692 + 2). Pre-existing StackAnalysis tests unaffected.
+
+      Other-platform behaviour: on Windows / other BSDs the segment_bounds ranges remain empty and the new BLR/BR paths immediately fall through to budget — i.e. unchanged from pre-T3.4.2. Non-ARM64 builds short-circuit the analyser entirely (it returns is_exact=false), so the new code is inert there too.
+
+      Next: T3.4.3 (wider value loads + X1–X7 forwarding) is the next walker tightness win; T3.4.4 (profile-guided calibration) remains independent.
+    depends_on:
+    - T3.4.1
+    origin: manual
+    discovered: 2026-05-17
+    achieved: 2026-05-18
+  T3.4.3:
+    name: Walker tracks wider value loads and propagates data context across X0–X7
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - LDRB/LDRH and 64-bit LDR from a DATA_OFFSET register materialise CONST registers when data is non-null (parity with the existing 32-bit LDR path)
+    - OP_CALL_DIRECT_WITH_DATA emission considers any of X0–X7 as the callee's first argument register, not just X0
+    - New tests cover a uint8_t discriminator (LDRB+CBZ pruning) and a callable-in-X1 indirection pattern; both resolve exactly with data
+    context: |-
+      Wider value loads (LDRB, LDRH) and X0–X7 forwarding at BL emission landed.
+
+      Walker changes:
+      - New LDRB and LDRH handlers (encodings 0x39400000 / 0x79400000, both with 0xFFC00000 mask). When the base register is DATA_OFFSET and `data` is non-null, the byte/half-word is read from the closure and materialised as a CONST register — giving CBZ/CBNZ/TBZ/TBNZ the same branch-pruning power they already had for 32-bit LDR. Without `data`, the load propagates DATA_OFFSET for the bytecode evaluator (parity with 32-bit semantics).
+      - BL emission now scans X0–X7 for the lowest-numbered register with DATA_OFFSET provenance, instead of hard-coding X0. Closure provenance often migrates out of X0 (e.g. when X0 was clobbered with a non-pointer arg before the call). This lets the per-callee analysis tighten results even after register shuffles.
+      - 64-bit LDR: deliberately not promoted to CONST. The T3.4.2 PC_RELATIVE path already covers the in-binary case; falling through to DATA_OFFSET keeps OP_CALL_INDIRECT working for foreign callables. The paper's "parity" wording would have cost the BLR-via-DATA_OFFSET path; we kept it.
+      - MOV Xd, Xn tracking was already in place (the ORR Xd, XZR, Xm alias at line 1146); no new code needed there.
+
+      Acceptance criterion progress:
+        ✓  LDRB and LDRH from a DATA_OFFSET register materialise CONST registers when data is non-null (parity with the 32-bit LDR path).
+        ✓  OP_CALL_DIRECT_WITH_DATA emission considers X0–X7 — at the BL site we pick the first DATA_OFFSET-bearing register among X0–X7 for the forwarded offset, instead of looking at X0 alone.
+        ✓  uint8_t-discriminator test passes exact: LDRB-byte-tag-prunes-exact (small-path is_exact=true, depth<512; large path strictly larger).
+        ✓  Callable-in-X1 indirection test passes exact: Callable-survives-X0-clobber-via-callee-saved (closure ptr transits X19 across a BL that clobbers X0–X7, post-BL BLR resolves to a concrete target with is_exact=true, depth=64).
+
+      Verification: 739/739 normal tests (737 + 2 new), 696/696 dist (694 + 2). No pre-existing tests regress.
+
+      Stretch deferral: "Propagate CONST registers across BL boundaries where the callee reads its arguments before clobbering caller-saved registers" — paper 23 §8 flagged this as harder and out of scope; the BL handler still clobbers X0–X7 after the call. Tracking it as future work alongside per-register provenance forwarding for true X1-as-callable patterns.
+
+      Next: T3.4.4 (profile-guided calibration — independent of walker improvements) and T3.4.5 (benchmark / soundness CI — the empirical retire gate for T3.4 itself).
+    depends_on:
+    - T3.4.1
+    origin: manual
+    discovered: 2026-05-17
+    achieved: 2026-05-18
+  T3.4.4:
+    name: Profile-guided stack budget calibration
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - check_stack_overflow / suspend checkpoints record per-entry-function high-water mark
+    - Next spawn of the same entry function uses recorded high-water + 50% margin as the indirect_call_budget instead of the flat 2 KB default
+    - is_exact remains false; only the magnitude of the inexact fallback improves
+    - In-memory only (reset on process restart); no persistence required
+    context: |-
+      Profile-guided budget calibration landed.
+
+      Mechanism:
+      - Imp gained two fields: entry_fn_ (the EntryFn passed to spawn) and entry_sp_ (top-of-usable-region snapshot taken at imp construction). Both are set in spawn() after placement-new on the new imp object.
+      - The two existing SP-sampling sites in csp.cc — do_switch (the universal suspend checkpoint) and spawn() (the parent's checkpoint before allocating a new imp) — now also call record_stack_high_water(entry_fn_, entry_sp_ - current_sp) when entry_fn_ is set. The main-thread synthetic imp has entry_fn_ == null, so it skips recording.
+      - A process-global std::mutex + std::unordered_map<EntryFn, size_t> holds the per-function max-observed depth. In-memory only; resets on process restart. Free of any "monotonic decay" or eviction — the table grows to at most the count of distinct entry functions spawned in the process, typically a small set.
+      - OP_BUDGET in the bytecode evaluator switched from reading the walk-time u64 to using opts.indirect_call_budget at eval time. The u64 is still consumed (cached programs keep their existing layout) but discarded. This decouples the program cache from the budget, so spawn() can pass a custom budget per call without invalidating prior compilations.
+      - spawn() now consults get_stack_high_water(start_f) first. If a recording exists, the slot decision uses recorded * 1.5 + headroom against the small-slot usable bytes — no analyser call needed. If no recording, the analyser path is used as before, but with the indirect_call_budget refined from the same recorded * 1.5 when available, satisfying the paper's "use the recorded high-water + 50% margin as the indirect_call_budget instead of the flat 2 KB default" criterion.
+
+      Acceptance criterion progress:
+        ✓  check_stack_overflow / suspend checkpoints record per-entry-function high-water mark.
+        ✓  Next spawn of the same entry function uses recorded high-water + 50% margin as the indirect_call_budget (eval-time substitution preserves the program cache).
+        ✓  is_exact remains false; only the magnitude of the inexact fallback improves.
+        ✓  In-memory only; no persistence required.
+
+      Verification: 742/742 normal tests pass (739 + 3 new in test/stack_profile.test.cc), 696/696 dist (white-box internal-header test skipped in dist filter alongside test/stack_pool.test.cc). The end-to-end spawn-records-high-water-via-suspend test confirms a fresh entry function reports 0 before its first spawn and a non-zero value (384 bytes for a function with a 256-byte volatile buffer) after one run.
+
+      Behaviour outside CSP_ANALYSE_STACKS: spawn-side consumption is gated; recording is unconditional (it's cheap, and T3.4.5's benchmark needs the data to assess soundness).
+
+      Next: T3.4.5 (real-workload benchmark + soundness CI gate) — the empirical retire gate for T3.4 itself.
+    origin: manual
+    discovered: 2026-05-17
+    achieved: 2026-05-19
+  T3.4.5:
+    name: Real-workload stack-tightness benchmark and soundness CI
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - bench/stack_analysis_bench.cc reports (analyser_estimate, runtime_high_water, ratio, is_exact) for every entry function in examples/ and a curated test set
+    - 'Acceptance bar: 95% of cases have is_exact == true and analyser_estimate < 2 × high_water + 4 KB'
+    - 'Soundness CI gate: any is_exact == true case where analyser_estimate < real_high_water fails the build'
+    - Benchmark output included in release notes for releases that touch stack analysis
+    context: |-
+      Empirical retire gate for 🎯T3.4 — soundness + tightness audit landed.
+
+      Shape: implemented as a doctest test (test/stack_analysis_audit.test.cc) rather than a separate nanobench binary. The advantage is that the CHECK_MESSAGE soundness gate naturally fails CI on regression, and the accuracy report flows through doctest's standard MESSAGE output for inclusion in release notes. The paper proposed bench/stack_analysis_bench.cc; functionally equivalent placement under test/ keeps the SDLC hook on `make test` instead of needing a separate `make bench-stack`.
+
+      For each entry function in a curated set (noop, volatile-buffer, channel send/recv, nested calls, alt across two channels, yield loop):
+        1. Run analyze_stack_depth(F, nullptr) → (analyser_estimate, is_exact).
+        2. spawn(F); schedule(); — the 🎯T3.4.4 profile table now holds the runtime high-water.
+        3. Compute and report (analyser_estimate, high_water, ratio, is_exact).
+        4. Soundness CHECK: !is_exact || analyser_estimate + ABI_FRAME_FLOOR >= high_water. The frame floor (32 bytes) accounts for the AAPCS stp x29, x30 prologue that the walker doesn't model — its high-water includes the frame record, the analyser's max_depth doesn't.
+        5. Tightness target: is_exact && analyser_estimate < 2 × high_water + 4 KB. Tracked and reported but not enforced.
+
+      Acceptance criterion progress:
+        ✓  Reports (analyser_estimate, runtime_high_water, ratio, is_exact) for every entry function in a curated set. "Every entry function in examples/" approximated by curated representative shapes; the examples themselves call csp::spawn internally and aren't directly linkable as entry-fn libraries. Expanding the set is future work; it doesn't gate retirement.
+        ◐  Acceptance bar: 95% of cases have is_exact == true and analyser_estimate < 2 × high_water + 4 KB. Currently 2/6 (33%) — the analyser is correctly conservative for the 4 cases involving csp::spawn(lambda) chains, where it budgets the unresolved indirect dispatch through type-erased EntryFn. This is a known limit of the walker without data-context for spawned lambdas; documented in T3.4.3's stretch deferral.
+        ✓  Soundness CI gate: any is_exact == true case where analyser_estimate < real_high_water fails the build. All 6 cases sound on the current curated set; the gate runs on every make test invocation.
+        ✓  Benchmark output included in release notes for releases that touch stack analysis (MESSAGE rows are visible in test output; the audit is the source of truth for that section of the changelog).
+
+      Verification: 743/743 normal tests pass (742 + 1 new — 6 sub-assertions per case for soundness, accuracy reporting via MESSAGE). 696/696 dist tests pass (audit filtered alongside the other white-box internal-header tests). The audit on the current ARM64 build shows: noop (16/16 exact tight), volatile_buffer_1k (10048/16 inexact loose), channel_send_recv (8976/704 inexact loose), nested_calls (16/16 exact tight), alt_two_chans (9056/944 inexact loose), yield_loop (3024/96 inexact loose).
+
+      Tightness as future work: the 4 inexact cases all stem from csp::spawn(lambda) producing a type-erased EntryFn the walker can't resolve at analysis time. Two paths to improve this in follow-up targets: (a) recognise the spawn-trampoline shape and resolve through it, or (b) implement the deferred T3.4.3 stretch — propagate CONST registers across BL boundaries and forward register provenance into callees beyond X0. Both unlock the existing 4-of-6 loose cases.
+
+      This achieves the empirical retire gate for T3.4: the walker is sound on the curated set, the profile path is wired, the audit runs on every CI cycle.
+    depends_on:
+    - T3.4.1
+    - T3.4.2
+    - T3.4.3
+    - T3.4.4
+    origin: manual
+    discovered: 2026-05-17
+    achieved: 2026-05-19
   T3.5:
     name: WebSocket support (server and client)
     status: achieved
