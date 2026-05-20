@@ -230,4 +230,28 @@ connection dial(const std::string& host, const std::string& service) {
     throw csp::error("dial failed: all addresses exhausted");
 }
 
+// --- Unified server (🎯T23.1) -----------------------------------------
+//
+// Walks the option list, calling each `apply()` so the protocol can stash
+// its server handle into `out.protocol_servers`. The front-door TU never
+// references any `csp::<proto>::` symbol by name — every per-protocol
+// behaviour is reached through the function pointer in `protocol_option`.
+// That keeps Rule 5 of the per-protocol DCE model intact: an `enable()`
+// the user never calls leaves its protocol TU dead, and the linker drops
+// the third-party libraries that protocol depended on.
+
+server serve(uint16_t port, std::initializer_list<protocol_option> opts) {
+    server out{.port = port, .protocol_servers = {}};
+    apply_context ctx{.port = port, .out = &out};
+    for (const auto& opt : opts) {
+        if (opt.apply != nullptr) {
+            opt.apply(ctx, opt.config);
+        }
+        if (opt.destroy != nullptr) {
+            opt.destroy(opt.config);
+        }
+    }
+    return out;
+}
+
 } // namespace csp::net

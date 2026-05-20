@@ -219,13 +219,30 @@ from the immediate file-split deliverable. The migration plan:
    direct-call API (`csp::http::serve`, `csp::tls::context`, …) continues to
    work unchanged; per-function DCE handles the no-call case. Document the
    five rules and gate them with code review + future lint.
-2. **Phase B (follow-up sub-target)**: Introduce the `enable()` factory
-   pattern + a unified `csp::net::serve(uint16_t port, std::initializer_list<csp::net::protocol_option>)` entry point. Each `enable()` factory lives in its own protocol TU and returns an opaque `protocol_option` (a
-   `void*` config + a function-pointer "apply"). The unified `serve` walks the
-   options, dispatches to the apply function pointers, and starts the right
-   protocol stack. Critically: the unified `serve` lives in `csp_net.cpp`
-   (the front-door TU) and references no protocol symbols by name — only via
-   the type-erased function pointers carried in the `protocol_option`s.
+2. **Phase B (initial release — 🎯T23.1)**: Introduce the `enable()`
+   factory pattern + a unified
+   `csp::net::serve(uint16_t port, std::initializer_list<csp::net::protocol_option>)`
+   entry point. Each `enable()` factory lives in its own protocol TU and
+   returns an opaque `protocol_option` (a `void* config` + a function-
+   pointer `apply` + an optional `destroy`). The unified `serve` walks the
+   option list and calls each `apply()`; each apply starts its protocol's
+   server (delegating to the existing direct-call API) and pushes the
+   typed server handle into the returned
+   `csp::net::server::protocol_servers` (a `std::vector<std::any>`).
+   Critically: the unified `serve` lives in `dist/csp.cpp` (the front-door
+   TU) and references no protocol symbols by name — only via the type-
+   erased function pointers carried in the `protocol_option`s.
+
+   Phase B ships in a minimum-viable shape: single-protocol case (e.g.
+   `csp::net::serve(8080, {csp::http::enable()})`) is fully wired. The
+   only protocol with a non-stub `enable()` in the initial drop is
+   `csp::http`; other protocols' factories will land as they're wired
+   through. ALPN negotiation across multiple options (TLS + ALPN
+   choosing between HTTP/1.1 and HTTP/2 on the same socket) is the
+   most consequential follow-up — it requires the TLS option's apply
+   to install an ALPN callback that consults the other applied options'
+   advertised protocol names, which is more careful than apply() running
+   in isolation. Filed for the design pass when a real user pulls.
 
 The reason for splitting Phase A and Phase B: the file split is mechanical
 and unblocks downstream users immediately. The unified-server API needs more

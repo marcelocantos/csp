@@ -114,6 +114,20 @@ struct server {
 server serve(uint16_t port, serve_options opts = {});
 server serve(const std::string& addr, uint16_t port, serve_options opts = {});
 
+// --- Factory for csp::net::serve (🎯T23.1) ---
+//
+// Returns a `csp::net::protocol_option` that, when passed to
+// `csp::net::serve(port, {...})`, starts an HTTP/1.1 server on that port
+// and stashes the resulting `csp::http::server` in
+// `csp::net::server::protocol_servers` (retrievable with
+// `std::any_cast<csp::http::server&>`).
+//
+// Calling this factory is what keeps `csp_http.cpp` and llhttp live in
+// the link; a build that doesn't reference `csp::http::enable()` (and
+// doesn't call `csp::http::serve` directly) drops both via `-dead_strip`
+// / `--gc-sections`.
+csp::net::protocol_option enable(serve_options opts = {});
+
 // --- Client ---
 
 struct fetch_options {
