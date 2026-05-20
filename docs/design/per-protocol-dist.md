@@ -196,9 +196,15 @@ This rule is the easiest to violate accidentally. We enforce it by:
 1. The amalgamation script excludes protocol .cc files from `dist/csp.cpp` —
    any new file added under `src/` that wants TLS or HTTP must be either
    gated into a per-protocol .cpp or excluded from the front-door TU.
-2. A grep-based lint (planned, see follow-up sub-target) scans `dist/csp.cpp`
-   for `csp::tls::`, `csp::http::`, `csp::http2::`, etc. — non-zero hits fail
-   the build.
+2. [`scripts/lint_frontdoor.py`](../../scripts/lint_frontdoor.py) (🎯T23.4)
+   greps `dist/csp.cpp` and every `src/` file that amalgamates into it for
+   `csp::tls::`, `csp::http::`, `csp::http2::`, `csp::http3::`, `csp::ws::`,
+   `csp::quic::` references. The lint strips comments before scanning so
+   docstrings referencing a protocol API don't trip it. Wired into `make`
+   (every build runs the lint; failure aborts the build with a message
+   naming the violated rule) and into `make bullseye` (the standing-
+   invariants check). Catches violations at source-edit time, not at
+   `make dist` time.
 
 ### Forward-looking factory API: `csp::<proto>::enable()`
 

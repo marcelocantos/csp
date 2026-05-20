@@ -512,15 +512,24 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 # --- Rules ---
 
 .PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples run-examples-ci dist iwyu clean \
-       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye
+       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor
 
 # Explicit default — keep `make` (no args) running the full test suite.
 # Without this, the `bullseye` rule below would become the default target
 # by virtue of appearing first.
 .DEFAULT_GOAL := test
 
-test: $(TARGET) check-md-links
+test: $(TARGET) check-md-links lint-frontdoor
 	./$(TARGET)
+
+# --- Front-door TU lint (🎯T23.4) ---
+# Enforces Rule 5 of the per-protocol DCE model: dist/csp.cpp (and the
+# src/ files amalgamated into it) must reference no csp::<proto>::
+# symbols. See docs/design/per-protocol-dist.md §5. Fast (~50 ms), runs
+# on every build so violations are caught at source-edit time, not at
+# make-dist time.
+lint-frontdoor:
+	@python3 scripts/lint_frontdoor.py
 
 # --- Standing invariants (consumed by `bullseye_convergence`) ---
 # Exit 0 if all green, non-zero on first violation. Stdout is relayed
@@ -538,6 +547,8 @@ bullseye:
 	 (echo "✗ tests (exit $$? — timeout=$(BULLSEYE_TEST_TIMEOUT)s)"; exit 1)
 	@python3 scripts/check_md_links.py >/dev/null && echo "✓ md-links" || \
 	 (echo "✗ md-links"; python3 scripts/check_md_links.py; exit 1)
+	@python3 scripts/lint_frontdoor.py >/dev/null && echo "✓ lint-frontdoor" || \
+	 (echo "✗ lint-frontdoor"; python3 scripts/lint_frontdoor.py; exit 1)
 	@test -z "$$(git status --porcelain)" && echo "✓ clean tree" || \
 	 (echo "✗ dirty tree"; git status --short; exit 1)
 
