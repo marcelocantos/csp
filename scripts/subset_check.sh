@@ -259,6 +259,7 @@ cxx_flags=(-std=c++20 -stdlib=libc++ -O2
            "${DEFINES[@]}"
            "${INCLUDES[@]}")
 cc_flags=(-O2 -ffunction-sections -fdata-sections
+          "${DEFINES[@]}"
           "${INCLUDES[@]}")
 
 cpp_objs=()
