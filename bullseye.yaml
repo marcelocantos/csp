@@ -301,6 +301,11 @@ targets:
         83defd6  docs: document per-protocol dist drop-in model (🎯T23)
 
       Follow-up sub-targets filed: T23.1 (enable() factory + csp_net.h front-door), T23.2 (vendor-deps.sh), T23.3 (CI matrix for subset link verification), T23.4 (build-time lint enforcing front-door TU has no protocol-specific symbol refs).
+    depends_on:
+    - T23.1
+    - T23.2
+    - T23.3
+    - T23.4
     origin: manual
     discovered: 2026-05-09
   T23.1:
@@ -316,13 +321,11 @@ targets:
     - Existing direct-call APIs (csp::http::serve, csp::tls::context, csp::quic::listen, …) continue to work unchanged so existing users don't migrate
     - API design covers ALPN negotiation (TLS + ALPN choosing between http2 and http/1.1) and the interaction between enable(tls::cert(...)) and enable(http::route(...)) options
     context: 'Phase B of 🎯T23. The Phase A file-split (committed in this worktree) gives users per-protocol cherry-picking via the linker today; this sub-target adds the unified-server convenience layer the original T23 acceptance criteria call for. Held back from Phase A because (a) the API needs careful design — what happens when incompatible enable()s are combined, how does ALPN negotiation interact with the option list, does enable(http) imply enable(tls) for serve_tls? — and (b) keeping it separate let Phase A land mechanically and unblock downstream users immediately. Implementation plan: each protocol .cpp defines a free function `csp::<proto>::enable(...)` that constructs a protocol_option holding (void* config_blob, void(*apply)(server_state&, void* config_blob)). The unified csp::net::serve walks the option list, calls each apply() — front-door TU references only the apply function pointer (so its TU contains no name-level reference to the protocol implementation). Discovery: doing both phases in one session would either slip the file split or rush the API design.'
-    depends_on:
-    - T23
     origin: manual
     discovered: 2026-05-17
   T23.2:
     name: scripts/vendor-deps.sh fetches and builds vendored protocol libraries with per-protocol flags
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -333,10 +336,9 @@ targets:
     - README or comments at the top of the script document the matrix of which library is needed for which protocol drop-in
     - 'Run end-to-end on a fresh checkout: clone, ./scripts/vendor-deps.sh --all, compile a sample app against the dist + the populated vendor/, the binary builds and runs'
     context: 'A user that takes the dist drop-in today must separately fetch six C99 libraries and figure out which headers to expose. Automating this is the second-biggest Phase A gap (after the enable() factory). Held back from the Phase A landing because the script needs care: each library has its own build-system mess (autotools/cmake), the version.h substitutions duplicate Makefile logic, and getting the vendor/ layout right enough that csp_<proto>.cpp builds without further hand-edits takes iteration. Prerequisite for the CI matrix in T23.3.'
-    depends_on:
-    - T23
     origin: manual
     discovered: 2026-05-17
+    achieved: 2026-05-19
   T23.3:
     name: CI matrix builds subset configurations and verifies link line excludes unselected protocols
     status: identified
@@ -363,8 +365,6 @@ targets:
     - The lint also catches the equivalent on src/ files that get folded into dist/csp.cpp by the amalgamation script (so the violation is caught at source-edit time, not after `make dist`)
     - 'Test fixture: a deliberately-violating commit fails CI; reverting it passes again'
     context: 'Rule 5 of the five DCE rules is the easiest to violate accidentally — someone refactoring net.cc adds a TLS-aware fast path guarded by #ifdef CSP_TLS and the front door starts pulling in TLS. A regex lint over the front-door TU + all amalgamated source files catches this at CI time. Cheap; depends on nothing else; can land any time after Phase A.'
-    depends_on:
-    - T23
     origin: manual
     discovered: 2026-05-17
   T24:

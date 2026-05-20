@@ -90,6 +90,15 @@ All dist files are generated from `src/`/`include/` by `scripts/amalgamate.py`
 C99 TU; the script copies it verbatim into `dist/` since it cannot be
 amalgamated into C++ alongside the other protocol implementations.
 
+External users fetch the third-party libraries via
+[`scripts/vendor-deps.sh`](scripts/vendor-deps.sh), which clones llhttp,
+picotls, nghttp2, nghttp3, ngtcp2, and wslay at pinned commits into
+`vendor/<name>/` and generates the autotools-style version headers.
+Per-protocol flags (`--http`, `--http2`, `--http3`, `--ws`, `--quic`,
+`--tls`, `--all`) match the drop-in `.cpp` files. The script is the
+canonical answer to "how do I get the deps the dist files need?" and is
+referenced from `dist/AGENTS-CSP.md`.
+
 ### Development source layout
 
 - **include/csp/csp.h** — Core API: `spawn`, `schedule`, `yield`, `chan`,
