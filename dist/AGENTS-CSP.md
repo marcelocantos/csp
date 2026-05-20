@@ -1114,5 +1114,16 @@ only way to make its TU live. See
 [`docs/design/per-protocol-dist.md`](https://github.com/marcelocantos/csp/blob/master/docs/design/per-protocol-dist.md)
 for the full discussion.
 
+The contract is enforced in CI by
+[`scripts/subset_check.sh`](https://github.com/marcelocantos/csp/blob/master/scripts/subset_check.sh)
+(🎯T23.3), which builds subset configurations (channels-only, http-only,
+http+ws, quic-only, full) on macOS arm64 and Linux x86_64. Each job runs
+`vendor-deps.sh` for that subset's libraries, compiles the drop-in plus a
+small sample, links with `-dead_strip` / `--gc-sections`, and uses `nm` to
+assert that libraries belonging to unselected protocols (`llhttp_`,
+`nghttp2_`, `nghttp3_`, `ngtcp2_`, `wslay_`, `ptls_`) are absent from the
+final binary. A regression that pulls an unselected protocol's symbols into
+the front-door TU trips a clear, named CI failure.
+
 Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to
 give coding agents CSP expertise.
