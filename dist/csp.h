@@ -3628,6 +3628,7 @@ inline csp::reader<std::string> lines(csp::io::fd_t fd,
 
 }
 
+#include <initializer_list>
 
 namespace csp::net {
 
@@ -3680,6 +3681,59 @@ listener listen(const std::string& addr, uint16_t port,
 
 connection dial(const std::string& host, uint16_t port);
 connection dial(const std::string& host, const std::string& service);
+
+// --- Unified server entry point (🎯T23.1) ------------------------------
+//
+// `csp::net::serve(port, {tls::enable(...), http::enable(), ...})` starts
+// a server on `port` running the per-protocol stacks named in the option
+// list. The option list is built from per-protocol `enable()` factories
+// living in their own drop-in .cpp files — calling, e.g., `http::enable()`
+// is what keeps `csp_http.cpp` (and llhttp) live in the link; an enable()
+// that's not called leaves its protocol TU dead and the third-party
+// library it depends on dropped by `-dead_strip` / `--gc-sections`.
+//
+// The opaque `protocol_option` struct carries an `apply()` function pointer
+// — the only mechanism the front-door TU (`csp.cpp`) uses to invoke
+// per-protocol behaviour — so Rule 5 of the per-protocol DCE model holds
+// (docs/design/per-protocol-dist.md §5).
+//
+// Phase B (initial release): single-protocol case fully supported. ALPN
+// negotiation for `tls` + `{http, http2}` and the interaction between
+// multiple option types is follow-up work — see 🎯T23.1's context for
+// the design space.
+
+struct server;
+
+// Context handed to each `protocol_option::apply()`. Apply functions stash
+// their per-protocol server handles into `out->protocol_servers` (typed,
+// retrievable via `std::any_cast`).
+struct apply_context {
+    uint16_t port;       // port the user asked for
+    server*  out;        // destination for the protocol-specific server handles
+};
+
+// Opaque option produced by `csp::<proto>::enable()` factories. The
+// front-door TU references only the `apply` function pointer — never the
+// protocol's namespace by name — which keeps Rule 5 intact.
+struct protocol_option {
+    void* config = nullptr;
+    void (*apply)(apply_context&, void* config) = nullptr;
+    void (*destroy)(void* config) = nullptr;   // nullptr = no cleanup
+};
+
+// Unified server handle. Holds typed protocol-server objects (each
+// protocol's `serve()` return type) inside a `std::any` so the front-
+// door TU stays protocol-agnostic. Callers cast back with `std::any_cast`:
+//
+//     auto srv = csp::net::serve(8080, {csp::http::enable()});
+//     auto& http_srv = std::any_cast<csp::http::server&>(srv.protocol_servers[0]);
+//
+struct server {
+    uint16_t              port;
+    std::vector<std::any> protocol_servers;
+};
+
+server serve(uint16_t port, std::initializer_list<protocol_option> opts);
 
 } // namespace csp::net
 
@@ -3786,6 +3840,20 @@ struct server {
 // connection. Dropping the reader stops accepting.
 server serve(uint16_t port, serve_options opts = {});
 server serve(const std::string& addr, uint16_t port, serve_options opts = {});
+
+// --- Factory for csp::net::serve (🎯T23.1) ---
+//
+// Returns a `csp::net::protocol_option` that, when passed to
+// `csp::net::serve(port, {...})`, starts an HTTP/1.1 server on that port
+// and stashes the resulting `csp::http::server` in
+// `csp::net::server::protocol_servers` (retrievable with
+// `std::any_cast<csp::http::server&>`).
+//
+// Calling this factory is what keeps `csp_http.cpp` and llhttp live in
+// the link; a build that doesn't reference `csp::http::enable()` (and
+// doesn't call `csp::http::serve` directly) drops both via `-dead_strip`
+// / `--gc-sections`.
+csp::net::protocol_option enable(serve_options opts = {});
 
 // --- Client ---
 
@@ -8487,7 +8555,6 @@ connection dial(const std::string& host, uint16_t port,
 #ifndef _WIN32
 
 
-#include <initializer_list>
 
 namespace csp::signal {
 

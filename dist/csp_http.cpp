@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <memory>
 #include <sstream>
 #include <string>
 
@@ -784,6 +785,37 @@ response fetch(
         state.status_code,
         std::move(state.headers),
         std::move(state.body)};
+}
+
+// --- Factory for csp::net::serve (🎯T23.1) ---
+//
+// The `apply()` lambda lives in this TU (csp_http.cpp in the dist drop-in),
+// so referencing `csp::http::enable()` from user code pulls the entire TU
+// — including its llhttp_* references — into the link. The front-door TU
+// (csp.cpp) reaches enable() only through the function-pointer-shaped
+// `protocol_option`, which leaves Rule 5 (no protocol symbols in the front
+// door) intact.
+
+csp::net::protocol_option enable(serve_options opts) {
+    auto* cfg = new serve_options(std::move(opts));
+    return csp::net::protocol_option{
+        .config = cfg,
+        .apply = [](csp::net::apply_context& ctx, void* config) {
+            auto* c = static_cast<serve_options*>(config);
+            // Start a real HTTP/1.1 server and hand its handle to the
+            // unified net::server. csp::http::server is move-only (its
+            // endpoints reader can't be copied), so we wrap it in a
+            // shared_ptr to fit std::any's copyable requirement. Callers
+            // retrieve the typed handle via
+            // std::any_cast<std::shared_ptr<csp::http::server>>(s.protocol_servers[0]).
+            ctx.out->protocol_servers.emplace_back(
+                std::make_shared<csp::http::server>(
+                    csp::http::serve(ctx.port, *c)));
+        },
+        .destroy = [](void* config) {
+            delete static_cast<serve_options*>(config);
+        },
+    };
 }
 
 } // namespace csp::http

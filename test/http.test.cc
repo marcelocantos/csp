@@ -12,6 +12,67 @@ using namespace csp;
 
 TEST_SUITE("http") {
 
+// 🎯T23.1 — csp::net::serve(port, {csp::http::enable()}) factory API.
+TEST_CASE("enable---net-serve-with-http-enable") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        // Unified net::serve walks the option list and starts each
+        // protocol's server. http::enable() apply() calls csp::http::serve
+        // internally and stashes its csp::http::server (wrapped in a
+        // shared_ptr because std::any requires copyable).
+        auto srv = net::serve(0, {http::enable()});
+        REQUIRE(srv.protocol_servers.size() == 1);
+        auto http_srv =
+            std::any_cast<std::shared_ptr<http::server>>(srv.protocol_servers[0]);
+        REQUIRE(http_srv != nullptr);
+        w << http_srv->port;
+
+        http::endpoint ep;
+        if (http_srv->endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                CHECK(req.url == "/factory");
+                std::string body_str = "factory-OK";
+                bytes body(body_str.begin(), body_str.end());
+                req.respond << http::response{
+                    200,
+                    {{"Content-Type", "text/plain"}},
+                    std::move(body)};
+            }
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto conn = net::dial("127.0.0.1", port);
+        std::string req =
+            "GET /factory HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        bytes req_bytes(req.begin(), req.end());
+        conn.output << req_bytes;
+
+        std::string response;
+        bytes chunk;
+        while (conn.input >> chunk) {
+            response.append(chunk.begin(), chunk.end());
+        }
+
+        CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
+        CHECK(response.find("factory-OK") != std::string::npos);
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
 TEST_CASE("serve---basic-get") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);

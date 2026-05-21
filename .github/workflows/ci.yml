@@ -219,6 +219,47 @@ jobs:
               --args ./build/dist/csp_tests 2>&1 || true
           fi
 
+  # --- Subset-link DCE check (🎯T23.3) ---
+  # Verifies that an external user who picks only some protocol drop-ins
+  # ends up with a binary that contains only those protocols' libraries.
+  # Each matrix job fetches the matching libraries via vendor-deps.sh,
+  # compiles the dist drop-in + a sample, and uses `nm` to assert that
+  # other protocols' symbol prefixes (llhttp_, nghttp2_, ngtcp2_, wslay_,
+  # ptls_) are absent from the final binary.
+  subset-link:
+    name: subset-link (${{ matrix.subset }} on ${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        subset: [channels, http, http+ws, quic, full]
+        include:
+          - os: macos-14
+            name: macOS arm64
+          - os: ubuntu-24.04
+            name: Linux x86_64
+            packages: clang-18 libc++-18-dev libc++abi-18-dev
+            cc_override: 'CXX=clang++-18 CC=clang-18'
+
+    steps:
+      - uses: actions/checkout@v4
+        # Deliberately no `submodules` and no `lfs` — the whole point of
+        # this job is to simulate an external user who took only the dist
+        # drop-in plus scripts/vendor-deps.sh.
+
+      - name: Install Linux dependencies
+        if: matrix.packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+          # Make clang-18 the default `cc` / `c++` for the script.
+          echo "CC=clang-18" >> "$GITHUB_ENV"
+          echo "CXX=clang++-18" >> "$GITHUB_ENV"
+
+      - name: Run subset_check.sh
+        run: scripts/subset_check.sh "${{ matrix.subset }}"
+
   # --- Windows: CMake-based build + test ---
   windows:
     name: Windows x86_64
