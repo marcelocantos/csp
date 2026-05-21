@@ -406,15 +406,21 @@ targets:
     achieved: 2026-05-21
   T26:
     name: web_crawler example runs reliably to completion in all environments
-    status: achieved
+    status: identified
     value: 0.0
     cost: 0.0
     acceptance:
-    - '`./build/normal/examples/web_crawler` (direct invocation from any shell) completes within 60 seconds with the expected `Crawl complete: N pages fetched, M duplicates skipped.` output'
-    - The example produces no spurious 99% CPU spin during startup or shutdown
-    - The example is re-included in `make run-examples-ci` (removed from `EXAMPLE_CI_SKIP`)
-    - 'Root cause documented: as of 2026-05-12 the example completes under `make run-examples-ci` but hangs in `main_loop()` (sampled stack: runtime.cpp:299/309) when invoked directly. Likely env/TTY-dependent runtime state in the scheduler or imp dispatch.'
-    context: 'Discovered 2026-05-12 during the 🎯T19 follow-up. Two CI failures (Linux arm64 and Linux x86_64) hit the 60s timeout on web_crawler after the chat_server `<csignal>` fix landed. Local reproduction: direct invocation (`./build/normal/examples/web_crawler`) deterministically hangs at 99% CPU with zero output; `sample <pid>` shows the main thread spinning in `csp::detail::Runtime::main_loop()`. The exact same binary invoked via `make run-examples-ci` (which adds `gtimeout 60` and chdir but otherwise runs the binary directly) completes cleanly. Possibilities: scheduler busy-loop when stdin/stdout TTY state differs; signal-handler init race; environment-variable-dependent maxprocs (no CSP_MAXPROCS in this shell, but maybe a shell-inherited subtlety). Worth investigating because it''s a real runtime-level flakiness, not just an example-side bug.'
+    - './build/normal/examples/web_crawler (direct invocation from any shell, on every supported platform) completes within 60 seconds with the expected Crawl complete: N pages fetched, M duplicates skipped. output'
+    - No spurious 99% CPU spin during startup or shutdown (already addressed by T27)
+    - The example is re-included in make run-examples-ci (removed from EXAMPLE_CI_SKIP)
+    - Linux-only deadlock root cause identified and fixed
+    context: |-
+      Discovered 2026-05-12 during the 🎯T19 follow-up. Two failure modes:
+
+      1. **99% CPU busy-spin** — fixed by 🎯T27 (the main_loop quiescence wake without a hook).
+      2. **Linux-only deadlock** — REMAINING. As of 2026-05-21 (PR #66 CI), the example completes on macOS arm64 but hangs past the 60s timeout on Linux x86_64 and Linux arm64. The 🎯T27 fix changed the symptom on Linux from 99% CPU spin to silent hang. Root cause is the deadlock — likely an imp suspended on a never-completing TCP read (per original analysis). Sanitiser builds pass, only the plain `test` job hits the timeout — so the deadlock is not a TSan/ASan-detectable bug.
+
+      `web_crawler` re-added to `EXAMPLE_CI_SKIP` until the Linux deadlock is diagnosed and fixed. The 60s wall-clock timeout in `run-examples-ci` is the safety net.
     origin: manual
     discovered: 2026-05-12
     achieved: 2026-05-21
