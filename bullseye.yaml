@@ -210,7 +210,7 @@ targets:
     achieved: 2026-05-17
   T2:
     name: Tier D combinators are implemented
-    status: identified
+    status: achieved
     value: 3.0
     cost: 5.0
     acceptance:
@@ -221,7 +221,7 @@ targets:
     context: Revised from original 6 to 4. `repeat` dropped (redundant with `cycle`), `compose` dropped (redundant with `operator|`), `amb` renamed to `race`.
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-28
+    achieved: 2026-05-21
   T20:
     name: Buffered `chan<T>(N)` does not move-before-commit on alt writes
     status: achieved
@@ -393,7 +393,7 @@ targets:
     discovered: 2026-05-09
   T25:
     name: task_scheduler example terminates cleanly after DAG completes
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -403,9 +403,10 @@ targets:
     context: 'Discovered 2026-05-12 during the 🎯T19 follow-up: two stray `task_scheduler` processes were spinning at 100% CPU for ~73 hours after `make run-examples-ci` wedged on them. The example was designed to finish on its own (it submits a DAG, drops the submit endpoint, and lets the dispatcher/workers/dashboard drain) but the signal-watcher imp spawned at main() startup keeps `schedule()` from quiescing. Workaround: 🎯T19 follow-up commit adds `task_scheduler` to `EXAMPLE_CI_SKIP` and wraps each example with a 60s timeout in run-examples-ci. This target tracks the actual fix to the example so it can be re-included.'
     origin: manual
     discovered: 2026-05-12
+    achieved: 2026-05-21
   T26:
     name: web_crawler example runs reliably to completion in all environments
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -416,9 +417,10 @@ targets:
     context: 'Discovered 2026-05-12 during the 🎯T19 follow-up. Two CI failures (Linux arm64 and Linux x86_64) hit the 60s timeout on web_crawler after the chat_server `<csignal>` fix landed. Local reproduction: direct invocation (`./build/normal/examples/web_crawler`) deterministically hangs at 99% CPU with zero output; `sample <pid>` shows the main thread spinning in `csp::detail::Runtime::main_loop()`. The exact same binary invoked via `make run-examples-ci` (which adds `gtimeout 60` and chdir but otherwise runs the binary directly) completes cleanly. Possibilities: scheduler busy-loop when stdin/stdout TTY state differs; signal-handler init race; environment-variable-dependent maxprocs (no CSP_MAXPROCS in this shell, but maybe a shell-inherited subtlety). Worth investigating because it''s a real runtime-level flakiness, not just an example-side bug.'
     origin: manual
     discovered: 2026-05-12
+    achieved: 2026-05-21
   T27:
     name: Runtime main_loop does not busy-spin when quiescent without a hook
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -428,9 +430,10 @@ targets:
     context: 'Diagnosed 2026-05-13 while investigating 🎯T26 (web_crawler example reliability). When CSP programs reach a quiescent-but-not-done state — all workers parked, no global work, no quiescence hook — `Runtime::main_loop` at `src/runtime.cpp:296-324` enters a tight busy-spin at 99% CPU. Root cause: the `park_cv.wait` predicate returns `true` whenever `all_parked()` is true, but the wake exists to fire the test-mode quiescence hook; with no hook installed, the wake leads to an immediate re-evaluation of the still-true predicate. Three fix candidates in docs/papers/22-main-loop-busy-spin.md; recommendation is (A) — guard the quiescence wake on an `atomic<bool>` mirror of `quiescence_hook_`''s registration state. Note: this is the *symptom* in web_crawler; the example also has a separate deadlock cause (🎯T26) — an imp suspended on a never-completing TCP read. Even after this fix, web_crawler will still hang on a wall clock when the deadlock condition arises, but it''ll be silent (no 99% CPU) and the CI timeout safety-net will catch it.'
     origin: manual
     discovered: 2026-05-13
+    achieved: 2026-05-21
   T28:
     name: All docs csp-flow blocks have rendered SVG references
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -450,6 +453,7 @@ targets:
       Filed 2026-05-19, after v0.15.0 release flagged the warning was still pending.
     origin: manual
     discovered: 2026-05-19
+    achieved: 2026-05-21
   T3:
     name: Runtime is production-ready for I/O workloads
     status: identified
@@ -873,7 +877,7 @@ targets:
     achieved: 2026-04-29
   T5:
     name: Unmodeled concurrent decision points have TLA+ specs
-    status: identified
+    status: achieved
     value: 3.0
     cost: 3.0
     acceptance:
@@ -882,7 +886,7 @@ targets:
     - Bug variants (`_Bug.tla`) for each new spec
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-27
+    achieved: 2026-05-21
   T6:
     name: Local Docker testing covers Linux scenarios
     status: achieved
@@ -987,7 +991,7 @@ targets:
     achieved: 2026-04-30
   T8:
     name: Signal handling is audited for correctness
-    status: identified
+    status: achieved
     value: 2.0
     cost: 2.0
     acceptance:
@@ -995,7 +999,7 @@ targets:
     - Any violations fixed or documented as acceptable
     origin: manual
     discovered: 2026-03-09
-    achieved: 2026-03-27
+    achieved: 2026-05-21
   T9:
     name: TSan is clean on all CI jobs
     status: achieved
