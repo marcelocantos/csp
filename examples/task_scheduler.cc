@@ -75,7 +75,7 @@ struct ProgressEvent {
     int id;
     std::string name;
     Status status;
-    std::string detail;   // e.g. "worker 2" or "timed out after 200ms"
+    std::string detail;   // e.g. "worker 2" or "after 200ms"
 };
 
 // ---------------------------------------------------------------------------
@@ -132,8 +132,6 @@ struct SchedulerHandle {
 };
 
 // Completion notification from worker to dispatcher.
-// id > 0: job succeeded; id < 0: job failed/timed_out (abs(id) is the job ID).
-// Positive IDs unblock dependents; negative IDs cascade failure downward.
 struct Completion { int id; bool success; };
 
 static SchedulerHandle start_scheduler(int num_workers) {
@@ -264,8 +262,11 @@ static SchedulerHandle start_scheduler(int num_workers) {
 // Dashboard
 // ---------------------------------------------------------------------------
 
-static void run_dashboard(reader<ProgressEvent> prog) {
-    spawn([r = std::move(prog)] {
+// run_dashboard spawns a dashboard imp and returns a reader that fires
+// (writer-death) when the dashboard exits. Callers can use ~r to join.
+static reader<poke_t> run_dashboard(reader<ProgressEvent> prog) {
+    chan<poke_t> done;
+    spawn([r = std::move(prog), done_w = std::move(done.w)] () mutable {
         ProgressEvent ev;
         while (r >> ev) {
             printf("  [%s] #%-2d %-12s %s\n",
@@ -273,7 +274,9 @@ static void run_dashboard(reader<ProgressEvent> prog) {
                    ev.name.c_str(), ev.detail.c_str());
             fflush(stdout);
         }
+        // done_w dropped on exit → caller sees ~done.r
     });
+    return std::move(done.r);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,24 +288,40 @@ int main() {
         printf("Task Scheduler — priority queue + DAG deps + per-job timeout\n");
         printf("(Send SIGINT / Ctrl-C to trigger graceful cancellation)\n\n");
 
-        // Top-level cancel scope: fires when guard() is called.
-        // Use shared_ptr so the signal watcher can safely call it after the
-        // outer imp has moved on to submitting jobs.
-        auto guard_ptr = std::make_shared<cancel_guard>(cancellation());
-
-        // Signal watcher: fires guard on SIGINT/SIGTERM.
+        // Signal setup BEFORE cancel scope so the producer/sentinel imps
+        // spawned inside signal::notify() do NOT inherit the cancel scope
+        // and are not interrupted when cancel fires on normal completion.
         auto sig = signal::notify({SIGINT, SIGTERM});
-        spawn([sig_r = std::move(sig), gp = guard_ptr] () mutable {
+
+        // Top-level cancel scope for SIGINT/SIGTERM graceful cancellation.
+        // The guard stays in this imp so its csp::local binding is
+        // properly scoped and destroyed here.
+        auto guard = cancellation();
+
+        // cancel_req: watcher sends here on SIGINT/SIGTERM to request cancel.
+        // stop_ch: outer imp drops writer when DAG completes to stop the watcher.
+        chan<poke_t> cancel_req;
+        chan<poke_t> stop_ch;
+
+        // Signal watcher: waits for SIGINT/SIGTERM or stop_ch writer death.
+        // On signal: sends to cancel_req so the outer imp fires cancel.
+        // On ~stop_ch.w (DAG done): exits without requesting cancel.
+        // Note: alt() is not cancel-aware so this watcher is safe inside the
+        // cancel scope.
+        spawn([sig_r = std::move(sig),
+               stop_r = std::move(stop_ch.r),
+               cancel_w = cancel_req.w.copy()] () mutable {
             int s;
-            if (sig_r >> s) {
+            if (alt(sig_r >> s, stop_r >> nullptr) == 0) {
                 printf("\n  [signal] caught %d — cancelling all jobs\n\n", s);
                 fflush(stdout);
-                (*gp)();
+                cancel_w << poke_t{};  // request outer imp to fire cancel
             }
+            // else: stop_ch writer dropped → DAG done, no cancel needed.
         });
 
         auto sched = start_scheduler(3);
-        run_dashboard(std::move(sched.progress));
+        auto dashboard_done = run_dashboard(std::move(sched.progress));
 
         // Submit the demo DAG.
         //
@@ -350,6 +369,18 @@ int main() {
         // Dropping submit lets the dispatcher know no more jobs are coming.
         // Dispatcher drains, workers drain, progress_ch closes, dashboard exits.
         sched.submit = {};
+
+        // Wait for dashboard done OR a cancel request from the signal watcher.
+        poke_t p;
+        if (alt(dashboard_done >> nullptr, cancel_req.r >> p) == 1) {
+            // Signal arrived: fire the cancel scope to stop all workers.
+            guard();
+            // Wait for dashboard to drain (workers catch canceled and exit).
+            try { dashboard_done >> nullptr; } catch (csp::canceled const&) {}
+        }
+
+        // Drop stop_ch writer → watcher exits →
+        // signal infrastructure cleans up → schedule() returns.
     });
 
     schedule();
