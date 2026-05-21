@@ -894,6 +894,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `count_forever<T>(start,step)` | producer | Unbounded numeric sequence |
 | `deaf<T>()` | consumer | Never-accepting endpoint |
 | `debounce<T>(dur,cfg)` | filter | Emit after quiet period, suppress rapid fire |
+| `diff<T>` | filter | Successive differences: emit `curr - prev` for each adjacent pair |
 | `default_if_empty<T>(val)` | filter | Emit default if input closes empty |
 | `delay<T>(dur)` | filter | Delay each value independently |
 | `distinct<T>()` | filter | Suppress consecutive duplicates |
@@ -902,6 +903,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `fallback<T>(readers)` | producer | Sequential failover: try each reader, use first that produces |
 | `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
 | `first<T>(n)` | filter | Take first n elements |
+| `frame<T>(n,timeout)` | filter | Collect into frames of up to n elements; flush partial on timeout or input close |
 | `first_wins<T>(readers...)` | producer | Read from whichever source responds first, discard the rest |
 | `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
 | `foreach_emit<T,S,U>(init,update,extract)` | filter | Generalized scan: separate state update and extraction |
@@ -927,7 +929,9 @@ All in `namespace csp::part` (included via `csp.h`).
 | `parallel_map<A,B>(n,f,cfg)` | filter | Concurrent N-worker transform; `cfg.ordered` preserves input order |
 | `partition<T>(n,f)` | function | Route to N outputs by classifier |
 | `quantize<T>(f)` | function | Variable-size batching |
+| `race<T>(readers)` | producer | Priority-biased merge: earlier sources win on simultaneous ready |
 | `reduce<T,A>(init,f)` | filter | Fold to single value |
+| `reorder<T,Key>(key_fn,initial)` | filter | Resequence out-of-order stream by key (contiguous ascending keys) |
 | `round_robin<T>(n)` | function | Distribute across N outputs |
 | `rpc_client` | function | Request/reply client: channel-pair variant (separate req/rep channels) or embedded-reply variant (uses `request<Req,Resp>` pattern) |
 | `rpc_server` | function | Request/reply server: channel-pair variant or embedded-reply variant (uses `request<Req,Resp>` pattern) |
