@@ -15,7 +15,7 @@
  * Expected TLC result: invariant violation of NoDoubleAlloc.
  *   TLC will find a state where stack_state = "in_use_B" and imp_a_pc = "running".
  *
- * See also: docs/papers/24-stack-pool-reclamation.md
+ * See also: docs/papers/25-stack-pool-reclamation.md
  ******************************************************************************)
 
 EXTENDS Integers

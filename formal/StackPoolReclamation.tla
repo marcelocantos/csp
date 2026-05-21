@@ -39,7 +39,7 @@
  *   NoDoubleAlloc — the stack is never simultaneously in_pool and in_use_*
  *   NoUseAfterFree — ImpB can only use S after ImpA has switched off
  *
- * See also: docs/papers/24-stack-pool-reclamation.md
+ * See also: docs/papers/25-stack-pool-reclamation.md
  ******************************************************************************)
 
 EXTENDS Integers

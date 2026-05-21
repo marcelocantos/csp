@@ -40,7 +40,7 @@
  *   AllWorkersJoined — after shutdown complete, every worker has exited
  *   NoEarlyJoin      — shutdown does not join before all workers have exited
  *
- * See also: docs/papers/25-mn-worker-join.md
+ * See also: docs/papers/26-mn-worker-join.md
  ******************************************************************************)
 
 EXTENDS Integers, FiniteSets

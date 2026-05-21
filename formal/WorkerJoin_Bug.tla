@@ -18,7 +18,7 @@
  *   TLC will find a state where shutdown_pc = "done" but w3 is not in joined
  *   (because w3 was added after the single read and never woken/joined).
  *
- * See also: docs/papers/25-mn-worker-join.md
+ * See also: docs/papers/26-mn-worker-join.md
  ******************************************************************************)
 
 EXTENDS Integers, FiniteSets
