@@ -34,6 +34,10 @@ struct Runtime {
     // fake_clock advanced time), false to stop (real deadlock).
     std::function<bool()> quiescence_hook_;
     std::mutex hook_mu_;
+    // Mirror of quiescence_hook_ != nullptr. Updated under hook_mu_ but
+    // readable without holding hook_mu_ (e.g., inside park_cv.wait predicate
+    // where acquiring hook_mu_ would violate the locking order with park_mu).
+    std::atomic<bool> has_hook_{false};
 
     // Dynamic processor pool management.
     std::atomic<int> num_procs_{0};     // Current live P count

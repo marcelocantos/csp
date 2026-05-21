@@ -42,6 +42,7 @@ fake_clock::~fake_clock() {
     auto& rt = detail::Runtime::instance();
     std::lock_guard<std::mutex> lk(rt.hook_mu_);
     rt.quiescence_hook_ = nullptr;
+    rt.has_hook_.store(false, std::memory_order_release);
 }
 
 void fake_clock::sleep_until(time_point tp) {
@@ -62,6 +63,7 @@ void fake_clock::sleep_until(time_point tp) {
                 if (!qs_.is_quiescent()) return true;  // imps still active
                 return advance_to_next();  // true=advanced, false=no timers
             };
+            rt.has_hook_.store(true, std::memory_order_release);
         }
     }
     internal::suspend();

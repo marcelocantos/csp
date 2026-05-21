@@ -1082,6 +1082,7 @@ fake_clock::~fake_clock() {
     auto& rt = detail::Runtime::instance();
     std::lock_guard<std::mutex> lk(rt.hook_mu_);
     rt.quiescence_hook_ = nullptr;
+    rt.has_hook_.store(false, std::memory_order_release);
 }
 
 void fake_clock::sleep_until(time_point tp) {
@@ -1102,6 +1103,7 @@ void fake_clock::sleep_until(time_point tp) {
                 if (!qs_.is_quiescent()) return true;  // imps still active
                 return advance_to_next();  // true=advanced, false=no timers
             };
+            rt.has_hook_.store(true, std::memory_order_release);
         }
     }
     internal::suspend();
@@ -3975,7 +3977,12 @@ namespace csp {
                     park_cv.wait(lk, [&] {
                         if (user_done()) return true;
                         if (has_global_work_.load(std::memory_order_acquire)) return true;
-                        return all_parked();  // quiescent — check hook
+                        // Only wake for quiescence when a hook is registered
+                        // (e.g. fake_clock). Without a hook there is nothing
+                        // useful to do when all workers are parked — sleeping
+                        // is correct; busy-spinning is not.
+                        if (has_hook_.load(std::memory_order_acquire) && all_parked()) return true;
+                        return false;
                     });
                 }
                 if (user_done()) break;

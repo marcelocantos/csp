@@ -299,7 +299,12 @@ namespace csp {
                     park_cv.wait(lk, [&] {
                         if (user_done()) return true;
                         if (has_global_work_.load(std::memory_order_acquire)) return true;
-                        return all_parked();  // quiescent — check hook
+                        // Only wake for quiescence when a hook is registered
+                        // (e.g. fake_clock). Without a hook there is nothing
+                        // useful to do when all workers are parked — sleeping
+                        // is correct; busy-spinning is not.
+                        if (has_hook_.load(std::memory_order_acquire) && all_parked()) return true;
+                        return false;
                     });
                 }
                 if (user_done()) break;
