@@ -74,7 +74,7 @@ targets:
     achieved: 2026-03-22
   T11:
     name: Scheduler is always M:N
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
     acceptance:
@@ -90,9 +90,10 @@ targets:
     context: M:N scheduler complete. `quiescence_scope` implemented for deterministic testing (scoped, inheritable via Imp::qs_). fake_clock thread-safe (mutex on pending_). fake_clock auto-advance via main_loop quiescence hook done.
     origin: manual
     discovered: 2026-03-29
+    achieved: 2026-05-21
   T12:
     name: Test names contain no spaces
-    status: identified
+    status: achieved
     value: 2.0
     cost: 1.0
     acceptance:
@@ -102,6 +103,7 @@ targets:
     context: Spaces in test names cause shell quoting issues with doctest's `-tc=` filter, especially inside lldb, scripts, and CI. All 667 names renamed to use hyphens.
     origin: manual
     discovered: 2026-04-02
+    achieved: 2026-05-21
   T13:
     name: Per-worker wake eliminates thundering herd
     status: achieved
@@ -129,7 +131,7 @@ targets:
     discovered: 2026-04-04
   T15:
     name: TLS uses PicoTLS instead of mbedTLS
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
     acceptance:
@@ -145,10 +147,10 @@ targets:
     context: 'mbedTLS uses internal pthread mutexes that cause SIGABRT under M:N fiber migration on Linux (lock on thread T1, unlock on T2). TSan also reports false races. PicoTLS has zero internal locking — thread-local PRNG only, harmless under migration. Buffer-in/buffer-out API integrates cleanly with CSP''s reactor. minicrypto backend is self-contained (cifra + micro-ecc, ~13.5K lines C). Limitation: minicrypto only supports secp256r1 keys and has no X.509 verifier. TLS 1.2 fallback can be added later via a second backend if needed.'
     origin: manual
     discovered: 2026-04-04
-    achieved: 2026-04-05
+    achieved: 2026-05-21
   T16:
     name: Dist-build test suite does not hang on CI
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
     acceptance:
@@ -158,7 +160,7 @@ targets:
     context: The dist build amalgamates all source into a single TU (`csp.cpp`),
     origin: manual
     discovered: 2026-04-07
-    achieved: 2026-04-07
+    achieved: 2026-05-21
   T17:
     name: Composable pull-based sized-read abstraction exists in csp::io
     status: identified
