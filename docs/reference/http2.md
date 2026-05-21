@@ -171,6 +171,7 @@ graph LR
   app -->|"request"| handler["handler"]
   handler -->|"response"| wire["→ client"]
 -->
+![http2 dispatch flow](diagrams/http2-dispatch-flow.svg)
 
 ## Flow control and backpressure
 
