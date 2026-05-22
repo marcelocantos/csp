@@ -121,9 +121,10 @@ targets:
     achieved: 2026-04-28
   T14:
     name: Dynamic scoping improvements
-    status: identified
+    status: set_aside
     value: 3.0
     cost: 6.0
+    set_aside_reason: Ill-defined. Acceptance is literally "TODO" and the context cuts off mid-sentence ("HAMT (231 lines) works and the paper-09 bugs are fixed. Not a"). The HAMT and paper-09 bug fixes it references as preconditions are already in place. There is no concrete "dynamic scoping improvement" specified to deliver. If a real follow-up emerges, file a new, scoped target rather than reviving this one.
     acceptance:
     - TODO
     context: HAMT (231 lines) works and the paper-09 bugs are fixed. Not a
