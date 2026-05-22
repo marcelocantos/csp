@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <cstdint>
 #include <mutex>
 
@@ -40,7 +41,14 @@ bool g_handler_installed[MAX_SIGNO + 1] = {};
 struct sigaction g_old_actions[MAX_SIGNO + 1] = {};
 
 void sig_handler(int sig) {
-    if (sig < 0 || sig > MAX_SIGNO) return;
+    // Save and restore errno: write() may set it, which would corrupt the
+    // errno value of the interrupted code.  Required by POSIX for handlers
+    // that call any function that modifies errno.
+    int saved_errno = errno;
+    if (sig < 0 || sig > MAX_SIGNO) {
+        errno = saved_errno;
+        return;
+    }
     uint64_t bit = 1ULL << sig;
     uint8_t byte = static_cast<uint8_t>(sig);
     int count = g_sig_pipe_count.load(std::memory_order_acquire);
@@ -49,6 +57,7 @@ void sig_handler(int sig) {
             ::write(g_sig_pipes[i].write_fd, &byte, 1);
         }
     }
+    errno = saved_errno;
 }
 
 void install_handler(int sig) {

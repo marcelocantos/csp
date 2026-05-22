@@ -51,6 +51,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [try_map](parts/try_map.md) | filter | Map with exception catching; errors to a side channel |
 | [where](parts/where.md) | filter | Forward only elements matching a predicate |
 | [scan](parts/scan.md) | filter | Running fold (accumulator) with intermediate results |
+| [diff](parts/diff.md) | filter | Successive differences: emit `curr - prev` for each adjacent pair |
 | [flat_map](parts/flat_map.md) | filter | Map each element to a sub-stream, then merge |
 | [flatten](parts/flatten.md) | filter | Flatten a stream of containers into individual elements |
 | [reduce](parts/reduce.md) | filter | Fold entire stream to a single output value |
@@ -68,6 +69,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [pairwise](parts/pairwise.md) | filter | Consecutive pairs from a stream |
 | [quantize](parts/quantize.md) | filter | Batch additive values into variable-size quanta |
 | [chunk_by](parts/chunk_by.md) | filter | Group consecutive elements where predicate holds between adjacent pairs |
+| [frame](parts/frame.md) | filter | Fixed-size frames with timeout flush for partial frames |
 
 ## Filtering
 
@@ -106,6 +108,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [switch_all](parts/switch_all.md) | filter | Flatten sub-streams with latest-wins cancellation |
 | [exhaust_all](parts/exhaust_all.md) | filter | Flatten sub-streams, ignoring new inputs while active |
 | [merge](parts/merge.md) | producer | Non-deterministic merge of N inputs |
+| [race](parts/race.md) | producer | Priority-biased merge: earlier sources win on simultaneous ready |
 | [mux](parts/mux.md) | producer | Non-deterministic merge of N heterogeneous inputs into `variant` |
 | [demux](parts/demux.md) | function | Split a `variant` stream into N typed readers |
 | [combine_latest](parts/combine_latest.md) | producer | Emit tuple of latest values whenever any input updates |
@@ -141,6 +144,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [conflate](parts/conflate.md) | filter | Merge pending values when downstream is slow |
 | [killswitch](parts/killswitch.md) | filter | Forward values until a keepalive channel dies |
 | [metrics](parts/metrics.md) | filter | Transparent passthrough reporting throughput stats on a side channel |
+| [reorder](parts/reorder.md) | filter | Resequence an out-of-order stream by key (unbounded lookahead, contiguous keys) |
 
 ## Lifecycle
 

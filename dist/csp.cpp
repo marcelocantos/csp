@@ -1082,6 +1082,7 @@ fake_clock::~fake_clock() {
     auto& rt = detail::Runtime::instance();
     std::lock_guard<std::mutex> lk(rt.hook_mu_);
     rt.quiescence_hook_ = nullptr;
+    rt.has_hook_.store(false, std::memory_order_release);
 }
 
 void fake_clock::sleep_until(time_point tp) {
@@ -1102,6 +1103,7 @@ void fake_clock::sleep_until(time_point tp) {
                 if (!qs_.is_quiescent()) return true;  // imps still active
                 return advance_to_next();  // true=advanced, false=no timers
             };
+            rt.has_hook_.store(true, std::memory_order_release);
         }
     }
     internal::suspend();
@@ -3975,7 +3977,12 @@ namespace csp {
                     park_cv.wait(lk, [&] {
                         if (user_done()) return true;
                         if (has_global_work_.load(std::memory_order_acquire)) return true;
-                        return all_parked();  // quiescent — check hook
+                        // Only wake for quiescence when a hook is registered
+                        // (e.g. fake_clock). Without a hook there is nothing
+                        // useful to do when all workers are parked — sleeping
+                        // is correct; busy-spinning is not.
+                        if (has_hook_.load(std::memory_order_acquire) && all_parked()) return true;
+                        return false;
                     });
                 }
                 if (user_done()) break;
@@ -4240,7 +4247,14 @@ bool g_handler_installed[MAX_SIGNO + 1] = {};
 struct sigaction g_old_actions[MAX_SIGNO + 1] = {};
 
 void sig_handler(int sig) {
-    if (sig < 0 || sig > MAX_SIGNO) return;
+    // Save and restore errno: write() may set it, which would corrupt the
+    // errno value of the interrupted code.  Required by POSIX for handlers
+    // that call any function that modifies errno.
+    int saved_errno = errno;
+    if (sig < 0 || sig > MAX_SIGNO) {
+        errno = saved_errno;
+        return;
+    }
     uint64_t bit = 1ULL << sig;
     uint8_t byte = static_cast<uint8_t>(sig);
     int count = g_sig_pipe_count.load(std::memory_order_acquire);
@@ -4249,6 +4263,7 @@ void sig_handler(int sig) {
             ::write(g_sig_pipes[i].write_fd, &byte, 1);
         }
     }
+    errno = saved_errno;
 }
 
 void install_handler(int sig) {
