@@ -75,6 +75,18 @@ TLC at 2 writers (440 states) and 3 writers (3,022 states): **all properties hol
 
 So the basic chan_op rendezvous protocol is formally verified correct for the contended single-channel case. The bug is **not** here.
 
+### Negative result 3 — not the buffered-chan filter imp's fan-out
+
+Wrote `formal/BufferedChanFilter.tla` modelling the filter's alt loop (1-slot buf, 1 writer doing N writes, M concurrent readers each doing 1 read). The model abstracts the rendezvous machinery — given the chan_op protocol is correct (negative 2), each successful registration on both sides leads to a handoff. Properties:
+
+- `TypeOK`, `ConservationOfValues`, `FilterStateConsistent` — invariants.
+- `EveryReaderServed` — liveness: every registered reader is eventually served.
+- `EnoughDelivered` — liveness: at least `|Readers|` values delivered.
+
+TLC at `Readers = {r1, r2, r3, r4}, NumWrites = 4` (1,766 states): **all properties hold**. The matching `BufferedChanFilter_Bug.tla` breaks the filter's re-arm-on-iteration logic (only registers on in once); TLC correctly catches the liveness violation in 85 states.
+
+The filter's abstract behaviour — sequential fan-out to multiple readers via successive alt iterations — is verified correct. The remaining suspect is **the implementation-level interaction** between the filter's 2-arm alt (input + output simultaneously) and the per-arm chan_op registration/wake — which the abstract model deliberately collapses. Modelling that fully needs to merge BufferedChanFilter with the alt + schedule + drain machinery from ChanWriteContention — substantially more state, future work.
+
 What this leaves on the table:
 
 - An imp that needs scheduling (probably the buffered-`frontier` filter imp,
