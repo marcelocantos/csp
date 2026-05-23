@@ -55,9 +55,44 @@ sleeps cleanly to the timeout.
 - **Not the rate-limit `sleep()`**: timing-only suspensions are not what
   hangs here — there is no scheduler tick waiting for time to advance.
 
-## What it almost certainly is
+## What it is NOT (added 2026-05-23)
 
-A **missed-wakeup race in the M:N scheduler's per-worker Note path**.
+Tried replacing `unpark_one()` with a brute-force wake-all variant — wake every parked / sleeping worker on every push instead of scanning for one. Result: **no improvement, still ~50% fail rate (9/20 pass).** Conclusion: the bug is not in the
+wake-exactly-one granularity. Workers are getting woken; they are not the bottleneck.
+
+What this leaves on the table:
+
+- An imp that needs scheduling (probably the buffered-`frontier` filter imp,
+  or a suspended worker/coordinator) is never getting `make_runnable()` /
+  `schedule()` called on it at all — the wake never *fires* in the first
+  place.
+- Or a `chan_op` rendezvous loses state: one side believes it rendezvoused
+  and continues; the other side stays suspended forever.
+
+Both shapes are consistent with the heisenbug timing pattern (anything that
+slows the contended-rendezvous window down eliminates the race).
+
+## Remaining hypothesis after the wake-all negative result
+
+A **missed `schedule()` call upstream of `unpark_one`** — the worker wake
+machinery is fine, but some imp that needs to become runnable never gets
+`make_runnable()` invoked on it. Likely candidates:
+
+- The buffered-`frontier` filter imp's alt completion path leaving the
+  filter imp suspended after delivering an item, when there are more
+  pending writes that should re-arm it.
+- A `chan_op` rendezvous on the unbuffered `results` channel where the
+  writer (worker) and reader (coordinator) both believe they completed
+  but only one is rescheduled.
+- A `prialt` two-phase commit where the second phase reschedules the
+  current imp but skips the peer because of an `in_global_` / `next_`
+  short-circuit in `Imp::schedule()` while the peer is in a transient
+  state.
+
+The heisenbug shape is consistent with all of these — slowing the
+contended-rendezvous window (with syscalls or gdb) gives the missed
+schedule call enough time to actually happen.
+
 The smoking gun is the heisenbug shape:
 
 - Adding any syscall in the coordinator path (`fflush`, `fprintf`,
