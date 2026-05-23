@@ -57,8 +57,23 @@ sleeps cleanly to the timeout.
 
 ## What it is NOT (added 2026-05-23)
 
-Tried replacing `unpark_one()` with a brute-force wake-all variant — wake every parked / sleeping worker on every push instead of scanning for one. Result: **no improvement, still ~50% fail rate (9/20 pass).** Conclusion: the bug is not in the
-wake-exactly-one granularity. Workers are getting woken; they are not the bottleneck.
+### Negative result 1 — not the worker-wake granularity
+
+Tried replacing `unpark_one()` with a brute-force wake-all variant — wake every parked / sleeping worker on every push instead of scanning for one. Result: **no improvement, still ~50% fail rate (9/20 pass).** Conclusion: the bug is not in the wake-exactly-one granularity. Workers are getting woken; they are not the bottleneck.
+
+### Negative result 2 — not the contended-chan-op rendezvous protocol
+
+Wrote `formal/ChanWriteContention.tla` modeling N writers (data senders) concurrently rendezvousing with 1 reader on an unbuffered channel, including the full `Imp::schedule` short-circuit ladder (`in_global_` / `suspending_` + `wake_pending_` / `in_local_`) and the `drain_suspended` clear/exchange/push cycle. Properties:
+
+- `TypeOK` — domain invariants on all state.
+- `AtMostOneMatch` — only one writer can be `alt_state = claimed` per reader scan.
+- `SignalImpliesClaimed` — signal is only set on claimed writers.
+- `NoLostWriter` — every claimed writer is eventually runnable (in_global / in_local / running) or has a pending action that will make it so.
+- `EveryMatchedWriterCompletes` — liveness: every matched writer eventually reaches `pc_writer = done`.
+
+TLC at 2 writers (440 states) and 3 writers (3,022 states): **all properties hold**. The companion `ChanWriteContention_Bug.tla` removes the `suspending_` check from the buggy `ReaderAltEndScheduleBuggy` action; TLC violates `NoScheduleDuringSuspend` in 60 states, confirming the spec is actually exercising what we think.
+
+So the basic chan_op rendezvous protocol is formally verified correct for the contended single-channel case. The bug is **not** here.
 
 What this leaves on the table:
 
@@ -72,22 +87,25 @@ What this leaves on the table:
 Both shapes are consistent with the heisenbug timing pattern (anything that
 slows the contended-rendezvous window down eliminates the race).
 
-## Remaining hypothesis after the wake-all negative result
+## Remaining hypothesis after both negative results
 
-A **missed `schedule()` call upstream of `unpark_one`** — the worker wake
-machinery is fine, but some imp that needs to become runnable never gets
-`make_runnable()` invoked on it. Likely candidates:
+The two negatives (wake-all granularity, single-channel chan_op rendezvous) leave the following candidates:
 
-- The buffered-`frontier` filter imp's alt completion path leaving the
-  filter imp suspended after delivering an item, when there are more
-  pending writes that should re-arm it.
-- A `chan_op` rendezvous on the unbuffered `results` channel where the
-  writer (worker) and reader (coordinator) both believe they completed
-  but only one is rescheduled.
-- A `prialt` two-phase commit where the second phase reschedules the
-  current imp but skips the peer because of an `in_global_` / `next_`
-  short-circuit in `Imp::schedule()` while the peer is in a transient
-  state.
+- **The buffered-`chan` filter imp's alt loop.** `chan<T>(N)` spawns a filter
+  imp running `alt(read from in, write to out)` in a loop (see the
+  body of `chan<T>::chan(size_t)` in `include/csp/csp.h`). Each alt
+  completion re-suspends the filter on a fresh prialt. A missed
+  re-arm here would manifest exactly as web_crawler's symptom — a
+  filter that delivered one batch then never delivers again.
+  **Modelling this is the next step.**
+- **Multi-channel coordination** between workers' frontier-read,
+  filter-deliver, and results-write. The protocol spans three imps
+  and two channels per worker; a `make_runnable` race across channels
+  is plausible.
+- **A non-protocol-level issue** (memory ordering on a specific
+  atomic, ABI difference between macOS and Linux libc++ futex
+  implementations). Lower probability but cannot be ruled out without
+  modelling the protocol layers exhaustively.
 
 The heisenbug shape is consistent with all of these — slowing the
 contended-rendezvous window (with syscalls or gdb) gives the missed
