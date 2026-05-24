@@ -247,6 +247,11 @@ static void run_worker(int id, reader<FetchReq> in, writer<CrawlResult> out,
 // ---------------------------------------------------------------------------
 
 int main() {
+    setbuf(stdout, nullptr);
+    // Diagnostic checkpoints for the Linux-only hang (🎯T26, paper 27).
+    // Remove once the hang is fixed.
+    fprintf(stderr, "[wc] main entry\n"); fflush(stderr);
+
     // Port channel: server imp sends its bound port to the coordinator.
     chan<uint16_t> port_ch;
     // Stop channel: coordinator drops stop_ch.w when the crawl is done.
@@ -255,8 +260,11 @@ int main() {
     // Server imp: bind, report port, accept connections until stop fires.
     spawn([port_w = std::move(port_ch.w),
            stop_r = std::move(stop_ch.r)] () mutable {
+        fprintf(stderr, "[wc] server: before http::serve\n"); fflush(stderr);
         auto srv = http::serve(0);
+        fprintf(stderr, "[wc] server: after http::serve, port=%d\n", srv.port); fflush(stderr);
         port_w << srv.port;
+        fprintf(stderr, "[wc] server: port sent\n"); fflush(stderr);
         port_w = {};
 
         http::endpoint ep;
@@ -276,9 +284,12 @@ int main() {
     // Coordinator imp: wait for port, run the crawl, signal server to stop.
     spawn([port_r = std::move(port_ch.r),
            stop_w = std::move(stop_ch.w)] () mutable {
+        fprintf(stderr, "[wc] coord: before port_r >> port\n"); fflush(stderr);
         uint16_t port;
         port_r >> port;
+        fprintf(stderr, "[wc] coord: after port_r >> port, port=%d\n", port); fflush(stderr);
         port_r = {};
+        fprintf(stderr, "[wc] coord: port_r closed\n"); fflush(stderr);
 
         constexpr int kWorkers   = 4;
         constexpr int kMaxDepth  = 3;
