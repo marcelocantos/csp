@@ -1,9 +1,81 @@
 # Paper 27 — `web_crawler` Linux-only deadlock
 
-🎯 Target: T26
-Status: **partially diagnosed — reproducible, root cause narrowed to runtime M:N
-wake path, not the example.**
-Filed: 2026-05-22, updated 2026-05-23 with docker-based repro findings.
+🎯 Target: T26 ✓ achieved 2026-05-26
+Status: **resolved**. Root cause: ident/fd namespace collision in
+`Reactor::fire_signal`. Fix in PR <pending>.
+Filed: 2026-05-22, updated 2026-05-23 with docker-based repro findings,
+resolved 2026-05-26.
+
+## Resolution
+
+The hang was **not** in the M:N scheduler's per-worker Note path — that was a
+red herring (negative results 1 and 2 in this paper are still correct; the
+chan_op rendezvous and worker wake are not at fault). The bug was in the
+reactor's event-dispatch shape:
+
+`Reactor::fire_signal(ident, ev)` checked `timer_writers_.erase(ident)` first
+and only fell back to `read_writers_.erase(fd)` / `write_writers_.erase(fd)`
+when the timer lookup missed. But **timer idents and fd numbers occupy the
+same numeric range**: timer idents come from `next_ident_` starting at 1, and
+fd numbers from the kernel start at 3 (after stdin/out/err) on a freshly-started
+process. A timer with ident=3 in flight at the same moment as fd=3's EPOLLIN
+firing would steal the listen-socket wake — the timer signal fired, the
+accept loop stayed parked, and pending connections sat unaccepted forever.
+
+The fix tags every timer ident with a high sentinel bit
+(`kTimerIdentBit = uintptr_t(1) << 63`) at the single point of generation
+(`create_timer`, Linux + macOS). `fire_signal` then dispatches on the bit:
+set → `timer_writers_`, clear → `read/write_writers_` keyed by the fd. Since
+fds are `int` (< 2³¹) and the bit is 2⁶³, the two namespaces are
+provably disjoint, so dispatch-by-value is unambiguous on every path — not
+just the ones this bug happened to expose. The ident stays an opaque
+cancellation token outside the reactor (the RAII `timer_signal` round-trips
+it to `cancel_timer` without interpreting it), so no caller has to know
+about the bit. The Windows reactor dispatches via typed callbacks rather
+than `fire_signal`, so it neither sets nor reads the bit.
+
+(An earlier draft passed an explicit `bool is_timer` parameter from the
+reactor loop instead. That worked but changed `fire_signal`'s signature and
+every call site, and only closed the paths it touched. The high-bit
+encoding is a smaller diff — signature and call sites unchanged — and
+eliminates the whole collision class.)
+
+The bug existed on macOS too, but kqueue's ident allocation patterns and
+fd numbering happened to make collisions rare in practice. Linux's epoll +
+timerfd combination, combined with web_crawler's heavy mix of short timers
+(rate-limit `sleep(100ms)`) and low-numbered fds, hit it ~50% of runs.
+
+### Why the earlier negative results pointed elsewhere
+
+The smoking-gun shape ("any sleep in the path → 50% hang; remove sleep →
+100% pass") looked like a scheduler wake bug because that's what was newly
+refactored. But removing sleep removed the source of timer idents, which
+removed the collision. The wake path was fine; the dispatch was wrong.
+
+### How it was found
+
+1. Reproduced reliably in a `ubuntu:24.04` arm64 container (matching CI):
+   ~50% hang rate with the default 100ms rate limit.
+2. Watchdog dump showed 13 imps alive, all `alt_state=ALT_WAITING`. 4
+   `byte_reader` imps stuck on connection reads, 1 `http/serve` imp stuck on
+   `wait_readable(listen_fd)`. Reactor's `read_writers_` had the listen fd
+   subscribed.
+3. `/proc/<pid>/fdinfo/<epfd>` showed the listen fd registered with
+   `events=0x40000000` — EPOLLONESHOT-disarmed, no EPOLLIN bit. The other
+   fds were correctly armed (`0x40000019`).
+4. TCP states: 4 connections in FIN_WAIT_2 on the client side — the kernel
+   had ESTABLISHED them and queued FIN + request bytes; the server hadn't
+   accepted yet.
+5. Adding `fprintf` to every `epoll_ctl` and `fire_signal` call: a line
+   `fire_signal ident=3 ev=r timer=1 erased=1` appeared during normal
+   operation. **A timer was being fired for "ident=3" when fd=3's EPOLLIN
+   should have fired.** Namespace collision.
+6. Fix: route by source, not by ident value.
+
+The bullet at the end of the original "smoking gun" section — "the bug
+appeared when CI started using `make run-examples-ci`" — was actually a
+coincidence: the per-worker-wake refactor was unrelated. The dispatch bug
+predates it.
 
 ## Symptom
 

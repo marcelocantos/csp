@@ -4971,6 +4971,8 @@ private:
 
     void loop();
     void wake();
+    // Dispatches to timer_writers_ when ident carries kTimerIdentBit,
+    // else to read/write_writers_ keyed by fd. (🎯T26)
     void fire_signal(uintptr_t ident, fd_event event);
 
 #ifdef __APPLE__

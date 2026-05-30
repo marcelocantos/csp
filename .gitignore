@@ -1,5 +1,7 @@
 build/
 build-dist/
+build-linux/
+build-linux-*/
 build-win/
 demos/build/
 *.d
