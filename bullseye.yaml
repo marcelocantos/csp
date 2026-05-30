@@ -407,7 +407,7 @@ targets:
     achieved: 2026-05-21
   T26:
     name: web_crawler example runs reliably to completion in all environments
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -416,15 +416,12 @@ targets:
     - The example is re-included in make run-examples-ci (removed from EXAMPLE_CI_SKIP)
     - Linux-only deadlock root cause identified and fixed
     context: |-
-      Discovered 2026-05-12 during the 🎯T19 follow-up. Two failure modes:
+      Achieved 2026-05-26. Root cause: ident/fd namespace collision in `Reactor::fire_signal`. The reactor used `timer_writers_.erase(ident)` first and only fell back to `read_writers_.erase(fd)` if no timer with that ident existed. But timer idents are produced by `next_ident_` starting at 1, and fd numbers from the kernel start in the same range (3, 4, 5…) — so a timer with ident=3 in flight would steal the wake intended for fd=3 (typically the listen socket). The fix tags every timer ident with a high sentinel bit (kTimerIdentBit = 1<<63) at generation in create_timer; fire_signal dispatches on the bit, making timer idents and fds provably disjoint (fds are int < 2^31). The ident stays an opaque cancellation token outside the reactor. Bug was Linux-specific in practice because timers and listen fds collided more readily on epoll's small fd numbers, but the same mis-dispatch existed in the macOS kqueue path and is fixed there too.
 
-      1. **99% CPU busy-spin** — fixed by 🎯T27 (the main_loop quiescence wake without a hook).
-      2. **Linux-only deadlock** — REMAINING. As of 2026-05-21 (PR #66 CI), the example completes on macOS arm64 but hangs past the 60s timeout on Linux x86_64 and Linux arm64. The 🎯T27 fix changed the symptom on Linux from 99% CPU spin to silent hang. Root cause is the deadlock — likely an imp suspended on a never-completing TCP read (per original analysis). Sanitiser builds pass, only the plain `test` job hits the timeout — so the deadlock is not a TSan/ASan-detectable bug.
-
-      `web_crawler` re-added to `EXAMPLE_CI_SKIP` until the Linux deadlock is diagnosed and fixed. The 60s wall-clock timeout in `run-examples-ci` is the safety net.
+      The 99% CPU busy-spin (failure mode 1) was fixed in 🎯T27. The deadlock (failure mode 2) is this fix.
     origin: manual
     discovered: 2026-05-12
-    achieved: 2026-05-21
+    achieved: 2026-05-26
   T27:
     name: Runtime main_loop does not busy-spin when quiescent without a hook
     status: achieved
