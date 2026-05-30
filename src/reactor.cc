@@ -244,6 +244,17 @@ Reactor& Reactor::instance() {
     return r;
 }
 
+// 🎯T26: timer idents (from next_ident_) and fd numbers (from the kernel)
+// both flow into fire_signal as a uintptr_t, and the kqueue/epoll dispatch
+// can't tell them apart by value alone — a timer with ident=3 would steal
+// the wake for fd=3. Tag every timer ident with this high bit so the two
+// occupy provably-disjoint ranges: fds are int (< 2^31), this bit is 2^63.
+// fire_signal routes on the bit; nothing outside the reactor interprets it
+// (callers treat the ident as an opaque cancellation token). The Windows
+// reactor dispatches via typed callbacks, not fire_signal, so it neither
+// sets nor reads this bit.
+static constexpr uintptr_t kTimerIdentBit = uintptr_t(1) << 63;
+
 // ============================================================
 // Platform: macOS (kqueue)
 // ============================================================
@@ -303,7 +314,8 @@ void Reactor::wake() {
 
 std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
     chan<> ch;
-    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed);
+    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed)
+               | kTimerIdentBit;
 
     {
         std::lock_guard<std::mutex> lk(signal_mu_);
@@ -371,10 +383,9 @@ void Reactor::fire_signal(uintptr_t ident, fd_event event) {
     size_t erased = 0;
     {
         std::lock_guard<std::mutex> lk(signal_mu_);
-        // On macOS, timer fire_signal is called with fd_event::read
-        // as a sentinel — we dispatch on ident presence in timer_writers_.
-        erased = timer_writers_.erase(ident);
-        if (!erased) {
+        if (ident & kTimerIdentBit) {
+            erased = timer_writers_.erase(ident);
+        } else {
             int fd = static_cast<int>(ident);
             if (event == fd_event::read)
                 erased = read_writers_.erase(fd);
@@ -472,7 +483,8 @@ void Reactor::wake() {
 
 std::pair<reader<>, uintptr_t> Reactor::create_timer(int64_t delay_ns) {
     chan<> ch;
-    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed);
+    auto ident = next_ident_.fetch_add(1, std::memory_order_relaxed)
+               | kTimerIdentBit;
 
     int tfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     assert(tfd >= 0);
@@ -561,8 +573,9 @@ void Reactor::fire_signal(uintptr_t ident, fd_event event) {
     size_t erased = 0;
     {
         std::lock_guard<std::mutex> lk(signal_mu_);
-        erased = timer_writers_.erase(ident);
-        if (!erased) {
+        if (ident & kTimerIdentBit) {
+            erased = timer_writers_.erase(ident);
+        } else {
             int fd = static_cast<int>(ident);
             if (event == fd_event::read)
                 erased = read_writers_.erase(fd);
@@ -599,6 +612,7 @@ void Reactor::loop() {
                 std::lock_guard<std::mutex> lk(signal_mu_);
                 auto it = timerfd_to_ident_.find(fd);
                 if (it != timerfd_to_ident_.end()) {
+                    // ident already carries kTimerIdentBit (set in create_timer).
                     ident = it->second;
                     // Drain the timerfd.
                     uint64_t val;
