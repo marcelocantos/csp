@@ -18,7 +18,11 @@ struct error : csp::error {
     error(int code);
 };
 
+class context;
 class conn;
+struct stream;
+struct stream_params;
+stream make_stream(context&, io::source, writer<bytes>, stream_params);
 
 /// Callback for custom certificate verification.
 /// Receives the server name and DER-encoded certificate chain.
@@ -53,6 +57,7 @@ private:
     struct impl;
     std::unique_ptr<impl> impl_;
     friend class conn;
+    friend stream make_stream(context&, io::source, writer<bytes>, stream_params);
 };
 
 class conn {

@@ -13,9 +13,12 @@ using namespace csp;
 // --- bytes_to_source: in-process adapter for tests ---
 //
 // Bridges a reader<bytes> into an io::source by spawning a small imp
-// that services read requests out of an internal leftover buffer.
-// Used to wire two `tls::stream`s together without going through
-// fds or sockets — the test pipes their ciphertext through chan<bytes>.
+// that services read requests from an internal leftover buffer.
+// Production sources read on demand too, so the shape is fair.
+//
+// Used to wire two `tls::stream`s together over chan<bytes> without
+// going through a real socket — the test pipes ciphertext through
+// in-process channels.
 
 static io::source bytes_to_source(reader<bytes> upstream) {
     chan<io::read_request> ch;
@@ -45,120 +48,69 @@ static io::source bytes_to_source(reader<bytes> upstream) {
     return std::move(ch.w);
 }
 
+// Accept-all verifier for self-signed test certs.
+static csp::tls::verify_fn accept_all =
+    [](const char*, const auto&) { return true; };
+
 // --- Tests ---
 
-// Stage 2 stub: passthrough through a single stream.  Bytes written
-// to plaintext_out emerge on the ciphertext side; bytes injected
-// into the ciphertext source emerge from plaintext_in.
-TEST_CASE("TlsStream---Stub-passthrough-single-stream") {
+// Full TLS handshake + bidirectional plaintext exchange via in-process
+// chan<bytes> pairs.  Both `make_stream` calls run concurrently in
+// spawned imps because the handshake is interleaved; calling them
+// sequentially on one imp would deadlock the first call waiting for
+// the second.
+TEST_CASE("TlsStream---Handshake-and-roundtrip-loopback") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
-    // ct_in_ch is buffered because bytes_to_source only reads on demand
-    // (per request from the stream).  Sequential push-then-read inside a
-    // single imp would deadlock on an unbuffered channel.
-    chan<bytes> ct_in_ch(8);  // test → stream's ciphertext_in
-    chan<bytes> ct_out_ch;    // stream's ciphertext_out → test
-
-    tls::context ctx(tls::context::client);
-    auto s = tls::make_stream(
-        ctx,
-        bytes_to_source(std::move(ct_in_ch.r)),
-        std::move(ct_out_ch.w),
-        {});
-
-    std::atomic<bool> done{false};
-    bytes read_back;
-    bytes wrote_through;
-
-    // Producer side: push ciphertext in, expect stream to deliver it as
-    // plaintext_in; also push plaintext out, expect it on ct_out_ch.
-    spawn([&,
-           s = std::move(s),
-           ct_in_w = std::move(ct_in_ch.w),
-           ct_out_r = std::move(ct_out_ch.r)]() mutable {
-        // 1. Feed bytes into ciphertext_in, read them out of plaintext_in.
-        bytes msg{'H', 'i'};
-        ct_in_w << msg;
-
-        bytes got = s.plaintext_in(8);
-        read_back = std::move(got);
-
-        // 2. Push bytes into plaintext_out, read them out of ciphertext_out.
-        bytes outgoing{'B', 'y', 'e'};
-        s.plaintext_out << outgoing;
-
-        bytes received;
-        ct_out_r >> received;
-        wrote_through = std::move(received);
-
-        done.store(true, std::memory_order_relaxed);
-    });
-
-    csp::schedule();
-    CHECK(done.load());
-    REQUIRE(read_back.size() == 2);
-    CHECK(read_back[0] == 'H');
-    CHECK(read_back[1] == 'i');
-    REQUIRE(wrote_through.size() == 3);
-    CHECK(wrote_through[0] == 'B');
-    CHECK(wrote_through[1] == 'y');
-    CHECK(wrote_through[2] == 'e');
-    csp::shutdown_runtime();
-}
-
-// Two stubbed streams wired back-to-back simulate a TLS-protected
-// connection.  Plaintext on the client side appears as plaintext on
-// the server side and vice versa, with ciphertext channels in between.
-// In the stub, ciphertext is just the plaintext bytes — the wiring is
-// what's exercised.
-TEST_CASE("TlsStream---Stub-passthrough-loopback") {
-    csp::shutdown_runtime();
-    csp::set_maxprocs(2);
-
-    chan<bytes> c2s;  // client ciphertext → server
-    chan<bytes> s2c;  // server ciphertext → client
+    // Buffered: production sockets buffer in the kernel, so writes
+    // (especially close_notify) don't typically block.  Unbuffered
+    // in-process chans would deadlock on shutdown.
+    chan<bytes> c2s(16);  // client ciphertext → server
+    chan<bytes> s2c(16);  // server ciphertext → client
 
     tls::context client_ctx(tls::context::client);
+    client_ctx.set_verify(accept_all);
     tls::context server_ctx(tls::context::server);
-
-    auto server = tls::make_stream(
-        server_ctx,
-        bytes_to_source(std::move(c2s.r)),
-        std::move(s2c.w),
-        {.client_mode = false});
-
-    auto client = tls::make_stream(
-        client_ctx,
-        bytes_to_source(std::move(s2c.r)),
-        std::move(c2s.w),
-        {.client_mode = true});
+    server_ctx.load_cert("test/certs/server.crt");
+    server_ctx.load_key("test/certs/server.key");
 
     std::atomic<bool> client_done{false};
     std::atomic<bool> server_done{false};
     bytes server_received;
     bytes client_received;
 
-    // Client: send "ping", read reply.
-    spawn([client = std::move(client),
-           &client_received, &client_done]() mutable {
-        bytes ping{'p', 'i', 'n', 'g'};
-        client.plaintext_out << ping;
+    spawn([&,
+           src = bytes_to_source(std::move(c2s.r)),
+           sink = std::move(s2c.w)]() mutable {
+        auto server = tls::make_stream(server_ctx,
+                                       std::move(src),
+                                       std::move(sink),
+                                       {.client_mode = false});
 
-        bytes reply = client.plaintext_in(64);
-        client_received = std::move(reply);
-        client_done.store(true, std::memory_order_relaxed);
-    });
-
-    // Server: read request, echo "pong".
-    spawn([server = std::move(server),
-           &server_received, &server_done]() mutable {
         bytes req = server.plaintext_in(64);
         server_received = std::move(req);
 
         bytes pong{'p', 'o', 'n', 'g'};
         server.plaintext_out << pong;
         server_done.store(true, std::memory_order_relaxed);
+    });
+
+    spawn([&,
+           src = bytes_to_source(std::move(s2c.r)),
+           sink = std::move(c2s.w)]() mutable {
+        auto client = tls::make_stream(client_ctx,
+                                       std::move(src),
+                                       std::move(sink),
+                                       {.sni_hostname = "localhost",
+                                        .client_mode = true});
+
+        bytes ping{'p', 'i', 'n', 'g'};
+        client.plaintext_out << ping;
+
+        bytes reply = client.plaintext_in(64);
+        client_received = std::move(reply);
+        client_done.store(true, std::memory_order_relaxed);
     });
 
     csp::schedule();
@@ -171,37 +123,115 @@ TEST_CASE("TlsStream---Stub-passthrough-loopback") {
     csp::shutdown_runtime();
 }
 
-// When the consumer drops the plaintext_in reader after pulling some
-// data, the stream imp should shut down cleanly — no hangs, no leaks.
-TEST_CASE("TlsStream---Stub-consumer-drop-shuts-down") {
+// Multiple plaintext sends from the same side accumulate correctly.
+// Tests that plainbuf/recvbuf state survives across reads on the peer.
+TEST_CASE("TlsStream---Multiple-writes-aggregate") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
-    chan<bytes> ct_in_ch(8);  // buffered, same reason as the first test
-    chan<bytes> ct_out_ch;
+    chan<bytes> c2s;
+    chan<bytes> s2c;
 
-    tls::context ctx(tls::context::client);
-    auto s = tls::make_stream(
-        ctx,
-        bytes_to_source(std::move(ct_in_ch.r)),
-        std::move(ct_out_ch.w),
-        {});
+    tls::context client_ctx(tls::context::client);
+    client_ctx.set_verify(accept_all);
+    tls::context server_ctx(tls::context::server);
+    server_ctx.load_cert("test/certs/server.crt");
+    server_ctx.load_key("test/certs/server.key");
 
     std::atomic<bool> done{false};
+    bytes accumulated;
 
-    spawn([s = std::move(s),
-           ct_in_w = std::move(ct_in_ch.w),
-           &done]() mutable {
-        ct_in_w << bytes{'x'};
-        bytes got = s.plaintext_in(8);
-        CHECK(got.size() == 1);
-        // Drop `s` by letting the lambda exit — the stream's request
-        // and write channels die; the stub imp must clean up.
+    spawn([&,
+           src = bytes_to_source(std::move(c2s.r)),
+           sink = std::move(s2c.w)]() mutable {
+        auto server = tls::make_stream(server_ctx,
+                                       std::move(src),
+                                       std::move(sink),
+                                       {.client_mode = false});
+
+        // Read three chunks; concatenate.
+        for (int i = 0; i < 3; ++i) {
+            bytes chunk = server.plaintext_in(64);
+            accumulated.insert(accumulated.end(),
+                               chunk.begin(), chunk.end());
+        }
         done.store(true, std::memory_order_relaxed);
+    });
+
+    spawn([&,
+           src = bytes_to_source(std::move(s2c.r)),
+           sink = std::move(c2s.w)]() mutable {
+        auto client = tls::make_stream(client_ctx,
+                                       std::move(src),
+                                       std::move(sink),
+                                       {.sni_hostname = "localhost"});
+
+        client.plaintext_out << bytes{'A', 'A'};
+        client.plaintext_out << bytes{'B', 'B'};
+        client.plaintext_out << bytes{'C', 'C'};
     });
 
     csp::schedule();
     CHECK(done.load());
+    REQUIRE(accumulated.size() == 6);
+    CHECK(std::string(accumulated.begin(), accumulated.end()) == "AABBCC");
+    csp::shutdown_runtime();
+}
+
+// Consumer drops the stream after one read — close_notify should fire
+// and both ends should shut down cleanly without hanging.
+TEST_CASE("TlsStream---Consumer-drop-sends-close-notify") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<bytes> c2s;
+    chan<bytes> s2c;
+
+    tls::context client_ctx(tls::context::client);
+    client_ctx.set_verify(accept_all);
+    tls::context server_ctx(tls::context::server);
+    server_ctx.load_cert("test/certs/server.crt");
+    server_ctx.load_key("test/certs/server.key");
+
+    std::atomic<bool> client_done{false};
+    std::atomic<bool> server_saw_eof{false};
+
+    spawn([&,
+           src = bytes_to_source(std::move(c2s.r)),
+           sink = std::move(s2c.w)]() mutable {
+        auto server = tls::make_stream(server_ctx,
+                                       std::move(src),
+                                       std::move(sink),
+                                       {.client_mode = false});
+
+        // Read once, then read again expecting EOF (peer close_notify).
+        bytes first = server.plaintext_in(64);
+        CHECK(first.size() == 2);
+
+        auto reply = io::call_source(server.plaintext_in, 64);
+        bytes second;
+        if (!(reply >> second)) {
+            server_saw_eof.store(true, std::memory_order_relaxed);
+        }
+    });
+
+    spawn([&,
+           src = bytes_to_source(std::move(s2c.r)),
+           sink = std::move(c2s.w)]() mutable {
+        auto client = tls::make_stream(client_ctx,
+                                       std::move(src),
+                                       std::move(sink),
+                                       {.sni_hostname = "localhost"});
+
+        client.plaintext_out << bytes{'h', 'i'};
+        // Drop client by letting the lambda exit — stream imp sends
+        // close_notify, then exits.
+        client_done.store(true, std::memory_order_relaxed);
+    });
+
+    csp::schedule();
+    CHECK(client_done.load());
+    CHECK(server_saw_eof.load());
     csp::shutdown_runtime();
 }
 
