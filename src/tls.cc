@@ -376,6 +376,70 @@ io::fd_t conn::fd() const {
     return impl_->fd;
 }
 
+// --- stream (🎯T17 Stage 2 — passthrough stub) ---
+//
+// Single imp drives both directions via prialt.  No picotls calls yet;
+// bytes flow through unmodified.  The real handshake and crypto land
+// in subsequent stages without changing the public API.
+
+stream make_stream(
+    context&      /*ctx*/,
+    io::source    ciphertext_in,
+    writer<bytes> ciphertext_out,
+    stream_params /*params*/)
+{
+    chan<io::read_request> read_ch;
+    chan<bytes>            write_ch;
+
+    spawn([
+        read_r  = std::move(read_ch.r),
+        write_r = std::move(write_ch.r),
+        up_in   = std::move(ciphertext_in),
+        up_out  = std::move(ciphertext_out)
+    ]() mutable {
+        internal::descr("tls::stream-stub");
+
+        io::read_request req;
+        bytes            wbuf;
+
+        for (;;) {
+            int which = prialt(read_r >> req, write_r >> wbuf);
+            if (which < 0) {
+                // Either consumer endpoint dropped — shut down.  Dropping
+                // up_in / up_out propagates EOF to the upstream peers.
+                return;
+            }
+
+            if (which == 0) {
+                // Plaintext read request: pull from upstream, forward reply.
+                bytes chunk;
+                try {
+                    auto reply_r = io::call_source(up_in, req.value);
+                    if (!(reply_r >> chunk)) {
+                        // Upstream EOF: drop req.reply, consumer sees death.
+                        return;
+                    }
+                } catch (...) {
+                    req.reply._throw(std::current_exception());
+                    return;
+                }
+                (void)(req.reply << std::move(chunk));
+            } else {
+                // Plaintext write: forward to upstream sink.
+                if (!(up_out << std::move(wbuf))) {
+                    return;
+                }
+            }
+        }
+    });
+
+    return stream{
+        std::move(read_ch.w),
+        std::move(write_ch.w),
+        std::string{}
+    };
+}
+
 } // namespace csp::tls
 
 #endif // CSP_TLS
