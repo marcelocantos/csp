@@ -147,6 +147,22 @@ response fetch(
     bytes body = {},
     fetch_options opts = {});
 
+// Streaming-body overload (🎯T17): the request body is pulled from a
+// source rather than materialised in memory.  The caller declares the
+// total `body_length` up front; that becomes the Content-Length header.
+// The fetch loops pulling chunks from `body` and writing them to the
+// connection until `body_length` bytes have been sent.  If the source
+// EOFs early, throws csp::error.
+//
+// Use this for large uploads, file-backed requests, or any body that
+// shouldn't sit in memory all at once.
+response fetch(
+    method m, const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers,
+    io::source body,
+    size_t body_length,
+    fetch_options opts = {});
+
 // Convenience wrappers.
 inline response get(
     const std::string& url,
@@ -160,6 +176,16 @@ inline response post(
     std::vector<std::pair<std::string, std::string>> headers = {},
     fetch_options opts = {}) {
     return fetch(method::POST, url, std::move(headers), std::move(body), opts);
+}
+
+// Streaming post: body comes from a source.
+inline response post(
+    const std::string& url,
+    io::source body, size_t body_length,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    fetch_options opts = {}) {
+    return fetch(method::POST, url, std::move(headers),
+                 std::move(body), body_length, opts);
 }
 
 } // namespace csp::http
