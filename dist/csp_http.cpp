@@ -755,8 +755,17 @@ response fetch(
     llhttp_init(&parser, HTTP_RESPONSE, &settings);
     parser.data = &state;
 
+    // Read the response.  On non-Windows we use the pull-based source
+    // (🎯T17); Windows falls back to the legacy push-based input until
+    // WSADuplicateSocket-based source plumbing lands for SOCKETs.
     bytes chunk;
+#ifdef _WIN32
     while (!state.message_complete && (conn.input >> chunk)) {
+#else
+    while (!state.message_complete) {
+        auto reply_r = csp::io::call_source(conn.source, opts.read_chunk_size);
+        if (!(reply_r >> chunk)) break;
+#endif
         auto err = llhttp_execute(
             &parser,
             reinterpret_cast<const char*>(chunk.data()),
@@ -775,6 +784,107 @@ response fetch(
         // Connection closed before a complete response.
         // If we got headers, return what we have (server may have
         // signaled end-of-body via connection close).
+        llhttp_finish(&parser);
+        if (!state.message_complete && state.status_code == 0) {
+            throw csp::error("HTTP response incomplete: connection closed");
+        }
+    }
+
+    return response{
+        state.status_code,
+        std::move(state.headers),
+        std::move(state.body)};
+}
+
+// Streaming-body overload (🎯T17).  Writes headers, then pulls
+// `body_length` bytes from the source and writes them to the
+// connection.  Response read is identical to the buffered overload.
+response fetch(
+    method m, const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers,
+    io::source body,
+    size_t body_length,
+    fetch_options opts) {
+
+    auto parsed = parse_url(url);
+
+    // Build the request head with an explicit Content-Length.
+    std::ostringstream os;
+    os << method_name(m) << " " << parsed.path << " HTTP/1.1\r\n";
+    os << "Host: " << parsed.host;
+    if (parsed.port != 80) os << ":" << parsed.port;
+    os << "\r\n";
+
+    bool has_content_length = false;
+    bool has_connection = false;
+    for (auto& [k, v] : headers) {
+        os << k << ": " << v << "\r\n";
+        if (iequals(k, "Content-Length")) has_content_length = true;
+        if (iequals(k, "Connection"))     has_connection = true;
+    }
+    if (!has_content_length) {
+        os << "Content-Length: " << body_length << "\r\n";
+    }
+    if (!has_connection) {
+        os << "Connection: close\r\n";
+    }
+    os << "\r\n";
+
+    auto head = os.str();
+    bytes head_bytes(head.begin(), head.end());
+
+    auto conn = net::dial(parsed.host, parsed.port);
+    conn.output << std::move(head_bytes);
+
+    // Stream the body in chunks from the source.
+    size_t remaining = body_length;
+    while (remaining > 0) {
+        size_t want = std::min(remaining, opts.read_chunk_size);
+        auto reply_r = csp::io::call_source(body, want);
+        bytes chunk;
+        if (!(reply_r >> chunk)) {
+            throw csp::error("http::fetch: body source EOF before "
+                             "body_length bytes sent");
+        }
+        size_t got = chunk.size();
+        if (!(conn.output << std::move(chunk))) {
+            throw csp::error("http::fetch: connection write failed during body stream");
+        }
+        remaining -= got;
+    }
+
+    // Read the response (identical to the buffered-body overload).
+    resp_parse_state state;
+    llhttp_settings_t settings;
+    llhttp_settings_init(&settings);
+    settings.on_status            = resp_on_status;
+    settings.on_header_field      = resp_on_header_field;
+    settings.on_header_value      = resp_on_header_value;
+    settings.on_headers_complete  = resp_on_headers_complete;
+    settings.on_body              = resp_on_body;
+    settings.on_message_complete  = resp_on_message_complete;
+
+    llhttp_t parser;
+    llhttp_init(&parser, HTTP_RESPONSE, &settings);
+    parser.data = &state;
+
+    bytes chunk;
+    while (!state.message_complete) {
+        auto reply_r = csp::io::call_source(conn.source, opts.read_chunk_size);
+        if (!(reply_r >> chunk)) break;
+        auto err = llhttp_execute(
+            &parser,
+            reinterpret_cast<const char*>(chunk.data()),
+            chunk.size());
+        if (state.message_complete) break;
+        if (err != HPE_OK) {
+            throw csp::error(
+                std::string("HTTP response parse error: ") +
+                llhttp_errno_name(err));
+        }
+    }
+
+    if (!state.message_complete) {
         llhttp_finish(&parser);
         if (!state.message_complete && state.status_code == 0) {
             throw csp::error("HTTP response incomplete: connection closed");

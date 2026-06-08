@@ -4,6 +4,7 @@
 
 #include <csp/csp.h>
 #include <csp/io.h>
+#include <csp/source.h>
 
 #include <functional>
 #include <memory>
@@ -17,7 +18,11 @@ struct error : csp::error {
     error(int code);
 };
 
+class context;
 class conn;
+struct stream;
+struct stream_params;
+stream make_stream(context&, io::source, writer<bytes>, stream_params);
 
 /// Callback for custom certificate verification.
 /// Receives the server name and DER-encoded certificate chain.
@@ -52,6 +57,7 @@ private:
     struct impl;
     std::unique_ptr<impl> impl_;
     friend class conn;
+    friend stream make_stream(context&, io::source, writer<bytes>, stream_params);
 };
 
 class conn {
@@ -87,6 +93,46 @@ private:
     struct impl;
     std::unique_ptr<impl> impl_;
 };
+
+// --- Stream-shaped TLS interface (🎯T17 Stage 2) ---
+//
+// A `tls::stream` is the source-shaped successor to `conn`.  It wraps
+// a ciphertext byte-pair (an io::source for inbound, a writer<bytes>
+// for outbound) and exposes a plaintext byte-pair with the same shape.
+// Composes uphill into HTTP parsers and other source consumers.
+//
+// Currently a passthrough stub: bytes flow through unmodified.  Real
+// picotls integration lands in the next stages (handshake, then
+// encrypt/decrypt, then alerts/close_notify).
+//
+// The lifecycle model:
+//   - Either consumer endpoint dropped → stream imp shuts down, drops
+//     both upstream endpoints, exits.
+//   - Upstream source EOF → reply-writer drop propagates to consumer
+//     (consumer's `>>` returns false).
+//   - Upstream source error → `_throw` propagates across plaintext_in.
+//   - Upstream sink dead → stream imp exits silently.
+
+struct stream_params {
+    std::string sni_hostname;
+    std::vector<std::string> alpn;
+    bool client_mode = true;
+};
+
+struct stream {
+    io::source    plaintext_in;
+    writer<bytes> plaintext_out;
+    std::string   negotiated_alpn;
+};
+
+// Wrap a ciphertext source/sink pair with TLS, returning the plaintext
+// stream.  Stage 2 stub: passthrough — `ctx` and `params` are accepted
+// but unused, bytes flow through unmodified.
+[[nodiscard]] stream make_stream(
+    context&      ctx,
+    io::source    ciphertext_in,
+    writer<bytes> ciphertext_out,
+    stream_params params);
 
 } // namespace csp::tls
 

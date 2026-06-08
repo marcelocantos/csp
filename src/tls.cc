@@ -376,6 +376,268 @@ io::fd_t conn::fd() const {
     return impl_->fd;
 }
 
+// --- stream (🎯T17 Stages 2.2 – 2.4) ---
+//
+// Synchronous handshake on the calling imp, then a single steady-state
+// imp that drives both directions via prialt.  Plaintext queue and
+// ciphertext input buffer live in the imp; picotls owns the crypto state.
+//
+// Errors during handshake throw on the calling imp.  Errors during
+// steady-state surface via _throw on the next plaintext read reply.
+// Peer close_notify is propagated as EOF (reply-writer drop).
+
+namespace {
+
+constexpr size_t kHandshakeChunk = 4096;
+constexpr size_t kSteadyChunk    = 8192;
+
+using ptls_handle = std::unique_ptr<ptls_t, decltype(&ptls_free)>;
+
+// Drain a ptls_buffer_t into a fresh bytes vector and reset the buffer.
+bytes take_buffer(ptls_buffer_t& buf) {
+    bytes out(buf.base, buf.base + buf.off);
+    buf.off = 0;
+    return out;
+}
+
+// Drive handshake synchronously.  Throws csp::error / tls::error on failure.
+// Returns any leftover ciphertext bytes that arrived after the handshake
+// completed — these must be fed to ptls_receive first in the steady state.
+bytes drive_handshake(ptls_t* tls,
+                      io::source&     ciphertext_in,
+                      writer<bytes>&  ciphertext_out) {
+    ptls_buffer_t sendbuf;
+    uint8_t       sendbuf_small[512];
+    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+
+    bytes  chunk;
+    size_t chunk_pos = 0;
+
+    for (;;) {
+        const uint8_t* input  = nullptr;
+        size_t         inlen  = 0;
+        if (chunk_pos < chunk.size()) {
+            input = chunk.data() + chunk_pos;
+            inlen = chunk.size() - chunk_pos;
+        }
+
+        int ret = ptls_handshake(tls, &sendbuf, input, &inlen, nullptr);
+        chunk_pos += inlen;
+
+        if (sendbuf.off > 0) {
+            if (!(ciphertext_out << take_buffer(sendbuf))) {
+                ptls_buffer_dispose(&sendbuf);
+                throw csp::error("tls: ciphertext sink closed during handshake");
+            }
+        }
+
+        if (ret == 0) {
+            ptls_buffer_dispose(&sendbuf);
+            bytes leftover;
+            if (chunk_pos < chunk.size()) {
+                leftover.assign(chunk.begin() + static_cast<ptrdiff_t>(chunk_pos),
+                                chunk.end());
+            }
+            return leftover;
+        }
+        if (ret != PTLS_ERROR_IN_PROGRESS) {
+            ptls_buffer_dispose(&sendbuf);
+            throw error(ret);
+        }
+
+        // Need more input — pull a chunk from upstream.
+        if (chunk_pos >= chunk.size()) {
+            chunk.clear();
+            chunk_pos = 0;
+            bytes next;
+            auto reply_r = io::call_source(ciphertext_in, kHandshakeChunk);
+            try {
+                if (!(reply_r >> next)) {
+                    ptls_buffer_dispose(&sendbuf);
+                    throw csp::error("tls: ciphertext source EOF during handshake");
+                }
+            } catch (csp::error&) {
+                ptls_buffer_dispose(&sendbuf);
+                throw;
+            } catch (...) {
+                ptls_buffer_dispose(&sendbuf);
+                throw;
+            }
+            chunk = std::move(next);
+        }
+    }
+}
+
+} // namespace
+
+stream make_stream(
+    context&      ctx,
+    io::source    ciphertext_in,
+    writer<bytes> ciphertext_out,
+    stream_params params)
+{
+    bool is_server = !params.client_mode;
+    ptls_handle tls(ptls_new(&ctx.impl_->ctx, is_server ? 1 : 0), &ptls_free);
+    if (!tls) throw error(PTLS_ERROR_NO_MEMORY);
+
+    if (!is_server && !params.sni_hostname.empty()) {
+        int ret = ptls_set_server_name(tls.get(), params.sni_hostname.c_str(), 0);
+        if (ret != 0) throw error(ret);
+    }
+
+    // ALPN selection: wired in a later stage.  Stage 2.4 leaves the
+    // negotiated_alpn empty regardless of params.alpn.
+
+    bytes initial_recv = drive_handshake(tls.get(), ciphertext_in, ciphertext_out);
+
+    chan<io::read_request> read_ch;
+    chan<bytes>            write_ch;
+
+    spawn([
+        tls     = std::move(tls),
+        read_r  = std::move(read_ch.r),
+        write_r = std::move(write_ch.r),
+        up_in   = std::move(ciphertext_in),
+        up_out  = std::move(ciphertext_out),
+        recvbuf  = std::move(initial_recv),
+        plainbuf = bytes{}
+    ]() mutable {
+        internal::descr("tls::stream");
+
+        bool peer_closed = false;
+
+        // Decrypt from recvbuf into plainbuf until plainbuf has bytes
+        // (or EOF / close_notify).  Pulls more ciphertext from upstream
+        // when recvbuf empties.  Returns false on EOF / clean close.
+        auto fill_plainbuf = [&]() -> bool {
+            if (peer_closed) return false;
+            while (plainbuf.empty()) {
+                if (!recvbuf.empty()) {
+                    ptls_buffer_t decbuf;
+                    uint8_t       decbuf_small[2048];
+                    ptls_buffer_init(&decbuf, decbuf_small, sizeof(decbuf_small));
+                    size_t consumed = recvbuf.size();
+                    int    ret      = ptls_receive(tls.get(), &decbuf,
+                                                   recvbuf.data(), &consumed);
+                    recvbuf.erase(recvbuf.begin(),
+                                  recvbuf.begin() + static_cast<ptrdiff_t>(consumed));
+
+                    if (ret == PTLS_ALERT_TO_PEER_ERROR(PTLS_ALERT_CLOSE_NOTIFY)) {
+                        ptls_buffer_dispose(&decbuf);
+                        peer_closed = true;
+                        return false;
+                    }
+                    if (ret != 0 && ret != PTLS_ERROR_IN_PROGRESS) {
+                        int e = ret;
+                        ptls_buffer_dispose(&decbuf);
+                        throw error(e);
+                    }
+                    if (decbuf.off > 0) {
+                        plainbuf = take_buffer(decbuf);
+                        ptls_buffer_dispose(&decbuf);
+                        return true;
+                    }
+                    ptls_buffer_dispose(&decbuf);
+                    // No plaintext yet — need more ciphertext.
+                }
+
+                // Pull more ciphertext.
+                bytes chunk;
+                auto  reply_r = io::call_source(up_in, kSteadyChunk);
+                if (!(reply_r >> chunk)) {
+                    // Unclean transport shutdown — treat as EOF for now.
+                    // RFC 8446 §6.1 says this should be a truncation error;
+                    // tightening lands in a later refinement.
+                    peer_closed = true;
+                    return false;
+                }
+                recvbuf.insert(recvbuf.end(), chunk.begin(), chunk.end());
+            }
+            return true;
+        };
+
+        // Encrypt plain and push to upstream.  Returns false on
+        // upstream sink death.
+        auto send_plain = [&](const bytes& plain) -> bool {
+            ptls_buffer_t sendbuf;
+            uint8_t       sendbuf_small[2048];
+            ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+            int ret = ptls_send(tls.get(), &sendbuf,
+                                plain.data(), plain.size());
+            if (ret != 0) {
+                int e = ret;
+                ptls_buffer_dispose(&sendbuf);
+                throw error(e);
+            }
+            bytes out = take_buffer(sendbuf);
+            ptls_buffer_dispose(&sendbuf);
+            if (out.empty()) return true;
+            return static_cast<bool>(up_out << std::move(out));
+        };
+
+        // Send close_notify alert; best-effort (peer may have closed).
+        // close_notify on consumer-drop is currently a no-op.  Sending
+        // it through up_out reliably runs into a runtime convergence
+        // issue when the ciphertext transport is a buffered chan<bytes>
+        // whose reader is held but not actively reading — `up_out <<
+        // alert` hangs even though the buffer has room.  Production use
+        // over real sockets (kernel send buffer) wouldn't hit this path,
+        // but the chan interaction needs investigation before re-enable.
+        // Lifecycle is otherwise clean: the upstream peer sees the
+        // ciphertext endpoints drop when the steady-state imp exits.
+        auto send_close_notify = [&]() {};
+
+        io::read_request req;
+        bytes            wbuf;
+
+        for (;;) {
+            int which = prialt(read_r >> req, write_r >> wbuf);
+            if (which < 0) {
+                // Consumer endpoint dropped — clean TLS shutdown.
+                send_close_notify();
+                return;
+            }
+
+            if (which == 0) {
+                // Plaintext read request.
+                bool have_data = false;
+                try {
+                    have_data = fill_plainbuf();
+                } catch (...) {
+                    req.reply._throw(std::current_exception());
+                    return;
+                }
+                if (!have_data) {
+                    // EOF: drop req.reply, consumer sees death.
+                    return;
+                }
+                size_t take = std::min(req.value, plainbuf.size());
+                bytes  out(plainbuf.begin(),
+                           plainbuf.begin() + static_cast<ptrdiff_t>(take));
+                plainbuf.erase(plainbuf.begin(),
+                               plainbuf.begin() + static_cast<ptrdiff_t>(take));
+                (void)(req.reply << std::move(out));
+            } else {
+                // Plaintext write.
+                try {
+                    if (!send_plain(wbuf)) {
+                        return;  // upstream sink dead
+                    }
+                } catch (...) {
+                    // ptls_send failed — TLS state is broken, can't recover.
+                    return;
+                }
+            }
+        }
+    });
+
+    return stream{
+        std::move(read_ch.w),
+        std::move(write_ch.w),
+        std::string{}
+    };
+}
+
 } // namespace csp::tls
 
 #endif // CSP_TLS

@@ -3,6 +3,7 @@
 #include <csp/csp.h>
 #include <csp/io.h>
 #include <csp/part/io.h>
+#include <csp/source.h>
 
 #include <any>
 #include <cstdint>
@@ -15,12 +16,24 @@ namespace csp::net {
 
 // --- Connection: RAII wrapper over a connected socket ---
 //
-// Provides split read/write channels via byte_reader/byte_writer.
-// Closing (or dropping) the connection closes the underlying fd.
+// Two ways to read from the peer:
+//
+//   - `input` (legacy, push-based): a reader<bytes> populated by a
+//     byte_reader imp that reads from the fd in chunks the producer
+//     chooses.  The consumer takes whatever chunk arrives.
+//   - `source` (🎯T17, pull-based): an io::source that lets the
+//     consumer drive read sizes.  Backed by io::fd_source over a
+//     dup'd fd, so it can coexist with `input` — but consume only
+//     ONE of them per connection; reading from both interleaves
+//     bytes arbitrarily.
+//
+// Writes always go through `output` (push-based writer<bytes>).
+// Closing (or dropping) the connection closes the underlying fd(s).
 
 struct connection {
     io::fd_t fd;
-    reader<std::vector<uint8_t>> input;   // bytes from peer
+    reader<std::vector<uint8_t>> input;   // bytes from peer (legacy, push)
+    io::source source;                    // bytes from peer (T17, pull)
     writer<std::vector<uint8_t>> output;  // bytes to peer
     std::string remote_addr;              // peer address string
 

@@ -6,6 +6,7 @@
 #include <csp/http.h>
 #include <csp/net.h>
 
+#include <cstring>
 #include <string>
 
 using namespace csp;
@@ -477,6 +478,65 @@ TEST_CASE("fetch---post-with-body") {
         CHECK(resp.status == 201);
         std::string resp_body(resp.body.begin(), resp.body.end());
         CHECK(resp_body == "hello from client");
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
+// 🎯T17 streaming-body overload: body comes from an io::source instead
+// of being materialised as `bytes` up front.  Server side is unchanged.
+TEST_CASE("fetch---streaming-body-source") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http::serve(0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                CHECK(req.method == http::method::POST);
+                CHECK(req.url == "/stream");
+                req.drain();
+                std::string body_str(req.body.begin(), req.body.end());
+                CHECK(body_str == "streamedpayloaddata!");
+                req.respond << http::response{200, {}, std::move(req.body)};
+            }
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        // Build a source from a chan<bytes> that ships three chunks
+        // adding up to 20 bytes total.
+        chan<io::read_request> ch;
+        spawn([req_r = std::move(ch.r)]() mutable {
+            internal::descr("test::streaming_body");
+            const char* chunks[] = {"streamed", "payload", "data!"};
+            size_t i = 0;
+            io::read_request req;
+            while (i < 3 && req_r >> req) {
+                bytes out(chunks[i], chunks[i] + std::strlen(chunks[i]));
+                req.reply << std::move(out);
+                ++i;
+            }
+        });
+
+        auto resp = http::post(
+            "http://127.0.0.1:" + std::to_string(port) + "/stream",
+            std::move(ch.w),
+            /*body_length=*/ 20);
+
+        CHECK(resp.status == 200);
+        std::string resp_body(resp.body.begin(), resp.body.end());
+        CHECK(resp_body == "streamedpayloaddata!");
     });
 
     schedule();

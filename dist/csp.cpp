@@ -2716,6 +2716,11 @@ connection make_connection(io::fd_t fd, std::string remote) {
 #ifdef _WIN32
     auto input = part::io::byte_reader(fd).spawn();
     auto output = part::io::byte_writer(fd).spawn();
+    // T17 source on Windows: deferred.  SOCKETs don't dup via POSIX
+    // dup(); proper duplication needs WSADuplicateSocket + WSASocket.
+    // Leave `source` default-constructed; Windows callers must use
+    // the legacy `input` path.  Filed as a follow-up under T17.
+    io::source src;
 #else
     auto rfd = fd;
     int raw_wfd = ::dup(fd.raw());
@@ -2739,11 +2744,24 @@ connection make_connection(io::fd_t fd, std::string remote) {
             ::shutdown(wfd.raw(), SHUT_WR);
             io::close(wfd);
         });
+    // T17 source: dup the fd so fd_source can own and close its copy
+    // without disturbing the byte_reader on rfd.  Consumers must use
+    // either `input` or `source`, not both — they pull from the same
+    // socket and interleave arbitrarily.
+    int raw_sfd = ::dup(fd.raw());
+    if (raw_sfd < 0) {
+        io::close(fd);
+        throw csp::error("dup failed");
+    }
+    auto sfd = io::fd_t(raw_sfd);
+    io::set_nonblock(sfd);
+    auto src = io::fd_source(sfd);
 #endif
 
     connection c;
     c.fd = fd;
     c.input = std::move(input);
+    c.source = std::move(src);
     c.output = std::move(output);
     c.remote_addr = std::move(remote);
     return c;
