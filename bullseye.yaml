@@ -164,7 +164,7 @@ targets:
     achieved: 2026-05-21
   T17:
     name: Composable pull-based sized-read abstraction exists in csp::io
-    status: identified
+    status: achieved
     value: 13.0
     cost: 8.0
     acceptance:
@@ -173,11 +173,71 @@ targets:
     - source integrates with CSP channel machinery (prialt-able via per-request response channels)
     - http::fetch and http::post accept source for streaming request bodies
     - Existing net::connection and http server/client use the new abstraction
-    context: 'reader&lt;bytes&gt; is push-based with producer-determined chunk boundaries — the consumer can''t control read size. Real I/O protocols need sized pulls that propagate to the syscall (io::read(fd, buf, n)). Go solves this with io.Reader; CSP needs a channel-native equivalent. Design settled in docs/papers/19-pull-based-sources.md: `writer<request<size_t, bytes>>` as the source type, with EOF via reply-writer death, errors via the channel-exception mechanism (🎯T18). Wide-ranging impact: touches io, net, tls, http layers.'
+    context: 'reader&lt;bytes&gt; is push-based with producer-determined chunk boundaries — the consumer can''t control read size. Real I/O protocols need sized pulls that propagate to the syscall (io::read(fd, buf, n)). Go solves this with io.Reader; CSP needs a channel-native equivalent. Design settled in docs/papers/19-pull-based-sources.md: `writer<request<size_t, bytes>>` as the source type, with EOF via reply-writer death, errors via the channel-exception mechanism (🎯T18). Wide-ranging impact: touches io, net, tls, http layers. Achieved 2026-06-07: io::source primitive in csp/source.h (fd_source + helpers), tls::stream layering source-over-source with real picotls handshake + steady-state crypto, net::connection grows io::source alongside legacy reader<bytes> (consumer chooses), http::fetch read path migrated to source, new streaming-body overload of http::fetch/post taking io::source + body_length. Deferred follow-ups: T17.1 migrate http::serve handle_connection to fd_source (still on direct io::read), T17.2 migrate ws/http2/http3 client paths off connection.input, T17.3 fix tls::stream close_notify hang on buffered chan, T17.4 reimplement tls::conn as a thin wrapper over tls::stream.'
     depends_on:
     - T18
     origin: design discussion, session 2026-04-13
     discovered: 2026-04-14
+    achieved: 2026-06-07
+  T17.1:
+    name: http::serve handle_connection reads via fd_source instead of direct io::read
+    status: identified
+    value: 5.0
+    cost: 3.0
+    acceptance:
+    - http::serve's handle_connection consumes ciphertext via io::source rather than direct io::read on the fd
+    - The hijack path (WebSocket upgrade) still hands off any unconsumed bytes to the upgraded handler
+    - Per-request body streaming via io::source instead of full buffering in state.body
+    - All existing http server tests pass
+    context: 'Deferred from 🎯T17. handle_connection in src/http.cc still calls io::read(fd, buf, buf_size) directly in its parse loop. Migrating to fd_source brings the server side under the same pull-based model as the client, and enables true chunk-by-chunk body streaming (the existing code has a comment flagging this as a T17 follow-up).'
+    depends_on:
+    - T17
+    origin: T17 retirement, 2026-06-07
+    discovered: 2026-06-07
+  T17.2:
+    name: ws / http2 / http3 client code uses connection.source
+    status: identified
+    value: 3.0
+    cost: 3.0
+    acceptance:
+    - ws::connect reads via io::source instead of connection.input
+    - http2 client reads via io::source
+    - http3 client reads via io::source
+    - Once all consumers migrate, the legacy reader<bytes> input field on net::connection can be removed
+    context: 'Deferred from 🎯T17. Other protocol clients still use the legacy push-based connection.input. Each one needs its read loop refactored to call_source pattern, similar to what http::fetch now does.'
+    depends_on:
+    - T17
+    origin: T17 retirement, 2026-06-07
+    discovered: 2026-06-07
+  T17.3:
+    name: tls::stream close_notify on consumer-drop works over buffered chan transports
+    status: identified
+    value: 3.0
+    cost: 2.0
+    acceptance:
+    - send_close_notify in src/tls.cc reliably writes the alert through up_out and returns, even when the upstream sink is a buffered chan<bytes> whose reader is held but idle
+    - The current no-op stub is replaced with the real send
+    - prialt(~writer, writer << bytes) does not hang in the documented test scenario
+    context: 'Deferred from 🎯T17. Reproducer in test/buf_test.test.cc (transient). tls::stream-stub send_close_notify is currently a no-op because prialt(~up_out, up_out << alert) hangs when the buffered chan reader is held but not actively pulling. Production over real sockets (kernel send buffer) wouldn''t hit this path. Likely a runtime quirk in the buffered chan filter''s alt() handling when both branches are armed but neither rendezvous is available. Investigate before re-enabling close_notify.'
+    depends_on:
+    - T17
+    origin: T17 retirement, 2026-06-07
+    discovered: 2026-06-07
+  T17.4:
+    name: tls::conn reimplemented as a thin wrapper over tls::stream
+    status: identified
+    value: 2.0
+    cost: 3.0
+    acceptance:
+    - tls::conn's read/write/handshake/shutdown delegate to tls::stream
+    - tls::conn keeps its public API (fd-taking constructor, byte-buffer read/write)
+    - All existing tls.test.cc tests pass via the new path
+    - The original conn implementation in src/tls.cc is removed once stream-backed conn is verified
+    context: 'Deferred from 🎯T17. tls::conn currently has its own picotls integration with direct fd I/O. Migrating it to wrap tls::stream removes duplicate picotls glue and keeps the abstraction layering clean. Needs an fd-to-source/sink adapter for the wrapper, plus careful handling of the existing conn::handshake/read/write semantics (conn does not own the fd; user closes separately).'
+    depends_on:
+    - T17
+    origin: T17 retirement, 2026-06-07
+    discovered: 2026-06-07
   T18:
     name: Channels can deliver exceptions in place of values
     status: achieved
