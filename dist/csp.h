@@ -3628,18 +3628,164 @@ inline csp::reader<std::string> lines(csp::io::fd_t fd,
 
 }
 
+/* csp/source.h */
+
+// Pull-based sized-read abstraction (🎯T17 Stage 1).
+//
+// A source is a channel into which consumers submit read requests.
+// Each request carries the desired byte count and a one-shot reply
+// channel.  The source imp fills the request (up to N bytes) and writes
+// the result into the reply channel.  EOF, errors, and normal data each
+// travel on structurally distinct paths:
+//
+//   - Success:  the reply channel carries a bytes value.
+//   - EOF:      the source imp exits; the reply-writer drops; the
+//               consumer's reader<bytes> observes peer death (>> returns
+//               false).  Structural — no sentinel value needed.
+//   - Errors:   the source calls req.reply._throw(ep) before exiting;
+//               the consumer's >> rethrows at the call site.
+//
+// This file defines the type aliases and the fd_source factory
+// (Stage 1).  Higher layers (tls_source, http_body_source) are in
+// separate headers.
+
+
+#include <cerrno>
+#include <cstring>
+
+namespace csp::io {
+
+// --- Core type aliases ---
+
+// A single pull request: consumer asks for up to `value` bytes;
+// the source writes up to that many into the `reply` channel.
+using read_request = request<size_t, bytes>;
+
+// The consumer-facing handle.  A source is the *write* end of a
+// request channel — consumers write requests into it and read
+// replies from the one-shot reply channels embedded in each request.
+using source = writer<read_request>;
+
+// --- errno_error: carry a syscall name + errno across channels ---
+
+class errno_error : public csp::error {
+public:
+    errno_error(const std::string& syscall, int err)
+        : csp::error(syscall + ": " + std::strerror(err)), err_(err) {}
+
+    int err() const { return err_; }
+
+private:
+    int err_;
+};
+
+// --- fd_source: TCP / pipe source (Stage 1 concrete implementation) ---
+//
+// Spawns an imp that serves read_request values from a non-blocking fd.
+// Contract: up to N bytes per request, matching read(2) semantics.
+// Partial reads (m < N) are normal; the consumer decides whether to
+// re-request.
+//
+// Lifecycle:
+//   - EOF (io::read returns 0): imp exits without writing a reply.
+//     The reply-writer drops; the consumer's reader sees peer death.
+//   - Error (io::read returns < 0): imp throws errno_error across the
+//     current reply via _throw, then exits.  The consumer's >> rethrows.
+//   - Zero-byte request: imp throws std::invalid_argument and exits.
+//     (Almost always a caller bug; we surface it immediately.)
+//
+// The source owns the fd and closes it when the imp exits (normal,
+// EOF, or error).
+
+[[nodiscard]] inline source fd_source(fd_t fd) {
+    chan<read_request> ch;
+
+    spawn([req_r = std::move(ch.r), fd]() mutable {
+        internal::descr("fd_source");
+        assert(fd.is_nonblock() && "fd_source: fd must be non-blocking");
+
+        read_request req;
+        while (req_r >> req) {
+            if (req.value == 0) {
+                req.reply._throw(
+                    std::make_exception_ptr(
+                        std::invalid_argument("fd_source: zero-byte read request")));
+                csp::io::close(fd);
+                return;
+            }
+
+            bytes buf(req.value);
+            ssize_t n = csp::io::read(fd, buf.data(), buf.size());
+
+            if (n == 0) {
+                // EOF: exit without writing.  The reply-writer drops, and
+                // the consumer's reader<bytes> sees peer death.
+                csp::io::close(fd);
+                return;
+            }
+
+            if (n < 0) {
+                // Error: throw across the reply, then exit.
+                int err = errno;
+                req.reply._throw(
+                    std::make_exception_ptr(errno_error("read", err)));
+                csp::io::close(fd);
+                return;
+            }
+
+            buf.resize(static_cast<size_t>(n));
+            req.reply << std::move(buf);
+        }
+
+        // Request channel closed by consumer — clean shutdown.
+        csp::io::close(fd);
+    });
+
+    return std::move(ch.w);
+}
+
+// --- Convenience helpers for source consumers ---
+
+// Read exactly one request from a source and return the bytes.
+// Throws on error; throws csp::channel_closed on EOF.
+inline bytes source_read(source& s, size_t n) {
+    return s(n);
+}
+
+// Non-blocking form: returns a reader<bytes> for the response.
+// Use in prialt:
+//   auto reply = csp::io::call_source(s, 4096);
+//   prialt(reply >> buf, ~other);
+inline reader<bytes> call_source(source& s, size_t n) {
+    return call(s, n);
+}
+
+} // namespace csp::io
+
 #include <initializer_list>
 
 namespace csp::net {
 
 // --- Connection: RAII wrapper over a connected socket ---
 //
-// Provides split read/write channels via byte_reader/byte_writer.
-// Closing (or dropping) the connection closes the underlying fd.
+// Two ways to read from the peer:
+//
+//   - `input` (legacy, push-based): a reader<bytes> populated by a
+//     byte_reader imp that reads from the fd in chunks the producer
+//     chooses.  The consumer takes whatever chunk arrives.
+//   - `source` (🎯T17, pull-based): an io::source that lets the
+//     consumer drive read sizes.  Backed by io::fd_source over a
+//     dup'd fd, so it can coexist with `input` — but consume only
+//     ONE of them per connection; reading from both interleaves
+//     bytes arbitrarily.
+//
+// Writes always go through `output` (push-based writer<bytes>).
+// Closing (or dropping) the connection closes the underlying fd(s).
 
 struct connection {
     io::fd_t fd;
-    reader<std::vector<uint8_t>> input;   // bytes from peer
+    reader<std::vector<uint8_t>> input;   // bytes from peer (legacy, push)
+    io::source source;                    // bytes from peer (T17, pull)
     writer<std::vector<uint8_t>> output;  // bytes to peer
     std::string remote_addr;              // peer address string
 
@@ -3874,6 +4020,22 @@ response fetch(
     bytes body = {},
     fetch_options opts = {});
 
+// Streaming-body overload (🎯T17): the request body is pulled from a
+// source rather than materialised in memory.  The caller declares the
+// total `body_length` up front; that becomes the Content-Length header.
+// The fetch loops pulling chunks from `body` and writing them to the
+// connection until `body_length` bytes have been sent.  If the source
+// EOFs early, throws csp::error.
+//
+// Use this for large uploads, file-backed requests, or any body that
+// shouldn't sit in memory all at once.
+response fetch(
+    method m, const std::string& url,
+    std::vector<std::pair<std::string, std::string>> headers,
+    io::source body,
+    size_t body_length,
+    fetch_options opts = {});
+
 // Convenience wrappers.
 inline response get(
     const std::string& url,
@@ -3887,6 +4049,16 @@ inline response post(
     std::vector<std::pair<std::string, std::string>> headers = {},
     fetch_options opts = {}) {
     return fetch(method::POST, url, std::move(headers), std::move(body), opts);
+}
+
+// Streaming post: body comes from a source.
+inline response post(
+    const std::string& url,
+    io::source body, size_t body_length,
+    std::vector<std::pair<std::string, std::string>> headers = {},
+    fetch_options opts = {}) {
+    return fetch(method::POST, url, std::move(headers),
+                 std::move(body), body_length, opts);
 }
 
 } // namespace csp::http
@@ -8585,140 +8757,6 @@ reader<int> notify(std::initializer_list<int> sigs);
 
 #endif // !_WIN32
 
-/* csp/source.h */
-
-// Pull-based sized-read abstraction (🎯T17 Stage 1).
-//
-// A source is a channel into which consumers submit read requests.
-// Each request carries the desired byte count and a one-shot reply
-// channel.  The source imp fills the request (up to N bytes) and writes
-// the result into the reply channel.  EOF, errors, and normal data each
-// travel on structurally distinct paths:
-//
-//   - Success:  the reply channel carries a bytes value.
-//   - EOF:      the source imp exits; the reply-writer drops; the
-//               consumer's reader<bytes> observes peer death (>> returns
-//               false).  Structural — no sentinel value needed.
-//   - Errors:   the source calls req.reply._throw(ep) before exiting;
-//               the consumer's >> rethrows at the call site.
-//
-// This file defines the type aliases and the fd_source factory
-// (Stage 1).  Higher layers (tls_source, http_body_source) are in
-// separate headers.
-
-
-#include <cerrno>
-#include <cstring>
-
-namespace csp::io {
-
-// --- Core type aliases ---
-
-// A single pull request: consumer asks for up to `value` bytes;
-// the source writes up to that many into the `reply` channel.
-using read_request = request<size_t, bytes>;
-
-// The consumer-facing handle.  A source is the *write* end of a
-// request channel — consumers write requests into it and read
-// replies from the one-shot reply channels embedded in each request.
-using source = writer<read_request>;
-
-// --- errno_error: carry a syscall name + errno across channels ---
-
-class errno_error : public csp::error {
-public:
-    errno_error(const std::string& syscall, int err)
-        : csp::error(syscall + ": " + std::strerror(err)), err_(err) {}
-
-    int err() const { return err_; }
-
-private:
-    int err_;
-};
-
-// --- fd_source: TCP / pipe source (Stage 1 concrete implementation) ---
-//
-// Spawns an imp that serves read_request values from a non-blocking fd.
-// Contract: up to N bytes per request, matching read(2) semantics.
-// Partial reads (m < N) are normal; the consumer decides whether to
-// re-request.
-//
-// Lifecycle:
-//   - EOF (io::read returns 0): imp exits without writing a reply.
-//     The reply-writer drops; the consumer's reader sees peer death.
-//   - Error (io::read returns < 0): imp throws errno_error across the
-//     current reply via _throw, then exits.  The consumer's >> rethrows.
-//   - Zero-byte request: imp throws std::invalid_argument and exits.
-//     (Almost always a caller bug; we surface it immediately.)
-//
-// The source owns the fd and closes it when the imp exits (normal,
-// EOF, or error).
-
-[[nodiscard]] inline source fd_source(fd_t fd) {
-    chan<read_request> ch;
-
-    spawn([req_r = std::move(ch.r), fd]() mutable {
-        internal::descr("fd_source");
-        assert(fd.is_nonblock() && "fd_source: fd must be non-blocking");
-
-        read_request req;
-        while (req_r >> req) {
-            if (req.value == 0) {
-                req.reply._throw(
-                    std::make_exception_ptr(
-                        std::invalid_argument("fd_source: zero-byte read request")));
-                csp::io::close(fd);
-                return;
-            }
-
-            bytes buf(req.value);
-            ssize_t n = csp::io::read(fd, buf.data(), buf.size());
-
-            if (n == 0) {
-                // EOF: exit without writing.  The reply-writer drops, and
-                // the consumer's reader<bytes> sees peer death.
-                csp::io::close(fd);
-                return;
-            }
-
-            if (n < 0) {
-                // Error: throw across the reply, then exit.
-                int err = errno;
-                req.reply._throw(
-                    std::make_exception_ptr(errno_error("read", err)));
-                csp::io::close(fd);
-                return;
-            }
-
-            buf.resize(static_cast<size_t>(n));
-            req.reply << std::move(buf);
-        }
-
-        // Request channel closed by consumer — clean shutdown.
-        csp::io::close(fd);
-    });
-
-    return std::move(ch.w);
-}
-
-// --- Convenience helpers for source consumers ---
-
-// Read exactly one request from a source and return the bytes.
-// Throws on error; throws csp::channel_closed on EOF.
-inline bytes source_read(source& s, size_t n) {
-    return s(n);
-}
-
-// Non-blocking form: returns a reader<bytes> for the response.
-// Use in prialt:
-//   auto reply = csp::io::call_source(s, 4096);
-//   prialt(reply >> buf, ~other);
-inline reader<bytes> call_source(source& s, size_t n) {
-    return call(s, n);
-}
-
-} // namespace csp::io
-
 /* csp/stack_analysis.h */
 
 
@@ -8799,7 +8837,11 @@ struct error : csp::error {
     error(int code);
 };
 
+class context;
 class conn;
+struct stream;
+struct stream_params;
+stream make_stream(context&, io::source, writer<bytes>, stream_params);
 
 /// Callback for custom certificate verification.
 /// Receives the server name and DER-encoded certificate chain.
@@ -8834,6 +8876,7 @@ private:
     struct impl;
     std::unique_ptr<impl> impl_;
     friend class conn;
+    friend stream make_stream(context&, io::source, writer<bytes>, stream_params);
 };
 
 class conn {
@@ -8869,6 +8912,46 @@ private:
     struct impl;
     std::unique_ptr<impl> impl_;
 };
+
+// --- Stream-shaped TLS interface (🎯T17 Stage 2) ---
+//
+// A `tls::stream` is the source-shaped successor to `conn`.  It wraps
+// a ciphertext byte-pair (an io::source for inbound, a writer<bytes>
+// for outbound) and exposes a plaintext byte-pair with the same shape.
+// Composes uphill into HTTP parsers and other source consumers.
+//
+// Currently a passthrough stub: bytes flow through unmodified.  Real
+// picotls integration lands in the next stages (handshake, then
+// encrypt/decrypt, then alerts/close_notify).
+//
+// The lifecycle model:
+//   - Either consumer endpoint dropped → stream imp shuts down, drops
+//     both upstream endpoints, exits.
+//   - Upstream source EOF → reply-writer drop propagates to consumer
+//     (consumer's `>>` returns false).
+//   - Upstream source error → `_throw` propagates across plaintext_in.
+//   - Upstream sink dead → stream imp exits silently.
+
+struct stream_params {
+    std::string sni_hostname;
+    std::vector<std::string> alpn;
+    bool client_mode = true;
+};
+
+struct stream {
+    io::source    plaintext_in;
+    writer<bytes> plaintext_out;
+    std::string   negotiated_alpn;
+};
+
+// Wrap a ciphertext source/sink pair with TLS, returning the plaintext
+// stream.  Stage 2 stub: passthrough — `ctx` and `params` are accepted
+// but unused, bytes flow through unmodified.
+[[nodiscard]] stream make_stream(
+    context&      ctx,
+    io::source    ciphertext_in,
+    writer<bytes> ciphertext_out,
+    stream_params params);
 
 } // namespace csp::tls
 
