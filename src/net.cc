@@ -34,11 +34,11 @@ connection make_connection(io::fd_t fd, std::string remote) {
 #ifdef _WIN32
     auto input = part::io::byte_reader(fd).spawn();
     auto output = part::io::byte_writer(fd).spawn();
-    // T17 source: dup the fd so fd_source can own and close its copy.
-    int raw_sfd = ::dup(fd.raw());
-    auto sfd = io::fd_t(raw_sfd);
-    io::set_nonblock(sfd);
-    auto src = io::fd_source(sfd);
+    // T17 source on Windows: deferred.  SOCKETs don't dup via POSIX
+    // dup(); proper duplication needs WSADuplicateSocket + WSASocket.
+    // Leave `source` default-constructed; Windows callers must use
+    // the legacy `input` path.  Filed as a follow-up under T17.
+    io::source src;
 #else
     auto rfd = fd;
     int raw_wfd = ::dup(fd.raw());

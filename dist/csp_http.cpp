@@ -755,12 +755,17 @@ response fetch(
     llhttp_init(&parser, HTTP_RESPONSE, &settings);
     parser.data = &state;
 
-    // Read the response via the pull-based source (🎯T17).  Consumer-
-    // controlled read sizes, the same protocol on top of TCP or TLS.
+    // Read the response.  On non-Windows we use the pull-based source
+    // (🎯T17); Windows falls back to the legacy push-based input until
+    // WSADuplicateSocket-based source plumbing lands for SOCKETs.
     bytes chunk;
+#ifdef _WIN32
+    while (!state.message_complete && (conn.input >> chunk)) {
+#else
     while (!state.message_complete) {
         auto reply_r = csp::io::call_source(conn.source, opts.read_chunk_size);
-        if (!(reply_r >> chunk)) break;  // upstream EOF
+        if (!(reply_r >> chunk)) break;
+#endif
         auto err = llhttp_execute(
             &parser,
             reinterpret_cast<const char*>(chunk.data()),
