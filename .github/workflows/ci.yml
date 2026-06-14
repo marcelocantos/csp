@@ -56,7 +56,7 @@ jobs:
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
           lfs: true
@@ -177,7 +177,7 @@ jobs:
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
           lfs: true
@@ -243,7 +243,7 @@ jobs:
             cc_override: 'CXX=clang++-18 CC=clang-18'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         # Deliberately no `submodules` and no `lfs` — the whole point of
         # this job is to simulate an external user who took only the dist
         # drop-in plus scripts/vendor-deps.sh.
@@ -266,7 +266,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
           lfs: true
@@ -296,12 +296,12 @@ jobs:
     runs-on: macos-14
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           lfs: true
 
       - name: Set up Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
