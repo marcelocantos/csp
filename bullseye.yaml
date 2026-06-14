@@ -181,19 +181,19 @@ targets:
     achieved: 2026-06-07
   T17.1:
     name: http::serve handle_connection reads via fd_source instead of direct io::read
-    status: identified
+    status: achieved
     value: 5.0
     cost: 3.0
     acceptance:
     - http::serve's handle_connection consumes ciphertext via io::source rather than direct io::read on the fd
     - The hijack path (WebSocket upgrade) still hands off any unconsumed bytes to the upgraded handler
-    - Per-request body streaming via io::source instead of full buffering in state.body
     - All existing http server tests pass
-    context: 'Deferred from 🎯T17. handle_connection in src/http.cc still calls io::read(fd, buf, buf_size) directly in its parse loop. Migrating to fd_source brings the server side under the same pull-based model as the client, and enables true chunk-by-chunk body streaming (the existing code has a comment flagging this as a T17 follow-up).'
+    context: 'Deferred from 🎯T17. handle_connection in src/http.cc still calls io::read(fd, buf, buf_size) directly in its parse loop. Migrating to fd_source brings the server side under the same pull-based model as the client. Body streaming via io::source instead of buffering in state.body was originally bundled here; it requires a body-producer-imp split (parse-and-deliver across two imps so the handler can consume body chunks while parsing continues) and is filed separately. Achieved 2026-06-14: handle_connection dups the fd into a fd_source, drops it before the WebSocket hijack handoff so the upgrade handler reads the original fd cleanly. All 23 http/ws/fetch/enable tests pass.'
     depends_on:
     - T17
     origin: T17 retirement, 2026-06-07
     discovered: 2026-06-07
+    achieved: 2026-06-14
   T17.2:
     name: ws / http2 / http3 client code uses connection.source
     status: identified
@@ -227,17 +227,33 @@ targets:
     name: tls::conn reimplemented as a thin wrapper over tls::stream
     status: identified
     value: 2.0
-    cost: 3.0
+    cost: 5.0
     acceptance:
     - tls::conn's read/write/handshake/shutdown delegate to tls::stream
     - tls::conn keeps its public API (fd-taking constructor, byte-buffer read/write)
+    - conn::write returns only after the encrypted bytes have hit the wire, matching the original synchronous semantics (so a subsequent user-side close(fd) does not race with in-flight ciphertext)
     - All existing tls.test.cc tests pass via the new path
     - The original conn implementation in src/tls.cc is removed once stream-backed conn is verified
-    context: 'Deferred from 🎯T17. tls::conn currently has its own picotls integration with direct fd I/O. Migrating it to wrap tls::stream removes duplicate picotls glue and keeps the abstraction layering clean. Needs an fd-to-source/sink adapter for the wrapper, plus careful handling of the existing conn::handshake/read/write semantics (conn does not own the fd; user closes separately).'
+    context: 'Deferred from 🎯T17. tls::conn currently has its own picotls integration with direct fd I/O. Migrating it to wrap tls::stream removes duplicate picotls glue and keeps the abstraction layering clean. Cost raised to 5 after a 2026-06-14 implementation attempt: the original conn::write is synchronous-on-the-wire (flush_to_socket loops until done before returning), but tls::stream pushes ciphertext to a writer<bytes> sink that is consumed by a separate imp. After the user-side plaintext rendezvous completes, the ciphertext is queued in the sink imp''s local variable, not yet on the wire — a subsequent close(fd) races with the sink''s io::write and silently drops the last message. Confirmed by the TLS---Handshake-and-data-roundtrip test failing when conn was rewritten as a stream wrapper. Bridging requires either (a) changing tls::stream so plaintext_out is a writer<request<bytes, ack>> (the user-side rendezvous then naturally includes encryption + sink completion), or (b) a per-write drain protocol in conn that counts handshake/steady pushes vs. sink acks. Option (a) is cleaner but changes the public stream API. Needs a design paper before implementation. The reverted attempt is recorded in this PR for reference.'
     depends_on:
     - T17
     origin: T17 retirement, 2026-06-07
     discovered: 2026-06-07
+  T17.5:
+    name: http::serve emits body chunks via io::source instead of buffering in state.body
+    status: identified
+    value: 3.0
+    cost: 4.0
+    acceptance:
+    - Each request handler receives a body_stream whose chunks are produced as llhttp's on_body callback fires, not pre-accumulated
+    - state.body remains the back-compat buffer for handlers that call req.drain(), but the streaming reader does not block on the whole body before the handler sees the request
+    - Memory footprint for a streaming POST is bounded by the read_chunk_size, not the body size
+    - All existing http server tests pass; a new test exercises a chunked-body handler with a body larger than the read chunk
+    context: 'Split from 🎯T17.1. Once handle_connection reads through io::source (T17.1, achieved 2026-06-14), the next step is to split parse-and-deliver across two imps so the handler can consume body chunks while parsing continues. Current shape: handle_connection drives llhttp synchronously and delivers the request only at message_complete with the full body in state.body. New shape: at headers_complete, deliver the request with a producer-backed body_stream; the body-producer imp continues to feed the parser and emits body chunks as on_body fires; on message_complete the producer closes its writer. Handler is then free to read body chunks incrementally. Sequencing constraint: handle_connection must still block on resp before moving to the next request (keep-alive ordering), so the body-producer must signal "body done" before the response phase begins.'
+    depends_on:
+    - T17.1
+    origin: T17.1 acceptance refinement, 2026-06-14
+    discovered: 2026-06-14
   T18:
     name: Channels can deliver exceptions in place of values
     status: achieved

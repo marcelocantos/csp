@@ -164,6 +164,20 @@ static ssize_t read_from_socket(csp::io::fd_t fd, uint8_t* buf, size_t len) {
 }
 
 // --- conn ---
+//
+// Synchronous byte-buffer TLS API.  Kept as the original direct-picotls
+// implementation rather than a wrapper over tls::stream because the
+// synchronous-on-write semantics (write() returns only after bytes hit
+// the wire) cannot be preserved across the spawn-and-rendezvous bridge
+// that a stream wrapper would introduce — a sink imp consuming
+// stream::plaintext_out's ciphertext runs concurrently with the user's
+// imp, so write() returning after the plaintext rendezvous does not
+// imply the ciphertext has been flushed before a subsequent close(fd).
+//
+// Migrating conn to a stream wrapper is tracked separately; it needs
+// either a request-shaped plaintext_out on tls::stream (so the user-
+// side rendezvous includes sink completion) or a sync facade with a
+// drain protocol bridging handshake → steady-state acks.
 
 struct conn::impl {
     ptls_t* tls = nullptr;

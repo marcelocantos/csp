@@ -4,6 +4,7 @@
 #include <csp/http.h>
 #include <csp/cancel.h>
 #include <csp/internal/signal.h>
+#include <csp/source.h>
 
 #include <llhttp.h>
 
@@ -211,12 +212,16 @@ int on_message_complete(llhttp_t* p) {
 // Uses direct I/O on the fd rather than net::connection channels.
 // This avoids inheriting cancel scopes from the accept loop.
 //
-// Body streaming design: the request body is fully buffered before the
-// request is delivered.  The body_stream channel is pre-populated with
-// a single chunk containing the complete body, then closed.  Handlers
-// that only need the full body call req.drain() or use req.body directly;
-// handlers that prefer the streaming interface can read body_stream.
-// True chunk-by-chunk streaming (without buffering) requires 🎯T17.
+// Ciphertext reads go through an io::source (🎯T17.1) built over the
+// fd as a non-owning view.  handle_connection retains fd ownership
+// for the explicit close on completion or for the WebSocket-upgrade
+// hijack handoff after dropping the source.
+//
+// Body buffering: the request body is fully accumulated in state.body
+// (filled by llhttp's on_body callback) before delivery.  body_stream
+// is a producer pre-populated with a single chunk.  Per-request chunk-
+// by-chunk streaming via io::source remains a follow-up — it requires
+// splitting parse-and-deliver into per-message producer imps.
 
 void handle_connection(io::fd_t fd, std::string remote_addr,
                        writer<endpoint> ep_out) {
@@ -231,6 +236,13 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
         io::close(fd);
         return;
     }
+
+    // Non-owning source: the imp reads from the fd but never closes
+    // it.  handle_connection retains fd ownership for the explicit
+    // io::close at `done:`, or for the WebSocket-upgrade hijack
+    // handoff after dropping the source.  Portable across platforms
+    // (no ::dup, which Windows doesn't provide for sockets).
+    io::source src = io::fd_source_view(fd);
 
     parse_state state;
     llhttp_settings_t settings;
@@ -248,15 +260,19 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
 
     auto req_writer = std::move(req_ch.w);
 
-    // Read raw bytes directly from the socket.
     constexpr size_t buf_size = 4096;
-    uint8_t buf[buf_size];
     for (;;) {
-        ssize_t n = io::read(fd, buf, buf_size);
-        if (n <= 0) break;
+        bytes chunk;
+        try {
+            chunk = src(buf_size);
+        } catch (...) {
+            // EOF (channel_closed) or transport error — same as the
+            // legacy `n <= 0` exit from io::read.
+            break;
+        }
 
-        const char* data = reinterpret_cast<const char*>(buf);
-        size_t len = static_cast<size_t>(n);
+        const char* data = reinterpret_cast<const char*>(chunk.data());
+        size_t len = chunk.size();
 
         while (len > 0) {
             state.message_complete = false;
@@ -345,6 +361,11 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                     // from req.hijack (it called ws::upgrade which reads the
                     // hijack channel synchronously after sending the 101).
                     if (resp.status == 101) {
+                        // Drop the source so its imp exits before the
+                        // WebSocket handler starts reading from the fd.
+                        // The source's read loop and the WS reader can
+                        // not safely interleave reads on the same fd.
+                        src = io::source{};
                         hijack_ch.w << request::hijack_result{fd, std::move(leftover)};
                         // fd ownership transferred — do NOT close.
                         return;
