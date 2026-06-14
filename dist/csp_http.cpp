@@ -213,12 +213,16 @@ int on_message_complete(llhttp_t* p) {
 // Uses direct I/O on the fd rather than net::connection channels.
 // This avoids inheriting cancel scopes from the accept loop.
 //
-// Body streaming design: the request body is fully buffered before the
-// request is delivered.  The body_stream channel is pre-populated with
-// a single chunk containing the complete body, then closed.  Handlers
-// that only need the full body call req.drain() or use req.body directly;
-// handlers that prefer the streaming interface can read body_stream.
-// True chunk-by-chunk streaming (without buffering) requires 🎯T17.
+// Ciphertext reads go through an io::source (🎯T17.1) built over a dup
+// of the connection fd.  The dup lets fd_source own/close its handle on
+// EOF/error while leaving the original fd available for the WebSocket
+// upgrade hijack path or for the explicit close on completion.
+//
+// Body buffering: the request body is fully accumulated in state.body
+// (filled by llhttp's on_body callback) before delivery.  body_stream
+// is a producer pre-populated with a single chunk.  Per-request chunk-
+// by-chunk streaming via io::source remains a follow-up — it requires
+// splitting parse-and-deliver into per-message producer imps.
 
 void handle_connection(io::fd_t fd, std::string remote_addr,
                        writer<endpoint> ep_out) {
@@ -233,6 +237,18 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
         io::close(fd);
         return;
     }
+
+    // dup the connection fd for the source so fd_source can own/close
+    // its dup while the original fd remains available for hijack or
+    // the explicit io::close at `done:`.  dup does not copy O_NONBLOCK,
+    // so set it explicitly.
+    io::fd_t src_fd(::dup(fd.raw()));
+    if (!src_fd) {
+        io::close(fd);
+        return;
+    }
+    io::set_nonblock(src_fd);
+    io::source src = io::fd_source(src_fd);
 
     parse_state state;
     llhttp_settings_t settings;
@@ -250,15 +266,19 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
 
     auto req_writer = std::move(req_ch.w);
 
-    // Read raw bytes directly from the socket.
     constexpr size_t buf_size = 4096;
-    uint8_t buf[buf_size];
     for (;;) {
-        ssize_t n = io::read(fd, buf, buf_size);
-        if (n <= 0) break;
+        bytes chunk;
+        try {
+            chunk = src(buf_size);
+        } catch (...) {
+            // EOF (channel_closed) or transport error — same as the
+            // legacy `n <= 0` exit from io::read.
+            break;
+        }
 
-        const char* data = reinterpret_cast<const char*>(buf);
-        size_t len = static_cast<size_t>(n);
+        const char* data = reinterpret_cast<const char*>(chunk.data());
+        size_t len = chunk.size();
 
         while (len > 0) {
             state.message_complete = false;
@@ -347,6 +367,12 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                     // from req.hijack (it called ws::upgrade which reads the
                     // hijack channel synchronously after sending the 101).
                     if (resp.status == 101) {
+                        // Drop the source so its imp closes the dup'd
+                        // fd and exits before the WebSocket handler
+                        // starts reading from the original fd.  Without
+                        // this, both fds share the kernel receive
+                        // buffer and reads would interleave.
+                        src = io::source{};
                         hijack_ch.w << request::hijack_result{fd, std::move(leftover)};
                         // fd ownership transferred — do NOT close.
                         return;
