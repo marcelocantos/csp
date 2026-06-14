@@ -3744,6 +3744,50 @@ private:
     return std::move(ch.w);
 }
 
+// --- fd_source_view: non-owning variant ---
+//
+// Same protocol as fd_source, but the imp does NOT close the fd on
+// exit (EOF, error, or request-channel drop).  The caller owns the
+// fd's lifecycle.  Useful when the fd must outlive the source — e.g.
+// the HTTP server's connection handler needs the fd available for
+// the WebSocket-upgrade hijack handoff after dropping the source.
+
+[[nodiscard]] inline source fd_source_view(fd_t fd) {
+    chan<read_request> ch;
+
+    spawn([req_r = std::move(ch.r), fd]() mutable {
+        internal::descr("fd_source_view");
+        assert(fd.is_nonblock() && "fd_source_view: fd must be non-blocking");
+
+        read_request req;
+        while (req_r >> req) {
+            if (req.value == 0) {
+                req.reply._throw(
+                    std::make_exception_ptr(
+                        std::invalid_argument("fd_source_view: zero-byte read request")));
+                return;
+            }
+
+            bytes buf(req.value);
+            ssize_t n = csp::io::read(fd, buf.data(), buf.size());
+
+            if (n == 0) return;  // EOF: caller's reader sees peer death.
+
+            if (n < 0) {
+                int err = errno;
+                req.reply._throw(
+                    std::make_exception_ptr(errno_error("read", err)));
+                return;
+            }
+
+            buf.resize(static_cast<size_t>(n));
+            req.reply << std::move(buf);
+        }
+    });
+
+    return std::move(ch.w);
+}
+
 // --- Convenience helpers for source consumers ---
 
 // Read exactly one request from a source and return the bytes.

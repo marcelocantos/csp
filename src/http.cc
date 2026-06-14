@@ -212,10 +212,10 @@ int on_message_complete(llhttp_t* p) {
 // Uses direct I/O on the fd rather than net::connection channels.
 // This avoids inheriting cancel scopes from the accept loop.
 //
-// Ciphertext reads go through an io::source (🎯T17.1) built over a dup
-// of the connection fd.  The dup lets fd_source own/close its handle on
-// EOF/error while leaving the original fd available for the WebSocket
-// upgrade hijack path or for the explicit close on completion.
+// Ciphertext reads go through an io::source (🎯T17.1) built over the
+// fd as a non-owning view.  handle_connection retains fd ownership
+// for the explicit close on completion or for the WebSocket-upgrade
+// hijack handoff after dropping the source.
 //
 // Body buffering: the request body is fully accumulated in state.body
 // (filled by llhttp's on_body callback) before delivery.  body_stream
@@ -237,17 +237,12 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
         return;
     }
 
-    // dup the connection fd for the source so fd_source can own/close
-    // its dup while the original fd remains available for hijack or
-    // the explicit io::close at `done:`.  dup does not copy O_NONBLOCK,
-    // so set it explicitly.
-    io::fd_t src_fd(::dup(fd.raw()));
-    if (!src_fd) {
-        io::close(fd);
-        return;
-    }
-    io::set_nonblock(src_fd);
-    io::source src = io::fd_source(src_fd);
+    // Non-owning source: the imp reads from the fd but never closes
+    // it.  handle_connection retains fd ownership for the explicit
+    // io::close at `done:`, or for the WebSocket-upgrade hijack
+    // handoff after dropping the source.  Portable across platforms
+    // (no ::dup, which Windows doesn't provide for sockets).
+    io::source src = io::fd_source_view(fd);
 
     parse_state state;
     llhttp_settings_t settings;
@@ -366,11 +361,10 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                     // from req.hijack (it called ws::upgrade which reads the
                     // hijack channel synchronously after sending the 101).
                     if (resp.status == 101) {
-                        // Drop the source so its imp closes the dup'd
-                        // fd and exits before the WebSocket handler
-                        // starts reading from the original fd.  Without
-                        // this, both fds share the kernel receive
-                        // buffer and reads would interleave.
+                        // Drop the source so its imp exits before the
+                        // WebSocket handler starts reading from the fd.
+                        // The source's read loop and the WS reader can
+                        // not safely interleave reads on the same fd.
                         src = io::source{};
                         hijack_ch.w << request::hijack_result{fd, std::move(leftover)};
                         // fd ownership transferred — do NOT close.
