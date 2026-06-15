@@ -1,0 +1,436 @@
+# hygiene.yaml — declared, drift-validated hygiene posture for this repo.
+# DRAFT schema (fleet hygiene initiative, piloted in csp). Sibling to
+# bullseye.yaml: bullseye tracks aspirational
+# state ("achieve X"); hygiene tracks steady-state ("we maintain X").
+#
+# Core idea: every item declares INTENT plus a machine-checkable `evidence`
+# pointer. `make hygiene-check` confirms each pointer resolves against repo
+# reality (the CI job exists, the make target exists, the scanner is wired in,
+# the gh setting matches). Drift — a claim with no backing reality, or a
+# skipped item that is silently running — fails the check.
+#
+# Three things distinguish this from a checklist:
+#   1. Negative space is first-class. `state: skipped` items carry a required
+#      `reason`; the validator asserts the thing really is absent (`evidence:
+#      absent:`). A deliberate, reasoned gap is a hygiene STATEMENT.
+#   2. Every item has `cadence` + `enforce`. The validator catches the gap
+#      between "declared blocking" and "actually able to merge past it".
+#   3. Tiers, not a binary. `tier` is the floor this repo GUARANTEES (the
+#      validator derives the highest tier all of whose items pass and asserts
+#      it matches this claim). `aspires` is the bullseye-style target: items
+#      between `tier` and `aspires` are reported as the gap-to-close, not failed.
+
+schema_version: 0
+
+repo: csp
+tier: 2          # held & enforced — every item with tier <= 2 must pass
+aspires: 3       # informational gap target — tier-3 items are reported, not failed
+
+# --- Tier ladder -----------------------------------------------------------
+# Shared vocabulary across the fleet (will move to a global definition the
+# portfolio aggregator reads; inlined here while the schema is being sketched).
+tiers:
+  1: baseline    # LICENSE + README + .gitignore; tests build & run on 1 platform
+  2: maintained  # full platform matrix, examples run, lint+format enforced,
+                 # dist/release discipline, governance settings validated
+  3: hardened    # formal specs checked in CI, security scanning (secret/dep/SAST),
+                 # SBOM + signed releases, fuzzing, perf-regression tracking
+
+# --- evidence: the machine-checkable union (one key per item) --------------
+#   ci_job:     <workflow>#<jobId>            job exists in that workflow
+#   ci_step:    {workflow, name}             a step with that name exists
+#   make_target:<name>                       `make -n <name>` resolves
+#   command:    <argv>                        runs, must exit 0
+#   file:       {path, matches?}             path exists (+ optional regex)
+#   gh_setting: {key, equals}                 `gh api repos/:owner/:repo` matches
+#   scanner:    {tool, config?, invoked?}    config present AND invoked in CI
+#   absent:     <evidence>                    the nested evidence must NOT resolve
+#   manual:     {last_verified}              attestation; no automated backing
+# `state`:   enforced | present | manual | planned | skipped
+# `cadence`: continuous | per-release | periodic:<dur> | once-must-hold
+# `enforce`: blocking | warning | informational
+# `reason`:  free text; REQUIRED when state == skipped or planned.
+
+items:
+
+  # ============================== CORRECTNESS =============================
+  - id: correctness.test-matrix
+    dim: correctness
+    desc: Unit tests run on macOS arm64, Linux x86_64, Linux arm64 (Makefile) + Windows x86_64 (CMake)
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 1
+    evidence: {ci_job: ci.yml#test}
+
+  - id: correctness.windows
+    dim: correctness
+    desc: Windows x86_64 builds & tests via CMake, with TLS deliberately off (-DCSP_TLS=OFF)
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    reason: Windows TLS path (picotls) unported; channels/http/ws covered, QUIC+TLS excluded on Windows.
+    evidence: {ci_job: ci.yml#windows}
+
+  - id: correctness.examples-run
+    dim: correctness
+    desc: All example programs compile AND execute (not just compile) in CI
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {make_target: run-examples-ci}
+
+  - id: correctness.dist-dropin
+    dim: correctness
+    desc: Amalgamated dist drop-in builds & passes the full test suite
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {make_target: test-dist}
+
+  - id: correctness.dist-fresh
+    dim: correctness
+    desc: Committed dist/ is regenerated and asserted byte-identical (no stale amalgamation)
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {ci_step: {workflow: ci.yml, name: Check dist is up-to-date}}
+
+  - id: correctness.subset-link-dce
+    dim: correctness
+    desc: Picking a protocol subset (channels/http/http+ws/quic/full) links only that subset's symbols
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    evidence: {ci_job: ci.yml#subset-link}
+
+  - id: correctness.sanitizers-linux
+    dim: correctness
+    desc: ASan+UBSan and TSan run on Linux x86_64 and arm64 against the dist build
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {ci_job: ci.yml#sanitize}
+
+  - id: correctness.sanitizers-macos-tsan
+    dim: correctness
+    desc: macOS TSan
+    state: skipped
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: >-
+      50–130× slower than Linux TSan (2–4 h vs 2 min), cancelled ~80% of runs,
+      and has never caught anything Linux arm64/x86_64 TSan didn't. macOS
+      ASan+UBSan is retained.
+    evidence: {absent: {ci_job: "ci.yml#sanitize:macOS TSan"}}
+
+  - id: correctness.formal-tla
+    dim: correctness
+    desc: TLA+ specs of the core concurrency protocols are model-checked in CI
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    evidence: {make_target: check}
+
+  - id: correctness.fuzzing
+    dim: correctness
+    desc: Fuzz harnesses over the wire-protocol parsers (http/ws/quic framing)
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: Parsers are vendored upstream (llhttp/nghttp2/ngtcp2/wslay) and fuzzed there; no csp-local harness yet.
+    evidence: {absent: {make_target: fuzz}}
+
+  # =========================== SECURITY / SUPPLY ==========================
+  - id: security.secret-scan
+    dim: security
+    desc: Secret scanning (gitleaks) in pre-commit and CI
+    state: planned
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    reason: No gitleaks config yet; relying on manual review. Highest-priority tier-3 gap.
+    evidence: {absent: {scanner: {tool: gitleaks}}}
+
+  - id: security.dep-vuln-scan
+    dim: security
+    desc: Vulnerability scanning of vendored C deps (osv-scanner over pinned versions)
+    state: planned
+    cadence: periodic:30d
+    enforce: warning
+    tier: 3
+    reason: Deps are vendored & pinned via scripts/vendor-deps.sh; no automated CVE watch on those pins yet.
+    evidence: {absent: {scanner: {tool: osv-scanner}}}
+
+  - id: security.sast
+    dim: security
+    desc: Static application security testing (CodeQL C/C++)
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: Not yet enabled; clang sanitizers + TLA+ cover the concurrency core but not injection/overflow classes.
+    evidence: {absent: {ci_job: ci.yml#codeql}}
+
+  - id: security.dep-pinning
+    dim: security
+    desc: All third-party C libraries vendored at pinned versions via a reproducible script
+    state: present
+    cadence: per-release
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: scripts/vendor-deps.sh}}
+
+  - id: security.actions-perms
+    dim: security
+    desc: GitHub Actions default token permissions are read-only (least privilege)
+    state: planned
+    cadence: once-must-hold
+    enforce: warning
+    tier: 3
+    reason: No top-level `permissions:` block in ci.yml yet; inherits repo default.
+    evidence: {absent: {ci_step: {workflow: ci.yml, name: permissions}}}
+
+  # ============================== CODE QUALITY ============================
+  - id: quality.frontdoor-lint
+    dim: quality
+    desc: Public header surface is linted (lint_frontdoor.py — no leaked internals)
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {make_target: lint-frontdoor}
+
+  - id: quality.iwyu
+    dim: quality
+    desc: include-what-you-use audit over the dist build
+    state: present
+    cadence: periodic:release
+    enforce: informational
+    tier: 2
+    evidence: {make_target: iwyu}
+
+  - id: quality.format
+    dim: quality
+    desc: Sources are clang-format clean, enforced in CI
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 2
+    reason: >-
+      No .clang-format committed; formatting is by-hand convention, guarded by
+      lint-frontdoor + iwyu rather than a formatter. Warning, not blocking —
+      can't block on a formatter the repo doesn't run. Gap to close if adopted.
+    evidence: {absent: {file: {path: .clang-format}}}
+
+  # =========================== DEPENDENCY HEALTH ==========================
+  - id: deps.vendor-freshness
+    dim: deps
+    desc: Vendored upstreams (llhttp/nghttp2/ngtcp2/wslay/picotls) reviewed against latest each release
+    state: manual
+    cadence: per-release
+    enforce: informational
+    tier: 2
+    evidence: {manual: {last_verified: 2026-05-21}}
+
+  # ========================== RELEASE & VERSIONING =======================
+  - id: release.semver-minor
+    dim: release
+    desc: Releases bump MINOR only; CSP_VERSION constant matches the latest git tag
+    state: enforced
+    cadence: per-release
+    enforce: blocking
+    tier: 2
+    evidence:
+      command: >-
+        test "$(grep -oE 'CSP_VERSION "[0-9.]+"' include/csp/csp.h | grep -oE '[0-9.]+')"
+        = "$(git describe --tags --abbrev=0 | tr -d v)"
+
+  - id: release.changelog
+    dim: release
+    desc: A maintained CHANGELOG records user-visible changes per release
+    state: planned
+    cadence: per-release
+    enforce: warning
+    tier: 2
+    reason: History lives in git + GitHub release notes; no curated CHANGELOG.md yet.
+    evidence: {absent: {file: {path: CHANGELOG.md}}}
+
+  - id: release.ci-built
+    dim: release
+    desc: Release artifacts are built by CI, never locally
+    state: manual
+    cadence: per-release
+    enforce: warning
+    tier: 2
+    evidence: {manual: {last_verified: 2026-05-21}}
+
+  # ============================ GOVERNANCE / META ========================
+  - id: governance.license
+    dim: governance
+    desc: Apache-2.0 LICENSE present, with NOTICES for vendored deps
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: LICENSE, matches: 'Apache License'}}
+
+  - id: governance.readme
+    dim: governance
+    desc: README present and current
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: README.md}}
+
+  - id: governance.gitignore
+    dim: governance
+    desc: .gitignore covers build artifacts, IDE/OS files, generated state
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: .gitignore}}
+
+  - id: governance.squash-only
+    dim: governance
+    desc: Repo is squash-merge only, with delete-branch-on-merge
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 2
+    evidence: {gh_setting: {key: allow_merge_commit, equals: false}}
+
+  - id: governance.security-md
+    dim: governance
+    desc: SECURITY.md documents the vulnerability-disclosure process
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: Public repo without a published disclosure policy yet.
+    evidence: {absent: {file: {path: SECURITY.md}}}
+
+  # ================================= BUILD ===============================
+  - id: build.parallel-makeflags
+    dim: build
+    desc: Parallelism set via MAKEFLAGS in the Makefile, never passed as -j on the CLI
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: Makefile, matches: 'MAKEFLAGS \+= -j'}}
+
+  - id: build.time-budget
+    dim: build
+    desc: Clean dist build + test completes within CI job timeout (30 min)
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {ci_step: {workflow: ci.yml, name: Build and test (dist)}}
+
+  # ============================ DOCUMENTATION ============================
+  - id: docs.md-links
+    dim: docs
+    desc: Internal markdown links resolve (no dead cross-references)
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence: {make_target: check-md-links}
+
+  - id: docs.tla-tags
+    dim: docs
+    desc: TLA+ spec tags referenced in code/docs stay in sync with the specs
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    evidence: {make_target: check-tla-tags}
+
+  - id: docs.todo
+    dim: docs
+    desc: docs/todo.md exists as the repo TODO sink
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 1
+    evidence: {file: {path: docs/todo.md}}
+
+  # ============================== PERFORMANCE ===========================
+  - id: perf.benchmarks
+    dim: perf
+    desc: Benchmark suite exists and builds (bench/)
+    state: present
+    cadence: per-release
+    enforce: informational
+    tier: 2
+    evidence: {make_target: bench}
+
+  - id: perf.regression-tracking
+    dim: perf
+    desc: Benchmark results tracked over time to catch regressions
+    state: planned
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: Benchmarks run on demand; no stored baseline or CI comparison yet.
+    evidence: {absent: {ci_job: ci.yml#bench}}
+
+  # ============================== VCS / HISTORY =========================
+  - id: vcs.lfs-binaries
+    dim: vcs
+    desc: Large/binary assets (TLA traces, fixtures) tracked via Git LFS
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: .gitattributes}}   # TODO: confirm LFS patterns present
+
+  - id: vcs.pre-commit-hook
+    dim: vcs
+    desc: scripts/hooks/pre-commit activated (core.hooksPath) for local gating
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: scripts/hooks/pre-commit}}
+
+  # =================== AGENT-READINESS / ONBOARDING ====================
+  - id: agent.claude-md
+    dim: agent
+    desc: CLAUDE.md present and current (project conventions discoverable by agents)
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: CLAUDE.md}}
+
+  - id: agent.bullseye
+    dim: agent
+    desc: bullseye.yaml present (convergence targets discoverable)
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: bullseye.yaml}}
+
+  - id: agent.onboarding-docs
+    dim: agent
+    desc: Clean-clone build instructions documented; time-to-first-green-test recoverable without spelunking
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: docs/overview.md}}

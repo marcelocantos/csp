@@ -514,7 +514,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 # --- Rules ---
 
 .PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples run-examples-ci dist iwyu clean \
-       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor
+       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor hygiene-check
 
 # Explicit default — keep `make` (no args) running the full test suite.
 # Without this, the `bullseye` rule below would become the default target
@@ -711,6 +711,14 @@ TLA_CHECK  := $(filter-out %_Bug.tla,$(TLA_SPECS))
 
 check-tla-tags:
 	@python3 scripts/check_tla_tags.py
+
+# --- Hygiene posture (fleet hygiene initiative) ---
+# Validates hygiene.yaml against repo reality: declared CI jobs / Makefile
+# targets / files / gh settings / scanners must exist; `skipped` items must
+# really be absent; the declared maturity tier must match what's held. Drift
+# fails. Uses `uv run` for the pyyaml dep (system python3 lacks it).
+hygiene-check:
+	@uv run scripts/hygiene_check.py
 
 check: $(TLA_JAR)
 	@fail=0; \
