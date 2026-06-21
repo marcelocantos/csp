@@ -32,15 +32,16 @@ connection make_connection(io::fd_t fd, std::string remote) {
     // fd is already non-blocking (set by io::accept or net::dial).
 
 #ifdef _WIN32
-    auto input = part::io::byte_reader(fd).spawn();
+    // Windows can't dup a SOCKET via POSIX dup(), so the read source and
+    // the writer share the one fd.  The writer owns the close; the source
+    // is a non-owning view over the same fd.
     auto output = part::io::byte_writer(fd).spawn();
-    // T17 source on Windows: deferred.  SOCKETs don't dup via POSIX
-    // dup(); proper duplication needs WSADuplicateSocket + WSASocket.
-    // Leave `source` default-constructed; Windows callers must use
-    // the legacy `input` path.  Filed as a follow-up under T17.
-    io::source src;
+    io::source src = io::fd_source_view(fd);
 #else
-    auto rfd = fd;
+    // The source owns the original fd and closes it on EOF/exit.  The
+    // writer gets its own dup so it can shutdown(SHUT_WR) before close —
+    // making the peer's reader see EOF — without disturbing the source's
+    // reads on the original fd.
     int raw_wfd = ::dup(fd.raw());
     if (raw_wfd < 0) {
         io::close(fd);
@@ -48,10 +49,6 @@ connection make_connection(io::fd_t fd, std::string remote) {
     }
     auto wfd = io::fd_t(raw_wfd);
     io::set_nonblock(wfd);
-    auto input = part::io::byte_reader(rfd).spawn();
-    // Socket-aware byte_writer: shutdown(SHUT_WR) before close so
-    // the peer's byte_reader sees EOF even though rfd still holds a
-    // reference to the underlying socket.
     auto output = spawn_consumer<bytes>(
         [wfd](reader<bytes> in) {
             internal::descr("byte_writer");
@@ -62,23 +59,11 @@ connection make_connection(io::fd_t fd, std::string remote) {
             ::shutdown(wfd.raw(), SHUT_WR);
             io::close(wfd);
         });
-    // T17 source: dup the fd so fd_source can own and close its copy
-    // without disturbing the byte_reader on rfd.  Consumers must use
-    // either `input` or `source`, not both — they pull from the same
-    // socket and interleave arbitrarily.
-    int raw_sfd = ::dup(fd.raw());
-    if (raw_sfd < 0) {
-        io::close(fd);
-        throw csp::error("dup failed");
-    }
-    auto sfd = io::fd_t(raw_sfd);
-    io::set_nonblock(sfd);
-    auto src = io::fd_source(sfd);
+    io::source src = io::fd_source(fd);
 #endif
 
     connection c;
     c.fd = fd;
-    c.input = std::move(input);
     c.source = std::move(src);
     c.output = std::move(output);
     c.remote_addr = std::move(remote);

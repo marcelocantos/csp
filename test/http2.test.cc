@@ -181,7 +181,9 @@ h2_response h2_fetch(
     flush_to_net();
 
     csp::bytes chunk;
-    while (!cs.done && (conn.input >> chunk)) {
+    while (!cs.done) {
+        auto rr = csp::io::call_source(conn.source, 4096);
+        if (!(rr >> chunk)) break;
         nghttp2_session_mem_recv2(session, chunk.data(), chunk.size());
         flush_to_net();
     }

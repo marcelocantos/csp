@@ -46,6 +46,19 @@ std::string read_one_response(io::source& src, std::string& buf) {
     }
 }
 
+// Drain a connection's source to EOF, returning everything read as a string
+// (the pull-based equivalent of `while (conn.input >> chunk) ...`).
+std::string read_to_eof(io::source& src) {
+    std::string out;
+    for (;;) {
+        auto rr = io::call_source(src, 4096);
+        bytes chunk;
+        if (!(rr >> chunk)) break;
+        out.append(chunk.begin(), chunk.end());
+    }
+    return out;
+}
+
 } // namespace
 
 TEST_SUITE("http") {
@@ -97,11 +110,7 @@ TEST_CASE("enable---net-serve-with-http-enable") {
         bytes req_bytes(req.begin(), req.end());
         conn.output << req_bytes;
 
-        std::string response;
-        bytes chunk;
-        while (conn.input >> chunk) {
-            response.append(chunk.begin(), chunk.end());
-        }
+        std::string response = read_to_eof(conn.source);
 
         CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
         CHECK(response.find("factory-OK") != std::string::npos);
@@ -153,11 +162,7 @@ TEST_CASE("serve---basic-get") {
         bytes req_bytes(req.begin(), req.end());
         conn.output << req_bytes;
 
-        std::string response;
-        bytes chunk;
-        while (conn.input >> chunk) {
-            response.append(chunk.begin(), chunk.end());
-        }
+        std::string response = read_to_eof(conn.source);
 
         CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
         CHECK(response.find("Content-Type: text/plain") != std::string::npos);
@@ -213,11 +218,7 @@ TEST_CASE("serve---post-with-body") {
         bytes req_bytes(req.begin(), req.end());
         conn.output << req_bytes;
 
-        std::string response;
-        bytes chunk;
-        while (conn.input >> chunk) {
-            response.append(chunk.begin(), chunk.end());
-        }
+        std::string response = read_to_eof(conn.source);
 
         CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
         CHECK(response.find("request body data") != std::string::npos);
@@ -263,7 +264,7 @@ TEST_CASE("serve---keep-alive") {
         // Send both requests, then read both responses.
         // The server handles them sequentially (request-response-
         // request-response) so we send one at a time.
-        std::string leftover;
+        std::string buf;
         for (int i = 0; i < 2; ++i) {
             std::string req =
                 "GET /test HTTP/1.1\r\n"
@@ -272,32 +273,7 @@ TEST_CASE("serve---keep-alive") {
             bytes req_bytes(req.begin(), req.end());
             conn.output << req_bytes;
 
-            std::string response = leftover;
-            leftover.clear();
-            bytes chunk;
-            for (;;) {
-                // Check if we already have a complete response.
-                auto body_start = response.find("\r\n\r\n");
-                if (body_start != std::string::npos) {
-                    auto cl_pos = response.find("Content-Length: ");
-                    if (cl_pos != std::string::npos) {
-                        auto cl_end = response.find("\r\n", cl_pos);
-                        auto cl_str = response.substr(
-                            cl_pos + 16, cl_end - cl_pos - 16);
-                        auto content_len =
-                            static_cast<size_t>(std::stoul(cl_str));
-                        auto header_end = body_start + 4;
-                        auto total = header_end + content_len;
-                        if (response.size() >= total) {
-                            leftover = response.substr(total);
-                            response.resize(total);
-                            break;
-                        }
-                    }
-                }
-                if (!(conn.input >> chunk)) break;
-                response.append(chunk.begin(), chunk.end());
-            }
+            std::string response = read_one_response(conn.source, buf);
             CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
             std::string expected = "response " + std::to_string(i + 1);
             CHECK(response.find(expected) != std::string::npos);
@@ -346,8 +322,7 @@ TEST_CASE("serve---request-header-lookup") {
         bytes req_bytes(req.begin(), req.end());
         conn.output << req_bytes;
 
-        bytes chunk;
-        while (conn.input >> chunk) {}
+        (void)read_to_eof(conn.source);
     });
 
     schedule();
@@ -412,11 +387,7 @@ TEST_CASE("serve---streaming-body") {
         bytes req_bytes(req.begin(), req.end());
         conn.output << req_bytes;
 
-        std::string response;
-        bytes chunk;
-        while (conn.input >> chunk) {
-            response.append(chunk.begin(), chunk.end());
-        }
+        std::string response = read_to_eof(conn.source);
 
         CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
         CHECK(response.find("streamed body data") != std::string::npos);

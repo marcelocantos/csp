@@ -291,8 +291,10 @@ TEST_CASE("ws---bad-upgrade-no-key") {
 
         // Read the response and check it's 400.
         std::string response;
-        bytes chunk;
-        while (conn.input >> chunk) {
+        for (;;) {
+            auto rr = io::call_source(conn.source, 4096);
+            bytes chunk;
+            if (!(rr >> chunk)) break;
             response.append(chunk.begin(), chunk.end());
         }
         CHECK(response.find("400") != std::string::npos);

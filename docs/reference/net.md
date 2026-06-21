@@ -24,7 +24,7 @@ A connected socket represented as a pair of channels.
 ```cpp
 struct connection {
     io::fd_t fd;                            // underlying socket (non-blocking)
-    reader<std::vector<uint8_t>> input;     // bytes arriving from peer
+    io::source source;                      // pull-based reads from peer
     writer<std::vector<uint8_t>> output;    // bytes to send to peer
     std::string remote_addr;                // peer address ("host:port")
 };
@@ -32,13 +32,20 @@ struct connection {
 
 ### Description
 
-`connection` is a move-only struct. The `input` reader and `output` writer
-are backed by `byte_reader` / `byte_writer` imps spawned on the socket.
-Closing (dropping) either endpoint propagates to the other side:
+`connection` is a move-only struct. The `source` (a pull-based
+`io::source`) and `output` writer are backed by reader / writer imps
+spawned on the socket. Closing (dropping) either endpoint propagates to
+the other side:
 
 - Dropping `output` sends a TCP FIN to the peer (half-close write).
-- The `input` reader returns `false` once the peer closes or errors.
+- Reading from `source` returns `false` (peer death) once the peer closes
+  or errors.
 - Dropping both closes the socket entirely.
+
+Read by pulling sized chunks: `source(n)` blocks and returns up to `n`
+bytes (throwing on error, `csp::channel_closed` on EOF), or
+`io::call_source(source, n)` returns a `reader<bytes>` you can `>>` (which
+returns `false` on EOF) or race in a `prialt`.
 
 `fd` is the raw socket (already non-blocking). Prefer the channel API;
 use `fd.raw()` only for platform calls that require a socket descriptor.
@@ -56,7 +63,10 @@ conn.output << data;
 conn.output = {};
 
 // Read response:
-for (std::vector<uint8_t> chunk; conn.input >> chunk;) {
+for (;;) {
+    auto reply = csp::io::call_source(conn.source, 4096);
+    std::vector<uint8_t> chunk;
+    if (!(reply >> chunk)) break;   // EOF
     // process chunk
 }
 ```
@@ -114,8 +124,10 @@ printf("Listening on port %u\n", srv.port);
 csp::net::connection conn;
 while (srv.connections >> conn) {
     csp::spawn([conn = std::move(conn)]() mutable {
-        std::vector<uint8_t> buf;
-        while (conn.input >> buf) {
+        for (;;) {
+            auto reply = csp::io::call_source(conn.source, 4096);
+            std::vector<uint8_t> buf;
+            if (!(reply >> buf)) break;   // peer closed
             conn.output << buf;
         }
     });
@@ -158,7 +170,10 @@ csp::spawn([] {
     conn.output << data;
     conn.output = {};   // half-close: signal EOF
 
-    for (std::vector<uint8_t> chunk; conn.input >> chunk;) {
+    for (;;) {
+        auto reply = csp::io::call_source(conn.source, 4096);
+        std::vector<uint8_t> chunk;
+        if (!(reply >> chunk)) break;   // EOF
         fwrite(chunk.data(), 1, chunk.size(), stdout);
     }
 });
