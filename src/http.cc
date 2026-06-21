@@ -134,7 +134,10 @@ struct parse_state {
     std::string header_field;
     std::string header_value;
     std::vector<std::pair<std::string, std::string>> headers;
-    bytes body;
+    // Body bytes produced by the current llhttp_execute call, drained to
+    // the handler's body_stream after each execute.  Bounded by the read
+    // chunk size — the whole body is never accumulated here (🎯T17.5).
+    bytes body_stage;
     bool in_value = false;
 
     llhttp_method_t req_method = HTTP_GET;
@@ -142,6 +145,7 @@ struct parse_state {
     uint8_t version_minor = 1;
     bool keep_alive = true;
 
+    bool headers_complete = false;
     bool message_complete = false;
 
     void flush_header() {
@@ -157,7 +161,8 @@ struct parse_state {
     void reset() {
         url.clear();
         headers.clear();
-        body.clear();
+        body_stage.clear();
+        headers_complete = false;
         message_complete = false;
     }
 };
@@ -190,14 +195,15 @@ int on_headers_complete(llhttp_t* p) {
     st->version_major = p->http_major;
     st->version_minor = p->http_minor;
     st->keep_alive = llhttp_should_keep_alive(p);
+    st->headers_complete = true;
     return 0;
 }
 
 int on_body(llhttp_t* p, const char* at, size_t len) {
     auto* st = static_cast<parse_state*>(p->data);
-    st->body.insert(st->body.end(),
-                    reinterpret_cast<const uint8_t*>(at),
-                    reinterpret_cast<const uint8_t*>(at) + len);
+    st->body_stage.insert(st->body_stage.end(),
+                          reinterpret_cast<const uint8_t*>(at),
+                          reinterpret_cast<const uint8_t*>(at) + len);
     return 0;
 }
 
@@ -212,19 +218,27 @@ int on_message_complete(llhttp_t* p) {
 // Uses direct I/O on the fd rather than net::connection channels.
 // This avoids inheriting cancel scopes from the accept loop.
 //
-// Ciphertext reads go through an io::source (🎯T17.1) built over the
-// fd as a non-owning view.  handle_connection retains fd ownership
-// for the explicit close on completion or for the WebSocket-upgrade
-// hijack handoff after dropping the source.
+// Reads go through an io::source (🎯T17.1) built over the fd as a
+// non-owning view.  handle_connection retains fd ownership for the
+// explicit close on completion or for the WebSocket-upgrade hijack
+// handoff after dropping the source.
 //
-// Body buffering: the request body is fully accumulated in state.body
-// (filled by llhttp's on_body callback) before delivery.  body_stream
-// is a producer pre-populated with a single chunk.  Per-request chunk-
-// by-chunk streaming via io::source remains a follow-up — it requires
-// splitting parse-and-deliver into per-message producer imps.
+// Body streaming (🎯T17.5): the request is delivered to the handler as
+// soon as its headers are parsed, before the body has finished arriving.
+// Body bytes are handed to the handler's body_stream chunk-by-chunk as
+// llhttp's on_body callback fires, so memory stays bounded by the read
+// chunk size rather than the body size.
+//
+// Robustness to early responses: a handler may respond (e.g. 401 / 413)
+// without reading the body.  Each body chunk is therefore delivered with
+// a `prialt` that races the body push against the handler's response —
+// the connection can never deadlock waiting to push a chunk nobody is
+// reading.  Once the handler has responded (or dropped its body_stream),
+// the orchestrator keeps draining the body off the wire so the next
+// keep-alive request starts at the right byte boundary.
 
 void handle_connection(io::fd_t fd, std::string remote_addr,
-                       writer<endpoint> ep_out) {
+                       writer<endpoint> ep_out, size_t read_chunk_size) {
     internal::descr("http/conn");
 
     chan<request> req_ch;
@@ -260,80 +274,65 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
 
     auto req_writer = std::move(req_ch.w);
 
-    constexpr size_t buf_size = 4096;
-    for (;;) {
-        bytes chunk;
-        try {
-            chunk = src(buf_size);
-        } catch (...) {
-            // EOF (channel_closed) or transport error — same as the
-            // legacy `n <= 0` exit from io::read.
-            break;
-        }
+    // Unconsumed wire bytes carried across reads (and across keep-alive
+    // requests: a single read may contain the tail of one request and the
+    // head of the next).
+    bytes residual;
 
-        const char* data = reinterpret_cast<const char*>(chunk.data());
-        size_t len = chunk.size();
+    for (;;) {  // one iteration per HTTP request (keep-alive)
+        state.reset();
 
-        while (len > 0) {
-            state.message_complete = false;
+        chan<bytes> body_ch;                     // body chunks -> handler
+        chan<response> resp_ch;                  // handler's response
+        chan<request::hijack_result> hijack_ch;  // protocol-upgrade hijack
+
+        bool delivered = false;     // request handed to the handler yet?
+        bool deliver_body = true;   // handler still reading body_stream?
+        bool resp_received = false; // handler responded before body end?
+        response resp;
+
+        // --- Parse the request, streaming the body as it arrives ---
+        for (;;) {
+            if (residual.empty()) {
+                try {
+                    residual = src(read_chunk_size);
+                } catch (...) {
+                    // EOF (channel_closed) or transport error.  Between
+                    // requests this is a normal close; mid-request it is a
+                    // truncated request — either way, end the connection.
+                    goto done;
+                }
+            }
+
+            const char* data = reinterpret_cast<const char*>(residual.data());
+            size_t len = residual.size();
             auto err = llhttp_execute(&parser, data, len);
 
-            if (state.message_complete) {
-                // Body streaming design (🎯T3.2):
-                //
-                // The request body is fully accumulated in state.body before
-                // delivery (llhttp buffers it via on_body callbacks).
-                // body_stream is a reader<bytes> backed by a spawn_producer
-                // imp that sends the body as one chunk and exits.
-                //
-                // Lifecycle: when the handler receives the request,
-                // handle_connection blocks on resp_ch.r >> resp.  The
-                // producer imp is then free to run on any OS thread and
-                // deliver the body to whoever reads body_stream.  No more
-                // than 3 imps (handle_connection + producer + handler) are
-                // active at once, but only 2 need CPU simultaneously
-                // (producer exits as soon as the handler receives the chunk).
-                //
-                // True chunk-by-chunk streaming (without buffering) requires
-                // 🎯T17.
-                reader<bytes> body_reader;
-                if (state.body.empty()) {
-                    body_reader = spawn_producer<bytes>(
-                        [](writer<bytes>) {
-                            // No body: exit immediately, closing the stream.
-                        });
-                } else {
-                    body_reader = spawn_producer<bytes>(
-                        [body = std::move(state.body)](writer<bytes> w) mutable {
-                            w << std::move(body);
-                        });
-                }
+            // The parser pauses (rather than consuming everything) at a
+            // message boundary: after on_message_complete (HPE_PAUSED), or at
+            // the end of an upgrade request's headers (HPE_PAUSED_UPGRADE /
+            // HPE_PAUSED_H2_UPGRADE — on_message_complete still fires, then
+            // any post-upgrade bytes are handed to the hijacking protocol).
+            bool paused = err == HPE_PAUSED ||
+                          err == HPE_PAUSED_UPGRADE ||
+                          err == HPE_PAUSED_H2_UPGRADE;
+            size_t consumed = paused
+                ? static_cast<size_t>(llhttp_get_error_pos(&parser) - data)
+                : len;
+            residual.erase(residual.begin(),
+                           residual.begin() +
+                               static_cast<std::ptrdiff_t>(consumed));
 
-                // Bytes that were consumed by the parser beyond the end
-                // of this message (may be non-zero when HPE_PAUSED).
-                size_t consumed = 0;
-                if (err == HPE_PAUSED) {
-                    consumed = static_cast<size_t>(
-                        llhttp_get_error_pos(&parser) - data);
-                } else {
-                    consumed = len;
-                }
+            if (err != HPE_OK && !paused) {
+                response bad{400, {}, {}};
+                auto wire = serialize_response(bad);
+                (void)io::write(fd, wire.data(), wire.size());
+                goto done;
+            }
 
-                // Collect any leftover bytes the parser has already buffered
-                // but not yet returned (bytes parsed past this message).
-                // Used by the hijack path (🎯T3.5 WebSocket upgrade) to
-                // hand any bytes already past the 101 boundary to the
-                // protocol that takes over the fd.
-                bytes leftover;
-                leftover.insert(leftover.end(),
-                                reinterpret_cast<const uint8_t*>(data + consumed),
-                                reinterpret_cast<const uint8_t*>(data + len));
-
-                chan<response> resp_ch;
-                // Sync hijack channel: write blocks until handler reads
-                // or handler drops the reader (no hijack).
-                chan<request::hijack_result> hijack_ch;
-
+            // Deliver the request as soon as the headers are in — before
+            // the body has finished arriving.
+            if (state.headers_complete && !delivered) {
                 request req;
                 req.method = from_llhttp(state.req_method);
                 req.url = std::move(state.url);
@@ -341,61 +340,74 @@ void handle_connection(io::fd_t fd, std::string remote_addr,
                 req.version_minor = state.version_minor;
                 req.headers = std::move(state.headers);
                 req.keep_alive = state.keep_alive;
-                req.body_stream = std::move(body_reader);
+                req.body_stream = std::move(body_ch.r);
                 req.respond = std::move(resp_ch.w);
                 req.hijack  = std::move(hijack_ch.r);
-
                 if (!(req_writer << std::move(req))) goto done;
+                delivered = true;
+            }
 
-                response resp;
-                if (resp_ch.r >> resp) {
-                    auto wire = serialize_response(resp);
-                    if (io::write(fd, wire.data(), wire.size()) < 0)
-                        goto done;
-
-                    // A 101 Switching Protocols response signals a protocol
-                    // upgrade (e.g. WebSocket).  Offer the raw fd to the
-                    // handler via the hijack channel; the handler must be
-                    // waiting on req.hijack.  This write is blocking because
-                    // the WebSocket handler must have already started reading
-                    // from req.hijack (it called ws::upgrade which reads the
-                    // hijack channel synchronously after sending the 101).
-                    if (resp.status == 101) {
-                        // Drop the source so its imp exits before the
-                        // WebSocket handler starts reading from the fd.
-                        // The source's read loop and the WS reader can
-                        // not safely interleave reads on the same fd.
-                        src = io::source{};
-                        hijack_ch.w << request::hijack_result{fd, std::move(leftover)};
-                        // fd ownership transferred — do NOT close.
-                        return;
+            // Hand this execute's body bytes to the handler, racing the
+            // push against an early response so a handler that rejects the
+            // request without draining its body cannot deadlock us.
+            if (!state.body_stage.empty()) {
+                if (deliver_body && !resp_received) {
+                    switch (prialt(body_ch.w << std::move(state.body_stage),
+                                   resp_ch.r >> resp)) {
+                    case 0:  break;                        // chunk delivered
+                    case 1:  resp_received = true; break;  // early response
+                    case ~0: deliver_body  = false; break; // body_stream dropped
+                    case ~1: goto done;                    // response abandoned
                     }
                 }
-
-                bool ka = state.keep_alive;
-
-                // Always resume — the parser stays paused even if
-                // HPE_OK is returned (all data consumed at the pause
-                // point).
-                llhttp_resume(&parser);
-                state.reset();
-
-                if (!ka) goto done;
-
-                data += consumed;
-                len  -= consumed;
-                if (len == 0) break;
-
-            } else if (err != HPE_OK) {
-                response bad{400, {}, {}};
-                auto wire = serialize_response(bad);
-                (void)io::write(fd, wire.data(), wire.size());
-                goto done;
-
-            } else {
-                break;
+                state.body_stage.clear();
             }
+
+            if (state.message_complete) break;
         }
+
+        // Body fully parsed.  `residual` now holds any bytes read past this
+        // message — the next pipelined request, or post-upgrade data for the
+        // hijack path.
+        bytes leftover = residual;
+
+        // Close the handler's body_stream (EOF) before awaiting the
+        // response, so a handler blocked draining the body unblocks and can
+        // respond.
+        body_ch.w = {};
+
+        if (!resp_received) {
+            if (!(resp_ch.r >> resp)) goto done;  // handler dropped, no response
+        }
+
+        {
+            auto wire = serialize_response(resp);
+            if (io::write(fd, wire.data(), wire.size()) < 0) goto done;
+        }
+
+        // A 101 Switching Protocols response signals a protocol upgrade
+        // (e.g. WebSocket).  Offer the raw fd to the handler via the hijack
+        // channel; the handler must already be waiting on req.hijack (it
+        // called ws::upgrade, which reads the hijack channel synchronously
+        // after sending the 101).
+        if (resp.status == 101) {
+            // Drop the source so its imp exits before the WebSocket handler
+            // starts reading from the fd — the source's read loop and the
+            // WS reader cannot safely interleave reads on the same fd.
+            src = io::source{};
+            hijack_ch.w << request::hijack_result{fd, std::move(leftover)};
+            return;  // fd ownership transferred — do NOT close.
+        }
+
+        bool ka = state.keep_alive;
+
+        // Always resume — the parser stays paused after message complete
+        // even when HPE_OK is returned (all data consumed at the pause
+        // point).
+        llhttp_resume(&parser);
+
+        if (!ka) goto done;
+        // residual carries any pipelined bytes into the next iteration.
     }
 
 done:
@@ -668,7 +680,8 @@ server serve(const std::string& addr, uint16_t port, serve_options opts) {
     // cancel-aware I/O interference.
 
     auto endpoints = spawn_producer<endpoint>(
-        [listen_fd = lr.listen_fd, port = lr.port](writer<endpoint> out) {
+        [listen_fd = lr.listen_fd, port = lr.port,
+         read_chunk_size = opts.read_chunk_size](writer<endpoint> out) {
             internal::descr("http/serve");
 
             auto stop = std::make_shared<std::atomic<bool>>(false);
@@ -729,8 +742,10 @@ server serve(const std::string& addr, uint16_t port, serve_options opts) {
                 auto out_copy2 = out.copy();
                 csp::spawn([fd = client_fd,
                             r = std::move(remote),
-                            o = std::move(out_copy2)]() mutable {
-                    handle_connection(fd, std::move(r), std::move(o));
+                            o = std::move(out_copy2),
+                            read_chunk_size]() mutable {
+                    handle_connection(fd, std::move(r), std::move(o),
+                                      read_chunk_size);
                 });
             }
             io::close(listen_fd);

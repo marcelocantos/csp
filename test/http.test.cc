@@ -11,6 +11,43 @@
 
 using namespace csp;
 
+namespace {
+
+// Read one complete HTTP/1.1 response (status line + headers + a
+// Content-Length-delimited body) from a connection's pull-based source,
+// carrying any bytes past the response boundary forward in `buf` for the
+// next call (so it works across keep-alive responses).
+std::string read_one_response(io::source& src, std::string& buf) {
+    for (;;) {
+        auto hdr_end = buf.find("\r\n\r\n");
+        if (hdr_end != std::string::npos) {
+            size_t content_len = 0;
+            auto cl = buf.find("Content-Length:");
+            if (cl != std::string::npos && cl < hdr_end) {
+                auto le = buf.find("\r\n", cl);
+                content_len = static_cast<size_t>(
+                    std::stoul(buf.substr(cl + 15, le - (cl + 15))));
+            }
+            size_t total = hdr_end + 4 + content_len;
+            if (buf.size() >= total) {
+                std::string resp = buf.substr(0, total);
+                buf.erase(0, total);
+                return resp;
+            }
+        }
+        auto rr = io::call_source(src, 4096);
+        bytes chunk;
+        if (!(rr >> chunk)) {  // EOF: return whatever we have.
+            std::string resp = std::move(buf);
+            buf.clear();
+            return resp;
+        }
+        buf.append(chunk.begin(), chunk.end());
+    }
+}
+
+} // namespace
+
 TEST_SUITE("http") {
 
 // 🎯T23.1 — csp::net::serve(port, {csp::http::enable()}) factory API.
@@ -383,6 +420,154 @@ TEST_CASE("serve---streaming-body") {
 
         CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
         CHECK(response.find("streamed body data") != std::string::npos);
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("serve---streaming-body-large") {
+    // 🎯T17.5: a body larger than the read chunk is delivered to the handler
+    // as multiple body_stream chunks (genuinely streamed, not pre-buffered),
+    // each bounded by the read chunk size — so memory stays bounded by the
+    // chunk size rather than the body size.
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    constexpr size_t body_size = 100 * 1024;  // 100 KiB >> default 4096 read chunk
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w), body_size] {
+        auto srv = http::serve(0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                CHECK(req.method == http::method::POST);
+                CHECK(req.url == "/upload");
+
+                size_t total = 0;
+                int chunk_count = 0;
+                size_t max_chunk = 0;
+                bytes chunk;
+                while (req.body_stream >> chunk) {
+                    total += chunk.size();
+                    if (chunk.size() > max_chunk) max_chunk = chunk.size();
+                    ++chunk_count;
+                }
+                CHECK(total == body_size);
+                CHECK(chunk_count > 1);     // proves it streamed, not buffered
+                CHECK(max_chunk <= 4096);   // bounded by the read chunk size
+
+                std::string ok = "ok";
+                req.respond << http::response{
+                    200, {}, bytes(ok.begin(), ok.end())};
+            }
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto conn = net::dial("127.0.0.1", port);
+
+        std::string head =
+            "POST /upload HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Content-Length: " + std::to_string(body_size) + "\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        bytes req_bytes(head.begin(), head.end());
+        req_bytes.insert(req_bytes.end(), body_size, 'x');
+        conn.output << std::move(req_bytes);
+
+        std::string buf;
+        auto response = read_one_response(conn.source, buf);
+        CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("serve---early-response-without-draining") {
+    // 🎯T17.5: a handler that responds without reading the body (e.g. an
+    // early 413 rejection) must not deadlock the connection, and the server
+    // must drain the unread body off the wire so the next keep-alive request
+    // stays in sync.
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    constexpr size_t body_size = 16 * 1024;  // spans several read chunks
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http::serve(0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            int count = 0;
+            http::request req;
+            while (ep.requests >> req) {
+                ++count;
+                if (count == 1) {
+                    // Reject WITHOUT touching req.body_stream.
+                    CHECK(req.url == "/big");
+                    std::string msg = "too big";
+                    req.respond << http::response{
+                        413, {}, bytes(msg.begin(), msg.end())};
+                } else {
+                    // The second request proves the connection survived the
+                    // un-drained first body and stayed byte-aligned.
+                    CHECK(req.url == "/ok");
+                    std::string msg = "fine";
+                    req.respond << http::response{
+                        200, {}, bytes(msg.begin(), msg.end())};
+                    break;
+                }
+            }
+            CHECK(count == 2);
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto conn = net::dial("127.0.0.1", port);
+        std::string buf;
+
+        // Request 1: large body, keep-alive; the handler won't read it.
+        std::string head1 =
+            "POST /big HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Content-Length: " + std::to_string(body_size) + "\r\n"
+            "\r\n";
+        bytes req1(head1.begin(), head1.end());
+        req1.insert(req1.end(), body_size, 'x');
+        conn.output << std::move(req1);
+
+        auto resp1 = read_one_response(conn.source, buf);
+        CHECK(resp1.find("413") != std::string::npos);
+
+        // Request 2: small GET; expect 200 — connection is still in sync.
+        std::string req2 =
+            "GET /ok HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        bytes req2_bytes(req2.begin(), req2.end());
+        conn.output << std::move(req2_bytes);
+
+        auto resp2 = read_one_response(conn.source, buf);
+        CHECK(resp2.find("HTTP/1.1 200 OK") != std::string::npos);
+        CHECK(resp2.find("fine") != std::string::npos);
     });
 
     schedule();
