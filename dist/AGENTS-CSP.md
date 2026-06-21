@@ -428,7 +428,7 @@ namespace csp::net {
 
 struct connection {
     io::fd_t fd;
-    reader<bytes> input;    // bytes from peer
+    io::source source;      // pull-based reads from peer (source(n) / call_source)
     writer<bytes> output;   // bytes to peer
     std::string remote_addr;
 };
@@ -465,8 +465,16 @@ struct request {
     std::string url;
     uint8_t version_major, version_minor;
     std::vector<std::pair<std::string, std::string>> headers;
-    bytes body;                    // buffered request body
+    bytes body;                    // empty until drain() is called
     bool keep_alive;
+
+    // Streaming body: delivered as soon as headers are parsed; chunks arrive
+    // here as the body streams in (closes at EOF). Read it incrementally, or
+    // call drain() to collect the whole body into `body`. A handler may also
+    // respond without reading it (e.g. 413) — the server drains the rest.
+    reader<bytes> body_stream;
+    const bytes& drain();          // body_stream -> body, then returns body
+
     writer<response> respond;      // write exactly one response
 
     // WebSocket / protocol upgrade: after writing a 101 response via

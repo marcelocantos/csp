@@ -18,8 +18,10 @@ TEST_CASE("listen-and-dial---basic-echo") {
 
         net::connection conn;
         if (srv.connections >> conn) {
-            std::vector<uint8_t> buf;
-            while (conn.input >> buf) {
+            for (;;) {
+                auto rr = io::call_source(conn.source, 4096);
+                std::vector<uint8_t> buf;
+                if (!(rr >> buf)) break;
                 if (!(conn.output << buf)) break;
             }
         }
@@ -37,13 +39,14 @@ TEST_CASE("listen-and-dial---basic-echo") {
         conn.output << data;
 
         std::vector<uint8_t> response;
-        conn.input >> response;
+        auto rr = io::call_source(conn.source, 4096);
+        rr >> response;
         std::string got(response.begin(), response.end());
         CHECK(got == msg);
 
         // Close connection — echo server sees EOF and exits.
         conn.output = {};
-        conn.input = {};
+        conn.source = {};
     });
 
     schedule();

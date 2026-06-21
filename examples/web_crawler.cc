@@ -173,8 +173,10 @@ static std::string raw_get(uint16_t server_port, const std::string& host,
 
         // Read full response.
         std::string response;
-        bytes chunk;
-        while (conn.input >> chunk) {
+        for (;;) {
+            auto rr = io::call_source(conn.source, 4096);
+            bytes chunk;
+            if (!(rr >> chunk)) break;
             response.append(chunk.begin(), chunk.end());
         }
 
