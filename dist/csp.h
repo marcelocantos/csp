@@ -8961,8 +8961,9 @@ private:
 // encrypt/decrypt, then alerts/close_notify).
 //
 // The lifecycle model:
-//   - Either consumer endpoint dropped → stream imp shuts down, drops
-//     both upstream endpoints, exits.
+//   - Either consumer endpoint dropped → stream imp sends a best-effort
+//     close_notify alert (non-blocking; dropped if the ciphertext sink
+//     can't accept it immediately), drops both upstream endpoints, exits.
 //   - Upstream source EOF → reply-writer drop propagates to consumer
 //     (consumer's `>>` returns false).
 //   - Upstream source error → `_throw` propagates across plaintext_in.
