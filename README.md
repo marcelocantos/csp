@@ -45,6 +45,12 @@ c++ -std=c++20 -O2 -c my_app.cpp -o my_app.o
 c++ my_app.o csp.o csp_globals.o -o my_app
 ```
 
+Prefer not to compile CSP yourself? Each release also ships **pre-built static
+and shared libraries** for macOS arm64 and Linux x86_64/arm64 — link
+`-lcsp` (plus `-lcsp_<proto>` for any network protocols) against the published
+archives. See [pre-built library artefacts](docs/design/prebuilt-libs.md) for
+the per-platform link incantations and the libc++ ABI policy.
+
 ### Hello, channels
 
 ```cpp

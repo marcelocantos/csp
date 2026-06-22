@@ -1155,5 +1155,18 @@ assert that libraries belonging to unselected protocols (`llhttp_`,
 final binary. A regression that pulls an unselected protocol's symbols into
 the front-door TU trips a clear, named CI failure.
 
+### Pre-built libraries
+
+Each GitHub Release also publishes pre-built static (`.a`) and shared
+(`.dylib`/`.so`) libraries so you can link compiled archives instead of
+compiling the drop-in — one `libcsp` core plus a `libcsp_<proto>` per
+protocol and a `lib<dep>` per vendored library, for macOS arm64 and Linux
+x86_64/arm64, with a separate `csp.h` header archive. Same cherry-pick model:
+`-lcsp_http -lcsp -lllhttp` for HTTP/1.1, with `-Wl,-dead_strip` /
+`-Wl,--gc-sections` dropping what you don't reference. ABI is libc++; a
+libstdc++ application must take the source drop-in above. Full per-platform
+link incantations, the library list per use case, and the ABI policy are in
+[`docs/design/prebuilt-libs.md`](https://github.com/marcelocantos/csp/blob/master/docs/design/prebuilt-libs.md).
+
 Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to
 give coding agents CSP expertise.

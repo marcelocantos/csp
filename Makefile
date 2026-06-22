@@ -514,7 +514,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 # --- Rules ---
 
 .PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples run-examples-ci dist iwyu clean \
-       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor
+       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor libs downstream-test
 
 # Explicit default — keep `make` (no args) running the full test suite.
 # Without this, the `bullseye` rule below would become the default target
@@ -723,6 +723,27 @@ check: $(TLA_JAR)
 
 dist:
 	python3 scripts/amalgamate.py
+
+# --- Pre-built library artefacts (🎯T24) ---
+# Build per-protocol static (.a) and shared (.dylib/.so) libraries from the
+# dist/ drop-in for the host platform. The release workflow runs this on each
+# platform and uploads the results. Output: build/libs/. Pass PROTOS=... to
+# restrict the protocol set (default: all). Drives off dist/, so it depends
+# on dist being current.
+#
+#   make libs                 # core + every protocol, fetching vendored deps
+#   make libs PROTOS="http"   # core + HTTP/1.1 only
+LIBS_OUT ?= build/libs
+PROTOS   ?=
+libs: dist
+	scripts/build-libs.sh --out $(LIBS_OUT) $(PROTOS)
+
+# Build + run the downstream link-test sample against the artefacts in
+# LIBS_OUT, proving the published libraries link and run with no CSP sources
+# or vendored deps in the consumer's tree.
+downstream-test: libs
+	$(MAKE) -C examples/downstream run \
+	    CSP_INCLUDE="$(abspath $(LIBS_OUT))" CSP_LIB="$(abspath $(LIBS_OUT))"
 
 test-dist: dist
 ifneq ($(findstring thread,$(SANITIZE)),)

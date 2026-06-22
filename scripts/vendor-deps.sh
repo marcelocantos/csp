@@ -64,7 +64,10 @@ NGTCP2_VERSION_NUM='0x011600'
 # Repo root = parent of scripts/.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VENDOR_DIR="$REPO_ROOT/vendor"
+# Destination for the fetched libraries. Defaults to vendor/ alongside the
+# script; override with VENDOR_DIR to fetch into a scratch tree (the
+# pre-built-lib build uses this so it doesn't disturb the dev submodule tree).
+VENDOR_DIR="${VENDOR_DIR:-$REPO_ROOT/vendor}"
 
 # Selected protocols (set by argument parsing).
 WANT_TLS=0
