@@ -1,0 +1,176 @@
+name: Release
+
+# Builds the pre-built CSP library artefacts (🎯T24) and uploads them to the
+# GitHub Release. Runs when a release is published; workflow_dispatch builds
+# and link-tests the artefacts without uploading (a safe dry run).
+#
+# Per platform it produces static (.a) and shared (.dylib/.so) libraries:
+#   libcsp.{a,dylib|so}                 core
+#   libcsp_<proto>.{a,dylib|so}         one per protocol (tls http http2
+#                                       http3 ws quic)
+#   lib<dep>.{a,dylib|so}               vendored deps (llhttp picotls nghttp2
+#                                       nghttp3 ngtcp2 wslay)
+# plus a single platform-independent headers archive (csp.h).
+#
+# A downstream-test job then links a minimal sample against each platform's
+# uploaded artefacts — no CSP sources, no vendored deps — proving the
+# documented link incantation works end-to-end.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # upload assets to the release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # --- Build per-platform libraries from dist/ ---
+  build:
+    name: build libs (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macos-arm64
+            shlib_ext: dylib
+          - os: ubuntu-24.04
+            name: linux-x86_64
+            shlib_ext: so
+            packages: clang-18 libc++-18-dev libc++abi-18-dev
+            cc: clang-18
+            cxx: clang++-18
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+            shlib_ext: so
+            packages: clang-18 libc++-18-dev libc++abi-18-dev
+            cc: clang-18
+            cxx: clang++-18
+
+    steps:
+      # No submodules / LFS: build from dist/ as an external user would,
+      # fetching third-party deps via scripts/vendor-deps.sh.
+      - uses: actions/checkout@v6
+
+      - name: Install Linux toolchain
+        if: matrix.packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Build libraries
+        run: |
+          scripts/build-libs.sh --out build/libs
+        env:
+          CC: ${{ matrix.cc || 'cc' }}
+          CXX: ${{ matrix.cxx || 'c++' }}
+
+      - name: Package libraries
+        id: package
+        run: |
+          set -euo pipefail
+          ver="${{ github.event.release.tag_name || github.sha }}"
+          libdir="csp-${ver}-${{ matrix.name }}"
+          mkdir -p "stage/$libdir"
+          cp build/libs/*.a build/libs/*.${{ matrix.shlib_ext }} "stage/$libdir/"
+          cp dist/AGENTS-CSP.md "stage/$libdir/" 2>/dev/null || true
+          tar -C stage -czf "${libdir}.tar.gz" "$libdir"
+          echo "lib_tarball=${libdir}.tar.gz" >> "$GITHUB_OUTPUT"
+          # Headers archive is platform-independent; only the macOS job emits
+          # it (named without a platform suffix) to avoid duplicate uploads.
+          if [ "${{ matrix.name }}" = "macos-arm64" ]; then
+            incdir="csp-${ver}-include"
+            mkdir -p "stage/$incdir"
+            cp dist/csp.h "stage/$incdir/"
+            tar -C stage -czf "${incdir}.tar.gz" "$incdir"
+            echo "inc_tarball=${incdir}.tar.gz" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Workflow artifacts feed the downstream-test job below regardless of
+      # trigger (so workflow_dispatch dry runs are fully exercised).
+      - name: Upload lib artifact (workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: libs-${{ matrix.name }}
+          path: build/libs/
+
+      - name: Upload include artifact (workflow)
+        if: matrix.name == 'macos-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: include
+          path: dist/csp.h
+
+      # Attach tarballs to the published release.
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "${{ steps.package.outputs.lib_tarball }}" --clobber
+          if [ -n "${{ steps.package.outputs.inc_tarball }}" ]; then
+            gh release upload "${{ github.event.release.tag_name }}" \
+              "${{ steps.package.outputs.inc_tarball }}" --clobber
+          fi
+
+  # --- Link + run a downstream sample against the built artefacts ---
+  # Proves the published libraries link and run with no CSP sources or
+  # vendored deps present. One job per platform.
+  downstream-test:
+    name: downstream-test (${{ matrix.name }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: macos-arm64
+          - os: ubuntu-24.04
+            name: linux-x86_64
+            packages: clang-18 libc++-18-dev libc++abi-18-dev
+            cxx: clang++-18
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+            packages: clang-18 libc++-18-dev libc++abi-18-dev
+            cxx: clang++-18
+
+    steps:
+      # Only the downstream sample + its Makefile are needed from the repo;
+      # everything else comes from the published artefacts.
+      - uses: actions/checkout@v6
+
+      - name: Install Linux toolchain
+        if: matrix.packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Fetch published libraries
+        uses: actions/download-artifact@v4
+        with:
+          name: libs-${{ matrix.name }}
+          path: artefacts/lib
+
+      - name: Fetch published headers
+        uses: actions/download-artifact@v4
+        with:
+          name: include
+          path: artefacts/include
+
+      - name: Build + run downstream sample
+        run: |
+          make -C examples/downstream run \
+            CSP_INCLUDE="$PWD/artefacts/include" \
+            CSP_LIB="$PWD/artefacts/lib" \
+            CXX="${{ matrix.cxx || 'c++' }}"

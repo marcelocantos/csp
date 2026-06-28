@@ -346,3 +346,12 @@ The full 🎯T23 acceptance criteria include items beyond Phase A:
 
 These four can be sequenced independently once Phase A is in. None blocks
 Phase A.
+
+## See also
+
+The same per-protocol cherry-pick model is also published as **pre-built
+library artefacts** with each release, so downstream projects can link
+compiled archives instead of compiling the drop-in themselves. See
+[prebuilt-libs.md](prebuilt-libs.md) for the published library set, the
+per-platform link incantations, and the ABI policy (libc++; libstdc++ users
+take the source drop-in described here).

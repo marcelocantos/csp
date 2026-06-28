@@ -1,5 +1,7 @@
 build/
 build-dist/
+# Downstream link-test sample binary (examples/downstream/Makefile output).
+examples/downstream/downstream
 build-linux/
 build-linux-*/
 build-win/

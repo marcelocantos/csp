@@ -592,17 +592,30 @@ stream make_stream(
             return static_cast<bool>(up_out << std::move(out));
         };
 
-        // Send close_notify alert; best-effort (peer may have closed).
-        // close_notify on consumer-drop is currently a no-op.  Sending
-        // it through up_out reliably runs into a runtime convergence
-        // issue when the ciphertext transport is a buffered chan<bytes>
-        // whose reader is held but not actively reading — `up_out <<
-        // alert` hangs even though the buffer has room.  Production use
-        // over real sockets (kernel send buffer) wouldn't hit this path,
-        // but the chan interaction needs investigation before re-enable.
-        // Lifecycle is otherwise clean: the upstream peer sees the
-        // ciphertext endpoints drop when the steady-state imp exits.
-        auto send_close_notify = [&]() {};
+        // Send close_notify alert.  Best-effort and *non-blocking*: the
+        // alert is a courtesy (lets the peer tell a clean shutdown from a
+        // truncation), so the send must not park.  A blocking
+        // `up_out << alert` deadlocks when two streams tear down over
+        // synchronous transports that neither side is draining — each
+        // parks writing its own close_notify to a chan whose peer has
+        // stopped pulling.  The non-blocking send delivers when a reader
+        // is ready (socket send buffer, parked buffer-filter, or a peer
+        // still pulling) and otherwise drops the alert; the peer still
+        // sees the ciphertext endpoints drop when this imp exits.  See
+        // docs/papers/31-buffered-chan-close-notify-hang.md.
+        auto send_close_notify = [&]() {
+            ptls_buffer_t sendbuf;
+            uint8_t       sendbuf_small[64];
+            ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+            int ret = ptls_send_alert(tls.get(), &sendbuf,
+                                      PTLS_ALERT_LEVEL_WARNING,
+                                      PTLS_ALERT_CLOSE_NOTIFY);
+            if (ret == 0 && sendbuf.off > 0) {
+                bytes alert = take_buffer(sendbuf);
+                (void)prialt(up_out << std::move(alert), csp::none);
+            }
+            ptls_buffer_dispose(&sendbuf);
+        };
 
         io::read_request req;
         bytes            wbuf;

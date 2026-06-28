@@ -551,7 +551,7 @@ targets:
     achieved: 2026-05-21
   T3:
     name: Runtime is production-ready for I/O workloads
-    status: identified
+    status: achieved
     value: 21.0
     cost: 34.0
     acceptance:
@@ -568,6 +568,7 @@ targets:
     - T3.4
     origin: manual
     discovered: 2026-03-09
+    achieved: 2026-06-22
   T3.1:
     name: Ergonomic I/O wrappers exist
     status: achieved
