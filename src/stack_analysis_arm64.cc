@@ -198,6 +198,21 @@ public:
 
 // --- Expression tree (transient IR) ---
 
+// 🎯T3.10: inbound argument-register provenance forwarded across a BL
+// boundary. One entry per X0–X7 register whose provenance the BL site
+// resolved, so the callee's analyser can seed that register instead of
+// blindly assuming the data pointer lives in X0. `origin` stores a
+// reg_state::origin_t value (reg_state is defined further down, so this
+// POD keeps it as a raw byte the BL handler and evaluator convert at the
+// boundary).
+struct arg_prov {
+    uint8_t  reg;       // argument register index (0–7)
+    uint8_t  origin;    // static_cast<uint8_t>(reg_state::origin_t)
+    uint64_t payload;   // DATA_OFFSET: byte offset into the caller's data;
+                        // PC_RELATIVE: absolute address bits;
+                        // CONST: signed value bits
+};
+
 struct expr {
     enum kind_t {
         CONST,
@@ -207,12 +222,14 @@ struct expr {
         CALL_INDIRECT,           // indirect call through data offset
         BUDGET,                  // conservative fallback budget
         CALL_DIRECT_WITH_DATA,   // direct call forwarding a data sub-pointer
+        CALL_DIRECT_WITH_ARGS,   // 🎯T3.10: direct call forwarding X0–X7 provenance
     };
     kind_t kind;
     size_t value = 0;              // CONST, BUDGET: depth; CALL_INDIRECT/CALL_DIRECT_WITH_DATA: offset
     const void* target = nullptr;  // CALL_DIRECT, CALL_DIRECT_WITH_DATA: callee address
     int refcount_ = 0;
     expr_ptr left, right;
+    std::vector<arg_prov> args;    // CALL_DIRECT_WITH_ARGS: forwarded register seeds
 
     static expr_ptr make_const(size_t v) {
         auto* e = new expr();
@@ -261,6 +278,18 @@ struct expr {
         e->value = data_off;
         return expr_ptr(e);
     }
+    // 🎯T3.10: direct call forwarding the inbound provenance of one or more
+    // argument registers (a DATA_OFFSET sub-pointer plus any PC_RELATIVE /
+    // CONST argument registers) so the callee's analyser can resolve calls
+    // and prune branches through arguments that arrive in X1–X7.
+    static expr_ptr make_call_direct_with_args(const void* addr,
+                                               std::vector<arg_prov> seeds) {
+        auto* e = new expr();
+        e->kind = CALL_DIRECT_WITH_ARGS;
+        e->target = addr;
+        e->args = std::move(seeds);
+        return expr_ptr(e);
+    }
 };
 
 void expr_ptr::addref() { if (p_) p_->refcount_++; }
@@ -280,7 +309,8 @@ bool is_pure(const expr& root) {
         case expr::BUDGET:
         case expr::CALL_INDIRECT:
         case expr::CALL_DIRECT:
-        case expr::CALL_DIRECT_WITH_DATA: return false;
+        case expr::CALL_DIRECT_WITH_DATA:
+        case expr::CALL_DIRECT_WITH_ARGS: return false;
         case expr::MAX:
         case expr::ADD:
             stack.push_back(e->left.get());
@@ -335,8 +365,23 @@ enum opcode : uint8_t {
     OP_CALL_DIRECT           = 0x04,
     OP_CALL_INDIRECT         = 0x05,
     OP_BUDGET                = 0x06,
-    OP_CALL_DIRECT_WITH_DATA = 0x07,  // <target_addr:8> <data_offset:8>
+    OP_CALL_DIRECT_WITH_DATA = 0x07,  // <target_addr:8> <data_prov:8>
+    // 🎯T3.10: <target_addr:8> <count:1> count×<reg:1 origin:1 payload:8>
+    OP_CALL_DIRECT_WITH_ARGS = 0x08,
 };
+
+// 🎯T3.10: OP_CALL_DIRECT_WITH_DATA's 64-bit operand packs the forwarding
+// register index into the high 5 bits and the byte offset into the low 59.
+// A closure is at most a few hundred bytes, so 59 bits of offset is ample
+// headroom, and reg index 0 reproduces the pre-T3.10 offset-only bytes
+// exactly (backward compatible — the common X0 forward is byte-identical).
+constexpr int      kDataRegShift = 59;
+constexpr uint64_t kDataOffMask  = (uint64_t{1} << kDataRegShift) - 1;
+constexpr uint64_t pack_data_prov(int reg, uint64_t off) {
+    return (static_cast<uint64_t>(reg) << kDataRegShift) | (off & kDataOffMask);
+}
+constexpr int      unpack_data_reg(uint64_t v) { return static_cast<int>(v >> kDataRegShift); }
+constexpr uint64_t unpack_data_off(uint64_t v) { return v & kDataOffMask; }
 
 void emit_u64(std::vector<uint8_t>& prog, uint64_t v) {
     const auto* p = reinterpret_cast<const uint8_t*>(&v);
@@ -389,7 +434,18 @@ void compile(const expr& root, std::vector<uint8_t>& prog) {
         case expr::CALL_DIRECT_WITH_DATA:
             prog.push_back(OP_CALL_DIRECT_WITH_DATA);
             emit_ptr(prog, f.e->target);
-            emit_u64(prog, f.e->value);  // data_offset
+            emit_u64(prog, f.e->value);  // packed (reg_index, data_offset)
+            stack.pop_back();
+            break;
+        case expr::CALL_DIRECT_WITH_ARGS:
+            prog.push_back(OP_CALL_DIRECT_WITH_ARGS);
+            emit_ptr(prog, f.e->target);
+            prog.push_back(static_cast<uint8_t>(f.e->args.size()));
+            for (const auto& a : f.e->args) {
+                prog.push_back(a.reg);
+                prog.push_back(a.origin);
+                emit_u64(prog, a.payload);
+            }
             stack.pop_back();
             break;
         case expr::MAX:
@@ -418,6 +474,45 @@ public:
     void unlock() { flag_.clear(std::memory_order_release); }
 };
 
+// --- Register tracking ---
+//
+// Defined here (above the program cache and analyser entry) so the cache
+// and the callee-entry seeding can talk about register provenance: a
+// callable forwarded across a BL boundary seeds the register it arrives in
+// (🎯T3.10), not blindly X0.
+
+struct reg_state {
+    enum origin_t {
+        UNKNOWN,
+        DATA_OFFSET,   // derived from X0 (data pointer) at a known byte offset
+        PC_RELATIVE,   // resolved ADRP+ADD absolute address (safe to read)
+        CONST,         // known integer constant (enables branch pruning)
+    };
+    origin_t origin = UNKNOWN;
+    union {
+        size_t offset;        // DATA_OFFSET: byte offset into data struct
+        const void* address;  // PC_RELATIVE: resolved virtual address
+        int64_t const_value;  // CONST: known integer value
+    } u = {};
+};
+
+// 🎯T3.10: the inbound X0–X7 provenance a callee's analyser starts from.
+// Pre-T3.10 this was implicitly { regs[0] = DATA_OFFSET(0) }; forwarding a
+// callable that arrives in X1–X7 (or a CONST discriminator) seeds the
+// corresponding register instead of leaving it UNKNOWN.
+struct callee_seed {
+    reg_state regs[8];   // default-constructed: all UNKNOWN
+};
+
+// The seed an unspecialised callee walk starts from: the data pointer in X0
+// at offset 0 (the AAPCS64 default for a void(*)(void*) entry function).
+inline callee_seed default_seed() {
+    callee_seed s;
+    s.regs[0].origin = reg_state::DATA_OFFSET;
+    s.regs[0].u.offset = 0;
+    return s;
+}
+
 // --- Program cache ---
 
 spinlock g_cache_mu;
@@ -431,26 +526,41 @@ ptr_map<stack_analysis> g_eval_cache;
 // Forward declaration.
 std::vector<uint8_t> analyze_and_compile(const void* fn,
                                          const stack_analysis_options& opts,
-                                         const void* data);
+                                         const void* data,
+                                         const callee_seed& seed);
 
 // Return by value: programs are typically 9-27 bytes, so copies are cheap.
-// When `data` is non-null, a data-specialised program is compiled and
-// returned directly without touching the global cache (the program is only
-// valid for that specific closure value).
+// A `cacheable` walk (data==nullptr, default seed) reuses the global program
+// cache keyed by `fn`. A specialised walk — one carrying a forwarded data
+// pointer and/or a non-default register seed (🎯T3.10) — is compiled on
+// demand and never touches the cache, because its result depends on call-site
+// state, not just the callee address (paper 30 §6.3, Option B).
 std::vector<uint8_t> get_or_compile(const void* fn,
-                                     const stack_analysis_options& opts,
-                                     const void* data = nullptr) {
-    if (data) {
-        return analyze_and_compile(fn, opts, data);
+                                    const stack_analysis_options& opts,
+                                    const void* data,
+                                    const callee_seed& seed,
+                                    bool cacheable) {
+    if (!cacheable) {
+        return analyze_and_compile(fn, opts, data, seed);
     }
     {
         std::lock_guard<spinlock> lk(g_cache_mu);
         if (auto* p = g_cache.find(fn)) return *p;
     }
-    auto prog = analyze_and_compile(fn, opts, nullptr);
+    auto prog = analyze_and_compile(fn, opts, data, seed);
     std::lock_guard<spinlock> lk(g_cache_mu);
     g_cache.emplace(fn, prog);
     return prog;
+}
+
+// Convenience overload preserving the pre-T3.10 contract: a data==nullptr
+// walk is cacheable; a data-specialised walk is not. Both use the default
+// (X0 = DATA_OFFSET(0)) seed.
+std::vector<uint8_t> get_or_compile(const void* fn,
+                                    const stack_analysis_options& opts,
+                                    const void* data = nullptr) {
+    return get_or_compile(fn, opts, data, default_seed(),
+                          /*cacheable=*/ data == nullptr);
 }
 
 // --- Segment bounds (🎯T3.4.2) ---
@@ -585,21 +695,9 @@ inline int64_t sign_extend(uint32_t val, int bits) {
 }
 
 // --- Register tracking ---
-
-struct reg_state {
-    enum origin_t {
-        UNKNOWN,
-        DATA_OFFSET,   // derived from X0 (data pointer) at a known byte offset
-        PC_RELATIVE,   // resolved ADRP+ADD absolute address (safe to read)
-        CONST,         // known integer constant (enables branch pruning)
-    };
-    origin_t origin = UNKNOWN;
-    union {
-        size_t offset;        // DATA_OFFSET: byte offset into data struct
-        const void* address;  // PC_RELATIVE: resolved virtual address
-        int64_t const_value;  // CONST: known integer value
-    } u = {};
-};
+//
+// reg_state (the per-register origin tag) is defined above, before the
+// program cache, so the cache and the callee-entry seeding can reference it.
 
 struct analysis_state {
     const uint32_t* pc;
@@ -771,28 +869,71 @@ std::vector<expr_ptr> walk(
                 if (over_budget) {
                     callee = expr::make_budget(opts.indirect_call_budget);
                 } else {
-                    // 🎯T3.4.3: scan X0–X7 for a DATA_OFFSET register. AAPCS64
-                    // puts the callee's first parameter in X0, but the closure-
-                    // derived pointer may still live in X1–X7 at the BL site
-                    // (e.g. when X0 was clobbered with a non-pointer arg).
-                    // Prefer X0 if it carries DATA_OFFSET; otherwise pick the
-                    // lowest-numbered register that does. The forwarded value
-                    // becomes the callee's data context — the callee's analyser
-                    // walks with X0 = DATA_OFFSET=0 pointing at the forwarded
-                    // sub-pointer, which lets per-callee analysis tighten
-                    // results even when the parent's BL site shuffled args.
-                    int fwd = -1;
+                    // 🎯T3.10: capture the inbound provenance of argument
+                    // registers X0–X7 and forward it to the callee, so a
+                    // callable or discriminator arriving in X1–X7 (not just
+                    // X0) can be resolved or pruned by the callee's own
+                    // analyser. By AAPCS64 the register a caller places an
+                    // argument in is the register the callee reads it from,
+                    // so seeding regs[i] in the callee mirrors the real
+                    // handoff (paper 30 §5.2). Anything the scan can't see
+                    // (stack-passed args, spills) is simply not forwarded and
+                    // the callee falls back to budget — sound by construction
+                    // (paper 30 §5.3, §8).
+                    //   - The first DATA_OFFSET register becomes the callee's
+                    //     forwarded data pointer (the 🎯T3.4.3 mechanism), now
+                    //     remembering which register it lands in.
+                    //   - PC_RELATIVE (resolved code / table addresses) and
+                    //     CONST (branch discriminators) are self-contained and
+                    //     forwarded as absolute seeds.
+                    int data_reg = -1;
+                    uint64_t data_offset = 0;
+                    int n_abs = 0;
+                    std::vector<arg_prov> seeds;
                     for (int i = 0; i < 8; ++i) {
-                        if (state.regs[i].origin == reg_state::DATA_OFFSET) {
-                            fwd = i;
+                        const auto& r = state.regs[i];
+                        switch (r.origin) {
+                        case reg_state::DATA_OFFSET:
+                            // Only the first (lowest) DATA_OFFSET can be
+                            // threaded as the single forwarded data pointer;
+                            // dropping any others only widens (sound).
+                            if (data_reg < 0) {
+                                data_reg = i;
+                                data_offset = r.u.offset;
+                                seeds.push_back(
+                                    {static_cast<uint8_t>(i),
+                                     static_cast<uint8_t>(reg_state::DATA_OFFSET),
+                                     r.u.offset});
+                            }
+                            break;
+                        case reg_state::PC_RELATIVE:
+                            seeds.push_back(
+                                {static_cast<uint8_t>(i),
+                                 static_cast<uint8_t>(reg_state::PC_RELATIVE),
+                                 reinterpret_cast<uint64_t>(r.u.address)});
+                            ++n_abs;
+                            break;
+                        case reg_state::CONST:
+                            seeds.push_back(
+                                {static_cast<uint8_t>(i),
+                                 static_cast<uint8_t>(reg_state::CONST),
+                                 static_cast<uint64_t>(r.u.const_value)});
+                            ++n_abs;
+                            break;
+                        case reg_state::UNKNOWN:
                             break;
                         }
                     }
-                    if (fwd >= 0) {
-                        callee = expr::make_call_direct_with_data(
-                            target, state.regs[fwd].u.offset);
-                    } else {
+                    if (seeds.empty()) {
                         callee = expr::make_call_direct(target);
+                    } else if (n_abs == 0) {
+                        // Sole DATA_OFFSET register — keep the compact opcode
+                        // (byte-identical to pre-T3.10 when it lands in X0).
+                        callee = expr::make_call_direct_with_data(
+                            target, pack_data_prov(data_reg, data_offset));
+                    } else {
+                        callee = expr::make_call_direct_with_args(
+                            target, std::move(seeds));
                     }
                 }
 
@@ -1264,13 +1405,16 @@ std::vector<expr_ptr> walk(
 // cache (they are data-specific).
 std::vector<uint8_t> analyze_and_compile(const void* fn,
                                          const stack_analysis_options& opts,
-                                         const void* data = nullptr) {
+                                         const void* data,
+                                         const callee_seed& seed) {
     analysis_state initial{};
     initial.pc = static_cast<const uint32_t*>(fn);
     initial.sp_delta = 0;
-    // X0 = data parameter.
-    initial.regs[0].origin = reg_state::DATA_OFFSET;
-    initial.regs[0].u.offset = 0;
+    // 🎯T3.10: seed the callee's inbound argument registers X0–X7. The
+    // default seed is { X0 = DATA_OFFSET(0) } (the AAPCS64 void(*)(void*)
+    // entry shape); a forwarded call seeds the register the callable /
+    // discriminator actually arrives in.
+    for (int i = 0; i < 8; ++i) initial.regs[i] = seed.regs[i];
 
     visit_set visited;
     size_t inst_count = 0;
@@ -1328,6 +1472,7 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
         const void* fn;
         bool is_exact_before;
         const void* saved_data;
+        bool cacheable;          // 🎯T3.10: store result keyed by fn only if true
     };
     std::vector<eval_frame> call_stack;
     small_ptr_set on_stack;  // cycle detection
@@ -1347,14 +1492,58 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
     on_stack.insert(root_fn);
     const void* current_data = data;
 
+    // 🎯T3.10: enter callee `addr` with forwarded data `fwd_data` and inbound
+    // register `seed`. `cacheable` selects whether the address-keyed eval
+    // cache may serve and store this callee's result — only unspecialised
+    // walks (default seed, no forwarded data) are cacheable (Option B, paper
+    // 30 §6.3). On a cache hit or detected recursion the result is pushed and
+    // the callee is not entered.
+    auto enter_callee = [&](const void* addr, const void* fwd_data,
+                            const callee_seed& seed, bool cacheable) {
+        if (cacheable) {
+            std::lock_guard<spinlock> lk(g_eval_cache_mu);
+            if (auto* r = g_eval_cache.find(addr)) {
+                is_exact &= r->is_exact;
+                values[vsp++] = r->max_depth;
+                return;
+            }
+        }
+        if (on_stack.contains(addr)) {
+            is_exact = false;
+            values[vsp++] = opts.indirect_call_budget;
+            return;
+        }
+        // Never walk a target that isn't in our executable text. An indirect
+        // target resolved from data (OP_CALL_INDIRECT, or a register seed)
+        // can be a non-function pointer when the data isn't a real fn-pointer
+        // table — e.g. a chained pointer load whose DATA_OFFSET base the
+        // single-base model can't follow. Walking it would fault; budget is
+        // the sound fallback. Direct (BL-derived) targets are always in text,
+        // so this never costs exactness for them.
+        if (!binary_bounds().text.contains(addr)) {
+            is_exact = false;
+            values[vsp++] = opts.indirect_call_budget;
+            return;
+        }
+        prog_store.push_back(get_or_compile(addr, opts, fwd_data, seed, cacheable));
+        call_stack.push_back({ip, end, addr, is_exact, current_data, cacheable});
+        on_stack.insert(addr);
+        is_exact = true;
+        current_data = fwd_data;
+        ip = prog_store.back().data();
+        end = ip + prog_store.back().size();
+    };
+
     while (true) {
         if (ip >= end) {
             if (call_stack.empty()) break;
-            // Return from callee — cache its result.
+            // Return from callee — cache its result only for unspecialised
+            // (cacheable) walks; a result specialised to forwarded data or a
+            // non-default register seed must not be served keyed by fn alone.
             auto& frame = call_stack.back();
             bool callee_exact = is_exact;
             size_t callee_depth = vsp > 0 ? values[vsp - 1] : 0;
-            {
+            if (frame.cacheable) {
                 std::lock_guard<spinlock> lk(g_eval_cache_mu);
                 g_eval_cache.emplace(frame.fn,
                     stack_analysis{callee_depth, callee_exact});
@@ -1392,29 +1581,7 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
         }
         case OP_CALL_DIRECT: {
             auto addr = read_ptr(ip);
-            // Check eval cache.
-            {
-                std::lock_guard<spinlock> lk(g_eval_cache_mu);
-                if (auto* r = g_eval_cache.find(addr)) {
-                    is_exact &= r->is_exact;
-                    values[vsp++] = r->max_depth;
-                    break;
-                }
-            }
-            // Cycle detection.
-            if (on_stack.contains(addr)) {
-                is_exact = false;
-                values[vsp++] = opts.indirect_call_budget;
-                break;
-            }
-            // Compile callee on demand and enter it.
-            prog_store.push_back(get_or_compile(addr, opts));
-            call_stack.push_back({ip, end, addr, is_exact, current_data});
-            on_stack.insert(addr);
-            is_exact = true;
-            current_data = nullptr;
-            ip = prog_store.back().data();
-            end = ip + prog_store.back().size();
+            enter_callee(addr, nullptr, default_seed(), /*cacheable=*/true);
             break;
         }
         case OP_CALL_INDIRECT: {
@@ -1425,29 +1592,7 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
             } else {
                 auto target = *reinterpret_cast<const void* const*>(
                     static_cast<const char*>(current_data) + off);
-                // Check eval cache.
-                {
-                    std::lock_guard<spinlock> lk(g_eval_cache_mu);
-                    if (auto* r = g_eval_cache.find(target)) {
-                        is_exact &= r->is_exact;
-                        values[vsp++] = r->max_depth;
-                        break;
-                    }
-                }
-                // Cycle detection.
-                if (on_stack.contains(target)) {
-                    is_exact = false;
-                    values[vsp++] = opts.indirect_call_budget;
-                    break;
-                }
-                // Compile callee on demand and enter it.
-                prog_store.push_back(get_or_compile(target, opts));
-                call_stack.push_back({ip, end, target, is_exact, current_data});
-                on_stack.insert(target);
-                is_exact = true;
-                current_data = nullptr;
-                ip = prog_store.back().data();
-                end = ip + prog_store.back().size();
+                enter_callee(target, nullptr, default_seed(), /*cacheable=*/true);
             }
             break;
         }
@@ -1462,10 +1607,15 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
             break;
         }
         case OP_CALL_DIRECT_WITH_DATA: {
-            // Direct call forwarding a data sub-pointer to the callee.
-            // The callee receives *(current_data + data_off) as its data arg.
+            // Direct call forwarding a data sub-pointer to the callee. The
+            // callee receives *(current_data + data_off) as its data arg, in
+            // the argument register the parent forwarded it from (🎯T3.10).
             auto addr = read_ptr(ip);
-            auto data_off = read_u64(ip);
+            auto raw = read_u64(ip);
+            int data_reg = unpack_data_reg(raw);
+            auto data_off = unpack_data_off(raw);
+            // We only ever pack reg indices 0–7; guard the fixed-size seed.
+            if (data_reg >= 8) data_reg = 0;
 
             // Resolve the forwarded data pointer (pointer within the closure).
             const void* forwarded_data = nullptr;
@@ -1474,31 +1624,58 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
                     static_cast<const char*>(current_data) + data_off);
             }
 
-            // When no data is forwarded, treat like OP_CALL_DIRECT (cache hit path).
-            if (!forwarded_data) {
-                std::lock_guard<spinlock> lk(g_eval_cache_mu);
-                if (auto* r = g_eval_cache.find(addr)) {
-                    is_exact &= r->is_exact;
-                    values[vsp++] = r->max_depth;
+            // The callee sees its data at offset 0 of the forwarded pointer,
+            // in register `data_reg`.
+            callee_seed seed;
+            seed.regs[data_reg].origin = reg_state::DATA_OFFSET;
+            seed.regs[data_reg].u.offset = 0;
+
+            // Cacheable only when this reduces to the unspecialised default:
+            // no forwarded data and the data pointer in X0 (paper 30 §6.3).
+            bool cacheable = (forwarded_data == nullptr && data_reg == 0);
+            enter_callee(addr, forwarded_data, seed, cacheable);
+            break;
+        }
+        case OP_CALL_DIRECT_WITH_ARGS: {
+            // 🎯T3.10: direct call forwarding the inbound provenance of
+            // several argument registers. Seeds the callee's X0–X7 so a
+            // callable arriving in X1–X7 resolves and a forwarded CONST
+            // discriminator prunes — always a call-site-specialised (and
+            // therefore uncached) walk.
+            auto addr = read_ptr(ip);
+            uint8_t count = *ip++;
+            callee_seed seed;
+            const void* forwarded_data = nullptr;
+            for (uint8_t k = 0; k < count; ++k) {
+                uint8_t reg = *ip++;
+                uint8_t origin = *ip++;
+                uint64_t payload = read_u64(ip);
+                if (reg >= 8) continue;  // defensive: only 0–7 are emitted
+                switch (static_cast<reg_state::origin_t>(origin)) {
+                case reg_state::DATA_OFFSET:
+                    // The data pointer arrives in `reg`; dereference the
+                    // caller's data to get the callee's data sub-pointer.
+                    if (current_data) {
+                        forwarded_data = *reinterpret_cast<const void* const*>(
+                            static_cast<const char*>(current_data) + payload);
+                    }
+                    seed.regs[reg].origin = reg_state::DATA_OFFSET;
+                    seed.regs[reg].u.offset = 0;
+                    break;
+                case reg_state::PC_RELATIVE:
+                    seed.regs[reg].origin = reg_state::PC_RELATIVE;
+                    seed.regs[reg].u.address =
+                        reinterpret_cast<const void*>(payload);
+                    break;
+                case reg_state::CONST:
+                    seed.regs[reg].origin = reg_state::CONST;
+                    seed.regs[reg].u.const_value = static_cast<int64_t>(payload);
+                    break;
+                case reg_state::UNKNOWN:
                     break;
                 }
             }
-            // Cycle detection.
-            if (on_stack.contains(addr)) {
-                is_exact = false;
-                values[vsp++] = opts.indirect_call_budget;
-                break;
-            }
-            // Compile and enter callee with forwarded data context.
-            // Pass forwarded_data so the callee's walk can materialise
-            // its own closure fields as CONST and prune branches.
-            prog_store.push_back(get_or_compile(addr, opts, forwarded_data));
-            call_stack.push_back({ip, end, addr, is_exact, current_data});
-            on_stack.insert(addr);
-            is_exact = true;
-            current_data = forwarded_data;  // pass sub-pointer to callee
-            ip = prog_store.back().data();
-            end = ip + prog_store.back().size();
+            enter_callee(addr, forwarded_data, seed, /*cacheable=*/false);
             break;
         }
         }
