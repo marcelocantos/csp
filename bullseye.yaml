@@ -225,7 +225,7 @@ targets:
     achieved: 2026-06-21
   T17.3:
     name: tls::stream close_notify on consumer-drop works over buffered chan transports
-    status: identified
+    status: achieved
     value: 3.0
     cost: 2.0
     acceptance:
@@ -237,6 +237,7 @@ targets:
     - T17
     origin: T17 retirement, 2026-06-07
     discovered: 2026-06-07
+    achieved: 2026-06-28
   T17.4:
     name: tls::conn reimplemented as a thin wrapper over tls::stream
     status: identified
