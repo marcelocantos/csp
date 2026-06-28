@@ -169,26 +169,33 @@ mkdir -p "$OUT_DIR" "$WORK"
 
 # --- expand requested protocols to the libraries they need ----------------
 # A protocol's drop-in implies its transitive vendor libs and protocol deps
-# (matching vendor-deps.sh's transitive resolution).
-declare -A WANT_PROTO=()
-declare -A WANT_VLIB=()
-for p in "${PROTOS[@]}"; do WANT_PROTO[$p]=1; done
-(( ${WANT_PROTO[http3]:-0} )) && { WANT_PROTO[quic]=1; }
-(( ${WANT_PROTO[quic]:-0}  )) && { WANT_PROTO[tls]=1; }
-(( ${WANT_PROTO[http2]:-0} )) && { WANT_PROTO[tls]=1; }
-(( ${WANT_PROTO[ws]:-0}    )) && { WANT_PROTO[http]=1; }
+# (matching vendor-deps.sh's transitive resolution). Stock macOS ships bash
+# 3.2, which has no associative arrays, so model the two sets as space-padded
+# strings (" tls http ") with membership helpers. Iterate with unquoted
+# expansion (`for p in $want_proto`) — the tokens are simple identifiers.
+want_proto=" "
+want_vlib=" "
+has()        { case "$1" in *" $2 "*) return 0 ;; *) return 1 ;; esac; }
+add_proto()  { has "$want_proto" "$1" || want_proto="$want_proto$1 "; }
+add_vlib()   { has "$want_vlib"  "$1" || want_vlib="$want_vlib$1 "; }
 
-(( ${WANT_PROTO[tls]:-0}   )) && WANT_VLIB[picotls]=1
-(( ${WANT_PROTO[http]:-0}  )) && WANT_VLIB[llhttp]=1
-(( ${WANT_PROTO[http2]:-0} )) && WANT_VLIB[nghttp2]=1
-(( ${WANT_PROTO[http3]:-0} )) && WANT_VLIB[nghttp3]=1
-(( ${WANT_PROTO[quic]:-0}  )) && WANT_VLIB[ngtcp2]=1
-(( ${WANT_PROTO[ws]:-0}    )) && WANT_VLIB[wslay]=1
+for p in "${PROTOS[@]}"; do add_proto "$p"; done
+has "$want_proto" http3 && add_proto quic   # chained, order matters:
+has "$want_proto" quic  && add_proto tls    # http3 -> quic -> tls
+has "$want_proto" http2 && add_proto tls
+has "$want_proto" ws    && add_proto http
+
+has "$want_proto" tls   && add_vlib picotls
+has "$want_proto" http  && add_vlib llhttp
+has "$want_proto" http2 && add_vlib nghttp2
+has "$want_proto" http3 && add_vlib nghttp3
+has "$want_proto" quic  && add_vlib ngtcp2
+has "$want_proto" ws    && add_vlib wslay
 
 # --- fetch vendored deps --------------------------------------------------
 if (( DO_FETCH )); then
     flags=()
-    for p in "${!WANT_PROTO[@]}"; do flags+=("$(vendor_flag "$p")"); done
+    for p in $want_proto; do flags+=("$(vendor_flag "$p")"); done
     echo "=== fetching vendored deps: ${flags[*]} ==="
     ( cd "$REPO_ROOT" && VENDOR_DIR="$VENDOR_DIR" "$REPO_ROOT/scripts/vendor-deps.sh" "${flags[@]}" )
 fi
@@ -203,7 +210,10 @@ make_lib() {
     local sh="$OUT_DIR/lib$name.$SHLIB_EXT"
     rm -f "$a"
     "$AR_BIN" rcs "$a" "$@"
-    local flags; mapfile -t flags < <(shlib_flags "lib$name.$SHLIB_EXT")
+    # bash 3.2 has no `mapfile`; read the flag lines into an array by hand.
+    local flags=() _line
+    while IFS= read -r _line; do flags+=("$_line"); done \
+        < <(shlib_flags "lib$name.$SHLIB_EXT")
     "$CXX_BIN" -std=c++20 -stdlib=libc++ -fPIC "${flags[@]}" -o "$sh" "$@"
     echo "  -> lib$name.a  lib$name.$SHLIB_EXT"
 }
@@ -256,7 +266,9 @@ build_proto() {
     read -r -a def <<< "$(proto_defines "$p")"
     echo "=== protocol lib: csp_$p ==="
     local obj="$WORK/csp_$p.o"
-    "$CXX_BIN" "${CXX_COMMON[@]}" "${def[@]}" "${inc[@]}" -c "$src" -o "$obj"
+    # def is empty for protocols without -DCSP_TLS (http, ws); guard the
+    # expansion so bash 3.2's `set -u` doesn't abort on the empty array.
+    "$CXX_BIN" "${CXX_COMMON[@]}" ${def[@]+"${def[@]}"} "${inc[@]}" -c "$src" -o "$obj"
     make_lib "csp_$p" "$obj"
 }
 
@@ -267,17 +279,23 @@ echo "=== core lib: csp ==="
 # declarations behind CSP_TLS. Building the core with CSP_TLS keeps the ABI
 # uniform across the whole artefact set.
 CORE_DEF=()
-(( ${WANT_PROTO[tls]:-0} || ${WANT_PROTO[quic]:-0} || ${WANT_PROTO[http2]:-0} || ${WANT_PROTO[http3]:-0} )) && CORE_DEF+=(-DCSP_TLS)
+if has "$want_proto" tls || has "$want_proto" quic || \
+   has "$want_proto" http2 || has "$want_proto" http3; then
+    CORE_DEF+=(-DCSP_TLS)
+fi
 core_objs=()
 for src in csp.cpp csp_globals.cpp; do
     obj="$WORK/${src%.cpp}.o"
-    "$CXX_BIN" "${CXX_COMMON[@]}" "${CORE_DEF[@]}" -c "$DIST/$src" -o "$obj"
+    # ${arr[@]+"${arr[@]}"} expands safely when the array is empty — bash 3.2
+    # errors on a plain "${empty[@]}" under `set -u` (CORE_DEF is empty for a
+    # TLS-free protocol set).
+    "$CXX_BIN" "${CXX_COMMON[@]}" ${CORE_DEF[@]+"${CORE_DEF[@]}"} -c "$DIST/$src" -o "$obj"
     core_objs+=("$obj")
 done
 make_lib csp "${core_objs[@]}"
 
 # --- vendored libs --------------------------------------------------------
-for v in "${!WANT_VLIB[@]}"; do
+for v in $want_vlib; do
     case "$v" in
         picotls) build_vlib picotls $(picotls_srcs) ;;
         llhttp)  build_vlib llhttp  $(llhttp_srcs) ;;
@@ -289,7 +307,7 @@ for v in "${!WANT_VLIB[@]}"; do
 done
 
 # --- protocol libs --------------------------------------------------------
-for p in "${!WANT_PROTO[@]}"; do
+for p in $want_proto; do
     build_proto "$p"
 done
 
