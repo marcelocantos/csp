@@ -468,9 +468,10 @@ targets:
     achieved: 2026-05-20
   T24:
     name: Pre-built CSP library artefacts published with each GitHub Release
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 5.0
     acceptance:
     - Each GitHub Release publishes static (.a) and shared (.dylib/.so) library artefacts for macOS arm64, Linux x86_64, and Linux arm64
     - 'Per platform: libcsp.{a,dylib|so} (core) plus libcsp_<proto>.{a,dylib|so} for tls, http, http2, http3, ws, quic — one library per protocol so users still cherry-pick at link time'
@@ -484,6 +485,7 @@ targets:
     - T23
     origin: manual
     discovered: 2026-05-09
+    achieved: 2026-06-28
   T25:
     name: task_scheduler example terminates cleanly after DAG completes
     status: achieved
