@@ -1,55 +1,45 @@
 # hygiene.yaml — declared, drift-validated hygiene posture for this repo.
-# DRAFT schema (fleet hygiene initiative, piloted in csp). Sibling to
-# bullseye.yaml: bullseye tracks aspirational
-# state ("achieve X"); hygiene tracks steady-state ("we maintain X").
+# Schema reference: the `hygiene` skill (~/.claude/skills/hygiene/SKILL.md).
+# Validate with `/hygiene`; aggregate the fleet with `/hygiene fleet`. Sibling
+# to bullseye.yaml: bullseye tracks aspirational state ("achieve X"); hygiene
+# tracks steady-state ("we maintain X").
 #
-# Core idea: every item declares INTENT plus a machine-checkable `evidence`
-# pointer. `make hygiene-check` confirms each pointer resolves against repo
-# reality (the CI job exists, the make target exists, the scanner is wired in,
-# the gh setting matches). Drift — a claim with no backing reality, or a
-# skipped item that is silently running — fails the check.
-#
-# Three things distinguish this from a checklist:
-#   1. Negative space is first-class. `state: skipped` items carry a required
-#      `reason`; the validator asserts the thing really is absent (`evidence:
-#      absent:`). A deliberate, reasoned gap is a hygiene STATEMENT.
-#   2. Every item has `cadence` + `enforce`. The validator catches the gap
-#      between "declared blocking" and "actually able to merge past it".
-#   3. Tiers, not a binary. `tier` is the floor this repo GUARANTEES (the
-#      validator derives the highest tier all of whose items pass and asserts
-#      it matches this claim). `aspires` is the bullseye-style target: items
-#      between `tier` and `aspires` are reported as the gap-to-close, not failed.
+# Tiers are PER DIMENSION (schema v1). For each dimension the held tier is the
+# highest T such that every item in that dimension with tier <= T is satisfied.
+# `floors` is the per-dimension ratchet: a dimension dropping below its floor
+# is DRIFT and fails the check. `aspires` is the gap horizon for reporting.
+# `enforce` is intent-only metadata and does NOT affect tiers (negative space —
+# `state: skipped` with a required `reason` + an `absent:` pointer — still does:
+# a skip that silently starts running fails the check).
 
-schema_version: 0
+schema_version: 1
 
 repo: csp
-tier: 2          # held & enforced — every item with tier <= 2 must pass
-aspires: 3       # informational gap target — tier-3 items are reported, not failed
+aspires: 3
+floors:            # per-dimension held-tier ratchet; below floor => DRIFT
+  correctness: 2
+  security: 2
+  quality: 2
+  deps: 2
+  release: 2
+  governance: 2
+  build: 2
+  docs: 3
+  perf: 2
+  vcs: 2
+  agent: 2
 
-# --- Tier ladder -----------------------------------------------------------
-# Shared vocabulary across the fleet (will move to a global definition the
-# portfolio aggregator reads; inlined here while the schema is being sketched).
 tiers:
-  1: baseline    # LICENSE + README + .gitignore; tests build & run on 1 platform
-  2: maintained  # full platform matrix, examples run, lint+format enforced,
-                 # dist/release discipline, governance settings validated
-  3: hardened    # formal specs checked in CI, security scanning (secret/dep/SAST),
-                 # SBOM + signed releases, fuzzing, perf-regression tracking
+  1: baseline    # LICENSE + README + .gitignore; tests build & run
+  2: maintained  # platform matrix, examples run, lint/format, release+governance
+  3: hardened    # formal specs, security scanning, signed releases, fuzzing, perf
 
-# --- evidence: the machine-checkable union (one key per item) --------------
-#   ci_job:     <workflow>#<jobId>            job exists in that workflow
-#   ci_step:    {workflow, name}             a step with that name exists
-#   make_target:<name>                       `make -n <name>` resolves
-#   command:    <argv>                        runs, must exit 0
-#   file:       {path, matches?}             path exists (+ optional regex)
-#   gh_setting: {key, equals}                 `gh api repos/:owner/:repo` matches
-#   scanner:    {tool, config?, invoked?}    config present AND invoked in CI
-#   absent:     <evidence>                    the nested evidence must NOT resolve
-#   manual:     {last_verified}              attestation; no automated backing
-# `state`:   enforced | present | manual | planned | skipped
-# `cadence`: continuous | per-release | periodic:<dur> | once-must-hold
-# `enforce`: blocking | warning | informational
-# `reason`:  free text; REQUIRED when state == skipped or planned.
+# evidence (one key per item): ci_job | ci_step{workflow,name} | make_target |
+#   command | file{path,matches?} | gh_setting{key,equals} | scanner{tool,config?}
+#   | manual{last_verified} | absent:<evidence>
+# state: enforced|present|manual|planned|skipped  (reason required if planned/skipped)
+# cadence: continuous|per-release|periodic:<dur>|once-must-hold
+# enforce: blocking|warning|informational  (intent only; does not affect tiers)
 
 items:
 
@@ -225,7 +215,7 @@ items:
     state: planned
     cadence: continuous
     enforce: warning
-    tier: 2
+    tier: 3
     reason: >-
       No .clang-format committed; formatting is by-hand convention, guarded by
       lint-frontdoor + iwyu rather than a formatter. Warning, not blocking —
@@ -261,7 +251,7 @@ items:
     state: planned
     cadence: per-release
     enforce: warning
-    tier: 2
+    tier: 3
     reason: History lives in git + GitHub release notes; no curated CHANGELOG.md yet.
     evidence: {absent: {file: {path: CHANGELOG.md}}}
 
