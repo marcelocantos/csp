@@ -29,6 +29,17 @@
 
 namespace {
 
+// Portable "don't inline this" so each fixture keeps its own frame and the
+// walker sees real BL/BLR calls. MSVC spells it differently from Clang/GCC;
+// the audit file (unlike stack_analysis.test.cc) compiles on every platform
+// because run_case spawns every fixture for the soundness gate, so the
+// attribute must be portable even though tightness is only gated on ARM64.
+#if defined(_MSC_VER)
+#define AUDIT_NOINLINE __declspec(noinline)
+#else
+#define AUDIT_NOINLINE __attribute__((noinline))
+#endif
+
 // Constant per-function ABI overhead the analyser doesn't model:
 //   - stp x29, x30, [sp, #-16]! (AAPCS frame record): 16 bytes
 //   - alignment padding when the body has no local allocas
@@ -111,12 +122,12 @@ void yield_loop_entry(void*) {
 // forwarding (🎯T3.4.3), and per-register provenance forwarding of a callable
 // arriving in a callee's X1 and a CONST discriminator (🎯T3.10).
 
-__attribute__((noinline)) static void tf_leaf(void*) {
+static AUDIT_NOINLINE void tf_leaf(void*) {
     volatile char buf[48];
     buf[0] = 1;
 }
 
-__attribute__((noinline)) static void tf_aux(void) {
+static AUDIT_NOINLINE void tf_aux(void) {
     volatile char buf[24];
     buf[0] = 1;
 }
@@ -137,7 +148,7 @@ struct inner_d { void (*cb)(void*); };
 struct outer_d { int tag; inner_d* inner; };
 inner_d g_inner{&tf_leaf};
 outer_d g_outer{0, &g_inner};
-__attribute__((noinline)) static void interp_callee(void* data) {
+static AUDIT_NOINLINE void interp_callee(void* data) {
     volatile char buf[40];
     buf[0] = 1;
     auto* d = static_cast<inner_d*>(data);
@@ -160,7 +171,7 @@ void interp_entry(void* data) {
 //     across a clobbering BL, then invoked via BLR.
 struct x1_data { void (*cb)(void*); };
 x1_data g_x1{&tf_leaf};
-__attribute__((noinline)) static void x1_callee(int n, void (*cb)(void*)) {
+static AUDIT_NOINLINE void x1_callee(int n, void (*cb)(void*)) {
     volatile char buf[32];
     buf[0] = static_cast<char>(n);
     tf_aux();      // clobbers X0–X7; cb must transit a callee-saved register.
@@ -179,15 +190,15 @@ void x1_entry(void* data) {
 //     W0 and prunes a branch before any inner BL.
 struct const_data { int which; };
 const_data g_const{0};
-__attribute__((noinline)) static void const_small(void*) {
+static AUDIT_NOINLINE void const_small(void*) {
     volatile char buf[40];
     buf[0] = 1;
 }
-__attribute__((noinline)) static void const_large(void*) {
+static AUDIT_NOINLINE void const_large(void*) {
     volatile char buf[512];
     for (int i = 0; i < 512; ++i) buf[i] = static_cast<char>(i);
 }
-__attribute__((noinline)) static void const_callee(int which) {
+static AUDIT_NOINLINE void const_callee(int which) {
     volatile char buf[24];
     buf[0] = 1;
     if (which == 0) {
