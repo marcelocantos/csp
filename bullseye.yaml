@@ -240,9 +240,10 @@ targets:
     achieved: 2026-06-28
   T17.4:
     name: tls::conn reimplemented as a thin wrapper over tls::stream
-    status: identified
+    status: achieved
     value: 2.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - tls::conn's read/write/handshake/shutdown delegate to tls::stream
     - tls::conn keeps its public API (fd-taking constructor, byte-buffer read/write)
@@ -254,6 +255,7 @@ targets:
     - T17
     origin: T17 retirement, 2026-06-07
     discovered: 2026-06-07
+    achieved: 2026-06-29
   T17.5:
     name: http::serve emits body chunks via io::source instead of buffering in state.body
     status: achieved
