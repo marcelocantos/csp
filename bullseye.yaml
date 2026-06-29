@@ -468,9 +468,10 @@ targets:
     achieved: 2026-05-20
   T24:
     name: Pre-built CSP library artefacts published with each GitHub Release
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 5.0
     acceptance:
     - Each GitHub Release publishes static (.a) and shared (.dylib/.so) library artefacts for macOS arm64, Linux x86_64, and Linux arm64
     - 'Per platform: libcsp.{a,dylib|so} (core) plus libcsp_<proto>.{a,dylib|so} for tls, http, http2, http3, ws, quic — one library per protocol so users still cherry-pick at link time'
@@ -484,6 +485,7 @@ targets:
     - T23
     origin: manual
     discovered: 2026-05-09
+    achieved: 2026-06-28
   T25:
     name: task_scheduler example terminates cleanly after DAG completes
     status: achieved
@@ -588,9 +590,10 @@ targets:
     achieved: 2026-04-27
   T3.10:
     name: Walker propagates register provenance across BL boundaries
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 8.0
     acceptance:
     - The OP_CALL_DIRECT_WITH_DATA opcode (or a sibling) carries per-register provenance, so a callable arriving in a callee's X1–X7 (not X0) can be resolved by the callee's analyser without requiring the parent's codegen to normalise it into X0.
     - 'Test ''R-X1 literal pattern'' passes is_exact=true: a caller that does `f(int n, void(*cb)(void*))` where cb arrives in the callee''s X1 and is later invoked via X19 after a MOV X19, X1 in the prologue — currently inexact, must become exact with data forwarded.'
@@ -616,6 +619,7 @@ targets:
       Filed 2026-05-19, after v0.15.0 retired the parent T3.4. The next step is a design paper (paper 24 or extending paper 23 §6) before writing code.
     origin: manual
     discovered: 2026-05-19
+    achieved: 2026-06-29
   T3.2:
     name: Channel-native HTTP/1.1 server works
     status: achieved

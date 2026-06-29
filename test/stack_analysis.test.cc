@@ -432,6 +432,117 @@ TEST_CASE("Callable-survives-X0-clobber-via-callee-saved") {
             ", is_exact: ", result.is_exact);
 }
 
+// ---- 🎯T3.10: per-register provenance forwarding across BL ----
+
+// Case (R-X1 literal): a callable passed as a function-pointer *argument*
+// that arrives in the callee's X1 (per AAPCS64 `f(int n, void(*cb)(void*))`,
+// where the integer occupies X0 and the callable occupies X1), is moved to a
+// callee-saved register in the prologue (MOV X19, X1) across a BL that
+// clobbers X0–X7, then invoked via BLR X19. Distinct from the closure-*held*
+// shape above: here cb crosses a real BL boundary as an argument register,
+// and the BLR happens in the *callee*, so the callee's analyser must be
+// seeded with X1 — the parent cannot normalise it into X0.
+//
+// The callable is loaded from the opaque `data` pointer in the caller (not a
+// compile-time constant) so the compiler cannot devirtualise `cb()` into a
+// direct call or constant-propagate it into the callee — the indirect
+// dispatch genuinely survives to runtime, exactly as it does for a spawned
+// closure. Pre-T3.10 the callee's analyser only ever seeded X0, so X1 (hence
+// X19) stayed UNKNOWN and the BLR fell to budget. With per-register
+// forwarding the parent's BL site seeds the callee's X1 with the callable's
+// resolved (PC_RELATIVE) address, so MOV X19, X1 carries it and the BLR
+// resolves to a direct call.
+struct rx1_lit_args { void (*cb)(void*); };  // cb at offset 0
+
+__attribute__((noinline)) static void rx1_lit_target(void*) {
+    volatile char buf[40];
+    buf[0] = 1;
+}
+
+__attribute__((noinline)) static void rx1_lit_aux(void) {
+    volatile char buf[24];
+    buf[0] = 1;
+}
+
+__attribute__((noinline))
+static void rx1_lit_callee(int n, void (*cb)(void*)) {
+    volatile char buf[32];
+    buf[0] = static_cast<char>(n);
+    rx1_lit_aux();   // BL — clobbers X0–X7; cb must transit a callee-saved reg.
+    cb(nullptr);     // BLR through the callable that arrived in X1.
+    buf[1] = 2;      // trailing statement → BLR, not a BR tail-call.
+}
+
+__attribute__((noinline)) static void rx1_lit_caller(void* data) {
+    volatile char buf[16];
+    buf[0] = 1;
+    auto* a = static_cast<rx1_lit_args*>(data);
+    rx1_lit_callee(7, a->cb);  // cb (opaque) passed in X1 across a real BL.
+    buf[1] = 2;  // trailing statement → real BL, not a tail-call B.
+}
+
+TEST_CASE("R-X1 literal pattern") {
+    rx1_lit_args a{&rx1_lit_target};
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&rx1_lit_caller), &a);
+    CHECK(result.is_exact);
+    CHECK(result.max_depth > 0);
+    MESSAGE("rx1_lit_caller depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
+// Case (R-CONST-arg): a discriminator passed as an integer *argument* that
+// arrives in the callee's W0, on which the callee branches (CBZ) before any
+// inner BL. The value is loaded from the opaque `data` pointer in the caller,
+// so the compiler cannot constant-fold the callee's branch — the CBZ
+// genuinely survives. With CONST forwarding the parent seeds the callee's
+// argument register, so the callee prunes to the taken arm and never explores
+// the deep arm. The "read before inner BL" precondition is enforced for free:
+// any nested BL in the callee clobbers X0–X7 to UNKNOWN, after which the
+// branch is no longer pruned (paper 30 §6.2).
+struct rconst_args { int which; };  // which at offset 0
+
+__attribute__((noinline)) static void rconst_small_arm(void*) {
+    volatile char buf[40];
+    buf[0] = 1;
+}
+
+__attribute__((noinline)) static void rconst_large_arm(void*) {
+    volatile char buf[512];
+    for (int i = 0; i < 512; ++i) buf[i] = static_cast<char>(i);
+}
+
+__attribute__((noinline)) static void rconst_callee(int which) {
+    volatile char buf[24];
+    buf[0] = 1;
+    if (which == 0) {
+        rconst_small_arm(nullptr);
+    } else {
+        rconst_large_arm(nullptr);
+    }
+}
+
+__attribute__((noinline)) static void rconst_caller(void* data) {
+    volatile char buf[16];
+    buf[0] = 1;
+    auto* a = static_cast<rconst_args*>(data);
+    rconst_callee(a->which);  // which (opaque) passed in W0 across a real BL.
+    buf[1] = 2;  // trailing statement → real BL, not a tail-call B.
+}
+
+TEST_CASE("CONST-arg-prunes-across-BL") {
+    rconst_args a{0};
+    auto result = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&rconst_caller), &a);
+    // The forwarded CONST(0) prunes the callee's CBZ to the small arm: the
+    // walk is exact and never accounts the 512-byte large arm.
+    CHECK(result.is_exact);
+    CHECK(result.max_depth > 0);
+    CHECK(result.max_depth < 512);
+    MESSAGE("rconst_caller depth: ", result.max_depth,
+            ", is_exact: ", result.is_exact);
+}
+
 } // TEST_SUITE
 
 #endif // !CSP_SANITIZED

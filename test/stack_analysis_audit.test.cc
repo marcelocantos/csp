@@ -29,6 +29,17 @@
 
 namespace {
 
+// Portable "don't inline this" so each fixture keeps its own frame and the
+// walker sees real BL/BLR calls. MSVC spells it differently from Clang/GCC;
+// the audit file (unlike stack_analysis.test.cc) compiles on every platform
+// because run_case spawns every fixture for the soundness gate, so the
+// attribute must be portable even though tightness is only gated on ARM64.
+#if defined(_MSC_VER)
+#define AUDIT_NOINLINE __declspec(noinline)
+#else
+#define AUDIT_NOINLINE __attribute__((noinline))
+#endif
+
 // Constant per-function ABI overhead the analyser doesn't model:
 //   - stp x29, x30, [sp, #-16]! (AAPCS frame record): 16 bytes
 //   - alignment padding when the body has no local allocas
@@ -98,18 +109,138 @@ void yield_loop_entry(void*) {
     for (int i = 0; i < 4; ++i) csp::yield();
 }
 
+// --- Tightness fixtures: shapes the analyser is *designed* to size exactly ---
+//
+// Each loads its callable / discriminator from an opaque `data` pointer — not
+// a compile-time constant — so the compiler can neither devirtualise the
+// indirect call nor constant-fold the branch away (single-TU interprocedural
+// constant propagation would otherwise resolve everything at compile time,
+// making the test pass for the wrong reason). They are analysed and run with
+// the same live `data`, exactly as csp::spawn() analyses spawn_entry<F> with
+// the live closure. Each exercises one resolution path the analyser must size
+// tightly: closure-held vtable dispatch (🎯T3.4.2), interprocedural data
+// forwarding (🎯T3.4.3), and per-register provenance forwarding of a callable
+// arriving in a callee's X1 and a CONST discriminator (🎯T3.10).
+
+static AUDIT_NOINLINE void tf_leaf(void*) {
+    volatile char buf[48];
+    buf[0] = 1;
+}
+
+static AUDIT_NOINLINE void tf_aux(void) {
+    volatile char buf[24];
+    buf[0] = 1;
+}
+
+// (a) Closure-held vtable: load a function pointer from data, BLR it.
+struct vt_data { void (*fn)(void*); };
+vt_data g_vt{&tf_leaf};
+void vtable_entry(void* data) {
+    volatile char buf[32];
+    buf[0] = 1;
+    auto* d = static_cast<vt_data*>(data);
+    d->fn(nullptr);
+}
+
+// (b) Interprocedural data forwarding: pass a sub-pointer to a callee that
+//     dispatches through a function pointer inside it.
+struct inner_d { void (*cb)(void*); };
+struct outer_d { int tag; inner_d* inner; };
+inner_d g_inner{&tf_leaf};
+outer_d g_outer{0, &g_inner};
+static AUDIT_NOINLINE void interp_callee(void* data) {
+    volatile char buf[40];
+    buf[0] = 1;
+    auto* d = static_cast<inner_d*>(data);
+    d->cb(nullptr);
+    buf[1] = 2;  // trailing statement → real BLR, not a BR tail-call.
+}
+void interp_entry(void* data) {
+    volatile char buf[24];
+    buf[0] = 1;
+    auto* d = static_cast<outer_d*>(data);
+    interp_callee(d->inner);  // real BL forwards the sub-pointer as the
+    buf[1] = 2;               // callee's data (current_data is rebased), so
+                              // the second-level deref resolves. A tail-call B
+                              // would instead pin current_data at the root and
+                              // collapse the chained load.
+}
+
+// (c) 🎯T3.10 per-register forwarding: a callable that arrives in the callee's
+//     X1 (AAPCS64 f(int, void(*)(void*))), moved to a callee-saved register
+//     across a clobbering BL, then invoked via BLR.
+struct x1_data { void (*cb)(void*); };
+x1_data g_x1{&tf_leaf};
+static AUDIT_NOINLINE void x1_callee(int n, void (*cb)(void*)) {
+    volatile char buf[32];
+    buf[0] = static_cast<char>(n);
+    tf_aux();      // clobbers X0–X7; cb must transit a callee-saved register.
+    cb(nullptr);   // BLR through the callable that arrived in X1.
+    buf[1] = 2;
+}
+void x1_entry(void* data) {
+    volatile char buf[16];
+    buf[0] = 1;
+    auto* d = static_cast<x1_data*>(data);
+    x1_callee(7, d->cb);
+    buf[1] = 2;
+}
+
+// (d) 🎯T3.10 CONST forwarding: a discriminator that arrives in the callee's
+//     W0 and prunes a branch before any inner BL.
+struct const_data { int which; };
+const_data g_const{0};
+static AUDIT_NOINLINE void const_small(void*) {
+    volatile char buf[40];
+    buf[0] = 1;
+}
+static AUDIT_NOINLINE void const_large(void*) {
+    volatile char buf[512];
+    for (int i = 0; i < 512; ++i) buf[i] = static_cast<char>(i);
+}
+static AUDIT_NOINLINE void const_callee(int which) {
+    volatile char buf[24];
+    buf[0] = 1;
+    if (which == 0) {
+        const_small(nullptr);
+    } else {
+        const_large(nullptr);
+    }
+}
+void const_entry(void* data) {
+    volatile char buf[16];
+    buf[0] = 1;
+    auto* d = static_cast<const_data*>(data);
+    const_callee(d->which);
+    buf[1] = 2;
+}
+
 struct AuditCase {
     const char* name;
     csp::internal::EntryFn entry;
+    const void* data;          // analysed and run with this (may be null)
+    bool tightness_candidate;  // the analyser is designed to size this tightly
 };
 
 const AuditCase kCases[] = {
-    {"noop",                 &noop_entry},
-    {"volatile_buffer_1k",   &volatile_buffer_entry},
-    {"channel_send_recv",    &channel_send_recv_entry},
-    {"nested_calls",         &nested_calls_entry},
-    {"alt_two_chans",        &alt_two_chans_entry},
-    {"yield_loop",           &yield_loop_entry},
+    // Tightness candidates — statically-resolvable bodies the analyser must
+    // size exactly (is_exact) and tightly.
+    {"noop",               &noop_entry,            nullptr,   true},
+    {"nested_calls",       &nested_calls_entry,    nullptr,   true},
+    {"vtable_closure",     &vtable_entry,          &g_vt,     true},
+    {"interproc_forward",  &interp_entry,          &g_outer,  true},
+    {"reg_x1_forward",     &x1_entry,              &g_x1,     true},
+    {"const_arg_prune",    &const_entry,           &g_const,  true},
+    // Runtime/PLT-bound shapes — the analyser correctly *widens* to budget
+    // here (scheduler context switch via jump_fcontext, channel rendezvous in
+    // prialt, the stack-protector __stack_chk_fail PLT call). spawn() sizes
+    // these from the empirical high-water profile (which it consults before
+    // the analyser), so they are soundness — not tightness — representatives:
+    // no per-register forwarding can resolve a context switch or a PLT stub.
+    {"volatile_buffer_1k", &volatile_buffer_entry,    nullptr, false},
+    {"channel_send_recv",  &channel_send_recv_entry,  nullptr, false},
+    {"alt_two_chans",      &alt_two_chans_entry,      nullptr, false},
+    {"yield_loop",         &yield_loop_entry,         nullptr, false},
 };
 
 struct AuditResult {
@@ -119,17 +250,22 @@ struct AuditResult {
     bool is_exact;
     bool sound;     // !is_exact || analyser_estimate >= high_water
     bool tight;     // is_exact && analyser_estimate < 2 * high_water + 4096
+    bool tightness_candidate;
 };
 
 AuditResult run_case(const AuditCase& c) {
     AuditResult r{};
     r.name = c.name;
+    r.tightness_candidate = c.tightness_candidate;
 
-    auto sa = csp::analyze_stack_depth(reinterpret_cast<const void*>(c.entry));
+    // Analyse — and below, run — with the same live data the case carries, so
+    // the analyser sees what spawn() sees in production (🎯T3.10).
+    auto sa = csp::analyze_stack_depth(reinterpret_cast<const void*>(c.entry),
+                                       c.data);
     r.analyser_estimate = sa.max_depth;
     r.is_exact = sa.is_exact;
 
-    csp::internal::spawn(c.entry, nullptr);
+    csp::internal::spawn(c.entry, const_cast<void*>(c.data));
     csp::schedule();
 
     r.high_water = csp::detail::get_stack_high_water(c.entry);
@@ -148,17 +284,18 @@ AuditResult run_case(const AuditCase& c) {
 TEST_SUITE("StackAnalysisAudit") {
 
 TEST_CASE("soundness-and-tightness-report") {
-    constexpr size_t N = sizeof(kCases) / sizeof(kCases[0]);
-    size_t tight_count = 0;
+    size_t candidate_count = 0;
+    size_t candidate_tight = 0;
 
-    MESSAGE("Stack analysis audit — name | analyser | high-water | ratio | is_exact | sound | tight");
+    MESSAGE("Stack analysis audit — name | analyser | high-water | ratio | is_exact | sound | tight | kind");
     for (const auto& c : kCases) {
         auto r = run_case(c);
 
-        // Soundness gate — HARD. Any exact analyser estimate that falls
-        // below the observed high-water (allowing the AAPCS frame-
-        // record floor) means the walker missed a path that would
-        // overflow a tightly-sized stack.
+        // Soundness gate — HARD, over *every* case (tightness candidates and
+        // runtime-bound shapes alike). Any exact analyser estimate that falls
+        // below the observed high-water (allowing the AAPCS frame-record
+        // floor) means the walker missed a path that would overflow a
+        // tightly-sized stack.
         std::ostringstream violation;
         violation << "soundness violation for " << r.name
                   << ": analyser=" << r.analyser_estimate
@@ -179,20 +316,38 @@ TEST_CASE("soundness-and-tightness-report") {
             << ratio << " | "
             << (r.is_exact ? "true" : "false") << " | "
             << (r.sound ? "OK" : "VIOLATION") << " | "
-            << (r.tight ? "tight" : "loose");
+            << (r.tight ? "tight" : "loose") << " | "
+            << (r.tightness_candidate ? "candidate" : "soundness-only");
         MESSAGE(row.str());
 
-        if (r.tight) tight_count++;
+        if (r.tightness_candidate) {
+            ++candidate_count;
+            if (r.tight) ++candidate_tight;
+        }
     }
 
-    // Tightness target — soft. Track the achievement against the 95%
-    // bar from paper 23 §8 (T3.4.5). Failing this is informational; it
-    // doesn't gate retirement.
-    double tight_frac = static_cast<double>(tight_count) / N;
+    // Tightness gate — measured over the statically-resolvable candidates,
+    // the shapes the analyser is designed to size exactly. Runtime/PLT-bound
+    // shapes are excluded: the analyser correctly widens them to budget and
+    // spawn() sizes them from the empirical profile instead (paper 30 §7.3).
+    // 🎯T3.10 acceptance: at least 4 of 6 curated candidates tight.
     std::ostringstream summary;
-    summary << "tight cases: " << tight_count << "/" << N
-            << " (" << (tight_frac * 100) << "%) — target 95%";
+    summary << "tight candidates: " << candidate_tight << "/" << candidate_count;
     MESSAGE(summary.str());
+
+    CHECK(candidate_count == 6);
+
+    // The instruction walker is ARM64-only; on other architectures
+    // analyze_stack_depth is a conservative stub that always returns
+    // is_exact=false, so tightness is not measurable there (every candidate
+    // reads "loose"). Soundness — gated above for every case — still holds,
+    // because an inexact estimate is vacuously sound. Enforce the tightness
+    // target only where the real walker runs.
+#if defined(__aarch64__)
+    CHECK(candidate_tight >= 4);
+#else
+    MESSAGE("tightness gate skipped — the stack walker is ARM64-only");
+#endif
 }
 
 } // TEST_SUITE("StackAnalysisAudit")

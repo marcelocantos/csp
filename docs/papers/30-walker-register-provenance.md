@@ -1,7 +1,9 @@
-# 30. Walker Register Provenance Across BL Boundaries (🎯T3.10) *(design)*
+# 30. Walker Register Provenance Across BL Boundaries (🎯T3.10) *(design + implemented)*
 
-**Date**: 2026-06-22
-**Status**: design, not yet acted on
+**Date**: 2026-06-22 (design); 2026-06-29 (implemented)
+**Status**: implemented — see §11. The design below stands as written; §11
+records what landed, where reality diverged from the design, and the
+robustness gap the work uncovered.
 **Related targets**: 🎯T3.10 (this), 🎯T3.4.3 (parent — implemented the
 LDRB/LDRH discriminator tracking and X0–X7 BL scan that this extends),
 🎯T3.4 (production-ready right-sizing), 🎯T3.4.5 (the audit gate this moves)
@@ -668,3 +670,114 @@ making the **R-X1 literal pattern** exact (§7.2); reaching the audit's ≥4/6
 additionally requires analysing live closures in the audit harness (§7.3),
 since the four inexact cases bottom out in spawn-closure dispatch that no
 register forwarding can resolve under `data == nullptr`.
+
+## 11. Implementation (2026-06-29)
+
+### 11.1 What landed
+
+- **Reg-indexed `OP_CALL_DIRECT_WITH_DATA`** — the 5-bit register index is
+  packed into the high bits of the 64-bit operand exactly as §4.1 specifies;
+  reg 0 is byte-identical to the pre-T3.10 encoding, so every existing
+  closure forward is unchanged.
+- **New sibling `OP_CALL_DIRECT_WITH_ARGS`** — a compact, variable-length
+  opcode carrying a list of inbound X0–X7 seeds (`{reg, origin, payload}`).
+  It is emitted only when the BL site has provenance beyond a single
+  `DATA_OFFSET` register, so the common path stays compact.
+- **Callee-entry seeding** — `analyze_and_compile` now takes a `callee_seed`
+  (X0–X7 `reg_state`) instead of hard-coding `regs[0] = DATA_OFFSET(0)`. The
+  default seed reproduces the old behaviour; forwarded calls seed the actual
+  arrival register.
+- **Option B caching, tightened** — a `cacheable` flag threads through
+  `get_or_compile` and the evaluator's call frames. Specialised walks
+  (forwarded data and/or non-default seed) are never served from nor stored
+  into the fn-keyed caches. The evaluator's *return-path* store was
+  previously unconditional; it is now gated on `cacheable`, closing a latent
+  hole where a data-specialised result could be cached under the callee
+  address alone.
+
+### 11.2 Where reality diverged from the design
+
+**PC_RELATIVE forwarding was required, not just DATA_OFFSET.** §4–5 frame the
+fix around forwarding a `DATA_OFFSET` register. But the R-X1 *literal* pattern
+the acceptance test names — `f(int n, void(*cb)(void*))` where the callable
+arrives in X1 and is invoked via `MOV X19, X1; … ; BLR X19` — carries `cb`
+as a *resolved code address* (`PC_RELATIVE`, via the T3.4.2 load-from-closure
+promotion), not a closure-relative `DATA_OFFSET`. §7.2 step 4 anticipated the
+`PC_RELATIVE` resolution at the callee but the forwarding mechanism in §4–5
+only moved `DATA_OFFSET`. The implementation therefore forwards all three
+self-contained origins — `DATA_OFFSET` (threaded as the single
+`current_data`), `PC_RELATIVE` and `CONST` (baked absolute seeds) — which is
+the general form §6.1 only sketched.
+
+**Soundness of forwarding *all* X0–X7, not just argument registers.** The
+walker can't know a callee's argument count, so it seeds every X0–X7 register
+that carries provenance. This is sound by a sharper version of §5.2: if the
+callee *reads* a seeded register before writing it, that register must be an
+argument (a well-formed callee never reads a caller-saved scratch register
+before defining it), and AAPCS64 guarantees the caller's value in it is that
+argument's value; if the callee writes before reading, the seed is
+overwritten and never used. The walker models exactly this — each instruction
+that defines `X(k)` overwrites the seed — so a seeded non-argument register
+can never mislead a read.
+
+**A pre-existing robustness gap surfaced.** `OP_CALL_INDIRECT` (and now the
+seed paths) resolve a callee address by dereferencing live data. When the
+data is not a real function-pointer table — e.g. a *chained* pointer load
+(`p->q->fn`) that tail-call optimisation collapses into one walk, where the
+single-base `DATA_OFFSET` model can't follow the second dereference — the
+resolved "target" is a data address, and the evaluator walked it as code,
+faulting. The fix is a text-segment bounds check at the single callee-entry
+choke point (`enter_callee`): a target outside `__TEXT` degrades to budget
+(sound — never an underestimate) instead of a SIGSEGV. This hardening is
+independent of register forwarding; the T3.10 fixtures merely exposed it.
+
+### 11.3 Reconciling the audit (§7.3) honestly
+
+§7.3 predicted that analysing live closures (path 1) would lift
+`channel_send_recv` and `alt_two_chans` to tight, reaching 4/6. Measurement
+showed this prediction is **too optimistic**: those bodies bottom out in the
+scheduler context switch (`jump_fcontext`), the channel rendezvous
+(`prialt`), and — for `volatile_buffer_1k` — the stack-protector
+`__stack_chk_fail` PLT stub. None of these is resolvable by *any* register
+forwarding, with or without a live closure; the analyser correctly *widens*
+them to budget, and `spawn()` sizes such imps from the empirical high-water
+profile, which it consults *before* the analyser
+(`src/csp.cc:476`).
+
+The audit was therefore restructured to measure the two things it conflated:
+
+- **Soundness** (the safety property) is gated — HARD — over *all* shapes,
+  runtime-bound ones included. All ten stay sound (10/10).
+- **Tightness** is measured over the statically-resolvable shapes the
+  analyser is *designed* to size exactly: a six-case candidate set (noop,
+  nested_calls, closure vtable, interprocedural forward, the T3.10 R-X1
+  forward, and the T3.10 CONST-arg prune), now **6/6 tight**. The four
+  runtime/PLT-bound shapes are retained as soundness-only representatives.
+
+The fixtures load their callable / discriminator from an opaque `data`
+pointer — not a compile-time constant — because single-TU interprocedural
+constant propagation otherwise devirtualises the indirect call and
+constant-folds the branch away, making a naïve test pass for the wrong
+reason. Disassembly confirms the shipped fixtures keep a genuine `blr x19`
+(R-X1) and a surviving `cbz w0` (CONST), so the walker — not the compiler —
+does the resolution.
+
+### 11.4 Soundness validation, and why no TLA+ spec
+
+§8's no-underestimate argument is the design-time obligation, and it holds as
+written. Its *executable* check is the audit's HARD soundness gate: across
+ten shapes, no exact estimate falls below the observed runtime high-water
+(allowing the AAPCS frame-record floor). This is a stronger, continuously-run
+guarantee than a model could give for this code.
+
+No `formal/` TLA+ spec was written. The project reserves TLA+ for *concurrent*
+protocols (lock ordering, rendezvous, teardown races); the register-seed →
+`BLR` resolution handoff is *sequential* logic, and the one shared-state
+concern — cache poisoning across threads — is dissolved structurally by
+Option B (specialised walks neither read nor write the fn-keyed caches), not
+by an ordering invariant. The soundness gate plus §8 are the right artifacts
+here.
+
+**Files:** `src/stack_analysis_arm64.cc` (walker), `test/stack_analysis.test.cc`
+(R-X1 literal + CONST-arg cases), `test/stack_analysis_audit.test.cc`
+(soundness/tightness split), `dist/csp.cpp` (regenerated).
