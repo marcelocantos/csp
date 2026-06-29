@@ -14,7 +14,9 @@ extern "C" {
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include <unistd.h>
+#include <variant>
 
 namespace csp::tls {
 
@@ -131,262 +133,252 @@ void context::set_verify(verify_fn fn) {
     impl_->ctx.verify_certificate = &impl_->verifier->super;
 }
 
-// --- socket I/O helpers ---
-
-// Flush a PicoTLS output buffer to the socket, using csp::io for
-// non-blocking writes. Returns bytes written.
-static void flush_to_socket(csp::io::fd_t fd, ptls_buffer_t& buf) {
-    size_t off = 0;
-    while (off < buf.off) {
-        csp::io::wait_writable(fd);
-        ssize_t n = ::write(fd.raw(), buf.base + off, buf.off - off);
-        if (n > 0) {
-            off += static_cast<size_t>(n);
-        } else if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-                continue;
-            throw csp::error("tls: socket write failed");
-        }
-    }
-}
-
-// Read raw bytes from the socket into a buffer, using csp::io for
-// non-blocking reads. Returns bytes read, 0 on EOF.
-static ssize_t read_from_socket(csp::io::fd_t fd, uint8_t* buf, size_t len) {
-    for (;;) {
-        csp::io::wait_readable(fd);
-        ssize_t n = ::read(fd.raw(), buf, len);
-        if (n >= 0) return n;
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-            continue;
-        throw csp::error("tls: socket read failed");
-    }
-}
-
 // --- conn ---
 //
-// Synchronous byte-buffer TLS API.  Kept as the original direct-picotls
-// implementation rather than a wrapper over tls::stream because the
-// synchronous-on-write semantics (write() returns only after bytes hit
-// the wire) cannot be preserved across the spawn-and-rendezvous bridge
-// that a stream wrapper would introduce — a sink imp consuming
-// stream::plaintext_out's ciphertext runs concurrently with the user's
-// imp, so write() returning after the plaintext rendezvous does not
-// imply the ciphertext has been flushed before a subsequent close(fd).
+// Synchronous byte-buffer TLS API, implemented as a thin wrapper over
+// tls::stream (🎯T17.4, design paper docs/papers/29-tls-conn-over-stream.md,
+// option (c)).  conn owns the ciphertext transport that make_stream drives:
 //
-// Migrating conn to a stream wrapper is tracked separately; it needs
-// either a request-shaped plaintext_out on tls::stream (so the user-
-// side rendezvous includes sink completion) or a sync facade with a
-// drain protocol bridging handshake → steady-state acks.
+//   - inbound:  a non-owning, cancel-forwarding fd source (below), fed to
+//               make_stream as ciphertext_in.
+//   - outbound: an UNBUFFERED chan<bytes> whose reader is consumed by a
+//               private, serial, wire-synchronous SINK imp that io::write_all's
+//               each ciphertext chunk to the socket.  The sink is what restores
+//               conn's synchronous-on-the-wire write contract (write() returns
+//               only after the bytes have left the process); a fire-and-forget
+//               ciphertext writer cannot offer it.
+//
+// The sink acks each flushed chunk back to conn over a depth-1 wire_ack
+// channel, but only once "armed".  conn arms it via a one-shot ctl barrier
+// after the handshake: because the sink processes ciphertext and ctl messages
+// serially (prialt), the arm is ordered after the last handshake flush —
+// giving conn::handshake() a wire-synchronous completion and leaving wire_ack
+// empty for the first conn::write().
+//
+// Wire-synchrony per write rests on the conn-serial-writes invariant (conn
+// issues one plaintext write at a time) and on send_plain producing exactly
+// one ciphertext push per write: conn::write hands the plaintext to the stream
+// imp, then blocks for the single ack.  Proven safe in formal/TlsConnDrain.tla
+// (the buggy "return after the plaintext rendezvous" variant — the reverted
+// 2026-06-14 attempt — is TlsConnDrain_Bug.tla).
+
+namespace {
+
+// Non-owning ciphertext source for conn's inbound side.  Mirrors
+// io::fd_source_view, but forwards cancellation/read errors to the consumer
+// via req.reply._throw rather than letting them escape the imp — an uncaught
+// csp::canceled in a bare imp would std::terminate.  This is what lets a
+// handshake pull, driven inline on conn's imp, surface csp::canceled at the
+// conn::handshake() call site.  (Steady-state read cancellation is observed
+// separately, on conn's own imp, by conn::read's prialt(done(), ...).)
+[[nodiscard]] io::source conn_ciphertext_source(io::fd_t fd) {
+    chan<io::read_request> ch;
+    spawn([req_r = std::move(ch.r), fd]() mutable {
+        internal::descr("tls::conn source");
+        io::read_request req;
+        while (req_r >> req) {
+            bytes   buf(req.value);
+            ssize_t n;
+            try {
+                n = io::read(fd, buf.data(), buf.size());
+            } catch (...) {
+                // Cancellation/timeout fired while parked in the reactor.
+                req.reply._throw(std::current_exception());
+                return;
+            }
+            if (n == 0) return;  // EOF: consumer sees reply-writer death
+            if (n < 0) {
+                req.reply._throw(
+                    std::make_exception_ptr(io::errno_error("read", errno)));
+                return;
+            }
+            buf.resize(static_cast<size_t>(n));
+            req.reply << std::move(buf);
+        }
+    });
+    return std::move(ch.w);
+}
+
+} // namespace
 
 struct conn::impl {
-    ptls_t* tls = nullptr;
-    csp::io::fd_t fd;
-    // Receive buffer for partially consumed TLS records (ciphertext).
-    std::vector<uint8_t> recvbuf;
-    size_t recvbuf_off = 0;
-    // Decrypted plaintext buffer for data that was decrypted but not
-    // yet returned to the caller.
-    std::vector<uint8_t> plainbuf;
-    size_t plainbuf_off = 0;
+    context*    ctx = nullptr;
+    io::fd_t    fd;
+    bool        is_server = false;
+    std::string hostname;
+
+    stream                                          strm;      // built by handshake()
+    reader<std::monostate>                          wire_ack;  // sink → conn flush acks
+    writer<request<std::monostate, std::monostate>> ctl;       // kept alive so the
+                                                               // sink's ctl branch
+                                                               // does not die early
+    // Decrypted plaintext not yet returned (conn::read returns "up to len").
+    bytes  leftover;
+    size_t leftover_off = 0;
 };
 
 conn::conn(context& ctx, io::fd_t fd) : impl_(std::make_unique<impl>()) {
-    impl_->fd = fd;
+    impl_->ctx = &ctx;
+    impl_->fd  = fd;
 
     // Suppress SIGPIPE on this fd.
 #ifdef F_SETNOSIGPIPE
     fcntl(fd.raw(), F_SETNOSIGPIPE, 1);
 #endif
 
-    // Determine if server by checking if sign_certificate is set (servers load keys).
-    bool is_server = (ctx.impl_->ctx.sign_certificate != nullptr);
-    impl_->tls = ptls_new(&ctx.impl_->ctx, is_server ? 1 : 0);
-    if (!impl_->tls) throw error(PTLS_ERROR_NO_MEMORY);
+    // Servers load a signing certificate; clients do not.  Mirrors the
+    // discriminator make_stream uses (params.client_mode).
+    impl_->is_server = (ctx.impl_->ctx.sign_certificate != nullptr);
 }
 
-conn::~conn() {
-    if (impl_ && impl_->tls) {
-        ptls_free(impl_->tls);
-    }
-}
+conn::~conn() = default;
 
 conn::conn(conn&&) noexcept = default;
 conn& conn::operator=(conn&&) noexcept = default;
 
 void conn::set_hostname(const std::string& hostname) {
-    int ret = ptls_set_server_name(impl_->tls, hostname.c_str(), 0);
-    if (ret != 0) throw error(ret);
+    impl_->hostname = hostname;
 }
 
 void conn::handshake() {
-    ptls_buffer_t sendbuf;
-    uint8_t sendbuf_small[256];
-    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+    // Outbound ciphertext travels an UNBUFFERED channel drained by a private,
+    // serial, wire-synchronous sink.  Inbound is a cancel-forwarding view.
+    chan<bytes>                                   cipher_ch;
+    chan<std::monostate>                          ack_ch(1);   // depth-1 (see below)
+    chan<request<std::monostate, std::monostate>> ctl_ch;      // arm/handshake barrier
 
-    uint8_t readbuf[4096];
-    const uint8_t* input = nullptr;
-    size_t inlen = 0;
-
-    for (;;) {
-        int ret = ptls_handshake(impl_->tls, &sendbuf, input, &inlen, nullptr);
-
-        // Always flush any output (even on error, per PicoTLS docs).
-        if (sendbuf.off > 0) {
-            flush_to_socket(impl_->fd, sendbuf);
-            sendbuf.off = 0;
+    spawn([fd     = impl_->fd,
+           cipher = std::move(cipher_ch.r),
+           ack    = std::move(ack_ch.w),
+           ctl    = std::move(ctl_ch.r)]() mutable {
+        internal::descr("tls::conn sink");
+        bool armed = false;
+        for (;;) {
+            bytes                                   chunk;
+            request<std::monostate, std::monostate> req;
+            int which = prialt(cipher >> chunk, ctl >> req);
+            if (which == 0) {
+                // Ciphertext chunk → flush to the wire to completion.
+                try {
+                    io::write_all(fd, chunk.data(), chunk.size());
+                } catch (...) {
+                    // Socket write failed: drop the ack writer so a blocked
+                    // conn::write observes the death and rethrows.
+                    return;
+                }
+                if (armed && !(ack << std::monostate{})) {
+                    return;  // conn went away
+                }
+            } else if (which == 1) {
+                // Arm + barrier: ordered after every preceding flush, so its
+                // reply tells conn the last handshake chunk is on the wire.
+                armed = true;
+                (void)(req.reply << std::monostate{});
+            } else {
+                return;  // ciphertext source dropped → stream torn down
+            }
         }
+    });
 
-        if (ret == 0) {
-            // Handshake complete. If there's leftover input, save it
-            // for subsequent reads.
-            // Note: inlen is updated to bytes consumed; we may have
-            // read more than was consumed.
-            break;
-        }
-        if (ret != PTLS_ERROR_IN_PROGRESS) {
-            ptls_buffer_dispose(&sendbuf);
-            throw error(ret);
-        }
+    stream_params params;
+    params.client_mode  = !impl_->is_server;
+    params.sni_hostname = impl_->hostname;
 
-        // Need more input from peer.
-        ssize_t n = read_from_socket(impl_->fd, readbuf, sizeof(readbuf));
-        if (n == 0) {
-            ptls_buffer_dispose(&sendbuf);
-            throw csp::error("tls: peer closed during handshake");
-        }
-        input = readbuf;
-        inlen = static_cast<size_t>(n);
-    }
+    // make_stream drives the handshake inline (pulling/flushing through the
+    // conn-owned source/sink), then spawns the steady-state stream imp.
+    impl_->strm = make_stream(*impl_->ctx,
+                              conn_ciphertext_source(impl_->fd),
+                              std::move(cipher_ch.w),
+                              std::move(params));
+    impl_->wire_ack = std::move(ack_ch.r);
+    impl_->ctl      = std::move(ctl_ch.w);
 
-    ptls_buffer_dispose(&sendbuf);
+    // Arm the sink and wait for its reply.  The reply lands only after the
+    // sink has flushed the final handshake chunk, so handshake() returns
+    // wire-synchronously and wire_ack is empty for the first write.
+    (void)impl_->ctl(std::monostate{});
 }
 
 ssize_t conn::read(void* buf, size_t len) {
-    // Return any previously buffered plaintext first.
-    if (impl_->plainbuf_off < impl_->plainbuf.size()) {
-        size_t avail = impl_->plainbuf.size() - impl_->plainbuf_off;
-        size_t copy = std::min(len, avail);
-        std::memcpy(buf, impl_->plainbuf.data() + impl_->plainbuf_off, copy);
-        impl_->plainbuf_off += copy;
-        if (impl_->plainbuf_off == impl_->plainbuf.size()) {
-            impl_->plainbuf.clear();
-            impl_->plainbuf_off = 0;
+    // Serve previously-buffered plaintext first (read returns "up to len").
+    if (impl_->leftover_off < impl_->leftover.size()) {
+        size_t avail = impl_->leftover.size() - impl_->leftover_off;
+        size_t copy  = std::min(len, avail);
+        std::memcpy(buf, impl_->leftover.data() + impl_->leftover_off, copy);
+        impl_->leftover_off += copy;
+        if (impl_->leftover_off == impl_->leftover.size()) {
+            impl_->leftover.clear();
+            impl_->leftover_off = 0;
         }
         return static_cast<ssize_t>(copy);
     }
+    if (len == 0) return 0;
 
-    ptls_buffer_t decbuf;
-    uint8_t decbuf_small[256];
-    ptls_buffer_init(&decbuf, decbuf_small, sizeof(decbuf_small));
-
-    uint8_t readbuf[4096];
-
-    auto return_plaintext = [&](size_t len) -> ssize_t {
-        size_t copy = std::min(len, decbuf.off);
-        std::memcpy(buf, decbuf.base, copy);
-        // Buffer any excess for the next read call.
-        if (copy < decbuf.off) {
-            impl_->plainbuf.assign(decbuf.base + copy,
-                                   decbuf.base + decbuf.off);
-            impl_->plainbuf_off = 0;
+    // Pull decrypted plaintext from the stream imp.  Cancellation fired on
+    // *this* imp is observed via prialt(done(), ...); the inbound source
+    // surfaces a transport error by throwing across the reply.  Op indices:
+    // done() is 0, reply_r >> b is 1.  A positive result is a data delivery;
+    // a death fires as ~index, so ~0 means done() (cancellation) and ~1 means
+    // the reply-writer dropped (EOF).
+    auto  reply_r = io::call_source(impl_->strm.plaintext_in, len);
+    bytes b;
+    if (csp::is_cancel_active()) {
+        int which = prialt(csp::done(), reply_r >> b);
+        if (which == ~0) {  // done() fired → cancellation/timeout
+            // The ciphertext source imp may be parked in io::read on the fd
+            // (it does not share this imp's cancel scope).  io::close does not
+            // wake a reactor waiter, so shut the read half to surface EOF and
+            // let the source — and the stream imp blocked behind it — tear
+            // down instead of leaking a permanently-parked imp.
+            ::shutdown(impl_->fd.raw(), SHUT_RD);
+            auto reason = csp::cancel_reason();
+            if (reason) std::rethrow_exception(reason);
+            throw csp::canceled{};
         }
-        ptls_buffer_dispose(&decbuf);
-        return static_cast<ssize_t>(copy);
-    };
-
-    for (;;) {
-        // Try to decrypt from already-buffered ciphertext.
-        if (impl_->recvbuf_off < impl_->recvbuf.size()) {
-            size_t avail = impl_->recvbuf.size() - impl_->recvbuf_off;
-            size_t consumed = avail;
-            int ret = ptls_receive(impl_->tls, &decbuf,
-                                   impl_->recvbuf.data() + impl_->recvbuf_off,
-                                   &consumed);
-            impl_->recvbuf_off += consumed;
-
-            // Compact buffer if fully consumed.
-            if (impl_->recvbuf_off == impl_->recvbuf.size()) {
-                impl_->recvbuf.clear();
-                impl_->recvbuf_off = 0;
-            }
-
-            if (ret == PTLS_ALERT_TO_PEER_ERROR(PTLS_ALERT_CLOSE_NOTIFY)) {
-                ptls_buffer_dispose(&decbuf);
-                return 0;
-            }
-            if (ret != 0 && ret != PTLS_ERROR_IN_PROGRESS) {
-                ptls_buffer_dispose(&decbuf);
-                throw error(ret);
-            }
-            if (decbuf.off > 0) return return_plaintext(len);
-            // Need more data — fall through to socket read.
-        }
-
-        // Read from socket.
-        ssize_t n = read_from_socket(impl_->fd, readbuf, sizeof(readbuf));
-        if (n == 0) {
-            ptls_buffer_dispose(&decbuf);
-            return 0; // EOF
-        }
-
-        // Feed to PicoTLS.
-        size_t consumed = static_cast<size_t>(n);
-        int ret = ptls_receive(impl_->tls, &decbuf, readbuf, &consumed);
-
-        // Buffer any unconsumed ciphertext.
-        if (consumed < static_cast<size_t>(n)) {
-            impl_->recvbuf.insert(impl_->recvbuf.end(),
-                                  readbuf + consumed,
-                                  readbuf + n);
-        }
-
-        if (ret == PTLS_ALERT_TO_PEER_ERROR(PTLS_ALERT_CLOSE_NOTIFY)) {
-            ptls_buffer_dispose(&decbuf);
-            return 0;
-        }
-        if (ret != 0 && ret != PTLS_ERROR_IN_PROGRESS) {
-            ptls_buffer_dispose(&decbuf);
-            throw error(ret);
-        }
-        if (decbuf.off > 0) return return_plaintext(len);
-        // No plaintext yet — loop to read more.
+        if (which < 0) return 0;  // ~1: reply-writer death → EOF (peer close_notify)
+    } else {
+        if (!(reply_r >> b)) return 0;  // EOF
     }
+
+    size_t copy = std::min(len, b.size());
+    std::memcpy(buf, b.data(), copy);
+    if (copy < b.size()) {
+        impl_->leftover.assign(b.begin() + static_cast<ptrdiff_t>(copy), b.end());
+        impl_->leftover_off = 0;
+    }
+    return static_cast<ssize_t>(copy);
 }
 
 ssize_t conn::write(const void* buf, size_t len) {
-    ptls_buffer_t sendbuf;
-    uint8_t sendbuf_small[256];
-    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+    if (len == 0) return 0;
 
-    int ret = ptls_send(impl_->tls, &sendbuf,
-                        static_cast<const uint8_t*>(buf), len);
-    if (ret != 0) {
-        ptls_buffer_dispose(&sendbuf);
-        throw error(ret);
+    // Hand the plaintext to the stream imp (one ptls_send → one ciphertext
+    // push), then BLOCK for the sink's wire ack: when this returns, the
+    // ciphertext is on the wire, so a caller-side close(fd) cannot race it.
+    // See formal/TlsConnDrain.tla.
+    const auto* p = static_cast<const uint8_t*>(buf);
+    if (!(impl_->strm.plaintext_out << bytes(p, p + len))) {
+        throw csp::error("tls: stream closed");
     }
-
-    flush_to_socket(impl_->fd, sendbuf);
-    ptls_buffer_dispose(&sendbuf);
+    std::monostate ack;
+    if (!(impl_->wire_ack >> ack)) {
+        throw csp::error("tls: socket write failed");
+    }
     return static_cast<ssize_t>(len);
 }
 
 void conn::shutdown() {
-    ptls_buffer_t sendbuf;
-    uint8_t sendbuf_small[64];
-    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
-
-    // Ignore errors on close_notify — peer may have already closed.
-    ptls_send_alert(impl_->tls, &sendbuf,
-                    PTLS_ALERT_LEVEL_WARNING, PTLS_ALERT_CLOSE_NOTIFY);
-    if (sendbuf.off > 0) {
-        try {
-            flush_to_socket(impl_->fd, sendbuf);
-        } catch (...) {
-            // Best-effort — peer may have closed.
-        }
+    // Drop the plaintext endpoints: the stream imp observes the death, sends
+    // a best-effort close_notify into the ciphertext sink, and exits.  Drain
+    // wire_ack until the sink exits (drops the ack writer) so shutdown waits
+    // for the close_notify — and any trailing ciphertext — to leave the wire.
+    // This is what makes a subsequent caller-side close(fd) safe even under
+    // fd recycling (TLS---Concurrent-connections).
+    impl_->strm.plaintext_out = {};
+    impl_->strm.plaintext_in  = {};
+    for (std::monostate ack; impl_->wire_ack >> ack;) {
+        // drain until the sink drops the ack writer on exit
     }
-    ptls_buffer_dispose(&sendbuf);
 }
 
 io::fd_t conn::fd() const {

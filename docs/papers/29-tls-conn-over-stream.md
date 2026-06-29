@@ -1,15 +1,16 @@
-# Paper 29: `tls::conn` over `tls::stream` — Wire-Synchronous Write *(design)*
+# Paper 29: `tls::conn` over `tls::stream` — Wire-Synchronous Write *(design + implemented)*
 
-## Status: DESIGN
+## Status: IMPLEMENTED (2026-06-29) — see [§ Implementation](#implementation)
 
-Pre-implementation design paper for 🎯T17.4 — reimplement `tls::conn`
-as a thin wrapper over `tls::stream`, deleting the duplicate direct-
-picotls integration in `src/tls.cc` while preserving `conn`'s
-synchronous-on-the-wire write semantics. No code yet; this paper
-settles the bridge mechanism before any layer is touched. A
-2026-06-14 implementation attempt failed and was reverted (see
-[The failed attempt](#the-failed-attempt)); this paper exists to make
-the next attempt converge.
+Design paper for 🎯T17.4 — reimplement `tls::conn` as a thin wrapper
+over `tls::stream`, deleting the duplicate direct-picotls integration
+in `src/tls.cc` while preserving `conn`'s synchronous-on-the-wire write
+semantics. A 2026-06-14 implementation attempt failed and was reverted
+(see [The failed attempt](#the-failed-attempt)); this paper settled the
+bridge mechanism, and **option (c)** landed on 2026-06-29. The design
+below stands as written; [§ Implementation](#implementation) records
+what shipped and the three places the realised mechanism had to refine
+the design's prose to be correct.
 
 ## The problem
 
@@ -557,6 +558,75 @@ documentation.
   `exception_ptr` — more faithful but heavier. Decide during
   implementation; the plain-death path matches today's coarse "throw
   `csp::error` on socket write failure" (`src/tls.cc:145`).
+
+## Implementation
+
+Option (c) shipped in `src/tls.cc` (the `conn` section) on 2026-06-29.
+`conn::impl` holds the `tls::stream`, a depth-1 `reader<std::monostate>`
+wire-ack, and a `writer<request<monostate, monostate>>` control endpoint;
+`conn::handshake()` builds the transport, spawns the private sink, calls
+`make_stream`, and arms the sink. All 12 `tls.test.cc`/`tls_stream.test.cc`
+cases pass (the stream's public API is untouched, so the stream tests were
+not edited). The drain-loop exit decision is verified by
+[`formal/TlsConnDrain.tla`](../../formal/TlsConnDrain.tla) (holds) paired
+with `TlsConnDrain_Bug.tla` (the reverted "return after the plaintext
+rendezvous" behaviour — TLC reports `returned=1, flushed=0`, the dropped
+"pong").
+
+Three refinements were needed where the design's prose, taken literally,
+would not have been correct:
+
+1. **Per-write completion is a *blocking single ack*, not "drain to
+   empty".** The [Open questions](#open-questions) preferred draining until
+   the conn-owned sink blocks on an empty channel. That probe is racy at the
+   *start* of a write: `conn::write` can observe the channel empty before the
+   stream imp has produced the ciphertext at all. The realised code instead
+   relies on the structural fact that one steady-state plaintext write
+   produces *exactly one* ciphertext push (`send_plain` does one `ptls_send`
+   → one `up_out <<`, regardless of record fragmentation), so `conn::write`
+   hands over the plaintext and then **blocks for exactly one** wire ack.
+   The conn-serial-writes invariant guarantees that ack belongs to this
+   write. This "one push per write" (k=1) is the load-bearing fact the TLA+
+   model encodes; a future change that fragmented a write into multiple
+   pushes would have to revisit it.
+
+2. **The sink is *armed* after the handshake; the arm doubles as the
+   handshake's wire-sync barrier.** [§ Option (c) Handshake/shutdown](#options)
+   said handshake ciphertext routes "through the conn-owned wire-synchronous
+   sink", but if the sink acked every handshake flush, those acks would
+   either deadlock an unbuffered ack channel (no one drains it while
+   `make_stream` runs inline) or pile up as stale acks the first write's
+   drain cannot disambiguate. The sink therefore *writes without acking*
+   until `conn` sends a one-shot `ctl` request after `make_stream` returns.
+   Because the sink selects ciphertext and `ctl` serially in one `prialt`,
+   the arm is ordered after the last handshake flush — so its reply gives
+   `conn::handshake()` a wire-synchronous completion *and* leaves the ack
+   channel empty for the first write. (The ack channel is depth-1 so the
+   trailing close_notify ack lands without blocking the sink during
+   teardown.)
+
+3. **Read cancellation needs a `shutdown(SHUT_RD)` wake, not just
+   `done()`.** [§ Implementation sketch step 3/5](#implementation-sketch)
+   assumed the inbound pull "parks in the reactor and observes `done()`".
+   That holds for the *handshake* pull (the conn-owned source is spawned
+   inside the handshake's cancel scope, so its `io::read` observes `done()`
+   and forwards `csp::canceled` across the reply — `conn` uses a
+   cancel-forwarding source variant rather than `fd_source_view`, which would
+   `std::terminate` on an uncaught `canceled`). But a *steady-state* read's
+   cancel scope is created after the handshake, so the long-lived source imp
+   does not share it: `conn::read` observes the cancellation on its own imp
+   via `prialt(done(), reply_r >> b)` and throws, but that leaves the source
+   imp parked in `io::read` on the fd. `io::close` does not wake a reactor
+   waiter, so `conn::read` first issues `shutdown(fd, SHUT_RD)` to surface
+   EOF and let the source — and the stream imp blocked behind it — tear
+   down. `conn::shutdown()` likewise drains the wire-ack until the sink exits,
+   so a caller-side `close(fd)` cannot race a still-pending `io::write` under
+   fd recycling.
+
+These are refinements *within* option (c) — the recommendation to keep
+`tls::stream`'s public API unchanged held. Option (a) remains the right
+answer only if a separate requirement makes `stream`'s outbound side
+demand-shaped (see [Open questions](#open-questions)).
 
 ## See also
 
