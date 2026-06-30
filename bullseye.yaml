@@ -959,6 +959,94 @@ targets:
     origin: manual
     discovered: 2026-03-28
     achieved: 2026-04-28
+  T30:
+    name: All examples/ programs demonstrate current idiomatic CSP (parts/combinators + ergonomic APIs)
+    status: converging
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Every example in examples/ either uses the current idiomatic API for its pattern, or carries a comment explaining why it deliberately shows the raw primitive (teaching intent).
+    - 'No example hand-rolls a stream pattern that a named csp::part:: combinator packages without a documented teaching reason.'
+    - All sub-targets of this umbrella are achieved.
+    - make examples still succeeds and every binary runs to completion (no regression vs 🎯T19).
+    context: 'Discovered 2026-06-30 during an idiomatic-usage review of all 18 example programs (4-agent fan-out). Finding: nothing is broken or using removed APIs (no buffer<T>, no conn.input — 🎯T19 and the io::source migration cleaned those up), but the parts/combinator library grew substantially AFTER most examples were written (Feb-Apr 2026), and 5 examples were never retrofitted. 13/18 are already idiomatic (including all the primitive-teaching examples where raw spawn/channels are correctly the point, plus rpc_service/pipeline/web_crawler as modern showcases). The 5 gaps all share one shape: a hand-rolled loop that a named combinator now packages. The single most telling case is an inconsistency — chat_room.cc uses csp::part::fanout while chat_server.cc hand-rolls the identical broadcast logic. This umbrella tracks bringing the laggards up to the current idiom (or annotating deliberate raw-primitive choices). Reference: review session 2026-06-30.'
+    depends_on:
+    - T30.1
+    - T30.2
+    - T30.3
+    - T30.4
+    - T30.5
+    - T30.6
+    origin: idiomatic-usage review, session 2026-06-30
+    discovered: 2026-06-30
+  T30.1:
+    name: chat_server broadcasts via csp::part::fanout, consistent with chat_room
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - examples/chat_server.cc replaces the hand-rolled spawn_broadcaster (subscriber vector + swap-remove on dead subscribers + alt over msgs/subs, ~L49-93) with csp::part::fanout<std::string>.
+    - The two chat examples (chat_room.cc, chat_server.cc) use the same broadcast-to-dynamic-subscribers idiom.
+    - make examples builds and chat_server runs to completion.
+    context: 'Most actionable finding of the 2026-06-30 review: chat_room.cc uses the fanout part while chat_server.cc hand-rolls the identical broadcast logic, so the two examples teach contradictory lessons about what is idiomatic. fanout already handles automatic dead-subscriber removal, deleting the duplicated swap-remove code.'
+    origin: subdivide(🎯T30)
+    discovered: 2026-06-30
+  T30.2:
+    name: log_aggregator routes by severity via csp::part::partition
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - examples/log_aggregator.cc replaces the hand-rolled severity-router imp (the switch(e.severity) -> iw/ww/ew dispatch, ~L138-153) with csp::part::partition<LogEntry>(3, classifier).
+    - Per-entry side-effect printing is preserved (e.g. via tap or a sink stage) if it is part of the demo.
+    - make examples builds and log_aggregator runs to completion.
+    context: Hand-rolled fan-out by classifier that csp::part::partition packages directly. Defensible as-is because of the inline printf, hence a minor gap rather than dated, but worth aligning with the combinator surface.
+    origin: subdivide(🎯T30)
+    discovered: 2026-06-30
+  T30.3:
+    name: sensor_fusion source producers use spawn_producer
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - examples/sensor_fusion.cc replaces the three raw `chan ch; spawn([w=move(ch.w)]...); return move(ch.r)` sensor producers (~L81-120) with spawn_producer<double>(...).
+    - make examples builds and sensor_fusion runs to completion.
+    context: 'Cleanest mechanical win: the three sinusoid generators repeat the manual channel-construct/move-writer/return-reader boilerplate that spawn_producer<T> packages (as merge_sort.cc already does correctly). No single named combinator replaces the timed stateful generators, but spawn_producer is the right wrapper.'
+    origin: subdivide(🎯T30)
+    discovered: 2026-06-30
+  T30.4:
+    name: etl_pipeline dedup uses csp::part::unique or documents why make_filter is needed
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - examples/etl_pipeline.cc either uses csp::part::unique<Record> for the name dedup (splitting the co-located city-rank annotation into its own scan/make_filter stage), OR the existing make_filter dedup (~L180-192) carries a comment noting that pure dedup is csp::part::unique<T> and make_filter is used here only because of the co-located stateful rank annotation.
+    - make examples builds and etl_pipeline runs to completion.
+    context: The std::set first-wins dedup duplicates csp::part::unique<T>, but the same stage also computes r.city_rank = ++city_count[r.city], which unique cannot do. A first-time reader could wrongly conclude hand-rolled std::set dedup is recommended; either split the concern or annotate the intent.
+    origin: subdivide(🎯T30)
+    discovered: 2026-06-30
+  T30.5:
+    name: fan_out_fan_in surfaces csp::part::parallel_map
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - examples/fan_out_fan_in.cc either adopts csp::part::parallel_map<Job,Result>(NUM_WORKERS, f, {.ordered=true}) (removing the manual post-hoc std::sort), OR adds a closing cross-reference comment pointing to parallel_map as the packaged production equivalent of the hand-rolled shared-queue worker pool.
+    - make examples builds and fan_out_fan_in runs to completion.
+    context: The example manually re-derives parallel_map (including the unordered-results sort that cfg.ordered eliminates). The raw form is defensible as a primitives lesson (shared-input/shared-output topology + refcount shutdown), so a cross-reference may be preferable to a rewrite — implementer's judgment.
+    origin: subdivide(🎯T30)
+    discovered: 2026-06-30
+  T30.6:
+    name: Example header comments match the code (no stale alt claims)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - examples/dining_philosophers.cc (L6) and examples/merge_sort.cc (L4-5) header comments no longer claim the code uses alt where it actually uses plain sequential blocking reads (or the code is changed to use alt/prialt to match).
+    - A scan of all example header comments finds no other comment/code mismatches of this kind.
+    context: 'Doc-accuracy hygiene surfaced by the review: both files describe selecting inputs with alt, but the code uses sequential `>>`. Small, but stale comments in otherwise-idiomatic examples mislead first-time readers.'
+    origin: subdivide(🎯T30)
+    discovered: 2026-06-30
   T4:
     name: API safety gaps are closed
     status: achieved
