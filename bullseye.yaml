@@ -552,6 +552,29 @@ targets:
     origin: manual
     discovered: 2026-05-19
     achieved: 2026-05-21
+  T29:
+    name: The test suite never hangs under TSan — Linux arm64 TSan CI stays within its normal envelope, and any hang is diagnosable
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - The `Linux arm64 TSan` CI job completes within its normal envelope (historically ~2 min; treat >10 min as a hang) across a sustained window of 20+ consecutive master runs, with zero timeout-cancellations.
+    - 'The intermittent hang is root-caused: a local/CI reproduction (e.g. looping the dist TSan test suite for N iterations on arm64) reliably triggers it, and the specific deadlock/livelock site in the scheduler / channel runtime is identified.'
+    - A fix lands and the reproduction no longer hangs over a long iteration run.
+    - 'CI captures a diagnostic on hang: the dist-TSan test step runs under a watchdog (e.g. `timeout` shorter than the job cap, sending SIGQUIT / triggering a gdb all-thread backtrace) so a future hang yields a stack trace instead of a bare `cancelled` step.'
+    context: |-
+      Discovered 2026-06-30 on PR #82 (a pure-data hygiene.yaml change): the `Linux arm64 TSan` job hung 30m17s and was cancelled by the job's `timeout-minutes: 30`. The hang was in the `Build and test (dist, thread)` step — `Set up job`, checkout, and `Install dependencies` all succeeded; `GDB backtrace on crash` was skipped (a timeout-cancellation is not a `failure()`, so no stack was captured). A re-run passed.
+
+      Strong evidence this is a real latent concurrency bug, not infra flakiness: across the last ~10 master runs the arm64 TSan job completes in 2–3 min, so 30 min is a ~15× hang, not slow-creep; the triggering diff was pure data (cannot affect the build/test); and it is arm64-TSan-specific (x86_64 TSan passed at 3 min in the same run), pointing at an arm64 weak-memory-ordering window that TSan timing widens.
+
+      Theories, most→least likely: (1) intermittent deadlock/livelock in the scheduler/channel runtime, arm64-specific ordering window; (2) main-loop busy-spin that fails to make progress under some interleavings (csp has prior form — paper 22 'main-loop busy-spin diagnosis', 🎯T26/T27; web_crawler deadlock 🎯T26); (3) a test-side real-time wait starved under TSan load. The watchdog acceptance criterion exists because the current CI captures nothing on a timeout, making this hard to root-cause after the fact — fix observability first so the next occurrence is actionable.
+    tags:
+    - ci
+    - concurrency
+    - tsan
+    - flaky
+    origin: manual
+    discovered: 2026-06-30
   T3:
     name: Runtime is production-ready for I/O workloads
     status: achieved
