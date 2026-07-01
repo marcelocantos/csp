@@ -233,13 +233,19 @@ conn::~conn() {
     if (!impl_) return;  // moved-from
     // The stream imp owns the ptls that references the caller's context, and
     // ptls_free runs when the imp exits.  Drop the plaintext endpoints so it
-    // exits, wake any source parked in io::read (io::close does not wake a
-    // reactor waiter), then WAIT for the imp to fully exit — its ptls_free
-    // must complete before the caller's context is destroyed, or ptls_free
-    // touches freed memory (heap-use-after-free, TLS---Cancel-during-read).
+    // exits, then WAIT for it to fully exit — ptls_free must complete before
+    // the caller's context is destroyed, or it touches freed memory
+    // (heap-use-after-free, TLS---Cancel-during-read).
+    //
+    // No shutdown(fd) here: conn::read blocks its own imp, so a conn is only
+    // destroyed after a read has returned or thrown.  The stream imp is
+    // therefore either parked in its prialt (dropping the endpoints exits it)
+    // or already unblocked by conn::read's own shutdown(SHUT_RD) on cancel.
+    // shutdown()ing the fd here is both unnecessary and unsafe: by now the
+    // caller has typically closed it, and on macOS the number may have been
+    // recycled by another connection whose read side we would wrongly close.
     impl_->strm.plaintext_out = {};
     impl_->strm.plaintext_in  = {};
-    ::shutdown(impl_->fd.raw(), SHUT_RD);
     if (impl_->strm.worker) {
         std::exception_ptr ep;
         (void)(impl_->strm.worker >> ep);  // join: returns after ptls_free
