@@ -176,6 +176,11 @@ int main() {
         // First-wins: keeps the first record seen for each name; drops
         // subsequent records with the same name. Also assigns city_rank
         // (count of unique records seen so far for that city).
+        //
+        // Pure first-wins dedup alone would be csp::part::unique<Record>;
+        // this stage uses make_filter because it *also* annotates each
+        // surviving record (city_rank) — stateful work a bare dedup
+        // combinator can't express.
         // ------------------------------------------------------------------
         auto deduped = make_filter<Record>(
             [](reader<Record> in, writer<Record> out) {

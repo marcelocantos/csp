@@ -9,8 +9,8 @@
 //     emitting LogEntry structs at varying rates. A burst of errors is
 //     injected into the auth service midway to trigger the alert threshold.
 //   - Merge: csp::part::merge combines all four sources into one stream.
-//   - Router imp: reads the merged stream, prints each entry, fans out to
-//     info_ch, warn_ch, and error_ch by severity.
+//   - Routing: a map passthrough prints each entry, then csp::part::partition
+//     fans out to info/warn/error streams by severity (DBG is dropped).
 //   - Alert monitor imp: counts errors per 1-second window; prints ALERT
 //     when the count reaches the threshold (3).
 //   - Aggregator imp: counts info/warn events per service per window,
@@ -132,29 +132,32 @@ int main() {
         srcs.push_back(std::move(auth_ch.r));
         auto merged = merge<LogEntry>(std::move(srcs)).spawn();
 
-        chan<LogEntry> info_ch, warn_ch, error_ch;
+        // Print every entry, then route by severity with the partition
+        // combinator: INFO/WARN/ERR go to outputs 0/1/2; DBG maps out of
+        // range and is dropped. partition itself does no printing, so a
+        // map passthrough handles the per-entry log line first.
+        auto printed = map<LogEntry>([](LogEntry e) {
+            printf("  [%s] %-4s %s\n",
+                   sev_name(e.severity), e.service.c_str(), e.message.c_str());
+            return e;
+        }).spawn(std::move(merged));
 
-        // Router imp: print each entry, then route by severity.
-        spawn([in = std::move(merged),
-               iw = std::move(info_ch.w),
-               ww = std::move(warn_ch.w),
-               ew = std::move(error_ch.w)] () mutable {
-            LogEntry e;
-            while (in >> e) {
-                printf("  [%s] %-4s %s\n",
-                       sev_name(e.severity), e.service.c_str(), e.message.c_str());
+        auto routed = partition<LogEntry>(std::move(printed), 3,
+            [](const LogEntry& e) -> size_t {
                 switch (e.severity) {
-                    case Sev::DBG:  break;   // debug entries not routed further
-                    case Sev::INFO: iw << e; break;
-                    case Sev::WARN: ww << e; break;
-                    case Sev::ERR:  ew << e; break;
+                    case Sev::INFO: return 0;
+                    case Sev::WARN: return 1;
+                    case Sev::ERR:  return 2;
+                    default:        return 3;   // DBG (out of range) → dropped
                 }
-            }
-        });
+            });
+        auto info_r  = std::move(routed[0]);
+        auto warn_r  = std::move(routed[1]);
+        auto error_r = std::move(routed[2]);
 
         // Alert monitor: count errors per 1-second window.
         constexpr int kAlertThreshold = 3;
-        spawn([er = std::move(error_ch.r)] () mutable {
+        spawn([er = std::move(error_r)] () mutable {
             auto ticks = tick(1s);
             time_point tp;
             LogEntry e;
@@ -182,7 +185,7 @@ int main() {
 
         // Aggregator: count info/warn per service, flush summary on each tick.
         struct Counts { int info = 0, warn = 0; };
-        spawn([ir = std::move(info_ch.r), wr = std::move(warn_ch.r)] () mutable {
+        spawn([ir = std::move(info_r), wr = std::move(warn_r)] () mutable {
             auto ticks = tick(1s);
             time_point tp;
             LogEntry e;
