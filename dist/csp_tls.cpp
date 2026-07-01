@@ -231,7 +231,22 @@ conn::conn(context& ctx, io::fd_t fd) : impl_(std::make_unique<impl>()) {
     impl_->is_server = (ctx.impl_->ctx.sign_certificate != nullptr);
 }
 
-conn::~conn() = default;
+conn::~conn() {
+    if (!impl_) return;  // moved-from
+    // The stream imp owns the ptls that references the caller's context, and
+    // ptls_free runs when the imp exits.  Drop the plaintext endpoints so it
+    // exits, wake any source parked in io::read (io::close does not wake a
+    // reactor waiter), then WAIT for the imp to fully exit — its ptls_free
+    // must complete before the caller's context is destroyed, or ptls_free
+    // touches freed memory (heap-use-after-free, TLS---Cancel-during-read).
+    impl_->strm.plaintext_out = {};
+    impl_->strm.plaintext_in  = {};
+    ::shutdown(impl_->fd.raw(), SHUT_RD);
+    if (impl_->strm.worker) {
+        std::exception_ptr ep;
+        (void)(impl_->strm.worker >> ep);  // join: returns after ptls_free
+    }
+}
 
 conn::conn(conn&&) noexcept = default;
 conn& conn::operator=(conn&&) noexcept = default;
@@ -379,6 +394,12 @@ void conn::shutdown() {
     for (std::monostate ack; impl_->wire_ack >> ack;) {
         // drain until the sink drops the ack writer on exit
     }
+    // Wait for the stream imp to fully exit so its ptls_free completes before
+    // the caller tears down its context (see conn::~conn).
+    if (impl_->strm.worker) {
+        std::exception_ptr ep;
+        (void)(impl_->strm.worker >> ep);
+    }
 }
 
 io::fd_t conn::fd() const {
@@ -502,7 +523,7 @@ stream make_stream(
     chan<io::read_request> read_ch;
     chan<bytes>            write_ch;
 
-    spawn([
+    auto worker = spawn([
         tls     = std::move(tls),
         read_r  = std::move(read_ch.r),
         write_r = std::move(write_ch.r),
@@ -656,7 +677,8 @@ stream make_stream(
     return stream{
         std::move(read_ch.w),
         std::move(write_ch.w),
-        std::string{}
+        std::string{},
+        std::move(worker)
     };
 }
 

@@ -623,8 +623,30 @@ would not have been correct:
    so a caller-side `close(fd)` cannot race a still-pending `io::write` under
    fd recycling.
 
+4. **conn must join the stream imp on teardown (ptls lifetime).** The
+   stream imp owns the `ptls_t` (created from the caller's `context`), and
+   `ptls_free` — which dereferences the context — runs when the imp's
+   closure is destroyed. Because the imp tears down *asynchronously*, its
+   `ptls_free` can outlive the caller's context. The `conn` tests declare
+   `context` as an imp-local, so when a test that does **not** call
+   `shutdown()` (`TLS---Cancel-during-read`) drops through to `~conn`, the
+   stream imp's `ptls_free` races the context destructor — a
+   heap-use-after-free ASan flagged (the fixed-and-merged direct-picotls
+   `conn` freed its `ptls` synchronously in `~conn`, so this ordering was
+   free before). Fix: `make_stream` returns the stream imp's join handle on
+   the `stream` struct, and `conn::shutdown()`/`~conn` **wait on it** (after
+   dropping the plaintext endpoints and a defensive `shutdown(SHUT_RD)` to
+   unblock any parked source) so `ptls_free` completes before the context
+   dies. `spawn_entry` destroys the closure — hence runs `ptls_free` —
+   before it drops the join writer, so the wait is exactly the barrier
+   needed. (The chan-transport `stream` tests are unaffected: their context
+   outlives `schedule()`, which already joins every imp.) This is the one
+   place a field was added to the public `stream` type — a join handle,
+   additive and ignorable by fire-and-forget consumers.
+
 These are refinements *within* option (c) — the recommendation to keep
-`tls::stream`'s public API unchanged held. Option (a) remains the right
+`tls::stream`'s plaintext interface unchanged held (the added `worker`
+join handle is inert for existing consumers). Option (a) remains the right
 answer only if a separate requirement makes `stream`'s outbound side
 demand-shaped (see [Open questions](#open-questions)).
 
