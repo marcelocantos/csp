@@ -7,9 +7,9 @@
 
 /* csp/csp.h */
 
-#define CSP_VERSION "0.19.0"
+#define CSP_VERSION "0.20.0"
 #define CSP_VERSION_MAJOR 0
-#define CSP_VERSION_MINOR 19
+#define CSP_VERSION_MINOR 20
 #define CSP_VERSION_PATCH 0
 
 
