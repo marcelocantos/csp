@@ -3,8 +3,9 @@
 // Five philosophers sit around a table, each needing two forks to eat.
 // Each fork is an imp that serves as a mutex — it offers itself
 // via a channel, and a philosopher "picks up" a fork by reading from
-// its channel. Philosophers use alt to request both forks, breaking
-// symmetry by having one philosopher reach for forks in reverse order.
+// its channel. Each philosopher picks up its two forks by reading from
+// both fork channels in turn, breaking symmetry by having one
+// philosopher reach for its forks in reverse order.
 //
 // No mutexes, no deadlock, no starvation — just channels.
 

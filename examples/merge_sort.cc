@@ -2,8 +2,8 @@
 //
 // Recursive merge sort where each merge step uses channels for
 // synchronization. The merge function reads from two sorted input
-// channels using alt to select whichever is ready, and writes to
-// one output channel.
+// channels, advancing whichever side holds the smaller value, and
+// writes the merged order to one output channel.
 //
 // This demonstrates recursive spawn and channel-mediated data flow.
 // The parallelism is natural — no explicit thread management, no

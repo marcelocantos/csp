@@ -124,6 +124,11 @@ struct stream {
     io::source    plaintext_in;
     writer<bytes> plaintext_out;
     std::string   negotiated_alpn;
+    // Join handle for the steady-state stream imp.  A consumer that must
+    // outlive nothing can ignore it; `conn` waits on it during teardown so
+    // the imp's ptls_free (which references the caller's context) completes
+    // before that context is destroyed.  Empty when make_stream throws.
+    reader<std::exception_ptr> worker;
 };
 
 // Wrap a ciphertext source/sink pair with TLS, returning the plaintext
