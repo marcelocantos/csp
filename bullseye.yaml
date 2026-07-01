@@ -961,7 +961,7 @@ targets:
     achieved: 2026-04-28
   T30:
     name: All examples/ programs demonstrate current idiomatic CSP (parts/combinators + ergonomic APIs)
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -979,9 +979,10 @@ targets:
     - T30.6
     origin: idiomatic-usage review, session 2026-06-30
     discovered: 2026-06-30
+    achieved: 2026-07-01
   T30.1:
     name: chat_server broadcasts via csp::part::fanout, consistent with chat_room
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -991,9 +992,10 @@ targets:
     context: 'Most actionable finding of the 2026-06-30 review: chat_room.cc uses the fanout part while chat_server.cc hand-rolls the identical broadcast logic, so the two examples teach contradictory lessons about what is idiomatic. fanout already handles automatic dead-subscriber removal, deleting the duplicated swap-remove code.'
     origin: subdivide(🎯T30)
     discovered: 2026-06-30
+    achieved: 2026-07-01
   T30.2:
     name: log_aggregator routes by severity via csp::part::partition
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1003,9 +1005,10 @@ targets:
     context: Hand-rolled fan-out by classifier that csp::part::partition packages directly. Defensible as-is because of the inline printf, hence a minor gap rather than dated, but worth aligning with the combinator surface.
     origin: subdivide(🎯T30)
     discovered: 2026-06-30
+    achieved: 2026-07-01
   T30.3:
     name: sensor_fusion source producers use spawn_producer
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1014,9 +1017,10 @@ targets:
     context: 'Cleanest mechanical win: the three sinusoid generators repeat the manual channel-construct/move-writer/return-reader boilerplate that spawn_producer<T> packages (as merge_sort.cc already does correctly). No single named combinator replaces the timed stateful generators, but spawn_producer is the right wrapper.'
     origin: subdivide(🎯T30)
     discovered: 2026-06-30
+    achieved: 2026-07-01
   T30.4:
     name: etl_pipeline dedup uses csp::part::unique or documents why make_filter is needed
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1025,9 +1029,10 @@ targets:
     context: The std::set first-wins dedup duplicates csp::part::unique<T>, but the same stage also computes r.city_rank = ++city_count[r.city], which unique cannot do. A first-time reader could wrongly conclude hand-rolled std::set dedup is recommended; either split the concern or annotate the intent.
     origin: subdivide(🎯T30)
     discovered: 2026-06-30
+    achieved: 2026-07-01
   T30.5:
     name: fan_out_fan_in surfaces csp::part::parallel_map
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1036,9 +1041,10 @@ targets:
     context: The example manually re-derives parallel_map (including the unordered-results sort that cfg.ordered eliminates). The raw form is defensible as a primitives lesson (shared-input/shared-output topology + refcount shutdown), so a cross-reference may be preferable to a rewrite — implementer's judgment.
     origin: subdivide(🎯T30)
     discovered: 2026-06-30
+    achieved: 2026-07-01
   T30.6:
     name: Example header comments match the code (no stale alt claims)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1047,6 +1053,7 @@ targets:
     context: 'Doc-accuracy hygiene surfaced by the review: both files describe selecting inputs with alt, but the code uses sequential `>>`. Small, but stale comments in otherwise-idiomatic examples mislead first-time readers.'
     origin: subdivide(🎯T30)
     discovered: 2026-06-30
+    achieved: 2026-07-01
   T4:
     name: API safety gaps are closed
     status: achieved
