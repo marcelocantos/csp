@@ -346,12 +346,23 @@ ssize_t conn::read(void* buf, size_t len) {
     if (csp::is_cancel_active()) {
         int which = prialt(csp::done(), reply_r >> b);
         if (which == ~0) {  // done() fired → cancellation/timeout
-            // The ciphertext source imp may be parked in io::read on the fd
-            // (it does not share this imp's cancel scope).  io::close does not
-            // wake a reactor waiter, so shut the read half to surface EOF and
-            // let the source — and the stream imp blocked behind it — tear
-            // down instead of leaking a permanently-parked imp.
+            // Tear the stream down NOW, while the fd is still open.  The
+            // ciphertext source imp is parked in io::read on the fd (it does
+            // not share this imp's cancel scope); shutdown(SHUT_RD) surfaces
+            // EOF so it — and the stream imp blocked behind it — exit.  We
+            // must WAIT for that here rather than throw and let the caller
+            // close(fd): io::close does not wake a reactor waiter, and on
+            // macOS a close racing the SHUT_RD can drop the fd's kqueue
+            // registration before the wake is delivered, parking the source
+            // forever (TLS---Cancel-during-read hang).  With the fd still
+            // open, the wake is reliable and the worker join completes.
             ::shutdown(impl_->fd.raw(), SHUT_RD);
+            impl_->strm.plaintext_out = {};
+            impl_->strm.plaintext_in  = {};
+            if (impl_->strm.worker) {
+                std::exception_ptr wep;
+                (void)(impl_->strm.worker >> wep);
+            }
             auto reason = csp::cancel_reason();
             if (reason) std::rethrow_exception(reason);
             throw csp::canceled{};
