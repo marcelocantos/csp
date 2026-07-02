@@ -957,6 +957,17 @@ targets:
     origin: manual
     discovered: 2026-03-28
     achieved: 2026-04-28
+  T32:
+    name: csp sizes stack slots from a true high-water bound so a Small slot can never be chosen for an imp that overflows it
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - The stack-slot size class is chosen from a sound upper bound, not a checkpoint-sampled high-water estimate that can under-count
+    - An imp whose usage can exceed the Small slot is never placed in one; add a test exercising the boundary
+    context: 'HIGH. src/csp.cc:476: the checkpoint-sampled high-water table under-sizes Small stack slots, causing silent cross-imp stack corruption. Unverified Fable-5 finder-stage candidate (verification interrupted by an API spend limit); verify before implementing. See docs/audit/fable-2026-07.md.'
+    origin: manual
+    discovered: 2026-07-02
   T4:
     name: API safety gaps are closed
     status: achieved
