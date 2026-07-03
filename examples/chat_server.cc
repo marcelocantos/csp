@@ -13,8 +13,11 @@
 //
 // Architecture:
 //   - Accept loop spawns a supervised client imp per connection.
-//   - Each room has a broadcast imp that fans messages to subscribers.
-//   - Rooms are created on first /join and tracked in a shared map.
+//   - A single registry imp owns the room map and serves join / list
+//     requests over request channels — no shared state, no mutex. Each
+//     room broadcasts via the csp::part::fanout combinator (the same
+//     dynamic pub/sub part chat_room.cc uses).
+//   - Rooms are created on first /join.
 //   - SIGINT/SIGTERM triggers graceful shutdown via cancellation.
 
 // Copyright 2026 Marcelo Cantos
@@ -26,105 +29,83 @@
 #include <csignal>
 #include <cstring>
 #include <map>
-#include <mutex>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <variant>
 #include <vector>
 
 using namespace csp;
 using namespace std::chrono_literals;
 
-// Per-room state: a broadcast channel for messages and a registration
-// channel for new subscribers. The broadcast imp reads from both and
-// fans messages to all live subscribers.
+// Per-room state, held privately by the registry imp: the fanout's
+// broadcast input (write a string to fan it to every subscriber) and its
+// subscriber-registration channel (write a writer<string> to subscribe).
 struct Room {
-    writer<std::string> broadcast;
+    writer<std::string>         broadcast;
     writer<writer<std::string>> subscribe;
 };
 
-// Spawn a broadcast imp that reads messages from `msgs` and fans them
-// to all subscribers registered via `subs`. Dead subscribers are
-// removed automatically.
-static void spawn_broadcaster(reader<std::string> msgs,
-                               reader<writer<std::string>> subs) {
-    spawn([msgs = std::move(msgs), subs = std::move(subs)]() mutable {
-        internal::descr("broadcaster");
+// A join request: subscribe `subscriber` to room `name` and reply with the
+// room's broadcast writer. The reply is a private per-client copy, so many
+// clients can share the writer without stealing each other's replies.
+struct JoinReq {
+    std::string         name;
+    writer<std::string> subscriber;
+};
 
-        std::vector<writer<std::string>> outs;
-        std::string msg;
-        writer<std::string> new_out;
+using JoinChan = writer<request<JoinReq, writer<std::string>>>;
+using ListChan = writer<request<std::monostate, std::vector<std::string>>>;
+
+// Registry imp: owns the room map and serves join / list requests serially.
+// Because it is the sole owner, there is no lock and no create-race. On a
+// join for a new room it spawns a fanout, registers the joining client as
+// the first subscriber (which is what makes fanout emit its broadcast
+// writer), and stashes both endpoints in the map.
+static void spawn_registry(
+    reader<request<JoinReq, writer<std::string>>>              join_r,
+    reader<request<std::monostate, std::vector<std::string>>> list_r) {
+    spawn([join_r = std::move(join_r), list_r = std::move(list_r)]() mutable {
+        internal::descr("room-registry");
+
+        std::map<std::string, Room> rooms;
+        request<JoinReq, writer<std::string>>              jr;
+        request<std::monostate, std::vector<std::string>>  lr;
 
         for (;;) {
-            switch (alt(msgs >> msg, subs >> new_out)) {
-            case 0: // Broadcast message to all subscribers.
-                for (auto it = outs.begin(); it != outs.end();) {
-                    if (*it << msg) {
-                        ++it;
-                    } else {
-                        // Dead subscriber — swap-remove.
-                        *it = std::move(outs.back());
-                        outs.pop_back();
-                    }
+            switch (alt(join_r >> jr, list_r >> lr)) {
+            case 0: {  // Join (or create) a room.
+                auto it = rooms.find(jr.value.name);
+                if (it == rooms.end()) {
+                    writer<writer<std::string>> sub_w;
+                    auto bc_in = part::fanout<std::string>.spawn(--sub_w);
+                    // First subscriber unblocks fanout's broadcast writer.
+                    sub_w << std::move(jr.value.subscriber);
+                    writer<std::string> bc_w;
+                    bc_in >> bc_w;
+                    bc_in = {};
+                    it = rooms.emplace(jr.value.name,
+                                       Room{std::move(bc_w), std::move(sub_w)})
+                             .first;
+                } else {
+                    it->second.subscribe << std::move(jr.value.subscriber);
                 }
+                jr.reply << it->second.broadcast.copy();
                 break;
-            case 1: // New subscriber.
-                outs.push_back(std::move(new_out));
+            }
+            case 1: {  // List active room names.
+                std::vector<std::string> names;
+                names.reserve(rooms.size());
+                for (auto& [name, _] : rooms) names.push_back(name);
+                lr.reply << std::move(names);
                 break;
-            case ~0: // Message channel closed — room is shutting down.
-                return;
-            case ~1: // No more subscriptions possible.
-                // Keep broadcasting to existing subscribers.
-                for (; msgs >> msg;) {
-                    for (auto it = outs.begin(); it != outs.end();) {
-                        if (*it << msg) {
-                            ++it;
-                        } else {
-                            *it = std::move(outs.back());
-                            outs.pop_back();
-                        }
-                    }
-                    if (outs.empty()) return;
-                }
+            }
+            default:  // Either request channel closed — server shutting down.
                 return;
             }
         }
     });
 }
-
-// Thread-safe room registry. Rooms are created on first join.
-struct RoomRegistry {
-    std::mutex mu;
-    std::map<std::string, std::shared_ptr<Room>> rooms;
-
-    std::shared_ptr<Room> get_or_create(const std::string& name) {
-        std::lock_guard lock(mu);
-        auto it = rooms.find(name);
-        if (it != rooms.end()) return it->second;
-
-        // Create broadcast and subscription channels.
-        auto [bc_w, bc_r] = chan<std::string>{};
-        auto [sub_w, sub_r] = chan<writer<std::string>>{};
-
-        // Spawn the broadcaster.
-        spawn_broadcaster(std::move(bc_r), std::move(sub_r));
-
-        auto room = std::make_shared<Room>(Room{
-            std::move(bc_w),
-            std::move(sub_w),
-        });
-        rooms.emplace(name, room);
-        return room;
-    }
-
-    std::vector<std::string> list() {
-        std::lock_guard lock(mu);
-        std::vector<std::string> names;
-        names.reserve(rooms.size());
-        for (auto& [name, _] : rooms) names.push_back(name);
-        return names;
-    }
-};
 
 static void send_line(writer<std::vector<uint8_t>>& out, const std::string& msg) {
     std::string line = msg + "\n";
@@ -132,7 +113,7 @@ static void send_line(writer<std::vector<uint8_t>>& out, const std::string& msg)
     out << std::move(data);
 }
 
-static void handle_client(io::fd_t fd, std::shared_ptr<RoomRegistry> registry) {
+static void handle_client(io::fd_t fd, JoinChan join_w, ListChan list_w) {
     // Set up I/O pipelines.
     auto lines = part::io::split_lines.spawn(
                      part::io::byte_reader(fd).spawn());
@@ -143,13 +124,12 @@ static void handle_client(io::fd_t fd, std::shared_ptr<RoomRegistry> registry) {
     std::string nick = "anon";
     std::string room_name = "lobby";
 
-    // Subscribe to initial room.
+    // Subscribe to the initial room; the reply is our broadcast writer.
     auto [my_w, my_r] = chan<std::string>{};
-    auto room = registry->get_or_create(room_name);
-    room->subscribe.copy() << std::move(my_w);
+    writer<std::string> bcast = join_w(JoinReq{room_name, std::move(my_w)});
 
     // Announce arrival.
-    room->broadcast.copy() << (nick + " joined " + room_name);
+    bcast << (nick + " joined " + room_name);
 
     send_line(out, "Welcome! You are in #" + room_name +
               ". Type /help for commands.");
@@ -164,7 +144,7 @@ static void handle_client(io::fd_t fd, std::shared_ptr<RoomRegistry> registry) {
             return;
 
         case ~1:  // Client disconnected.
-            room->broadcast.copy() << (nick + " left");
+            bcast << (nick + " left");
             return;
 
         case ~2:  // Room died (shouldn't happen normally).
@@ -187,36 +167,32 @@ static void handle_client(io::fd_t fd, std::shared_ptr<RoomRegistry> registry) {
                     } else {
                         auto old = nick;
                         nick = arg;
-                        room->broadcast.copy()
-                            << (old + " is now " + nick);
+                        bcast << (old + " is now " + nick);
                     }
                 } else if (cmd == "/join") {
                     if (arg.empty()) {
                         send_line(out, "Usage: /join <room>");
                     } else {
                         // Leave current room.
-                        room->broadcast.copy()
-                            << (nick + " left " + room_name);
+                        bcast << (nick + " left " + room_name);
                         my_r = {};  // Unsubscribe (kills old writer).
 
                         // Join new room.
                         room_name = arg;
                         auto [w, r] = chan<std::string>{};
-                        room = registry->get_or_create(room_name);
-                        room->subscribe.copy() << std::move(w);
+                        bcast = join_w(JoinReq{room_name, std::move(w)});
                         my_r = std::move(r);
 
-                        room->broadcast.copy()
-                            << (nick + " joined " + room_name);
+                        bcast << (nick + " joined " + room_name);
                         send_line(out, "Joined #" + room_name);
                     }
                 } else if (cmd == "/rooms") {
-                    auto names = registry->list();
+                    auto names = list_w(std::monostate{});
                     std::string msg = "Active rooms:";
                     for (auto& n : names) msg += " #" + n;
                     send_line(out, msg);
                 } else if (cmd == "/quit") {
-                    room->broadcast.copy() << (nick + " left");
+                    bcast << (nick + " left");
                     send_line(out, "Goodbye!");
                     return;
                 } else if (cmd == "/help") {
@@ -230,8 +206,7 @@ static void handle_client(io::fd_t fd, std::shared_ptr<RoomRegistry> registry) {
                 }
             } else {
                 // Broadcast message to room.
-                room->broadcast.copy()
-                    << ("[" + nick + "] " + line);
+                bcast << ("[" + nick + "] " + line);
             }
             break;
         }
@@ -267,7 +242,12 @@ int main() {
             }
         });
 
-        auto registry = std::make_shared<RoomRegistry>();
+        // Room registry imp. Clients reach it through copies of these
+        // writers; when the accept loop and every client have dropped
+        // their copies, the registry drains and exits.
+        chan<request<JoinReq, writer<std::string>>>              join_ch;
+        chan<request<std::monostate, std::vector<std::string>>>  list_ch;
+        spawn_registry(std::move(join_ch.r), std::move(list_ch.r));
 
         // Create the listen socket.
         io::fd_t listen_fd(::socket(AF_INET6, SOCK_STREAM, 0));
@@ -337,8 +317,11 @@ int main() {
             }
             fprintf(stderr, "Client connected from %s\n", addr_str);
 
-            spawn(supervised([client_fd, registry] {
-                handle_client(client_fd, registry);
+            // Pass restart-safe writer copies (the supervised imp may re-run).
+            spawn(supervised([client_fd,
+                              jw = join_ch.w.copy(),
+                              lw = list_ch.w.copy()] {
+                handle_client(client_fd, jw.copy(), lw.copy());
             }));
         }
 

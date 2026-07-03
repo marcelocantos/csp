@@ -7,6 +7,11 @@
 // exhausted, workers exit naturally and the output channel closes.
 //
 // Compare to thread pool + mutex + condition variable boilerplate.
+//
+// The library packages exactly this fan-out/compute/fan-in as the
+// csp::part::parallel_map<In, Out>(n, f) combinator — pass {.ordered=true}
+// to preserve input order and skip the manual sort below. This example
+// builds it from raw channels to show the mechanism parallel_map wraps.
 
 #include "csp.h"
 

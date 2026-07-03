@@ -79,8 +79,7 @@ static bool is_anomaly(double val, const FieldStats& s, size_t n) {
 
 // Temperature: 10 Hz. Sinusoidal drift; spike at steps [spike_lo, spike_hi).
 static reader<double> make_temp_sensor(int count) {
-    chan<double> ch;
-    spawn([w = std::move(ch.w), count] {
+    return spawn_producer<double>([count](writer<double> w) {
         for (int i = 0; i < count; ++i) {
             double v = 22.0 + 0.5 * std::sin(0.3 * i);
             if (i >= 50 && i < 70) v += 12.0;   // spike at ~5-7 s
@@ -88,27 +87,23 @@ static reader<double> make_temp_sensor(int count) {
             sleep(100ms);
         }
     });
-    return std::move(ch.r);
 }
 
 // Pressure: 1 Hz. Slow sinusoidal drift.
 static reader<double> make_pres_sensor(int count) {
-    chan<double> ch;
-    spawn([w = std::move(ch.w), count] {
+    return spawn_producer<double>([count](writer<double> w) {
         for (int i = 0; i < count; ++i) {
             double v = 1013.0 + 0.3 * std::cos(0.15 * i);
             if (!(w << v)) break;
             sleep(1000ms);
         }
     });
-    return std::move(ch.r);
 }
 
 // Vibration: 100 Hz. High-rate absolute amplitudes.
 // Feeds quantize, which emits every 5.0 accumulated units.
 static reader<double> make_vib_sensor(int count) {
-    chan<double> ch;
-    spawn([w = std::move(ch.w), count] {
+    return spawn_producer<double>([count](writer<double> w) {
         for (int i = 0; i < count; ++i) {
             double v = std::abs(0.1 + 0.05 * std::sin(0.8 * i));
             if (i >= 500 && i < 700) v += 2.0;  // spike at ~5-7 s
@@ -116,7 +111,6 @@ static reader<double> make_vib_sensor(int count) {
             sleep(10ms);
         }
     });
-    return std::move(ch.r);
 }
 
 // --- Main ---
