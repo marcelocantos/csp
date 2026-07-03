@@ -1054,6 +1054,17 @@ targets:
     origin: subdivide(🎯T30)
     discovered: 2026-06-30
     achieved: 2026-07-01
+  T33:
+    name: csp sizes stack slots from a true high-water bound so a Small slot can never be chosen for an imp that overflows it
+    status: identified
+    value: 8.0
+    cost: 5.0
+    acceptance:
+    - The stack-slot size class is chosen from a sound upper bound (is_exact analyser), not a checkpoint-sampled high-water estimate that can under-count — restoring the T3.4.4 invariant that only the inexact fallback magnitude improves
+    - An imp whose true peak stack can exceed the Small slot is never placed in one; a test exercises the shallow-sample-then-deep-descent boundary under -DCSP_ANALYSE_STACKS on arm64
+    context: 'HIGH, confirmed by two-lens verification (2026-07-03). src/csp.cc:476: StackClass::Small is selected purely from profile_needed = high_water*1.5 + headroom, with no is_exact gate and no analyser call — an independent path that preempts the sound analyser. The high-water is a do_switch checkpoint sample, not a peak, so a helper that grows and unwinds between two channel ops is never sampled; a shallow instance''s sample then gates a deep instance''s Small allocation. Arena slots have only a 4 KB software guard (no PROT_NONE page on arm64), so a descent into the neighbouring slot silently corrupts an adjacent imp''s Imp control block and stack. The verifier confirmed this violates the repo''s own T3.4.4 acceptance criteria. Found by Fable-5 audit 2026-07 (docs/audit/fable-2026-07.md).'
+    origin: manual
+    discovered: 2026-07-03
   T4:
     name: API safety gaps are closed
     status: achieved
