@@ -1065,6 +1065,18 @@ targets:
     context: 'HIGH, confirmed by two-lens verification (2026-07-03). src/csp.cc:476: StackClass::Small is selected purely from profile_needed = high_water*1.5 + headroom, with no is_exact gate and no analyser call — an independent path that preempts the sound analyser. The high-water is a do_switch checkpoint sample, not a peak, so a helper that grows and unwinds between two channel ops is never sampled; a shallow instance''s sample then gates a deep instance''s Small allocation. Arena slots have only a 4 KB software guard (no PROT_NONE page on arm64), so a descent into the neighbouring slot silently corrupts an adjacent imp''s Imp control block and stack. The verifier confirmed this violates the repo''s own T3.4.4 acceptance criteria. Found by Fable-5 audit 2026-07 (docs/audit/fable-2026-07.md).'
     origin: manual
     discovered: 2026-07-03
+  T31:
+    name: Stack-analysis walker reads forwarded data pointers within bounds (no ASan over-read)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A full local sanitized build (make SANITIZE=address,undefined) on ARM64 macOS runs the whole suite — including test/stack_analysis_audit.test.cc — with no AddressSanitizer global-buffer-overflow in src/stack_analysis_arm64.cc.
+    - The walker either bounds its forwarded-data-pointer read to the load width it actually decoded, OR the audit fixtures provide correctly-sized (8-byte) data slots for the 64-bit load the walker models, with a comment stating the contract.
+    - 'No behavioural regression: stack_analysis.test.cc tightness/soundness gates still pass on ARM64.'
+    context: 'Discovered 2026-07-01 during the v0.20.0 release: the full local ASan+UBSan suite reported a global-buffer-overflow at src/stack_analysis_arm64.cc:1699 (analyze_stack_depth) — an 8-byte read landing 0 bytes after the 4-byte global g_const in test/stack_analysis_audit.test.cc, i.e. into its ASan redzone. The T3.10 walker models a forwarded data-pointer load (the X0-X7 seed / discriminator it follows across BL boundaries) as a 64-bit read; when the real data slot is only 4 bytes the read over-runs. Byte-identical to master/v0.19.0 — NOT introduced by 🎯T17.4/🎯T30. It is masked on CI (layout-dependent: green on master''s macOS ASan with identical code) and does not fire in the dist build (the audit test is excluded from the amalgamation), which is why it went unnoticed at T3.10. Low user impact (a fixture-triggered over-read of an adjacent global, not a crash in production paths), but a genuine latent walker robustness gap worth closing. Fix candidates in the acceptance. Related: 🎯T3.10 (paper 30), 🎯T3.4.5 (the audit gate).'
+    origin: discovered during v0.20.0 release, session 2026-07-01
+    discovered: 2026-07-01
   T4:
     name: API safety gaps are closed
     status: achieved
