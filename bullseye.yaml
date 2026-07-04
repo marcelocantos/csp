@@ -1056,9 +1056,11 @@ targets:
     achieved: 2026-07-01
   T33:
     name: csp sizes stack slots from a true high-water bound so a Small slot can never be chosen for an imp that overflows it
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
+    actual_cost: 3.0
+    achieved: 2026-07-04
     acceptance:
     - The stack-slot size class is chosen from a sound upper bound (is_exact analyser), not a checkpoint-sampled high-water estimate that can under-count — restoring the T3.4.4 invariant that only the inexact fallback magnitude improves
     - An imp whose true peak stack can exceed the Small slot is never placed in one; a test exercises the shallow-sample-then-deep-descent boundary under -DCSP_ANALYSE_STACKS on arm64
@@ -1074,7 +1076,9 @@ targets:
     - A full local sanitized build (make SANITIZE=address,undefined) on ARM64 macOS runs the whole suite — including test/stack_analysis_audit.test.cc — with no AddressSanitizer global-buffer-overflow in src/stack_analysis_arm64.cc.
     - The walker either bounds its forwarded-data-pointer read to the load width it actually decoded, OR the audit fixtures provide correctly-sized (8-byte) data slots for the 64-bit load the walker models, with a comment stating the contract.
     - 'No behavioural regression: stack_analysis.test.cc tightness/soundness gates still pass on ARM64.'
-    context: 'Discovered 2026-07-01 during the v0.20.0 release: the full local ASan+UBSan suite reported a global-buffer-overflow at src/stack_analysis_arm64.cc:1699 (analyze_stack_depth) — an 8-byte read landing 0 bytes after the 4-byte global g_const in test/stack_analysis_audit.test.cc, i.e. into its ASan redzone. The T3.10 walker models a forwarded data-pointer load (the X0-X7 seed / discriminator it follows across BL boundaries) as a 64-bit read; when the real data slot is only 4 bytes the read over-runs. Byte-identical to master/v0.19.0 — NOT introduced by 🎯T17.4/🎯T30. It is masked on CI (layout-dependent: green on master''s macOS ASan with identical code) and does not fire in the dist build (the audit test is excluded from the amalgamation), which is why it went unnoticed at T3.10. Low user impact (a fixture-triggered over-read of an adjacent global, not a crash in production paths), but a genuine latent walker robustness gap worth closing. Fix candidates in the acceptance. Related: 🎯T3.10 (paper 30), 🎯T3.4.5 (the audit gate).'
+    context: 'Discovered 2026-07-01 during the v0.20.0 release: the full local ASan+UBSan suite reported a global-buffer-overflow at src/stack_analysis_arm64.cc:1699 (analyze_stack_depth) — an 8-byte read landing 0 bytes after the 4-byte global g_const in test/stack_analysis_audit.test.cc, i.e. into its ASan redzone. The T3.10 walker models a forwarded data-pointer load (the X0-X7 seed / discriminator it follows across BL boundaries) as a 64-bit read; when the real data slot is only 4 bytes the read over-runs. Byte-identical to master/v0.19.0 — NOT introduced by 🎯T17.4/🎯T30. It is masked on CI (layout-dependent: green on master''s macOS ASan with identical code) and does not fire in the dist build (the audit test is excluded from the amalgamation), which is why it went unnoticed at T3.10. Low user impact (a fixture-triggered over-read of an adjacent global, not a crash in production paths), but a genuine latent walker robustness gap worth closing. Fix candidates in the acceptance. Related: 🎯T3.10 (paper 30), 🎯T3.4.5 (the audit gate). Independently reconfirmed 2026-07-04 by the T33 remediation''s ASan verification gate (the const_arg_prune case, test line 233), which re-derived the identical over-read from clean master — corroborating this finding via a second discovery path.'
+    depends_on:
+    - T3.4.5
     origin: discovered during v0.20.0 release, session 2026-07-01
     discovered: 2026-07-01
   T4:

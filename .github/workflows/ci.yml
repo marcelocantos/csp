@@ -100,6 +100,20 @@ jobs:
               --args ./build/normal/csp_tests 2>&1 || true
           fi
 
+      # 🎯T33: the analyser-driven Small stack-slot selection path is compiled
+      # in only under -DCSP_ANALYSE_STACKS (ANALYSE=1). The default `make`
+      # above builds the whole tree with it off, so the StackSlotSizing
+      # regression test skips there. Build and run once with the gate on so
+      # the slot-sizing invariant is actually exercised (meaningful on arm64
+      # arena builds; the test self-skips on non-arena builds).
+      - name: Build and test (stack analyser enabled)
+        run: |
+          ulimit -c unlimited
+          make ANALYSE=1 ${{ matrix.make_cxx || '' }}
+        env:
+          MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
+          MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
+
       - name: Build examples
         run: make examples ${{ matrix.make_cxx || '' }}
 

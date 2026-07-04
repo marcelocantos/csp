@@ -337,9 +337,11 @@ namespace csp {
                 auto* fp = CSP_FRAME_ADDRESS();
                 check_stack_overflow(self, fp);
                 // 🎯T3.4.4: profile this suspend's depth into the per-entry
-                // high-water table. The recorded value drives slot-class
-                // selection and budget refinement on the next spawn() of
-                // the same entry function.
+                // high-water table. The recorded value refines the analyser's
+                // indirect_call_budget on the next spawn() of the same entry
+                // function. It never selects the slot class directly (🎯T33):
+                // a checkpoint sample is not a sound upper bound, so it must
+                // not gate the Small slot.
                 if (self->entry_fn_ && self->entry_sp_) {
                     auto* top = static_cast<char*>(self->entry_sp_);
                     auto* cur = static_cast<char*>(fp);
@@ -461,48 +463,52 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
     }
 
     // Pick a slot class for the new imp's stack. Default everywhere unless
-    // the analyser is enabled (CSP_ANALYSE_STACKS) and either the cached
-    // analyser estimate is exact (🎯T3.4.1) or the per-entry-fn high-water
-    // table holds a recorded observation (🎯T3.4.4) — both with margin.
+    // the analyser is enabled (CSP_ANALYSE_STACKS) and the cached analyser
+    // estimate is a sound upper bound (is_exact) that fits the Small slot
+    // with margin (🎯T3.4.1).
+    //
+    // 🎯T33: the Small slot must NEVER be chosen from the checkpoint-sampled
+    // per-entry high-water table. That value is sampled only at do_switch
+    // checkpoints, so a helper that grows and unwinds between two channel ops
+    // is never observed; it is also keyed per EntryFn and shared across all
+    // instances, so a shallow instance's small sample would gate a deep
+    // instance's allocation. Arena Small slots have only a 4 KB software
+    // guard (no PROT_NONE page), so a mis-sized slot silently corrupts a
+    // neighbouring imp. The profile therefore only refines the analyser's
+    // indirect_call_budget for the never-shrinking Default slot (the 🎯T3.4.4
+    // invariant: the profile improves the magnitude of the inexact fallback,
+    // it does not down-size the slot class). See docs/audit/fable-2026-07.md
+    // (F1); the design rationale is paper 08 §7 (analyser must never
+    // underestimate).
     StackClass slot_cls = StackClass::Default;
 #ifdef CSP_ANALYSE_STACKS
     if (constexpr size_t kSmallUsable = StackPool::small_slot_usable_bytes();
         kSmallUsable > 0) {
         constexpr size_t kHeadroomFloor = 2 * 1024;
 
-        // First check the empirical high-water table. If we have observed
-        // this entry function before, the recorded depth plus a 50% margin
-        // is more authoritative than any inexact analyser estimate.
+        ::csp::stack_analysis_options opts;
+        // Profile-derived budget refines the magnitude of OP_BUDGET results
+        // when the walker can't resolve an indirect call. Recorded
+        // high-water + 50% margin replaces the flat 2 KB default; this is the
+        // indirect_call_budget surface promised by 🎯T3.4.4 (eval-time
+        // consumption keeps the program cache budget-agnostic). It never
+        // selects the slot class — only sharpens the analyser's own estimate,
+        // whose is_exact flag remains the sole gate below.
         if (size_t hw = ::csp::detail::get_stack_high_water(start_f); hw > 0) {
-            size_t profile_needed = hw + hw / 2 + kHeadroomFloor + sizeof(Imp);
-            if (profile_needed <= kSmallUsable) {
-                slot_cls = StackClass::Small;
+            size_t refined = hw + hw / 2;
+            if (refined > opts.indirect_call_budget) {
+                opts.indirect_call_budget = refined;
             }
         }
-
-        // Fall back to the analyser when there's no observation yet, or to
-        // tighten further when the analyser produces an exact estimate.
-        if (slot_cls == StackClass::Default) {
-            ::csp::stack_analysis_options opts;
-            // Profile-derived budget refines the magnitude of OP_BUDGET
-            // results when the walker can't resolve an indirect call.
-            // Recorded high-water + 50% margin replaces the flat 2 KB
-            // default; this is the indirect_call_budget surface promised
-            // by 🎯T3.4.4 (eval-time consumption keeps the program cache
-            // budget-agnostic).
-            if (size_t hw = ::csp::detail::get_stack_high_water(start_f); hw > 0) {
-                size_t refined = hw + hw / 2;
-                if (refined > opts.indirect_call_budget) {
-                    opts.indirect_call_budget = refined;
-                }
-            }
-            auto sa = ::csp::analyze_stack_depth_cached(
-                reinterpret_cast<const void*>(start_f), data, opts);
-            // 2× headroom + 2 KB absolute floor (ABI spill / signal frame).
-            size_t needed = sa.max_depth * 2 + kHeadroomFloor + sizeof(Imp);
-            if (sa.is_exact && needed <= kSmallUsable) {
-                slot_cls = StackClass::Small;
-            }
+        auto sa = ::csp::analyze_stack_depth_cached(
+            reinterpret_cast<const void*>(start_f), data, opts);
+        // 2× headroom + 2 KB absolute floor (ABI spill / signal frame).
+        size_t needed = sa.max_depth * 2 + kHeadroomFloor + sizeof(Imp);
+        // Small is gated strictly on a sound static upper bound. An inexact
+        // analyser result (the common type-erased csp::spawn(lambda) case)
+        // keeps the Default slot no matter what the profile observed.
+        if (sa.is_exact && needed <= kSmallUsable) {
+            slot_cls = StackClass::Small;
         }
     }
 #endif

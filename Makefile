@@ -64,6 +64,19 @@ ifeq ($(CSP_TLS),0)
 BUILDDIR := $(BUILDDIR)-notls
 endif
 
+# --- Stack-analysis wiring (🎯T3.4 / 🎯T33) ---
+# ANALYSE=1 compiles in the CSP_ANALYSE_STACKS gate that lets spawn() pick a
+# tighter Small stack slot from the analyser (and, historically, the profile
+# table). Off by default until the 🎯T3.4.5 benchmark is green. This mode gets
+# its own build directory so it coexists with the default build, and it is the
+# build under which the 🎯T33 slot-sizing regression test is meaningful (the
+# Small-slot spawn path is #ifdef'd out otherwise).
+
+ifeq ($(ANALYSE),1)
+CXXFLAGS += -DCSP_ANALYSE_STACKS
+BUILDDIR := $(BUILDDIR)-analyse
+endif
+
 # --- Auto-dependencies ---
 # -MMD generates .d files alongside .o files listing header deps.
 # -MP adds phony targets for each header, preventing errors when
