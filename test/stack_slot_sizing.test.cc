@@ -20,6 +20,27 @@
 // (analyser is_exact); the profile only refines the inexact fallback
 // magnitude for the never-shrinking Default slot.
 //
+// How this guards the invariant, and why it does NOT run a real over-slot
+// frame:
+//   The bug is a *selection* decision made in spawn() before the imp runs.
+//   The buggy path derives a Small slot from the recorded high-water sample
+//   (`profile_needed = hw + hw/2 + headroom + sizeof(Imp) <= 16 KB`),
+//   independent of the entry's true frame — so we detect the regression by
+//   the slot *class actually allocated* (StackPool::small_allocations()),
+//   not by provoking an overflow. A faithful "true peak exceeds the slot"
+//   entry would, on the *buggy* build, be placed in a Small slot and then
+//   overrun it by kilobytes across only the soft guard — silently corrupting
+//   a neighbouring arena imp mid-schedule instead of failing this assertion
+//   cleanly. So the entry stays shallow and we assert on the decision. (A
+//   `volatile char buf[]` would not give a faithful frame anyway: clang -O2
+//   coalesces a non-escaping volatile local down to a few bytes — verified
+//   `sub sp, sp, #0x20` for a 24 KB buffer.)
+//
+// The entries stay analyser-inexact (is_exact == false) because they call
+// csp::yield(), an unbounded runtime call the walker cannot bound — so the
+// *only* route to a Small slot on the buggy build is the profile path, and
+// the fix's is_exact gate is what must keep them in the Default slot.
+//
 // This test is only meaningful in arena mode with the analyser wiring
 // compiled in (arm64 + -DCSP_ANALYSE_STACKS). On any other build the Small
 // slot class does not exist and the whole spawn-side path is #ifdef'd out,
@@ -54,23 +75,25 @@ constexpr bool kAnalyseWired =
 
 std::atomic<int> g_probe_ran{0};
 
-// A spawned entry function whose *true* peak stack depth is data-dependent
-// and occurs strictly between two channel-op checkpoints — exactly the shape
-// the checkpoint sampler cannot observe. The volatile buffer is large enough
-// (24 KB) to overflow a 16 KB-usable Small slot, but it is allocated and
-// consumed after the first yield() and released before the second, so no
-// do_switch checkpoint ever samples SP while it is live. The analyser cannot
-// resolve this type-erased entry (is_exact == false), so the *only* route to
-// a Small slot is the buggy profile path.
-void deep_between_checkpoints(void*) {
-    csp::yield();  // checkpoint 1 — shallow
-    {
-        volatile char buf[24 * 1024];
-        for (size_t i = 0; i < sizeof(buf); i += 4096) buf[i] = static_cast<char>(i);
-        // Touch the deepest byte so the compiler cannot elide the frame.
-        buf[sizeof(buf) - 1] = 7;
-    }
-    csp::yield();  // checkpoint 2 — shallow again; the 24 KB peak is gone
+// Two *distinct* type-erased entry functions, one per test case, so the
+// per-EntryFn high-water table cannot carry state between cases (doctest may
+// run cases in name or random order — a shared key made the exact-equality
+// precondition below order-dependent). Each writes a different sentinel so
+// linker identical-code-folding cannot merge them back into one EntryFn.
+// Each is analyser-inexact because it calls csp::yield(), and shallow,
+// because the invariant under test is a spawn-time selection, not a runtime
+// overflow (see header).
+volatile int g_sink_a = 0;
+volatile int g_sink_b = 0;
+
+void probe_selection(void*) {
+    csp::yield();
+    g_sink_a = 1;
+    g_probe_ran.fetch_add(1, std::memory_order_relaxed);
+}
+void probe_profiling(void*) {
+    csp::yield();
+    g_sink_b = 2;
     g_probe_ran.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -78,8 +101,8 @@ void deep_between_checkpoints(void*) {
 
 TEST_SUITE("StackSlotSizing") {
 
-// 🎯T33: an entry function whose true peak can exceed the Small slot must
-// never be placed in one on the strength of a checkpoint-sampled high-water.
+// 🎯T33: an inexact-analyser entry must never be placed in a Small slot on
+// the strength of a checkpoint-sampled high-water.
 TEST_CASE("profiled-inexact-entry-never-gets-small-slot") {
     if constexpr (!kArena || !kAnalyseWired) {
         MESSAGE("Small-slot spawn path requires arena mode + "
@@ -87,16 +110,16 @@ TEST_CASE("profiled-inexact-entry-never-gets-small-slot") {
         return;
     }
 
-    auto* fn = static_cast<csp::internal::EntryFn>(&deep_between_checkpoints);
+    auto* fn = static_cast<csp::internal::EntryFn>(&probe_selection);
 
     // Simulate the reported failure precondition: a prior shallow instance of
-    // this same EntryFn recorded a small high-water. This is exactly what the
-    // do_switch sampler would store for an instance that took a shallow path
-    // (the audit's "instance A"). The value is chosen to sit safely inside
-    // the buggy selection window:
-    //   profile_needed = hw + hw/2 + 2 KB headroom + sizeof(Imp) <= 16 KB
-    // so hw = 4 KB yields ~8 KB + sizeof(Imp) < 16 KB regardless of the exact
-    // Imp size.
+    // this same EntryFn recorded a small high-water — exactly what the
+    // do_switch sampler stores for an instance that took a shallow path (the
+    // audit's "instance A"). 4 KB sits inside the buggy selection window
+    //   profile_needed = hw + hw/2 + 2 KB headroom + sizeof(Imp) <= 16 KB.
+    // The key is unique to this case, so the seed is exact — no cross-case
+    // contamination of the monotonic-max table can push it out of the window
+    // (which would make the buggy build *pass* and void the differential).
     csp::detail::record_stack_high_water(fn, 4 * 1024);
     REQUIRE(csp::detail::get_stack_high_water(fn) == 4 * 1024);
 
@@ -110,40 +133,45 @@ TEST_CASE("profiled-inexact-entry-never-gets-small-slot") {
 
     size_t small_delta = pool.small_allocations() - small_before;
 
-    // The entry's analyser result is inexact (type-erased spawn entry), and
-    // its *true* peak (24 KB) exceeds the 16 KB Small usable region. Selecting
-    // Small here on the strength of the 4 KB checkpoint sample is the defect:
-    // the imp can descend past its slot into a neighbour with only a soft
-    // guard between them. A correct sizing path leaves it in the Default slot.
+    // Under the fix, an inexact entry lands in the Default slot. A non-zero
+    // delta means spawn() chose a Small slot from the 4 KB checkpoint sample —
+    // the T33 defect. (small_allocations() is a process-global counter; this
+    // suite spawns no other imp in the window, and daemon/background imps are
+    // themselves type-erased/inexact, so none can take a Small slot to inflate
+    // the delta.)
     CHECK_MESSAGE(small_delta == 0,
-        "a profiled-but-inexact entry (true peak 24 KB) must stay in the "
-        "Default slot; a non-zero delta means spawn() chose a Small (16 KB) "
-        "slot from a checkpoint-sampled high-water, violating the T3.4.4 "
-        "invariant that Small selection is gated on a sound upper bound "
+        "an inexact-analyser entry must stay in the Default slot; a non-zero "
+        "delta means spawn() chose a Small (16 KB) slot from a "
+        "checkpoint-sampled high-water, violating the T3.4.4 invariant that "
+        "Small selection is gated on a sound upper bound (is_exact) "
         "(small_delta=" << small_delta << ")");
 }
 
-// The profile high-water must still refine the analyser's indirect_call_budget
-// for the *Default*-slot path (the 🎯T3.4.4 residue the fix must preserve): the
-// recorded observation is not discarded, it just no longer down-sizes the slot
-// class. We assert the recorded value survives a spawn (recording is
-// unconditional and the fix must not tear out the table).
-TEST_CASE("profile-table-survives-spawn-for-budget-refinement") {
+// The profile high-water must still be *recorded* (the 🎯T3.4.4 residue the
+// fix preserves): the sampler is not torn out, it just no longer down-sizes
+// the slot class. Assert that a spawn with NO pre-seeding leaves a real
+// sampled observation in the table — a non-tautological check that profiling
+// still runs (contrast: asserting `>= 4 KB` right after recording 4 KB into a
+// monotonic map is vacuous).
+TEST_CASE("profile-table-still-records-samples") {
     if constexpr (!kArena || !kAnalyseWired) {
         MESSAGE("Requires arena mode + -DCSP_ANALYSE_STACKS; skipping.");
         return;
     }
-    auto* fn = static_cast<csp::internal::EntryFn>(&deep_between_checkpoints);
-    csp::detail::record_stack_high_water(fn, 4 * 1024);
+    auto* fn = static_cast<csp::internal::EntryFn>(&probe_profiling);
+
+    // Fresh, unique, deliberately unseeded key: whatever lands in the table is
+    // the sampler's own observation from the spawn below.
+    REQUIRE(csp::detail::get_stack_high_water(fn) == 0);
 
     g_probe_ran.store(0, std::memory_order_relaxed);
     csp::internal::spawn(fn, nullptr);
     csp::schedule();
     REQUIRE(g_probe_ran.load(std::memory_order_relaxed) == 1);
 
-    // The table still holds an observation for fn (the fix keeps profiling;
-    // it only stops using the sample to pick Small).
-    CHECK(csp::detail::get_stack_high_water(fn) >= 4 * 1024);
+    // do_switch sampled the imp's real depth at its yield checkpoint and
+    // stored it — a strictly positive value the fix must not stop recording.
+    CHECK(csp::detail::get_stack_high_water(fn) > 0);
 }
 
 } // TEST_SUITE("StackSlotSizing")

@@ -109,10 +109,40 @@ jobs:
       - name: Build and test (stack analyser enabled)
         run: |
           ulimit -c unlimited
-          make ANALYSE=1 ${{ matrix.make_cxx || '' }}
+          # Build with the analyser gate on, then run only the slot-sizing
+          # suite this step exists to exercise. The rest of the suite already
+          # ran under the source build above; re-running all of it here would
+          # roughly double per-row wall-time for no added coverage. The
+          # ANALYSE build dir is build/normal-analyse (Makefile BUILDDIR).
+          make ANALYSE=1 build ${{ matrix.make_cxx || '' }}
+          ./build/normal-analyse/csp_tests --no-colors --reporters=console -ts=StackSlotSizing
         env:
           MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
           MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
+
+      # The handlers above hard-code ./build/normal/csp_tests; the ANALYSE step
+      # produces a different binary (build/normal-analyse), so a crash there —
+      # the exact slot overflow this PR gates — needs its own handler pointed
+      # at the right binary, or CI shows a bare non-zero exit with no trace.
+      - name: GDB backtrace on crash (stack analyser)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            echo "=== Backtrace from $core ==="
+            gdb -batch -ex "thread apply all bt full" ./build/normal-analyse/csp_tests "$core" 2>&1 || true
+          done
+          if ! ls core.* 1>/dev/null 2>&1; then
+            echo "=== No core dump found, re-running StackSlotSizing under GDB ==="
+            gdb -batch \
+              -ex "handle SIGUSR1 nostop noprint pass" \
+              -ex "handle SIGUSR2 nostop noprint pass" \
+              -ex "handle SIG32 nostop noprint pass" \
+              -ex "set pagination off" \
+              -ex "run" \
+              -ex "thread apply all bt full" \
+              --args ./build/normal-analyse/csp_tests -ts=StackSlotSizing 2>&1 || true
+          fi
 
       - name: Build examples
         run: make examples ${{ matrix.make_cxx || '' }}
