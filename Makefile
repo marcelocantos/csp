@@ -540,7 +540,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 .DEFAULT_GOAL := test
 
 test: $(TARGET) check-md-links lint-frontdoor
-	./$(TARGET)
+	$(TEST_RUN)
 
 # --- Front-door TU lint (🎯T23.4) ---
 # Enforces Rule 5 of the per-protocol DCE model: dist/csp.cpp (and the
@@ -705,6 +705,27 @@ ifeq ($(TIMEOUT_CMD),)
 EXAMPLE_RUN := ./$$bin
 else
 EXAMPLE_RUN := $(TIMEOUT_CMD) 60 ./$$bin
+endif
+
+# 🎯T29: opt-in CI hang watchdog for `make test`. When TEST_TIMEOUT
+# (seconds) is set, wrap the test binary in `timeout -s QUIT
+# --kill-after=60`: a hang cores the test process (timeout's direct
+# child), failing the `test` recipe, instead of running until the CI
+# job's own wall-clock cancel — which leaves no diagnostics behind.
+# QUIT, not ABRT: doctest installs its own SIGABRT handler (it's one of
+# doctest's fatal-condition signals) that prints a crash summary and
+# exits gracefully — no core, defeating the whole mechanism. SIGQUIT is
+# not trapped by doctest, TSan, or anything in csp, so the kernel
+# default applies: terminate + core dump of every thread, which is what
+# the failure()-gated GDB step picks up. TEST_TIMEOUT is empty by
+# default, giving today's plain, unwrapped run; same fallback if no
+# timeout binary is available (see TIMEOUT_CMD above).
+ifeq ($(strip $(TEST_TIMEOUT)),)
+TEST_RUN := ./$(TARGET)
+else ifeq ($(TIMEOUT_CMD),)
+TEST_RUN := ./$(TARGET)
+else
+TEST_RUN := $(TIMEOUT_CMD) -s QUIT --kill-after=60 $(TEST_TIMEOUT) ./$(TARGET)
 endif
 
 run-examples-ci: $(EXAMPLE_BINS)
