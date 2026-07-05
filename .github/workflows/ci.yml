@@ -167,21 +167,31 @@ jobs:
       - name: GDB backtrace on crash (dist)
         if: failure() && runner.os == 'Linux'
         run: |
-          for core in core.*; do
-            [ -f "$core" ] || continue
-            echo "=== Backtrace from $core ==="
-            gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
+          # 🎯T29: test-dist produces more than one csp_tests binary
+          # (build/dist and build/dist-notls, for CSP_TLS=1/0), so
+          # discover them instead of hardcoding a path that goes stale
+          # whenever the BUILDDIR naming scheme shifts.
+          bins=$(find build -name csp_tests -type f 2>/dev/null)
+          for bin in $bins; do
+            for core in core.*; do
+              [ -f "$core" ] || continue
+              echo "=== Backtrace from $core ($bin) ==="
+              gdb -batch -ex "thread apply all bt full" "$bin" "$core" 2>&1 || true
+            done
           done
           if ! ls core.* 1>/dev/null 2>&1; then
             echo "=== No core dump found, re-running under GDB ==="
-            gdb -batch \
-              -ex "handle SIGUSR1 nostop noprint pass" \
-              -ex "handle SIGUSR2 nostop noprint pass" \
-              -ex "handle SIG32 nostop noprint pass" \
-              -ex "set pagination off" \
-              -ex "run" \
-              -ex "thread apply all bt full" \
-              --args ./build/dist/csp_tests 2>&1 || true
+            for bin in $bins; do
+              echo "=== $bin ==="
+              gdb -batch \
+                -ex "handle SIGUSR1 nostop noprint pass" \
+                -ex "handle SIGUSR2 nostop noprint pass" \
+                -ex "handle SIG32 nostop noprint pass" \
+                -ex "set pagination off" \
+                -ex "run" \
+                -ex "thread apply all bt full" \
+                --args "$bin" 2>&1 || true
+            done
           fi
 
   # --- Sanitizers (macOS + Linux, on dist) ---
@@ -219,6 +229,12 @@ jobs:
             sanitize: thread
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+            # 🎯T29: this row is the one that's hung in practice. Cap the
+            # suite itself well under the 30-minute job timeout so a hang
+            # cores (SIGQUIT — see the TEST_TIMEOUT comment in Makefile for
+            # why not SIGABRT) and fails the step with a backtrace, instead
+            # of running out the clock and getting a diagnostics-free cancel.
+            test_timeout: 1200
 
     steps:
       - uses: actions/checkout@v6
@@ -236,7 +252,7 @@ jobs:
       - name: Build and test (dist, ${{ matrix.sanitize }})
         run: |
           ulimit -c unlimited
-          make test-dist SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }}
+          make test-dist SANITIZE=${{ matrix.sanitize }} ${{ matrix.make_cxx || '' }} TEST_TIMEOUT=${{ matrix.test_timeout || '' }}
         env:
           # libc++abi on Linux frees std::logic_error strings with free()
           # instead of operator delete, triggering false positives under ASan.
@@ -246,21 +262,31 @@ jobs:
       - name: GDB backtrace on crash
         if: failure() && runner.os == 'Linux'
         run: |
-          for core in core.*; do
-            [ -f "$core" ] || continue
-            echo "=== Backtrace from $core ==="
-            gdb -batch -ex "thread apply all bt full" ./build/dist/csp_tests "$core" 2>&1 || true
+          # 🎯T29: test-dist's BUILDDIR varies with SANITIZE and CSP_TLS
+          # (e.g. build/thread-dist-notls, build/address-undefined-dist),
+          # so discover the binary instead of hardcoding a path that goes
+          # stale whenever the naming scheme shifts.
+          bins=$(find build -name csp_tests -type f 2>/dev/null)
+          for bin in $bins; do
+            for core in core.*; do
+              [ -f "$core" ] || continue
+              echo "=== Backtrace from $core ($bin) ==="
+              gdb -batch -ex "thread apply all bt full" "$bin" "$core" 2>&1 || true
+            done
           done
           if ! ls core.* 1>/dev/null 2>&1; then
             echo "=== No core dump found, re-running under GDB ==="
-            gdb -batch \
-              -ex "handle SIGUSR1 nostop noprint pass" \
-              -ex "handle SIGUSR2 nostop noprint pass" \
-              -ex "handle SIG32 nostop noprint pass" \
-              -ex "set pagination off" \
-              -ex "run" \
-              -ex "thread apply all bt full" \
-              --args ./build/dist/csp_tests 2>&1 || true
+            for bin in $bins; do
+              echo "=== $bin ==="
+              gdb -batch \
+                -ex "handle SIGUSR1 nostop noprint pass" \
+                -ex "handle SIGUSR2 nostop noprint pass" \
+                -ex "handle SIG32 nostop noprint pass" \
+                -ex "set pagination off" \
+                -ex "run" \
+                -ex "thread apply all bt full" \
+                --args "$bin" 2>&1 || true
+            done
           fi
 
   # --- Subset-link DCE check (🎯T23.3) ---
