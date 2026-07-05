@@ -27,6 +27,23 @@
 #include <atomic>
 #include <sstream>
 
+// 🎯T31: detect whether this TU is built under a sanitizer that instruments
+// memory accesses (ASan) or every load/store (TSan). Such builds inject
+// interceptor calls — `bl __asan_report_loadN`, `bl __tsan_readN` — into every
+// data-touching function. Those stubs live in __TEXT,__stubs, outside the
+// walker's __TEXT,__text bound, so the walker soundly widens each instrumented
+// candidate to budget (is_exact=false). Tightness is therefore not measurable
+// under instrumentation, though soundness (an over-approximation) still holds.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#    define CSP_AUDIT_SANITIZED 1
+#  endif
+#endif
+#if !defined(CSP_AUDIT_SANITIZED) && \
+    (defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__))
+#  define CSP_AUDIT_SANITIZED 1
+#endif
+
 namespace {
 
 // Portable "don't inline this" so each fixture keeps its own frame and the
@@ -188,8 +205,24 @@ void x1_entry(void* data) {
 
 // (d) 🎯T3.10 CONST forwarding: a discriminator that arrives in the callee's
 //     W0 and prunes a branch before any inner BL.
-struct const_data { int which; };
-const_data g_const{0};
+//
+// 🎯T31 fixture contract — the closure passed to analyze_stack_depth is
+// modelled as a pointer-width-or-larger object. The walker always dereferences
+// a forwarded/entry data pointer with a 64-bit load (a forwarded data
+// sub-pointer is a `void*`; see OP_CALL_DIRECT_WITH_DATA in
+// src/stack_analysis_arm64.cc). Under ASan the walker additionally follows the
+// compiler's shadow-check slow path, whose `bl __asan_report_loadN` forwards
+// the closure pointer itself — so even this fixture, whose logical payload is
+// a 4-byte discriminator, has its backing object read 8 bytes wide. Real
+// spawn() closures are always >= sizeof(void*); a bare 4-byte object is not a
+// valid closure. `which` must stay a 4-byte int at offset 0 so it materialises
+// as a CONST for branch pruning (widening it to 64 bits would make the load
+// look like a pointer field and defeat the pruning this case exists to test);
+// the trailing pad makes the object pointer-width so the modelled 64-bit read
+// stays in bounds. Without the pad, ASan trips a global-buffer-overflow one
+// byte past g_const.
+struct const_data { int which; int _pad; };
+const_data g_const{0, 0};
 static AUDIT_NOINLINE void const_small(void*) {
     volatile char buf[40];
     buf[0] = 1;
@@ -340,11 +373,16 @@ TEST_CASE("soundness-and-tightness-report") {
     // The instruction walker is ARM64-only; on other architectures
     // analyze_stack_depth is a conservative stub that always returns
     // is_exact=false, so tightness is not measurable there (every candidate
-    // reads "loose"). Soundness — gated above for every case — still holds,
-    // because an inexact estimate is vacuously sound. Enforce the tightness
-    // target only where the real walker runs.
-#if defined(__aarch64__)
+    // reads "loose"). Under a sanitizer (🎯T31) the walker widens every
+    // instrumented candidate for the same reason. Soundness — gated above for
+    // every case — still holds in both situations, because an inexact estimate
+    // is vacuously sound. Enforce the tightness target only where the real,
+    // uninstrumented walker runs.
+#if defined(__aarch64__) && !defined(CSP_AUDIT_SANITIZED)
     CHECK(candidate_tight >= 4);
+#elif defined(__aarch64__)
+    MESSAGE("tightness gate skipped — sanitizer instrumentation injects "
+            "interceptor calls the walker soundly widens on");
 #else
     MESSAGE("tightness gate skipped — the stack walker is ARM64-only");
 #endif
