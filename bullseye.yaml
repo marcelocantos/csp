@@ -570,6 +570,13 @@ targets:
       Strong evidence this is a real latent concurrency bug, not infra flakiness: across the last ~10 master runs the arm64 TSan job completes in 2–3 min, so 30 min is a ~15× hang, not slow-creep; the triggering diff was pure data (cannot affect the build/test); and it is arm64-TSan-specific (x86_64 TSan passed at 3 min in the same run), pointing at an arm64 weak-memory-ordering window that TSan timing widens.
 
       Theories, most→least likely: (1) intermittent deadlock/livelock in the scheduler/channel runtime, arm64-specific ordering window; (2) main-loop busy-spin that fails to make progress under some interleavings (csp has prior form — paper 22 'main-loop busy-spin diagnosis', 🎯T26/T27; web_crawler deadlock 🎯T26); (3) a test-side real-time wait starved under TSan load. The watchdog acceptance criterion exists because the current CI captures nothing on a timeout, making this hard to root-cause after the fact — fix observability first so the next occurrence is actionable.
+
+      --- Watchdog design (scoped 2026-07-05 while shipping 🎯T31; ready to implement as this target's own PR) ---
+      Mechanism: make a hang manifest as a diagnosable step *failure* (with a core) instead of a job-level `cancelled`, then let a `failure()`-gated GDB step backtrace it.
+      1. Makefile: add an opt-in `TEST_TIMEOUT` (seconds). When set, the `test` recipe runs the binary as `timeout -s ABRT --kill-after=60 $(TEST_TIMEOUT) ./$(TARGET)` (GNU `timeout` on Linux; `gtimeout` on macOS). Keeping the wrapper in the recipe means it uses `$(TARGET)` and the correct BUILDDIR automatically. With `ulimit -c unlimited` + `kernel.core_pattern=core.%p` (already set for Linux CI), SIGABRT on expiry cores the *test* process (it is timeout's direct child) and exits 134 → recipe fails → step fails.
+      2. ci.yml: on the `Linux arm64 TSan` sanitize row only, pass `TEST_TIMEOUT=1200` (20 min < the 30-min job cap) to the `make test-dist` step.
+      3. GOTCHA found 2026-07-05: the sanitize job's existing `GDB backtrace on crash` step hardcodes `./build/dist/csp_tests`, which is STALE — the dist-TSan binary is actually `build/thread-dist-notls/csp_tests` (BUILDDIR = build/$(SANITIZE)-$(CSP_INCLUDE)[-notls]; test-dist runs the recursive `make CSP_INCLUDE=dist CSP_TLS=0 test`). The ASan rows are `build/address-undefined-dist[-notls]/csp_tests`. That step has never fired (the hang is a cancel, not a core), so the wrong path went unnoticed. The backtrace step must discover the binary via `find build -name csp_tests -type f` (try each against `core.*`) rather than hardcode, which also fixes the pre-existing bug.
+      Validate locally what is validatable: `gtimeout -s ABRT` on a deliberately-hung test → confirm core + non-zero exit + lldb/gdb `thread apply all bt`. The hang path itself is not locally reproducible, so this only fixes observability; root-cause + the 20-run window remain.
     tags:
     - ci
     - concurrency
@@ -1054,24 +1061,12 @@ targets:
     origin: subdivide(🎯T30)
     discovered: 2026-06-30
     achieved: 2026-07-01
-  T33:
-    name: csp sizes stack slots from a true high-water bound so a Small slot can never be chosen for an imp that overflows it
-    status: achieved
-    value: 8.0
-    cost: 5.0
-    actual_cost: 3.0
-    achieved: 2026-07-04
-    acceptance:
-    - The stack-slot size class is chosen from a sound upper bound (is_exact analyser), not a checkpoint-sampled high-water estimate that can under-count — restoring the T3.4.4 invariant that only the inexact fallback magnitude improves
-    - An imp whose true peak stack can exceed the Small slot is never placed in one; a test exercises the shallow-sample-then-deep-descent boundary under -DCSP_ANALYSE_STACKS on arm64
-    context: 'HIGH, confirmed by two-lens verification (2026-07-03). src/csp.cc:476: StackClass::Small is selected purely from profile_needed = high_water*1.5 + headroom, with no is_exact gate and no analyser call — an independent path that preempts the sound analyser. The high-water is a do_switch checkpoint sample, not a peak, so a helper that grows and unwinds between two channel ops is never sampled; a shallow instance''s sample then gates a deep instance''s Small allocation. Arena slots have only a 4 KB software guard (no PROT_NONE page on arm64), so a descent into the neighbouring slot silently corrupts an adjacent imp''s Imp control block and stack. The verifier confirmed this violates the repo''s own T3.4.4 acceptance criteria. Found by Fable-5 audit 2026-07 (docs/audit/fable-2026-07.md).'
-    origin: manual
-    discovered: 2026-07-03
   T31:
     name: Stack-analysis walker reads forwarded data pointers within bounds (no ASan over-read)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 3.0
     acceptance:
     - A full local sanitized build (make SANITIZE=address,undefined) on ARM64 macOS runs the whole suite — including test/stack_analysis_audit.test.cc — with no AddressSanitizer global-buffer-overflow in src/stack_analysis_arm64.cc.
     - The walker either bounds its forwarded-data-pointer read to the load width it actually decoded, OR the audit fixtures provide correctly-sized (8-byte) data slots for the 64-bit load the walker models, with a comment stating the contract.
@@ -1081,6 +1076,20 @@ targets:
     - T3.4.5
     origin: discovered during v0.20.0 release, session 2026-07-01
     discovered: 2026-07-01
+    achieved: 2026-07-05
+  T33:
+    name: csp sizes stack slots from a true high-water bound so a Small slot can never be chosen for an imp that overflows it
+    status: achieved
+    value: 8.0
+    cost: 5.0
+    actual_cost: 3.0
+    acceptance:
+    - The stack-slot size class is chosen from a sound upper bound (is_exact analyser), not a checkpoint-sampled high-water estimate that can under-count — restoring the T3.4.4 invariant that only the inexact fallback magnitude improves
+    - An imp whose true peak stack can exceed the Small slot is never placed in one; a test exercises the shallow-sample-then-deep-descent boundary under -DCSP_ANALYSE_STACKS on arm64
+    context: 'HIGH, confirmed by two-lens verification (2026-07-03). src/csp.cc:476: StackClass::Small is selected purely from profile_needed = high_water*1.5 + headroom, with no is_exact gate and no analyser call — an independent path that preempts the sound analyser. The high-water is a do_switch checkpoint sample, not a peak, so a helper that grows and unwinds between two channel ops is never sampled; a shallow instance''s sample then gates a deep instance''s Small allocation. Arena slots have only a 4 KB software guard (no PROT_NONE page on arm64), so a descent into the neighbouring slot silently corrupts an adjacent imp''s Imp control block and stack. The verifier confirmed this violates the repo''s own T3.4.4 acceptance criteria. Found by Fable-5 audit 2026-07 (docs/audit/fable-2026-07.md).'
+    origin: manual
+    discovered: 2026-07-03
+    achieved: 2026-07-04
   T4:
     name: API safety gaps are closed
     status: achieved
