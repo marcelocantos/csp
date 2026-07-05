@@ -231,7 +231,8 @@ jobs:
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
             # 🎯T29: this row is the one that's hung in practice. Cap the
             # suite itself well under the 30-minute job timeout so a hang
-            # cores (SIGABRT) and fails the step with a backtrace, instead
+            # cores (SIGQUIT — see the TEST_TIMEOUT comment in Makefile for
+            # why not SIGABRT) and fails the step with a backtrace, instead
             # of running out the clock and getting a diagnostics-free cancel.
             test_timeout: 1200
 
