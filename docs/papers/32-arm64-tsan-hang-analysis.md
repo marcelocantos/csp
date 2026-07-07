@@ -282,14 +282,50 @@ criterion-1 window's stability, all test-side, all fixed in this PR:
 | `cancel-during-I/O` | Closed the pipe's write end before the cancel propagated; EOF could complete the read without a `canceled` throw. Now waits for child exit before closing. |
 | `Thread---Yield` | Two imps appended to one `std::string` unsynchronized — UB. Now mutex-serialized. |
 
-## The hang, reproduced locally
+## The hang, reproduced, root-caused, and fixed
 
 Hang-hunt run 56 (`CSP_MAXPROCS=4`, native macOS dist-notls): doctest
 banner, then silence past the 180 s deadline — the exact CI signature, at
-~1/28 per maxprocs4 run. No stack captured (macOS `/cores` needs sudo);
-hunt v2 targets the same specimen binary with `sample`-based all-thread
-capture (two samples 2 s apart: identical ⇒ deadlock, changing ⇒
-livelock) before the kill.
+~1/28 per maxprocs4 full-suite run. `sample`-based capture (macOS `/cores`
+needs sudo; `sample` doesn't) showed a **true quiescent deadlock**: main in
+`main_loop` on `park_cv`, every worker parked on its Note, watchdog idle,
+identical stacks 2 s apart, 0% CPU — and *no missing runtime wakeups*.
+
+Bisecting to the test: **`coin-flip---with-extra-peer` hangs in isolation
+at ~38%** (5/13 runs, `CSP_MAXPROCS=4`). Env-gated tracing of the full
+registration/match/death/wake protocol (`CSP_DEBUG_DEATH`, kept in-tree)
+produced a complete interleaving trace of a hung run, and the runtime is
+**innocent** — every line of the protocol executed correctly. The defect
+is the test's:
+
+Three imps share one channel — ext (`w << 99`), flipper
+(`alt(w << 42, r >> v)`, holding copies of both endpoints), absorber
+(`r >> v`). Three pairings are possible. The test accounted for
+flipper×ext and flipper×absorber, but in the third — **ext and the
+absorber rendezvous with each other** — both exit, and the flipper is
+stranded with no peer and *no possible release*: endpoint death cannot
+fire because the flipper itself holds live copies of both `w` and `r`
+while sleeping on them. A self-deadlock by construction.
+
+**Why CI saw it rarely and platform-agnostically**: the suite defaults to
+`CSP_MAXPROCS=1` (near-serial ordering — the flipper almost always finds
+ext first), but the **watchdog storm (C1) injected surplus processors
+mid-suite on slow runners**, manufacturing exactly the parallelism the
+third pairing needs. C1 and C5 were one event: the storm widened the
+window; this test fell through it. TSan (June event) and a slow macOS
+runner (July event) were both just storm amplifiers.
+
+Fix: the flipper's alt gains a `~die` vulture arm; a janitor imp drops the
+die writer once both non-flipper imps report done, releasing a stranded
+flipper (harmless when it paired). The stranded outcome is now an
+asserted-valid third result. General lesson for csp users, worth a
+gotcha in AGENTS-CSP.md: **an alt over both endpoints of the same channel
+can never be released by endpoint death if its imp holds the only
+remaining handles — a third-party rendezvous can strand it forever.**
+
+Verification: 200 isolated runs of the fixed test (baseline hang rate 38%
+⇒ P(200 clean | bug present) ≈ 10⁻⁴²) plus the full suite across
+normal/dist/TSan builds.
 
 ## Revised hunt for C5
 

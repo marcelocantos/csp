@@ -556,7 +556,8 @@ targets:
     achieved: 2026-05-21
   T29:
     name: The test suite never hangs under TSan — Linux arm64 TSan CI stays within its normal envelope, and any hang is diagnosable
-    status: converging
+    status: achieved
+    achieved: 2026-07-07
     value: 0.0
     cost: 0.0
     acceptance:
@@ -592,6 +593,13 @@ targets:
       WATCHDOG STORM ROOT-CAUSED AND FIXED (branch worktree-agent-acba192a8709768fd): stall discriminator miscalibration — one missed 10ms heartbeat tick means mid-slice, not blocked; the watchdog inflated 2–4 proc pools to the 64 cap (~64k threads/suite-run) under TSan AND natively. Fix: 100ms stall hysteresis + rescuable-work gate + reuse-before-add. Oracle: CSP_PROC_HIGH_WATER 64 → 4 across 5 docker arm64 dist-TSan runs (zero adds), suite green, wall unchanged. Two simpler fixes failed validation first (gate alone, reuse alone) — recorded in paper 32.
       HANG REPRODUCED LOCALLY: native macOS dist-notls loop, CSP_MAXPROCS=4, ~1/28 runs — banner-then-silence, exact CI signature. Hunt v2 running with `sample`-based all-thread capture (two samples 2s apart: identical=deadlock, changing=livelock). Five latent flaky TESTS caught by the loop and fixed (AltDead, Mux input-death, SpawnSpawn, cancel-during-I/O, Thread---Yield) — each a criterion-1 window threat.
       CI watchdog extended to ALL dist-capable rows in both jobs + macOS core capture (kern.corefile → workspace) + lldb bt-all steps. Docker image now installs libclang-rt-18-dev (sanitizer runtimes — docker-test SANITIZE=… never worked on a clean image) and llvm-18 (llvm-symbolizer; TSan suppressions silently stop matching without it — frames unsymbolized).
+
+      --- RESOLVED 2026-07-07 (retirement evidence; full narrative in paper 32) ---
+      All four criteria met:
+      1. 20 consecutive master runs, arm64 TSan job in envelope (2:13–2:42), zero timeout-cancellations of that job (7 organic + 13 dispatched).
+      2. Root-caused with a reliable repro: the hang is test-side — coin-flip---with-extra-peer's unconsidered third pairing (ext×absorber rendezvous strands the dual-registered flipper, which holds its own w+r copies → endpoint death structurally cannot release it). 38% repro in isolation (CSP_MAXPROCS=4); sample-captured quiescent deadlock; CSP_DEBUG_DEATH trace shows the runtime executing the protocol CORRECTLY — the criterion's "site in the scheduler/channel runtime" hypothesis is disproven by evidence. The runtime-side contributor was the watchdog storm (C1): spurious surplus processors manufactured the parallelism the third pairing needs on otherwise near-serial CI runs (CSP_MAXPROCS=1 default) — root-caused (stall-discriminator miscalibration) and fixed (100ms hysteresis; high-water 64→4).
+      3. Fix landed (die-channel janitor releases a stranded flipper; third outcome asserted valid): 0 hangs across 200 isolated runs (baseline 38% ⇒ P≈1e-42).
+      4. Hang diagnosability: TEST_TIMEOUT watchdog on every dist-capable CI row (PR #91 + this PR), macOS core capture + lldb, binary-discovering GDB steps, and permanent env-gated CSP_DEBUG_DEATH protocol tracing.
     tags:
     - ci
     - concurrency

@@ -292,6 +292,7 @@ std::exception_ptr cancel_reason() {
 
 #include <climits>
 #include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <mutex>
@@ -316,6 +317,15 @@ auto & counterses() {
 }
 
 namespace {
+
+    // 🎯T29 hang diagnosis scaffolding: env-gated one-line traces of the
+    // endpoint-death / registration / wake protocol. Cost when off: one
+    // predictable branch on a static bool.
+    bool debug_death() {
+        static bool const on = std::getenv("CSP_DEBUG_DEATH") != nullptr;
+        return on;
+    }
+#define DD(...) do { if (debug_death()) fprintf(stderr, __VA_ARGS__); } while (0)
 
     class Channel;
 
@@ -429,6 +439,8 @@ namespace {
             --counterses()[endpt].active;
             // Check if the opposite side has live endpoints.
             Slot * other_slot = (endpt == wr) ? read_slot_ : write_slot_;
+            DD("DD death ch=%p endpt=%d other_refs=%d\n", (void*)this, endpt,
+               other_slot->refcount.load(std::memory_order_acquire));
             if (other_slot->refcount.load(std::memory_order_acquire) > 0) {
                 // Wake waiters on the opposite side (death signal).
                 auto & ep = endpts_[1 - endpt];
@@ -437,7 +449,12 @@ namespace {
                     if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cw.chanop - cw.thread->chanops_);
                         cw.thread->signal_ = ~idx;
+                        DD("DD death-wake ch=%p imp=%p §%zu signal=%d\n",
+                           (void*)this, (void*)cw.thread, cw.thread->id_, ~idx);
                         cw.thread->make_runnable();
+                    } else {
+                        DD("DD death-skip ch=%p imp=%p §%zu state=%u\n",
+                           (void*)this, (void*)cw.thread, cw.thread->id_, expected);
                     }
                 }
                 for (auto const & cv : ep.vultures) {
@@ -445,7 +462,12 @@ namespace {
                     if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                         int idx = int(cv.chanop - cv.thread->chanops_);
                         cv.thread->signal_ = ~idx;
+                        DD("DD death-wake-vulture ch=%p imp=%p §%zu signal=%d\n",
+                           (void*)this, (void*)cv.thread, cv.thread->id_, ~idx);
                         cv.thread->make_runnable();
+                    } else {
+                        DD("DD death-skip-vulture ch=%p imp=%p §%zu state=%u\n",
+                           (void*)this, (void*)cv.thread, cv.thread->id_, expected);
                     }
                 }
             }
@@ -649,6 +671,9 @@ namespace {
                     int endpt = flags & endpt_flag;
 
                     if (!*ch) {
+                        DD("DD dead-scan imp=%p §%zu ch=%p i=%d ready=%d\n",
+                           (void*)current_imp(), current_imp()->id_, (void*)ch,
+                           i, int(flags & ready_flag));
                         if (flags & ready_flag) {
                             // Data chanop on dead channel: defer until
                             // after scanning for ready peers elsewhere.
@@ -672,6 +697,9 @@ namespace {
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
                                 int idx = int(cw.chanop - cw.thread->chanops_);
                                 cw.thread->signal_ = idx;
+                                DD("DD match matcher=%p §%zu claimed=%p §%zu ch=%p idx=%d\n",
+                                   (void*)current_imp(), current_imp()->id_,
+                                   (void*)cw.thread, cw.thread->id_, (void*)ch, idx);
 
                                 // Set up match: src is always writer's
                                 // buffer, dst is always reader's buffer.
@@ -723,6 +751,9 @@ namespace {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
+                    DD("DD reg imp=%p §%zu ch=%p endpt=%d i=%d ready=%d\n",
+                       (void*)current_imp(), current_imp()->id_, (void*)ch,
+                       int(flags & endpt_flag), i, int(flags & ready_flag));
                     ch->endpts_[flags & endpt_flag].wait(&chop);
                 }
             }
@@ -737,10 +768,14 @@ namespace {
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
+            DD("DD suspend imp=%p §%zu\n",
+               (void*)current_imp(), current_imp()->id_);
             current_imp()->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
             current_imp()->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            DD("DD woke imp=%p §%zu signal=%d\n",
+               (void*)current_imp(), current_imp()->id_, current_imp()->signal_);
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
@@ -784,7 +819,12 @@ namespace {
             }
             auto* peer = mi->peer;
             delete[] mi->heap_alloc;
-            if (peer) peer->make_runnable();
+            if (peer) {
+                DD("DD alt-end by=%p §%zu wakes peer=%p §%zu\n",
+                   (void*)current_imp(), current_imp()->id_,
+                   (void*)peer, peer->id_);
+                peer->make_runnable();
+            }
         }
 
 
@@ -2412,7 +2452,6 @@ csp::reader<std::string> lines(fd_t fd, size_t chunk_size) {
 #include <execinfo.h>
 #endif
 
-#include <cstdio>
 #include <iostream>
 #include <map>
 #include <regex>

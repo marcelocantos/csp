@@ -1015,6 +1015,14 @@ All in `namespace csp::part` (included via `csp.h`).
     COW (path-copy HAMT). Changes are invisible to other imps
     unless explicitly shared via `context::current()` + `context_scope`.
 
+12. **Self-holding alt can strand forever**: An imp that alts over BOTH
+    endpoints of the same channel (`alt(w << x, r >> v)`) while holding
+    its own `w` and `r` copies can never be released by endpoint death —
+    its own handles keep both sides alive. If every other peer pairs off
+    elsewhere, the imp sleeps forever (deadlock). Give such an alt an
+    escape arm (`~die` on a channel someone else drops), or ensure a
+    peer is guaranteed to arrive.
+
 ## Integration
 
 CSP distributes as a small set of vendor-drop-in files. The **core** trio is
