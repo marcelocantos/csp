@@ -9,8 +9,10 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 
 namespace csp {
 
@@ -29,6 +31,29 @@ namespace csp {
 #else
             pthread_setname_np(pthread_self(), name);
 #endif
+        }
+
+        // 🎯T29 repro-loop instrumentation: process-global high-water mark
+        // for the processor pool, to correlate slow/hung dist-TSan runs with
+        // watchdog-driven add_processor() churn (paper 32, hypothesis C1).
+        // Not part of the public API — dumped to stderr only when
+        // CSP_PROC_STATS is set, via a single atexit hook registered once
+        // from Runtime::init().
+        static std::atomic<int> g_procs_high_water{0};
+
+        static void note_procs_high_water(int n) {
+            int cur = g_procs_high_water.load(std::memory_order_relaxed);
+            while (n > cur && !g_procs_high_water.compare_exchange_weak(
+                                   cur, n, std::memory_order_relaxed,
+                                   std::memory_order_relaxed)) {
+            }
+        }
+
+        static void print_procs_high_water() {
+            if (std::getenv("CSP_PROC_STATS") != nullptr) {
+                fprintf(stderr, "CSP_PROC_HIGH_WATER=%d\n",
+                        g_procs_high_water.load(std::memory_order_relaxed));
+            }
         }
 
         static Runtime g_runtime;
@@ -69,6 +94,16 @@ namespace csp {
 
             initial_procs_ = num_procs;
             max_procs_ = std::max(num_procs, (int)std::thread::hardware_concurrency() * 4);
+
+            note_procs_high_water(num_procs);
+            {
+                static std::atomic<bool> atexit_registered{false};
+                bool expected = false;
+                if (atexit_registered.compare_exchange_strong(
+                        expected, true, std::memory_order_relaxed)) {
+                    std::atexit(print_procs_high_water);
+                }
+            }
 
             // Pre-reserve to max_procs_ so the vector never reallocates.
             // This lets steal_work and take_from_global read procs[i]
@@ -406,6 +441,7 @@ namespace csp {
                 idx = n;
                 procs[idx] = std::make_unique<Processor>(idx);
                 num_procs_.store(n + 1, std::memory_order_release);
+                note_procs_high_water(n + 1);
             }
             procs[idx]->worker = std::thread([this, idx] {
                 set_thread_name(idx);
