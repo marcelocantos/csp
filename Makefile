@@ -816,7 +816,7 @@ DOCKER_BUILDDIR  = build/$(subst /,-,$(DOCKER_PLATFORM))
 docker-image:
 	printf '%s\n' \
 		'FROM ubuntu:24.04' \
-		'RUN apt-get update && apt-get install -y --no-install-recommends clang-18 libc++-18-dev libc++abi-18-dev libclang-rt-18-dev make python3 git' \
+		'RUN apt-get update && apt-get install -y --no-install-recommends clang-18 libc++-18-dev libc++abi-18-dev libclang-rt-18-dev llvm-18 make python3 git' \
 	| docker build --platform $(DOCKER_PLATFORM) -t $(DOCKER_TAG) -
 
 docker-run-test:
