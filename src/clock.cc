@@ -88,7 +88,15 @@ void fake_clock::fire_expired() {
 }
 
 void fake_clock::advance(duration d) {
-    current_ += d;
+    // Write current_ under mu_: advance_to_next() (the quiescence hook,
+    // possibly on another thread) writes it under mu_ concurrently, and a
+    // torn/lost advance would strand a sleeper whose deadline is never
+    // reached. The unlocked *read* in now() remains covered by the TSan
+    // suppression (see test/tsan_suppressions.txt).
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        current_ += d;
+    }
     fire_expired();
 }
 

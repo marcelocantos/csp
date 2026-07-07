@@ -388,8 +388,20 @@ namespace csp {
         void Runtime::watchdog_loop() {
             using namespace std::chrono;
             constexpr auto interval = milliseconds(10);
+            // A worker is "stalled" only after this many consecutive
+            // ticks with no heartbeat progress (100 ms). One missed tick
+            // means "mid-slice", not "blocked": a healthy worker whose
+            // slice runs 15-50 ms (routine under TSan's 10-20× slowdown,
+            // or any compute-heavy imp) is indistinguishable from a
+            // blocked one at single-tick granularity, and treating it as
+            // stalled grew the pool to max_procs_ on every TSan run
+            // (paper 32 addendum). The watchdog rescues *blocked*
+            // workers; 100 ms detection latency is still far below the
+            // wind-down and test timescales that depend on rescue.
+            constexpr int kStallTicks = 10;
 
             std::vector<uint64_t> last(max_procs_, 0);
+            std::vector<int> stalled_ticks(max_procs_, 0);
 
             while (!stopping.load(std::memory_order_acquire)) {
                 std::this_thread::sleep_for(interval);
@@ -403,17 +415,85 @@ namespace csp {
                     if (!p.alive.load(std::memory_order_acquire)) continue;
                     if (p.parked.load(std::memory_order_acquire)) {
                         last[i] = p.heartbeat.load(std::memory_order_acquire);
+                        stalled_ticks[i] = 0;
                         continue;
                     }
                     uint64_t hb = p.heartbeat.load(std::memory_order_acquire);
-                    if (hb == last[i]) {
-                        // P is stalled — add a new P so work stealing
-                        // can drain its queue.
-                        add_processor();
+                    if (hb != last[i]) {
+                        stalled_ticks[i] = 0;
+                    } else if (++stalled_ticks[i] >= kStallTicks) {
+                        // Re-arm: rescue again only after another full
+                        // window of continued no-progress.
+                        stalled_ticks[i] = 0;
+                        // P is stalled — but only add a rescue P when there
+                        // is work a new P could actually take: a queued MT
+                        // in the stalled P's ring (beyond the sentinel and
+                        // the imp that is hogging the P), or global work.
+                        // A stalled P with nothing queued behind it (one imp
+                        // in a long compute stretch or blocking syscall)
+                        // needs no rescue; unconditionally adding one churns
+                        // add→park→wind-down→die→re-add every tick. Under
+                        // TSan's 10-20× slowdown that churn saturated
+                        // max_procs_ (64 procs, ~64k thread creations per
+                        // suite run — paper 32, C1).
+                        bool rescuable = false;
+                        {
+                            std::lock_guard<std::mutex> lk(p.run_mu);
+                            if (auto* start = p.busy) {
+                                auto* it = start;
+                                do {
+                                    if (it != &p.main && it != p.running) {
+                                        rescuable = true;
+                                        break;
+                                    }
+                                    it = it->next_;
+                                } while (it != start);
+                            }
+                        }
+                        if (!rescuable) {
+                            rescuable = has_global_work_.load(std::memory_order_acquire);
+                        }
+                        if (rescuable) {
+                            // Reuse before add: a woken parked P steals
+                            // exactly like a fresh P would, and re-using
+                            // the pool prevents the second churn shape —
+                            // rescue P finishes, parks, and the next tick
+                            // ADDS another instead of waking it. Only
+                            // create a new P when nobody is parked (the
+                            // mn watchdog stress tests' regime).
+                            if (!try_wake_parked_worker()) {
+                                add_processor();
+                            }
+                        }
                     }
                     last[i] = hb;
                 }
             }
+        }
+
+        bool Runtime::try_wake_parked_worker() {
+            // Same two-pass shape as unpark_one(), but reports success and
+            // skips the park_cv notifies — the watchdog isn't publishing
+            // new work, just redirecting an idle P at work that already
+            // exists (which main_loop's predicates track independently).
+            int n = num_procs_.load(std::memory_order_acquire);
+            for (int i = 1; i < n; ++i) {
+                auto* p = procs[i].get();
+                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
+                if (p->note.is_sleeping()) {
+                    p->note.wake();
+                    return true;
+                }
+            }
+            for (int i = 1; i < n; ++i) {
+                auto* p = procs[i].get();
+                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
+                if (p->parked.load(std::memory_order_acquire)) {
+                    p->note.wake();
+                    return true;
+                }
+            }
+            return false;
         }
 
         void Runtime::add_processor() {

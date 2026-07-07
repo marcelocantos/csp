@@ -69,15 +69,19 @@ TEST_CASE("Mux---input-death-continues") {
         stats.spawn([w = cs.w.copy()] { w << std::string("world"); });
         cs.release();
 
-        // Read int value.
-        mr >> v;
-        CHECK(std::holds_alternative<int>(v));
-        CHECK(10 == std::get<int>(v));
-
-        // Read string value.
-        mr >> v;
-        CHECK(std::holds_alternative<std::string>(v));
-        CHECK("world" == std::get<std::string>(v));
+        // Read both values. The writers are concurrent imps on distinct
+        // channels, and mux's fair alt makes no ordering promise between
+        // them — either may arrive first (seen string-first ~1/30 runs
+        // under CSP_MAXPROCS=4, dist-notls).
+        V a, b;
+        mr >> a;
+        mr >> b;
+        V& vi = std::holds_alternative<int>(a) ? a : b;
+        V& vs = std::holds_alternative<int>(a) ? b : a;
+        CHECK(std::holds_alternative<int>(vi));
+        CHECK(10 == std::get<int>(vi));
+        CHECK(std::holds_alternative<std::string>(vs));
+        CHECK("world" == std::get<std::string>(vs));
     });
 }
 

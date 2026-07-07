@@ -1128,7 +1128,15 @@ void fake_clock::fire_expired() {
 }
 
 void fake_clock::advance(duration d) {
-    current_ += d;
+    // Write current_ under mu_: advance_to_next() (the quiescence hook,
+    // possibly on another thread) writes it under mu_ concurrently, and a
+    // torn/lost advance would strand a sleeper whose deadline is never
+    // reached. The unlocked *read* in now() remains covered by the TSan
+    // suppression (see test/tsan_suppressions.txt).
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        current_ += d;
+    }
     fire_expired();
 }
 
@@ -3732,6 +3740,30 @@ namespace csp {
 #endif
         }
 
+        // 🎯T29 repro-loop instrumentation: process-global high-water mark
+        // for the processor pool, to correlate slow/hung dist-TSan runs with
+        // watchdog-driven add_processor() churn (paper 32, hypothesis C1).
+        // Not part of the public API — dumped to stderr only when
+        // CSP_PROC_STATS is set, via a single atexit hook registered once
+        // from Runtime::init().
+        static std::atomic<int> g_procs_high_water{0};
+
+        static void note_procs_high_water(int n) {
+            int cur = g_procs_high_water.load(std::memory_order_relaxed);
+            while (n > cur && !g_procs_high_water.compare_exchange_weak(
+                                   cur, n, std::memory_order_relaxed,
+                                   std::memory_order_relaxed)) {
+            }
+        }
+
+        static void print_procs_high_water() {
+            if (std::getenv("CSP_PROC_STATS") != nullptr) {
+                fprintf(stderr, "CSP_PROC_HIGH_WATER=%d CSP_HW_CONCURRENCY=%u\n",
+                        g_procs_high_water.load(std::memory_order_relaxed),
+                        std::thread::hardware_concurrency());
+            }
+        }
+
         static Runtime g_runtime;
 
         Runtime& Runtime::instance() {
@@ -3770,6 +3802,16 @@ namespace csp {
 
             initial_procs_ = num_procs;
             max_procs_ = std::max(num_procs, (int)std::thread::hardware_concurrency() * 4);
+
+            note_procs_high_water(num_procs);
+            {
+                static std::atomic<bool> atexit_registered{false};
+                bool expected = false;
+                if (atexit_registered.compare_exchange_strong(
+                        expected, true, std::memory_order_relaxed)) {
+                    std::atexit(print_procs_high_water);
+                }
+            }
 
             // Pre-reserve to max_procs_ so the vector never reallocates.
             // This lets steal_work and take_from_global read procs[i]
@@ -4053,8 +4095,20 @@ namespace csp {
         void Runtime::watchdog_loop() {
             using namespace std::chrono;
             constexpr auto interval = milliseconds(10);
+            // A worker is "stalled" only after this many consecutive
+            // ticks with no heartbeat progress (100 ms). One missed tick
+            // means "mid-slice", not "blocked": a healthy worker whose
+            // slice runs 15-50 ms (routine under TSan's 10-20× slowdown,
+            // or any compute-heavy imp) is indistinguishable from a
+            // blocked one at single-tick granularity, and treating it as
+            // stalled grew the pool to max_procs_ on every TSan run
+            // (paper 32 addendum). The watchdog rescues *blocked*
+            // workers; 100 ms detection latency is still far below the
+            // wind-down and test timescales that depend on rescue.
+            constexpr int kStallTicks = 10;
 
             std::vector<uint64_t> last(max_procs_, 0);
+            std::vector<int> stalled_ticks(max_procs_, 0);
 
             while (!stopping.load(std::memory_order_acquire)) {
                 std::this_thread::sleep_for(interval);
@@ -4068,17 +4122,85 @@ namespace csp {
                     if (!p.alive.load(std::memory_order_acquire)) continue;
                     if (p.parked.load(std::memory_order_acquire)) {
                         last[i] = p.heartbeat.load(std::memory_order_acquire);
+                        stalled_ticks[i] = 0;
                         continue;
                     }
                     uint64_t hb = p.heartbeat.load(std::memory_order_acquire);
-                    if (hb == last[i]) {
-                        // P is stalled — add a new P so work stealing
-                        // can drain its queue.
-                        add_processor();
+                    if (hb != last[i]) {
+                        stalled_ticks[i] = 0;
+                    } else if (++stalled_ticks[i] >= kStallTicks) {
+                        // Re-arm: rescue again only after another full
+                        // window of continued no-progress.
+                        stalled_ticks[i] = 0;
+                        // P is stalled — but only add a rescue P when there
+                        // is work a new P could actually take: a queued MT
+                        // in the stalled P's ring (beyond the sentinel and
+                        // the imp that is hogging the P), or global work.
+                        // A stalled P with nothing queued behind it (one imp
+                        // in a long compute stretch or blocking syscall)
+                        // needs no rescue; unconditionally adding one churns
+                        // add→park→wind-down→die→re-add every tick. Under
+                        // TSan's 10-20× slowdown that churn saturated
+                        // max_procs_ (64 procs, ~64k thread creations per
+                        // suite run — paper 32, C1).
+                        bool rescuable = false;
+                        {
+                            std::lock_guard<std::mutex> lk(p.run_mu);
+                            if (auto* start = p.busy) {
+                                auto* it = start;
+                                do {
+                                    if (it != &p.main && it != p.running) {
+                                        rescuable = true;
+                                        break;
+                                    }
+                                    it = it->next_;
+                                } while (it != start);
+                            }
+                        }
+                        if (!rescuable) {
+                            rescuable = has_global_work_.load(std::memory_order_acquire);
+                        }
+                        if (rescuable) {
+                            // Reuse before add: a woken parked P steals
+                            // exactly like a fresh P would, and re-using
+                            // the pool prevents the second churn shape —
+                            // rescue P finishes, parks, and the next tick
+                            // ADDS another instead of waking it. Only
+                            // create a new P when nobody is parked (the
+                            // mn watchdog stress tests' regime).
+                            if (!try_wake_parked_worker()) {
+                                add_processor();
+                            }
+                        }
                     }
                     last[i] = hb;
                 }
             }
+        }
+
+        bool Runtime::try_wake_parked_worker() {
+            // Same two-pass shape as unpark_one(), but reports success and
+            // skips the park_cv notifies — the watchdog isn't publishing
+            // new work, just redirecting an idle P at work that already
+            // exists (which main_loop's predicates track independently).
+            int n = num_procs_.load(std::memory_order_acquire);
+            for (int i = 1; i < n; ++i) {
+                auto* p = procs[i].get();
+                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
+                if (p->note.is_sleeping()) {
+                    p->note.wake();
+                    return true;
+                }
+            }
+            for (int i = 1; i < n; ++i) {
+                auto* p = procs[i].get();
+                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
+                if (p->parked.load(std::memory_order_acquire)) {
+                    p->note.wake();
+                    return true;
+                }
+            }
+            return false;
         }
 
         void Runtime::add_processor() {
@@ -4107,6 +4229,7 @@ namespace csp {
                 idx = n;
                 procs[idx] = std::make_unique<Processor>(idx);
                 num_procs_.store(n + 1, std::memory_order_release);
+                note_procs_high_water(n + 1);
             }
             procs[idx]->worker = std::thread([this, idx] {
                 set_thread_name(idx);

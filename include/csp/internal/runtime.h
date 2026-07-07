@@ -62,6 +62,11 @@ struct Runtime {
     void quiescent_loop();
     void watchdog_loop();
     void add_processor();
+    // Wake one parked/sleeping worker so it can steal from a stalled P.
+    // Returns false when no worker is parked (caller may add_processor).
+    // Watchdog-only: unlike unpark_one() it reports success and skips the
+    // park_cv notifies (the watchdog isn't publishing new work).
+    bool try_wake_parked_worker();
     Imp* local_next(Processor& p);
     bool take_from_global(Processor& p);
     bool steal_work(Processor& thief);

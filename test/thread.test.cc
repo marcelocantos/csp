@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -33,7 +34,10 @@ TEST_CASE("Thread---Parallel") {
 }
 
 TEST_CASE("Thread---SpawnSpawn") {
-    int result = 0;
+    // Atomic: the 25 grandchild imps run concurrently on multiple OS
+    // threads under M:N; a plain int loses increments (seen 1/40 runs,
+    // dist-notls).
+    std::atomic<int> result{0};
     csp::run([&]{
         for (int i = 0; i < 5; ++i) {
             csp::spawn([&]{
@@ -80,18 +84,27 @@ TEST_CASE("Thread---Throw") {
 }
 
 TEST_CASE("Thread---Yield") {
+    // The two imps run on different OS threads under M:N; appends to a
+    // shared std::string race (lost appends seen ~1/40 runs,
+    // dist-notls). Serialize them; the assertions below only check
+    // completion counts, not order.
     std::string trace;
+    std::mutex trace_mu;
+    auto app = [&](char c) {
+        std::lock_guard<std::mutex> lk(trace_mu);
+        trace += c;
+    };
 
     csp::run([&]{
         csp::spawn([&]{
-            trace += 'A';
+            app('A');
             csp::yield();
-            trace += 'A';
+            app('A');
         });
         csp::spawn([&]{
-            trace += 'B';
+            app('B');
             csp::yield();
-            trace += 'B';
+            app('B');
         });
     });
 

@@ -316,7 +316,14 @@ TEST_CASE("Channel---AltDead") {
         }
 
         kill = {};
-        csp::yield(); // Let the other guy wake up and smell the roses.
+        // Wait for the server to observe the death and exit: its exit
+        // drops the echo channel's writer, so this read fails exactly
+        // when the server is gone. (A bare yield() raced: the server's
+        // alt could see a pending 11th request and the dead die channel
+        // simultaneously ready, and alt — fair, unlike prialt — may pick
+        // the request. Seen ~1/30 runs under CSP_MAXPROCS=4, dist-notls.)
+        int probe;
+        CHECK_FALSE(bool(in >> probe));
 
         CHECK_FALSE((out << 5));
     });

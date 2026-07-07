@@ -72,10 +72,21 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install coreutils
 
+      # 🎯T29: write macOS cores into the workspace (like Linux's
+      # core_pattern=core.%p above) so the lldb step below can find them.
+      # The 2026-07-07 hang was macOS arm64 `Build and test (dist)` —
+      # 24.5 min of silence after the doctest banner, cancelled with no
+      # diagnostics because only the Linux arm64 TSan row had a watchdog.
+      - name: Enable core dumps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sudo sysctl -w kern.coredump=1
+          sudo sysctl -w kern.corefile="$PWD/core.%P"
+
       - name: Build and test (source)
         run: |
           ulimit -c unlimited
-          make ${{ matrix.make_cxx || '' }}
+          make TEST_TIMEOUT=1200 ${{ matrix.make_cxx || '' }}
         env:
           MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
           MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
@@ -159,7 +170,7 @@ jobs:
       - name: Build and test (dist)
         run: |
           ulimit -c unlimited
-          make test-dist ${{ matrix.make_cxx || '' }}
+          make test-dist TEST_TIMEOUT=1200 ${{ matrix.make_cxx || '' }}
         env:
           MALLOC_CHECK_: ${{ runner.os == 'Linux' && '3' || '' }}
           MALLOC_PERTURB_: ${{ runner.os == 'Linux' && '42' || '' }}
@@ -194,6 +205,25 @@ jobs:
             done
           fi
 
+      # 🎯T29: macOS counterpart of the GDB steps. TEST_TIMEOUT's SIGQUIT
+      # cores the hung test process into the workspace (kern.corefile set
+      # above); pair every core with every discovered binary — lldb on a
+      # mismatched pair just errors and moves on.
+      - name: LLDB backtrace on crash (macOS)
+        if: failure() && runner.os == 'macOS'
+        run: |
+          bins=$(find build -name csp_tests -type f 2>/dev/null)
+          found=0
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            found=1
+            for bin in $bins; do
+              echo "=== Backtrace from $core ($bin) ==="
+              lldb --batch -o "bt all" -o quit "$bin" -c "$core" 2>&1 || true
+            done
+          done
+          [ "$found" -eq 1 ] || echo "No core dumps found in workspace."
+
   # --- Sanitizers (macOS + Linux, on dist) ---
   sanitize:
     name: ${{ matrix.name }}
@@ -203,9 +233,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 🎯T29: every row caps the suite (test_timeout) well under the
+          # 30-minute job timeout so a hang cores (SIGQUIT — see the
+          # TEST_TIMEOUT comment in Makefile for why not SIGABRT) and
+          # fails the step with a backtrace, instead of running out the
+          # clock and getting a diagnostics-free cancel. Hangs have hit
+          # the dist suite on Linux arm64 TSan (2026-06-30) AND on plain
+          # macOS arm64 (2026-07-07), so the watchdog is on all rows,
+          # both jobs.
           - os: macos-14
             name: macOS ASan+UBSan
             sanitize: address,undefined
+            test_timeout: 1200
           # macOS TSan removed: 50-130x slower than Linux TSan (2-4 hours
           # vs 2 minutes), gets cancelled 80% of the time, and has never
           # caught anything that Linux arm64/x86_64 TSan didn't also find.
@@ -214,26 +253,24 @@ jobs:
             sanitize: address,undefined
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+            test_timeout: 1200
           - os: ubuntu-24.04
             name: Linux x86_64 TSan
             sanitize: thread
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+            test_timeout: 1200
           - os: ubuntu-24.04-arm
             name: Linux arm64 ASan+UBSan
             sanitize: address,undefined
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
+            test_timeout: 1200
           - os: ubuntu-24.04-arm
             name: Linux arm64 TSan
             sanitize: thread
             make_cxx: 'CXX="clang++-18 -std=c++20 -stdlib=libc++"'
             packages: clang-18 libc++-18-dev libc++abi-18-dev gdb
-            # 🎯T29: this row is the one that's hung in practice. Cap the
-            # suite itself well under the 30-minute job timeout so a hang
-            # cores (SIGQUIT — see the TEST_TIMEOUT comment in Makefile for
-            # why not SIGABRT) and fails the step with a backtrace, instead
-            # of running out the clock and getting a diagnostics-free cancel.
             test_timeout: 1200
 
     steps:
@@ -248,6 +285,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.packages }}
           sudo sysctl -w kernel.core_pattern=core.%p
+
+      # 🎯T29: gtimeout for the TEST_TIMEOUT wrapper + workspace cores
+      # for the lldb step, mirroring the test job's macOS setup.
+      - name: Install macOS dependencies (coreutils for gtimeout)
+        if: runner.os == 'macOS'
+        run: brew install coreutils
+
+      - name: Enable core dumps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          sudo sysctl -w kern.coredump=1
+          sudo sysctl -w kern.corefile="$PWD/core.%P"
 
       - name: Build and test (dist, ${{ matrix.sanitize }})
         run: |
@@ -288,6 +337,22 @@ jobs:
                 --args "$bin" 2>&1 || true
             done
           fi
+
+      # 🎯T29: macOS counterpart of the GDB step above.
+      - name: LLDB backtrace on crash (macOS)
+        if: failure() && runner.os == 'macOS'
+        run: |
+          bins=$(find build -name csp_tests -type f 2>/dev/null)
+          found=0
+          for core in core.*; do
+            [ -f "$core" ] || continue
+            found=1
+            for bin in $bins; do
+              echo "=== Backtrace from $core ($bin) ==="
+              lldb --batch -o "bt all" -o quit "$bin" -c "$core" 2>&1 || true
+            done
+          done
+          [ "$found" -eq 1 ] || echo "No core dumps found in workspace."
 
   # --- Subset-link DCE check (🎯T23.3) ---
   # Verifies that an external user who picks only some protocol drop-ins
