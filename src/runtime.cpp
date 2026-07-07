@@ -51,8 +51,9 @@ namespace csp {
 
         static void print_procs_high_water() {
             if (std::getenv("CSP_PROC_STATS") != nullptr) {
-                fprintf(stderr, "CSP_PROC_HIGH_WATER=%d\n",
-                        g_procs_high_water.load(std::memory_order_relaxed));
+                fprintf(stderr, "CSP_PROC_HIGH_WATER=%d CSP_HW_CONCURRENCY=%u\n",
+                        g_procs_high_water.load(std::memory_order_relaxed),
+                        std::thread::hardware_concurrency());
             }
         }
 
