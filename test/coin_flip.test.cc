@@ -249,34 +249,61 @@ TEST_CASE("coin-flip---vector-form") {
 
 TEST_CASE("coin-flip---with-extra-peer") {
     // One imp does a coin flip on a channel that also has an
-    // external writer waiting. Both outcomes are valid.
+    // external writer waiting. THREE outcomes are valid: the flipper
+    // pairs as writer (absorber reads its 42), pairs as reader (takes
+    // the external 99), or — the pairing this test originally missed —
+    // the external writer and the absorber pair off with EACH OTHER,
+    // leaving the flipper stranded. A stranded flipper can never be
+    // released by endpoint death: it holds live copies of both w and r
+    // itself, so neither side's refcount can reach zero while it
+    // sleeps. That latent self-deadlock hung CI (paper 32 addendum;
+    // ~38% repro in isolation under CSP_MAXPROCS=4) whenever scheduling
+    // let ext and the absorber rendezvous first. The die channel
+    // releases the flipper in that third outcome.
     RunStats stats;
 
     int role = -1;
 
     csp::run([&] {
         auto [w, r] = chan<int>{};
+        auto [die_w, die_r] = chan<int>{};
+        auto [done_w, done_r] = chan<int>{};
 
         // External writer waiting on the channel.
-        stats.spawn([w = w.copy()] {
+        stats.spawn([w = w.copy(), done = done_w.copy()] () mutable {
             w << 99;
+            done << 1;
         });
 
-        // Coin flipper: could match as writer (if it tries write first
-        // and the external writer is the reader peer) or as reader
-        // (if it finds the external writer).
-        stats.spawn([w = w.copy(), r = r.copy(), &role] {
+        // Coin flipper: may match as writer, as reader, or not at all
+        // (ext and absorber paired directly — the ~die arm fires).
+        stats.spawn([w = w.copy(), r = r.copy(), die = die_r.copy(),
+                     &role] {
             int v = 0;
-            switch (alt(w << 42, r >> v)) {
+            switch (alt(w << 42, r >> v, ~die)) {
             case 0: role = 0; break;
             case 1: role = 1; break;
+            case ~2: role = 2; break;
             }
         });
 
-        // Need a reader to absorb the value if coin flipper chose write.
-        stats.spawn([r = r.copy()] {
+        // Reader to absorb the value if the coin flipper chose write —
+        // or, in the third outcome, the external writer's 99.
+        stats.spawn([r = r.copy(), done = done_w.copy()] () mutable {
             int v = 0;
             r >> v;
+            done << 1;
+        });
+
+        // Janitor: once both non-flipper imps have finished, any
+        // still-sleeping flipper is stranded — drop the die writer to
+        // fire its vulture. Harmless if the flipper already paired.
+        stats.spawn([done = done_r.copy(),
+                     die = std::move(die_w)] () mutable {
+            int v = 0;
+            done >> v;
+            done >> v;
+            die = {};
         });
     });
 

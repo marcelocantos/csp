@@ -640,8 +640,10 @@ TEST_CASE("cancel-during-I/O") {
 
     csp::spawn([&]() {
         auto guard = cancellation();
-        chan<> entered;  // signals child is about to enter I/O
-        spawn([&, w = std::move(entered.w)]() mutable {
+        chan<> entered;   // signals child is about to enter I/O
+        chan<> finished;  // its writer dies when the child exits
+        spawn([&, w = std::move(entered.w),
+               fin = std::move(finished.w)]() mutable {
             try {
                 w = {};  // signal: about to enter I/O
                 char buf[1];
@@ -652,7 +654,13 @@ TEST_CASE("cancel-during-I/O") {
         });
         prialt(~entered.r);  // wait for child to be ready
         guard();
-        csp::yield();
+        // Wait for the child to observe the cancel and exit (its exit
+        // drops fin). Closing wfd before that raced: the EOF could reach
+        // the blocked read ahead of the cancel, completing it without a
+        // `canceled` throw (seen ~1/40 runs under CSP_MAXPROCS=4,
+        // dist-notls). With no EOF in flight, the cancel is the only
+        // possible wake.
+        prialt(~finished.r);
         // Close write end so the orphaned reactor helper can see EOF and exit.
         ::close(wfd.raw());
         csp::yield();
