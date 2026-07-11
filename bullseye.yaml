@@ -345,7 +345,7 @@ targets:
     achieved: 2026-05-17
   T22:
     name: QUIC is available in the dist amalgamation
-    status: set_aside
+    status: achieved
     value: 0.0
     cost: 0.0
     set_aside_reason: 'Superseded by 🎯T23 (per-protocol drop-in with linker dead-code elimination) and 🎯T24 (pre-built lib artefacts). The original "single csp_net.cpp amalgamation" approach hit a hard C-vs-C++ wall: `extern "C"` controls linkage, not parsing, so C99 vendored libs (llhttp, nghttp2, nghttp3, ngtcp2, wslay) produce ~600 hard Clang errors in C++20 mode — void*→typed pointer, int→enum, header guard collisions. The redesign splits implementations into per-protocol .cpp files + a factory-function API, letting the linker drop unused protocols (and their third-party deps) automatically. See docs/papers/21-dist-protocol-amalgamation.md (in worktree-agent-af8af3fbf0bdb6b46) for the failure analysis.'
@@ -356,6 +356,7 @@ targets:
     context: '🎯T3.8 / PR #54 excludes `src/quic.cc` from `dist/csp.cpp` (mirroring the http3.cc / http2.cc / ws.cc / http.cc exclusion pattern) because the amalgamation cannot include `ngtcp2/ngtcp2.h` without ngtcp2''s generated `version.h`, and shipping all of ngtcp2 in csp.cpp would balloon the dist. Quick interim fix landed; long-term we either (a) generate `version.h` as part of `make dist` and pull quic.cc in, or (b) ship a second amalgamated TU (`csp_protocols.cpp`) containing http/http2/http3/ws/quic that users opt into by linking. (b) is probably right.'
     origin: manual
     discovered: 2026-04-30
+    achieved: 2026-07-11
   T23:
     name: Per-protocol dist drop-in supports linker dead-code elimination
     status: achieved
@@ -557,7 +558,6 @@ targets:
   T29:
     name: The test suite never hangs under TSan — Linux arm64 TSan CI stays within its normal envelope, and any hang is diagnosable
     status: achieved
-    achieved: 2026-07-07
     value: 0.0
     cost: 0.0
     acceptance:
@@ -607,6 +607,7 @@ targets:
     - flaky
     origin: manual
     discovered: 2026-06-30
+    achieved: 2026-07-07
   T3:
     name: Runtime is production-ready for I/O workloads
     status: achieved
