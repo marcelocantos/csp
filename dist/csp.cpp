@@ -1136,9 +1136,14 @@ time_point fake_clock::now() const {
 fake_clock::~fake_clock() {
     // Unregister quiescence hook.
     auto& rt = detail::Runtime::instance();
-    std::lock_guard<std::mutex> lk(rt.hook_mu_);
-    rt.quiescence_hook_ = nullptr;
-    rt.has_hook_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(rt.hook_mu_);
+        rt.quiescence_hook_ = nullptr;
+        rt.has_hook_.store(false, std::memory_order_release);
+    }
+    // Wake main_loop so it re-registers without the quiescence-watcher
+    // flag (🎯T34 O3; cold path).
+    rt.broadcast_park();
 }
 
 void fake_clock::sleep_until(time_point tp) {
@@ -1152,15 +1157,23 @@ void fake_clock::sleep_until(time_point tp) {
     // the runtime to be initialized at fake_clock construction time).
     auto& rt = detail::Runtime::instance();
     {
-        std::lock_guard<std::mutex> lk(rt.hook_mu_);
-        if (!rt.quiescence_hook_) {
-            rt.quiescence_hook_ = [this]() -> bool {
-                // Only advance time when ALL scope members are sleeping.
-                if (!qs_.is_quiescent()) return true;  // imps still active
-                return advance_to_next();  // true=advanced, false=no timers
-            };
-            rt.has_hook_.store(true, std::memory_order_release);
+        bool installed = false;
+        {
+            std::lock_guard<std::mutex> lk(rt.hook_mu_);
+            if (!rt.quiescence_hook_) {
+                rt.quiescence_hook_ = [this]() -> bool {
+                    // Only advance time when ALL scope members are sleeping.
+                    if (!qs_.is_quiescent()) return true;  // imps still active
+                    return advance_to_next();  // true=advanced, false=no timers
+                };
+                rt.has_hook_.store(true, std::memory_order_release);
+                installed = true;
+            }
         }
+        // main_loop may already be waiting, registered without the
+        // quiescence-watcher flag. Wake it unconditionally so it
+        // re-registers and starts reacting to worker parks (🎯T34 O3).
+        if (installed) rt.broadcast_park();
     }
     internal::suspend();
     // Imp woke (timer fired or cancelled). Mark the timer entry
@@ -1466,8 +1479,7 @@ namespace csp {
             auto daemon = rt.daemon_gs.load(std::memory_order_acquire);
             if (live - 1 <= daemon) {
                 // All non-daemon imps are done.
-                { std::lock_guard<std::mutex> lk(rt.park_mu); }
-                rt.park_cv.notify_all();
+                rt.notify_watchers();
             }
         }
 
@@ -1853,8 +1865,7 @@ int run() {
     // Wait for either completion or quiescence (all workers parked +
     // no global work + no pending signals = deadlock or external
     // action needed).
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&] {
+    rt.park_wait([&] {
         if (user_done()) return true;
         // Check quiescence: all workers parked, no global work, no signals.
         if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
@@ -1867,7 +1878,7 @@ int run() {
             }
         }
         return true;  // quiescent — deadlock or done
-    });
+    }, /*quiescence=*/true);
     return 0;
 }
 
@@ -1875,8 +1886,7 @@ void await_idle() {
     // Wait for ALL imps (including daemons) to exit.
     // Used by test cleanup after killing daemon handlers.
     auto& rt = Runtime::instance();
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&rt] {
+    rt.park_wait([&rt] {
         return rt.live_gs.load(std::memory_order_acquire) == 0;
     });
 }
@@ -1897,8 +1907,7 @@ void await_quiescent() {
     // At this point every live imp has registered its channel/timer
     // waiters and yielded — the system is in a deterministic state.
     auto& rt = Runtime::instance();
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&rt] {
+    rt.park_wait([&rt] {
         if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
         if (csp::detail::Reactor::instance().has_pending_signals()) return false;
         int np = rt.num_procs_.load(std::memory_order_acquire);
@@ -1909,7 +1918,7 @@ void await_quiescent() {
             }
         }
         return true;
-    });
+    }, /*quiescence=*/true);
 }
 
 void yield() {
@@ -3929,9 +3938,10 @@ namespace csp {
             // all of which wait on park_cv. Acquire-release park_mu before
             // notifying so any waiter that has evaluated the predicate as false
             // (but hasn't entered cv.wait yet) will have entered cv.wait before
-            // we notify. This prevents lost wakeups. // TLA:WorkerParking.ShutdownAcquireMu
-            { std::lock_guard<std::mutex> lk(park_mu); } // TLA:WorkerParking.ShutdownReleaseMu
-            park_cv.notify_all(); // TLA:WorkerParking.ShutdownNotify
+            // we notify. This prevents lost wakeups. The empty critical
+            // section + broadcast live inside notify_watchers().
+            // TLA:WorkerParking.ShutdownAcquireMu TLA:WorkerParking.ShutdownReleaseMu
+            notify_watchers(); // TLA:WorkerParking.ShutdownNotify
 
             if (watchdog_.joinable()) {
                 watchdog_.join();
@@ -3944,8 +3954,7 @@ namespace csp {
             for (int i = 1; i < n; ++i) {
                 if (procs[i]) procs[i]->note.wake();
             }
-            { std::lock_guard<std::mutex> lk(park_mu); }
-            park_cv.notify_all();
+            notify_watchers();
 
             for (int i = 1; i < n; ++i) {
                 if (procs[i] && procs[i]->worker.joinable()) {
@@ -3955,6 +3964,37 @@ namespace csp {
 
             procs.clear();
             num_procs_.store(0, std::memory_order_release);
+        }
+
+        void Runtime::notify_watchers() {
+            // Publish → fence → count read: pairs with park_wait's
+            // register → fence → predicate read. TLA:ParkGate.NReadCount
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            if (park_waiters_.load(std::memory_order_relaxed) == 0) {
+                return;
+            }
+            // Empty critical section: a watcher that evaluated its
+            // predicate false still holds park_mu until cv.wait blocks;
+            // serialize so the notify lands after it (same shape as the
+            // shutdown fix, bug #8). TLA:ParkGate.NAcquireMu
+            { std::lock_guard<std::mutex> lk(park_mu); }
+            park_cv.notify_all();
+        }
+
+        void Runtime::notify_quiesce_watchers() {
+            // Same gate protocol, second instance (TLA:ParkGate) —
+            // counts only watchers whose predicate reads parked state.
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            if (quiesce_waiters_.load(std::memory_order_relaxed) == 0) {
+                return;
+            }
+            { std::lock_guard<std::mutex> lk(park_mu); }
+            park_cv.notify_all();
+        }
+
+        void Runtime::broadcast_park() {
+            { std::lock_guard<std::mutex> lk(park_mu); }
+            park_cv.notify_all();
         }
 
         void Runtime::unpark_one() {
@@ -3971,11 +4011,6 @@ namespace csp {
                 if (!p || !p->alive.load(std::memory_order_acquire)) continue;
                 if (p->note.is_sleeping()) {
                     p->note.wake();
-                    // Also wake main_loop / run() / quiescent_loop which wait
-                    // on the shared park_cv. They use park_cv.wait with
-                    // has_global_work_ in the predicate and need notification
-                    // when the scheduler adds work.
-                    park_cv.notify_all();
                     return;
                 }
             }
@@ -3986,14 +4021,14 @@ namespace csp {
                 if (!p || !p->alive.load(std::memory_order_acquire)) continue;
                 if (p->parked.load(std::memory_order_acquire)) {
                     p->note.wake();
-                    park_cv.notify_all();
                     return;
                 }
             }
-            // All workers are active — no action needed.
-            // Still notify park_cv: main_loop checks has_global_work_ and
-            // needs to be woken when work is pushed to the global queue.
-            park_cv.notify_all();
+            // All workers are active — no action needed.  park_cv
+            // watchers are NOT notified here (🎯T34 O3): no watcher's
+            // predicate becomes true because work arrived — main_loop
+            // acts on completion (imp exit) and quiescence (worker
+            // parks), each of which has its own notifier.
         }
 
         void Runtime::push_to_global(Imp* imp) {
@@ -4043,12 +4078,11 @@ namespace csp {
                 // false and p.parked being set, unpark_one() will see parked=true
                 // and wake us, OR we see has_work() here and skip the sleep.
                 p.parked.store(true, std::memory_order_release); // TLA:PerWorkerWake.WorkerSetParked
-                {
-                    // Notify main_loop / quiescent_loop while holding park_mu
-                    // so they see a consistent parked snapshot.
-                    std::lock_guard<std::mutex> lk(park_mu);
-                    park_cv.notify_all();  // wake main_loop quiescence check
-                }
+                // Wake main_loop / quiescent_loop's quiescence check.
+                // Skipped entirely when no quiescence watcher is
+                // registered (TLA:ParkGate) — this used to be a mutex +
+                // broadcast syscall on every park.
+                notify_quiesce_watchers();
 
                 // Check for work that arrived after steal_work but before we
                 // set parked. If found, skip the sleep (unpark_one may not have
@@ -4075,6 +4109,11 @@ namespace csp {
                     && !stopping.load(std::memory_order_acquire)
                     && !has_work(p)) {
                     p.alive.store(false, std::memory_order_release);
+                    // A dead P is skipped by all_parked scans, so this
+                    // exit can complete quiescence — tell the watchers.
+                    // (Latent before 🎯T34 O3: unpark_one's unconditional
+                    // broadcasts papered over the missing notify here.)
+                    notify_quiesce_watchers();
                     return;
                 }
             }
@@ -4096,19 +4135,25 @@ namespace csp {
             };
 
             for (;;) {
-                {
-                    std::unique_lock<std::mutex> lk(park_mu);
-                    park_cv.wait(lk, [&] {
-                        if (user_done()) return true;
-                        if (has_global_work_.load(std::memory_order_acquire)) return true;
-                        // Only wake for quiescence when a hook is registered
-                        // (e.g. fake_clock). Without a hook there is nothing
-                        // useful to do when all workers are parked — sleeping
-                        // is correct; busy-spinning is not.
-                        if (has_hook_.load(std::memory_order_acquire) && all_parked()) return true;
-                        return false;
-                    });
-                }
+                // Register as a quiescence watcher only while a hook is
+                // installed (fake_clock).  Without one, worker parks are
+                // irrelevant here and must not wake this thread — and
+                // work arriving never wakes it (nothing to do with work;
+                // workers are unparked directly via their Notes).
+                bool const hook = has_hook_.load(std::memory_order_acquire);
+                park_wait([&] {
+                    if (user_done()) return true;
+                    // Hook installed/uninstalled while we waited
+                    // (broadcast_park wakes us unconditionally): loop
+                    // around and re-register with fresh parameters.
+                    if (has_hook_.load(std::memory_order_acquire) != hook) return true;
+                    // Only wake for quiescence when a hook is registered
+                    // (e.g. fake_clock). Without a hook there is nothing
+                    // useful to do when all workers are parked — sleeping
+                    // is correct; busy-spinning is not.
+                    if (hook && all_parked()) return true;
+                    return false;
+                }, /*quiescence=*/hook);
                 if (user_done()) break;
                 if (has_global_work_.load(std::memory_order_acquire)) continue;
                 // Quiescent: all workers parked. Call hook if registered.
@@ -4136,8 +4181,7 @@ namespace csp {
             // global queue empty).  Unlike main_loop(), suspended imps that
             // are waiting for external events (e.g. fake_clock timers) do NOT
             // prevent this from returning — they are not in any run queue.
-            std::unique_lock<std::mutex> lk(park_mu);
-            park_cv.wait(lk, [this] {
+            park_wait([this] {
                 if (has_global_work_.load(std::memory_order_acquire)) {
                     return false;
                 }
@@ -4148,7 +4192,7 @@ namespace csp {
                     if (!p.parked.load(std::memory_order_acquire)) return false;
                 }
                 return true;
-            });
+            }, /*quiescence=*/true);
         }
 
         void Runtime::watchdog_loop() {

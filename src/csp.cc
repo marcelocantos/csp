@@ -245,8 +245,7 @@ namespace csp {
             auto daemon = rt.daemon_gs.load(std::memory_order_acquire);
             if (live - 1 <= daemon) {
                 // All non-daemon imps are done.
-                { std::lock_guard<std::mutex> lk(rt.park_mu); }
-                rt.park_cv.notify_all();
+                rt.notify_watchers();
             }
         }
 
@@ -632,8 +631,7 @@ int run() {
     // Wait for either completion or quiescence (all workers parked +
     // no global work + no pending signals = deadlock or external
     // action needed).
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&] {
+    rt.park_wait([&] {
         if (user_done()) return true;
         // Check quiescence: all workers parked, no global work, no signals.
         if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
@@ -646,7 +644,7 @@ int run() {
             }
         }
         return true;  // quiescent — deadlock or done
-    });
+    }, /*quiescence=*/true);
     return 0;
 }
 
@@ -654,8 +652,7 @@ void await_idle() {
     // Wait for ALL imps (including daemons) to exit.
     // Used by test cleanup after killing daemon handlers.
     auto& rt = Runtime::instance();
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&rt] {
+    rt.park_wait([&rt] {
         return rt.live_gs.load(std::memory_order_acquire) == 0;
     });
 }
@@ -676,8 +673,7 @@ void await_quiescent() {
     // At this point every live imp has registered its channel/timer
     // waiters and yielded — the system is in a deterministic state.
     auto& rt = Runtime::instance();
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&rt] {
+    rt.park_wait([&rt] {
         if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
         if (csp::detail::Reactor::instance().has_pending_signals()) return false;
         int np = rt.num_procs_.load(std::memory_order_acquire);
@@ -688,7 +684,7 @@ void await_quiescent() {
             }
         }
         return true;
-    });
+    }, /*quiescence=*/true);
 }
 
 void yield() {

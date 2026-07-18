@@ -23,6 +23,21 @@ struct Runtime {
 
     std::mutex park_mu;
     std::condition_variable park_cv;
+    // Watcher-count gates for park_cv broadcasts (🎯T34 O3).  Only
+    // completion/quiescence watchers (main_loop, run, await_idle,
+    // await_quiescent, quiescent_loop) wait on park_cv; scheduler-side
+    // notifiers skip the broadcast syscall when none is registered.
+    // Two classes, two instances of the gate protocol verified in
+    // formal/ParkGate.tla:
+    //   park_waiters_    — all watchers; notified on completion events
+    //                      (imp exit, shutdown).
+    //   quiesce_waiters_ — the subset whose predicate reads worker
+    //                      parked state; notified when a worker parks
+    //                      or winds down.
+    // A watcher's predicate must only read state whose publishers
+    // notify a counter the watcher registered on.
+    std::atomic<int> park_waiters_{0};
+    std::atomic<int> quiesce_waiters_{0};
 
     std::atomic<bool> stopping{false};
     std::atomic<bool> has_global_work_{false};  // Set by push_to_global, cleared by drain
@@ -49,6 +64,39 @@ struct Runtime {
     void init(int num_procs);   // 0 = hardware_concurrency
     void shutdown();
     void unpark_one();
+
+    // Register as a park_cv watcher and wait for pred.  quiescence
+    // selects the additional quiesce_waiters_ registration for
+    // predicates that read worker parked state.
+    // TLA:ParkGate.WRegister TLA:ParkGate.WEval
+    template <typename Pred>
+    void park_wait(Pred&& pred, bool quiescence = false) {
+        std::unique_lock<std::mutex> lk(park_mu);
+        park_waiters_.fetch_add(1, std::memory_order_relaxed);
+        if (quiescence) {
+            quiesce_waiters_.fetch_add(1, std::memory_order_relaxed);
+        }
+        // Pairs with the fence in notify_watchers (eventcount): either
+        // the notifier sees our registration, or our predicate read
+        // sees its published state.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        park_cv.wait(lk, std::forward<Pred>(pred));
+        if (quiescence) {
+            quiesce_waiters_.fetch_sub(1, std::memory_order_relaxed);
+        }
+        park_waiters_.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    // Broadcast park_cv iff a watcher is registered.  Callers must
+    // have published the state the watchers' predicates read (release
+    // stores suffice; the fence supplies the SC pairing).
+    void notify_watchers();          // completion events (imp exit, shutdown)
+    void notify_quiesce_watchers();  // worker park / wind-down events
+
+    // Unconditional broadcast for cold reconfiguration events
+    // (quiescence-hook install/uninstall): wakes every watcher so it
+    // re-enters park_wait and re-registers with fresh parameters.
+    void broadcast_park();
 
     // Push an imp to the global run queue.  Caller must hold
     // global_mu.  The imp must already be delinked from any local
