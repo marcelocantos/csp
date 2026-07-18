@@ -1116,7 +1116,7 @@ targets:
     achieved: 2026-07-04
   T34:
     name: Channel rendezvous cost is flat across processor counts and within 2× of the single-worker baseline
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1130,6 +1130,23 @@ targets:
     - scheduler
     - channels
     origin: 'Session 2026-07-18: channel hot-path performance investigation'
+    discovered: 2026-07-18
+    achieved: 2026-07-18
+  T35:
+    name: Multi-writer fan-in and buffered channels scale with processor count instead of degrading
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'alt/8ch-shape fan-in at default CSP_MAXPROCS is within 2x of its CSP_MAXPROCS=2 figure (2026-07-18 post-T34 baseline: ~210 ns at 2 procs vs 1.3–5 µs noisy at 16)'
+    - Buffered chan<int>(1024) throughput at 16 procs is under 500 ns/element (post-T34 baseline ~1670 ns), via sticky alt registration and/or a ring buffer owned by Channel (paper 33 O4) — either design TLA-modeled before implementation
+    - 'alt/prialt/vulture semantics preserved: full suite green natively and under TSan'
+    context: 'Follow-up to 🎯T34 (paper 33, docs/papers/33-channel-hot-path-performance.md). Post-T34 profiling: fan-in is bound by full phase-2/phase-3 re-registration each alt (all K channel locks while writers hammer the same locks) — sticky registration is the lever; buffered channels still pay two rendezvous per element through the filter imp — O4 ring-buffer-in-Channel is the lever (~50 ns potential). Both are architectural: model in TLA+ first (MultiChannelAlt.tla / BufferedChanFilter.tla are the existing neighbours). Remaining micro item: count==1 prialt fast path skipping pin/dedup machinery.'
+    tags:
+    - performance
+    - channels
+    - scheduler
+    origin: 'Session 2026-07-18: T34 round-2 profiling'
     discovered: 2026-07-18
   T4:
     name: API safety gaps are closed
