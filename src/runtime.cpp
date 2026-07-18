@@ -82,7 +82,7 @@ namespace csp {
             live_gs.store(0, std::memory_order_release);
 
             {
-                std::lock_guard<std::mutex> lk(global_mu);
+                std::lock_guard lk(global_mu);
                 global_run_queue.clear();
             }
 
@@ -202,7 +202,7 @@ namespace csp {
             // predicate false still holds park_mu until cv.wait blocks;
             // serialize so the notify lands after it (same shape as the
             // shutdown fix, bug #8). TLA:ParkGate.NAcquireMu
-            { std::lock_guard<std::mutex> lk(park_mu); }
+            { std::lock_guard lk(park_mu); }
             park_cv.notify_all();
         }
 
@@ -213,12 +213,12 @@ namespace csp {
             if (quiesce_waiters_.load(std::memory_order_relaxed) == 0) {
                 return;
             }
-            { std::lock_guard<std::mutex> lk(park_mu); }
+            { std::lock_guard lk(park_mu); }
             park_cv.notify_all();
         }
 
         void Runtime::broadcast_park() {
-            { std::lock_guard<std::mutex> lk(park_mu); }
+            { std::lock_guard lk(park_mu); }
             park_cv.notify_all();
         }
 
@@ -257,9 +257,10 @@ namespace csp {
         }
 
         void Runtime::push_to_global(Imp* imp) {
-            // Caller must hold global_mu.
+            // Caller must hold global_mu and hold the placement claim.
             assert(!imp->next_);
             assert(!imp->in_global_);
+            assert(imp->placed_.load(std::memory_order_relaxed));
             imp->in_global_ = true;
             global_run_queue.push_back(imp);
             has_global_work_.store(true, std::memory_order_release);
@@ -383,7 +384,7 @@ namespace csp {
                 if (has_global_work_.load(std::memory_order_acquire)) continue;
                 // Quiescent: all workers parked. Call hook if registered.
                 {
-                    std::lock_guard<std::mutex> hlk(hook_mu_);
+                    std::lock_guard hlk(hook_mu_);
                     if (quiescence_hook_) {
                         if (!quiescence_hook_()) {
                             // Hook has no more fake-clock work. Live imps
@@ -473,7 +474,7 @@ namespace csp {
                         // suite run — paper 32, C1).
                         bool rescuable = false;
                         {
-                            std::lock_guard<std::mutex> lk(p.run_mu);
+                            std::lock_guard lk(p.run_mu);
                             if (auto* start = p.busy) {
                                 auto* it = start;
                                 do {
@@ -532,7 +533,7 @@ namespace csp {
         }
 
         void Runtime::add_processor() {
-            std::lock_guard<std::mutex> lk(global_mu);
+            std::lock_guard lk(global_mu);
             int n = num_procs_.load(std::memory_order_relaxed);
 
             // Try to reuse a dead surplus slot.
@@ -571,7 +572,7 @@ namespace csp {
 
         // TLA:StealWork.VLocalNext
         Imp* Runtime::local_next(Processor& p) {
-            std::lock_guard<std::mutex> lk(p.run_mu);
+            std::lock_guard lk(p.run_mu);
             auto& busy = p.busy;
             if (!busy) {
                 p.running = nullptr;
@@ -595,7 +596,7 @@ namespace csp {
 
         // TLA:StealWork.TkAcquireGlobal TLA:StealWork.TkPopAndSchedule
         bool Runtime::take_from_global([[maybe_unused]] Processor& p) {
-            std::lock_guard<std::mutex> lk(global_mu);
+            std::lock_guard lk(global_mu);
             if (global_run_queue.empty()) {
                 has_global_work_.store(false, std::memory_order_release);
                 return false;
@@ -626,12 +627,12 @@ namespace csp {
 
                 Imp* stolen = nullptr;
                 {
-                    std::lock_guard<std::mutex> lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
+                    std::lock_guard lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
 
                     // Try to acquire global_mu without blocking to avoid
                     // deadlock (take_from_global holds global_mu then
                     // acquires run_mu via schedule_local).
-                    std::unique_lock<std::mutex> glk(global_mu, std::try_to_lock); // TLA:StealWork.TStealTryGlobalOK TLA:StealWork.TStealTryGlobalFail
+                    std::unique_lock glk(global_mu, std::try_to_lock); // TLA:StealWork.TStealTryGlobalOK TLA:StealWork.TStealTryGlobalFail
                     if (!glk) continue;
 
                     if (!victim.busy) continue;
@@ -665,7 +666,7 @@ namespace csp {
 
         bool Runtime::has_work(Processor& p) {
             {
-                std::lock_guard<std::mutex> lk(p.run_mu);
+                std::lock_guard lk(p.run_mu);
                 // Queue has real work if there's more than just the sentinel.
                 if (p.busy && p.busy->next_ != p.busy) {
                     return true;
@@ -673,7 +674,7 @@ namespace csp {
             }
 
             {
-                std::lock_guard<std::mutex> lk(global_mu);
+                std::lock_guard lk(global_mu);
                 if (!global_run_queue.empty()) {
                     return true;
                 }

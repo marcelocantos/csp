@@ -162,6 +162,16 @@ struct alignas(16) Imp {
     enum SuspendState : uint32_t { SUSP_IDLE, SUSP_PENDING, SUSP_WAKE };
     std::atomic<uint32_t> suspend_state_{SUSP_IDLE};
 
+    // Run-queue placement claim (🎯T34 round 2, TLA:PlacementClaim):
+    // TRUE while the imp is in (or committed to) a run queue.  Racing
+    // placers — duplicate wakers, the deferred-wake drain — each do
+    // one exchange(TRUE); only the one that observed FALSE inserts.
+    // Cleared by the imp itself when it delinks to suspend/exit
+    // (after the CheckWP early-wake decision, so a woken-early imp
+    // never exposes a FALSE window).  Replaces the global_mu-serialized
+    // next_/in_global_ checks on the wake path.
+    std::atomic<bool> placed_{false};
+
 #if CSP_ASAN
     void* asan_fake_stack_ = nullptr;  // ASan fake-stack state for this fiber
 #endif

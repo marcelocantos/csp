@@ -14,6 +14,7 @@
 #include "csp/imp_exit.h"
 #include "csp/internal/blocking_pool.h"
 #include "csp/internal/csp_internal.h"
+#include "csp/internal/fast_mutex.h"
 #include "csp/internal/flat_hash_set.h"
 #include "csp/internal/function.h"
 #include "csp/internal/hamt.h"
