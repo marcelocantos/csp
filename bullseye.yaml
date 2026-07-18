@@ -1116,7 +1116,7 @@ targets:
     achieved: 2026-07-04
   T34:
     name: Channel rendezvous cost is flat across processor counts and within 2× of the single-worker baseline
-    status: identified
+    status: converging
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1124,7 +1124,7 @@ targets:
     - 'No global lock is acquired on the steady-state rendezvous path (wake and context-switch): drain_suspended and Imp::schedule no longer take global_mu per operation, or an equivalent lock-free protocol is TLC-verified (DrainSuspended/StealWork specs updated)'
     - unpark_one does not broadcast park_cv when no completion/quiescence watcher is parked
     - make bench runs green and its send/recv numbers are recorded in docs/papers/33-channel-hot-path-performance.md as before/after
-    context: 'Paper 33 (docs/papers/33-channel-hot-path-performance.md, 2026-07-18) measured the channel hot path: two-imp ping-pong degrades 321→5081 ns/op as CSP_MAXPROCS goes 2→16 because every wake routes through global_mu + push_to_global + unpark_one (futex/condvar syscalls) and migrates the imp to a fresh core, and drain_suspended takes global_mu on every context switch. Ranked fixes O1–O8 in the paper: wake-to-local runnext-style fast path, per-imp CAS suspend protocol, unpark broadcast gating, real futex Note, singleton prialt fast path, current_imp caching, channel alloc coalescing. Buffered-channel rearchitecture (O4: ring buffer in Channel instead of filter imp; 825→~50 ns potential) is deliberately excluded — separate objective if pursued.'
+    context: 'Paper 33 (docs/papers/33-channel-hot-path-performance.md) measured the channel hot path and ranked fixes O1–O8. Session 2026-07-18 landed O6+O8 (041110e), O3 (9659527), O2 (73d7d54), O1+O5+O7-lite (1b54133): wake-to-local scheduling, CAS suspend protocol, gated park broadcasts, futex Note. RESULTS: pingpong flat ~189 ns/op across 2–16 procs (was 321→5081; criterion 1 MET with margin); drain_suspended off global_mu (TLC: DrainSuspended.tla); unpark_one no longer touches park_cv (TLC: ParkGate.tla); make bench green with numbers in paper 33 (criteria 3–4 MET). REMAINING for criterion 2: Imp::schedule still takes global_mu for placement serialization — needs a per-imp placement CAS (next-round list in paper 33, which also flags fan-in channel-mutex contention / sticky registration and O4 ring-buffer buffered channels as follow-ups). alt/8ch at 16 procs trades ~13% (accepted; documented in paper).'
     tags:
     - performance
     - scheduler
