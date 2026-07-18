@@ -2084,8 +2084,14 @@ public:
     void release(StackRegion region);
 
     // Reclaim unused stack pages below the current SP.
-    // No-op for arena stacks (no per-page reclaim supported).
+#if CSP_USE_ARENA_STACKS
+    // No-op for arena stacks (no per-page reclaim supported): the whole
+    // slab is one VMA. Inline so the hot-path call sites (prialt entry,
+    // do_switch, spawn) compile to nothing (🎯T35 profiling).
+    void maybe_shrink(StackRegion const&, void*) {}
+#else
     void maybe_shrink(StackRegion const& region, void* current_sp);
+#endif
 
     // Unmap all pooled stacks. Called during shutdown.
     void drain();

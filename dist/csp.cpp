@@ -330,13 +330,11 @@ auto & counterses() {
 namespace {
 
     // 🎯T29 hang diagnosis scaffolding: env-gated one-line traces of the
-    // endpoint-death / registration / wake protocol. Cost when off: one
-    // predictable branch on a static bool.
-    bool debug_death() {
-        static bool const on = std::getenv("CSP_DEBUG_DEATH") != nullptr;
-        return on;
-    }
-#define DD(...) do { if (debug_death()) fprintf(stderr, __VA_ARGS__); } while (0)
+    // endpoint-death / registration / wake protocol. Namespace-scope
+    // initializer (not a function-local static): access is a plain load
+    // with no init-guard check at the ~8 DD sites on the prialt path.
+    bool const g_debug_death = std::getenv("CSP_DEBUG_DEATH") != nullptr;
+#define DD(...) do { if (g_debug_death) [[unlikely]] fprintf(stderr, __VA_ARGS__); } while (0)
 
     class Channel;
 
@@ -1673,12 +1671,15 @@ namespace csp {
             if (self->stk_) {
                 auto* fp = CSP_FRAME_ADDRESS();
                 check_stack_overflow(self, fp);
+#ifdef CSP_ANALYSE_STACKS
                 // 🎯T3.4.4: profile this suspend's depth into the per-entry
                 // high-water table. The recorded value refines the analyser's
                 // indirect_call_budget on the next spawn() of the same entry
                 // function. It never selects the slot class directly (🎯T33):
                 // a checkpoint sample is not a sound upper bound, so it must
-                // not gate the Small slot.
+                // not gate the Small slot. Compiled out with the analyser
+                // (its only consumer): a mutex + hash lookup per suspend is
+                // pure waste otherwise (🎯T35 profiling).
                 if (self->entry_fn_ && self->entry_sp_) {
                     auto* top = static_cast<char*>(self->entry_sp_);
                     auto* cur = static_cast<char*>(fp);
@@ -1687,6 +1688,7 @@ namespace csp {
                             self->entry_fn_, static_cast<size_t>(top - cur));
                     }
                 }
+#endif
                 StackPool::instance().maybe_shrink(self->stk_, fp);
             }
             Imp* target;
@@ -6637,11 +6639,7 @@ void StackPool::release(StackRegion region) {
     }
 }
 
-void StackPool::maybe_shrink(StackRegion const&, void*) {
-    // No-op for arena stacks: the entire slab is one VMA; we cannot reclaim
-    // individual slot pages without splitting the mapping. The software
-    // overflow limit (overflow_limit) replaces guard-page overflow detection.
-}
+// maybe_shrink: inline no-op in the header for arena builds.
 
 void StackPool::drain() {
     std::lock_guard<std::mutex> lk(mu_);

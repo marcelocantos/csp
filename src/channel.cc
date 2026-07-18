@@ -43,13 +43,11 @@ auto & counterses() {
 namespace {
 
     // 🎯T29 hang diagnosis scaffolding: env-gated one-line traces of the
-    // endpoint-death / registration / wake protocol. Cost when off: one
-    // predictable branch on a static bool.
-    bool debug_death() {
-        static bool const on = std::getenv("CSP_DEBUG_DEATH") != nullptr;
-        return on;
-    }
-#define DD(...) do { if (debug_death()) fprintf(stderr, __VA_ARGS__); } while (0)
+    // endpoint-death / registration / wake protocol. Namespace-scope
+    // initializer (not a function-local static): access is a plain load
+    // with no init-guard check at the ~8 DD sites on the prialt path.
+    bool const g_debug_death = std::getenv("CSP_DEBUG_DEATH") != nullptr;
+#define DD(...) do { if (g_debug_death) [[unlikely]] fprintf(stderr, __VA_ARGS__); } while (0)
 
     class Channel;
 

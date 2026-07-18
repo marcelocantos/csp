@@ -423,12 +423,15 @@ namespace csp {
             if (self->stk_) {
                 auto* fp = CSP_FRAME_ADDRESS();
                 check_stack_overflow(self, fp);
+#ifdef CSP_ANALYSE_STACKS
                 // 🎯T3.4.4: profile this suspend's depth into the per-entry
                 // high-water table. The recorded value refines the analyser's
                 // indirect_call_budget on the next spawn() of the same entry
                 // function. It never selects the slot class directly (🎯T33):
                 // a checkpoint sample is not a sound upper bound, so it must
-                // not gate the Small slot.
+                // not gate the Small slot. Compiled out with the analyser
+                // (its only consumer): a mutex + hash lookup per suspend is
+                // pure waste otherwise (🎯T35 profiling).
                 if (self->entry_fn_ && self->entry_sp_) {
                     auto* top = static_cast<char*>(self->entry_sp_);
                     auto* cur = static_cast<char*>(fp);
@@ -437,6 +440,7 @@ namespace csp {
                             self->entry_fn_, static_cast<size_t>(top - cur));
                     }
                 }
+#endif
                 StackPool::instance().maybe_shrink(self->stk_, fp);
             }
             Imp* target;
