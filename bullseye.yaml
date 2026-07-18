@@ -1114,6 +1114,23 @@ targets:
     origin: manual
     discovered: 2026-07-03
     achieved: 2026-07-04
+  T34:
+    name: Channel rendezvous cost is flat across processor counts and within 2× of the single-worker baseline
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'bench send/recv ns/op at default CSP_MAXPROCS is within 2x of the CSP_MAXPROCS=2 figure on the same machine (baseline 2026-07-18: 321 ns vs 5081 ns — a 16x gap)'
+    - 'No global lock is acquired on the steady-state rendezvous path (wake and context-switch): drain_suspended and Imp::schedule no longer take global_mu per operation, or an equivalent lock-free protocol is TLC-verified (DrainSuspended/StealWork specs updated)'
+    - unpark_one does not broadcast park_cv when no completion/quiescence watcher is parked
+    - make bench runs green and its send/recv numbers are recorded in docs/papers/33-channel-hot-path-performance.md as before/after
+    context: 'Paper 33 (docs/papers/33-channel-hot-path-performance.md, 2026-07-18) measured the channel hot path: two-imp ping-pong degrades 321→5081 ns/op as CSP_MAXPROCS goes 2→16 because every wake routes through global_mu + push_to_global + unpark_one (futex/condvar syscalls) and migrates the imp to a fresh core, and drain_suspended takes global_mu on every context switch. Ranked fixes O1–O8 in the paper: wake-to-local runnext-style fast path, per-imp CAS suspend protocol, unpark broadcast gating, real futex Note, singleton prialt fast path, current_imp caching, channel alloc coalescing. Buffered-channel rearchitecture (O4: ring buffer in Channel instead of filter imp; 825→~50 ns potential) is deliberately excluded — separate objective if pursued.'
+    tags:
+    - performance
+    - scheduler
+    - channels
+    origin: 'Session 2026-07-18: channel hot-path performance investigation'
+    discovered: 2026-07-18
   T4:
     name: API safety gaps are closed
     status: achieved
