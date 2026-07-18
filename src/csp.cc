@@ -121,8 +121,11 @@ namespace csp {
             // OS thread.  This ensures the saved register data on the
             // target's stack is visible to us before we jump.
             auto ctx = target.ctx_.load(std::memory_order_acquire);
-            current_p().save_ctx = &self->ctx_;
-            current_p().save_imp = self;
+            {
+                auto& p = current_p();
+                p.save_ctx = &self->ctx_;
+                p.save_imp = self;
+            }
 #if CSP_ASAN
             __sanitizer_start_switch_fiber(
                 &self->asan_fake_stack_,
@@ -139,8 +142,11 @@ namespace csp {
             // Release-store our caller's saved SP so that any thread
             // that later acquire-loads ctx_ will also see the register
             // data that jump_fcontext wrote to the caller's stack.
-            current_p().save_ctx->store(t.fctx, std::memory_order_release);
-            drain_suspended(current_p().save_imp);
+            // Re-resolve the processor: we may have resumed on a
+            // different OS thread than the one that jumped.
+            auto& p_after = current_p();
+            p_after.save_ctx->store(t.fctx, std::memory_order_release);
+            drain_suspended(p_after.save_imp);
             return (intptr_t)t.data;
         }
 
@@ -160,13 +166,12 @@ namespace csp {
         }
 
         void Imp::schedule_local(bool make_current) {
-            std::lock_guard<std::mutex> lk(current_p().run_mu);
+            auto& p = current_p();
+            std::lock_guard<std::mutex> lk(p.run_mu);
             if (next_) {
                 return;
             }
-            auto& busy = current_p().busy;
-            if (busy == &current_p().main) {
-            }
+            auto& busy = p.busy;
             if (busy) {
                 next_ = busy;
                 prev_ = busy->prev_;
@@ -230,8 +235,8 @@ namespace csp {
                 // Excluded: P0 (its thread runs main_loop, never imps)
                 // and non-P threads (reactor, blocking pool).
                 // TLA:StealWork.WAcquireRunMu TLA:StealWork.WPushLocal
-                if (has_processor() && current_p().id != 0) {
-                    auto& p = current_p();
+                if (has_processor()) {
+                    if (auto& p = current_p(); p.id != 0) {
                     std::lock_guard<std::mutex> plk(p.run_mu);
                     bool has_waiting = false;
                     if (auto* start = p.busy) {
@@ -256,6 +261,7 @@ namespace csp {
                     }
                     // Local queue already has waiting work — spill to
                     // the global queue so parked workers share the load.
+                    }
                 }
                 rt.push_to_global(this); // TLA:StealWork.WPush
             }
@@ -273,9 +279,10 @@ namespace csp {
         }
 
         void Imp::deschedule() {
-            std::lock_guard<std::mutex> lk(current_p().run_mu);
+            auto& p = current_p();
+            std::lock_guard<std::mutex> lk(p.run_mu);
             assert(next_);
-            auto& busy = current_p().busy;
+            auto& busy = p.busy;
             if (busy == this && (busy = next_) == this) {
                 busy = nullptr;
             }
@@ -363,8 +370,6 @@ namespace csp {
                 // Inline schedule without re-acquiring run_mu.
                 if (!next_) {
                     if (busy) {
-                        if (busy == &current_p().main) {
-                        }
                         next_ = busy;
                         prev_ = busy->prev_;
                         next_->prev_ = prev_->next_ = this;
@@ -414,13 +419,14 @@ namespace csp {
             }
             Imp* target;
             {
-                std::lock_guard<std::mutex> lk(current_p().run_mu);
+                auto& p = current_p();
+                std::lock_guard<std::mutex> lk(p.run_mu);
                 // Update running to the active MT so steal_work skips it.
                 // (local_next sets running for the initial pick; chained
                 // do_switch calls keep it current as execution moves
                 // between imps.)
-                current_p().running = self;
-                auto& busy = current_p().busy;
+                p.running = self;
+                auto& busy = p.busy;
                 if (busy == self) {
                     busy = busy->next_;
                 }
@@ -752,9 +758,9 @@ void await_quiescent() {
 void yield() {
     bool should_switch;
     {
-        std::lock_guard<std::mutex> lk(current_p().run_mu);
-        auto& busy = current_p().busy;
-        should_switch = busy->next_ != busy;
+        auto& p = current_p();
+        std::lock_guard<std::mutex> lk(p.run_mu);
+        should_switch = p.busy->next_ != p.busy;
     }
     if (should_switch) {
         do_switch();
