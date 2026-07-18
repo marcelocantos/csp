@@ -1,5 +1,6 @@
 #pragma once
 
+#include <csp/internal/fast_mutex.h>
 #include <csp/internal/processor.h>
 
 #include <atomic>
@@ -18,7 +19,7 @@ struct Runtime {
 
     std::vector<std::unique_ptr<Processor>> procs;  // P0 = main thread
 
-    std::mutex global_mu;
+    FastMutex global_mu;
     std::deque<Imp*> global_run_queue;
 
     std::mutex park_mu;

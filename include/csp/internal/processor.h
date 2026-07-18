@@ -1,9 +1,9 @@
 #pragma once
 
 #include <csp/internal/csp_internal.h>
+#include <csp/internal/fast_mutex.h>
 #include <csp/internal/note.h>
 
-#include <mutex>
 #include <thread>
 
 namespace csp::detail {
@@ -18,7 +18,7 @@ struct Processor {
     std::atomic<fcontext_t>*  save_ctx;   // Where to store suspended imp's ctx
     Imp*  save_imp;    // The imp being suspended
 
-    std::mutex run_mu;                // Protects busy queue DLL
+    FastMutex run_mu;                 // Protects busy queue DLL
     Imp* running = nullptr;   // Imp claimed by local_next (steal-safe)
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
     Note note;                        // Per-worker futex note (park/unpark)
