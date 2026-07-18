@@ -296,7 +296,6 @@ std::exception_ptr cancel_reason() {
 #include <cstdlib>
 #include <exception>
 #include <mutex>
-#include <random>
 #include <string>
 
 
@@ -439,7 +438,7 @@ namespace {
             --counterses()[endpt].active;
             // Check if the opposite side has live endpoints.
             Slot * other_slot = (endpt == wr) ? read_slot_ : write_slot_;
-            DD("DD death ch=%p endpt=%d other_refs=%d\n", (void*)this, endpt,
+            DD("DD death ch=%p endpt=%d other_refs=%zu\n", (void*)this, endpt,
                other_slot->refcount.load(std::memory_order_acquire));
             if (other_slot->refcount.load(std::memory_order_acquire) > 0) {
                 // Wake waiters on the opposite side (death signal).
@@ -537,11 +536,18 @@ namespace {
         }
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
+            // Cache the current imp. The pointer stays valid across
+            // do_switch below: it names this imp, and Imp::run restores
+            // current_imp() to it before control returns here. Only the
+            // TLS *slot* must not be cached across a switch (see
+            // docs/tls-caching-bug.md); the Imp* value is stable.
+            auto * const self = current_imp();
+
             // Reclaim unused stack pages at this API boundary.
-            if (current_imp()->stk_) {
+            if (self->stk_) {
                 auto* fp = CSP_FRAME_ADDRESS();
-                check_stack_overflow(current_imp(), fp);
-                StackPool::instance().maybe_shrink(current_imp()->stk_, fp);
+                check_stack_overflow(self, fp);
+                StackPool::instance().maybe_shrink(self->stk_, fp);
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -672,7 +678,7 @@ namespace {
 
                     if (!*ch) {
                         DD("DD dead-scan imp=%p §%zu ch=%p i=%d ready=%d\n",
-                           (void*)current_imp(), current_imp()->id_, (void*)ch,
+                           (void*)self, self->id_, (void*)ch,
                            i, int(flags & ready_flag));
                         if (flags & ready_flag) {
                             // Data chanop on dead channel: defer until
@@ -698,7 +704,7 @@ namespace {
                                 int idx = int(cw.chanop - cw.thread->chanops_);
                                 cw.thread->signal_ = idx;
                                 DD("DD match matcher=%p §%zu claimed=%p §%zu ch=%p idx=%d\n",
-                                   (void*)current_imp(), current_imp()->id_,
+                                   (void*)self, self->id_,
                                    (void*)cw.thread, cw.thread->id_, (void*)ch, idx);
 
                                 // Set up match: src is always writer's
@@ -746,20 +752,20 @@ namespace {
             // Re-resolution pins (alive_++) serve double duty: they keep
             // channels alive while we sleep.  No separate pin loop needed.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
-            current_imp()->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
+            self->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
                     DD("DD reg imp=%p §%zu ch=%p endpt=%d i=%d ready=%d\n",
-                       (void*)current_imp(), current_imp()->id_, (void*)ch,
+                       (void*)self, self->id_, (void*)ch,
                        int(flags & endpt_flag), i, int(flags & ready_flag));
-                    ch->endpts_[flags & endpt_flag].wait(&chop);
+                    ch->endpts_[flags & endpt_flag].wait(&chop, self);
                 }
             }
 
-            current_imp()->chanops_ = chanops;
-            current_imp()->n_chanops_ = count;
+            self->chanops_ = chanops;
+            self->n_chanops_ = count;
             // Mark suspending_ before unlock_all so that schedule()
             // (called by a waker on another thread) will set
             // wake_pending_ instead of pushing to the global queue.
@@ -769,21 +775,21 @@ namespace {
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
             DD("DD suspend imp=%p §%zu\n",
-               (void*)current_imp(), current_imp()->id_);
-            current_imp()->suspending_.store(true, std::memory_order_release);
+               (void*)self, self->id_);
+            self->suspending_.store(true, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            current_imp()->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
             DD("DD woke imp=%p §%zu signal=%d\n",
-               (void*)current_imp(), current_imp()->id_, current_imp()->signal_);
+               (void*)self, self->id_, self->signal_);
 
             // Phase 3: Woken up — clean up registrations under sorted locks.
             lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < current_imp()->n_chanops_; ++i) {
-                auto const & chop = current_imp()->chanops_[i];
+            for (int i = 0; i < self->n_chanops_; ++i) {
+                auto const & chop = self->chanops_[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, current_imp());
+                    ch->endpts_[flags & endpt_flag].remove(&chop, self);
                 }
             }
             unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
@@ -793,19 +799,19 @@ namespace {
             for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
             mi->has_pins = false;
 
-            current_imp()->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+            self->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
 
             // Check for swap wake-up: if signal_ is INT_MIN, a channel swap
             // occurred. Re-resolve happens at retry: label.
-            if (current_imp()->signal_ == INT_MIN) {
-                current_imp()->chanops_ = nullptr;
-                current_imp()->n_chanops_ = 0;
+            if (self->signal_ == INT_MIN) {
+                self->chanops_ = nullptr;
+                self->n_chanops_ = 0;
                 goto retry;
             }
 
-            out->result = current_imp()->signal_;
-            current_imp()->chanops_ = nullptr;
-            current_imp()->n_chanops_ = 0;
+            out->result = self->signal_;
+            self->chanops_ = nullptr;
+            self->n_chanops_ = 0;
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
@@ -842,12 +848,12 @@ namespace {
             Waiters waiters;
             Vultures vultures;
 
-            void wait(ChanOp const * chop) {
+            void wait(ChanOp const * chop, Imp * t) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
-                    waiters.emplace(chop, current_imp());
+                    waiters.emplace(chop, t);
                 } else {
-                    vultures.emplace(chop, current_imp());
+                    vultures.emplace(chop, t);
                 }
             }
 
@@ -1068,8 +1074,18 @@ void prialt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait)
 void alt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait) {
     int offset = 0;
     if (count > 1) {
-        thread_local std::mt19937 rng{std::random_device{}()};
-        offset = std::uniform_int_distribution<int>(0, count - 1)(rng);
+        // xorshift64* + Lemire reduction: the offset only needs to be
+        // uniform-ish for fairness, not cryptographic, and this stays
+        // off the syscall/heavy-math path (mt19937 + rejection sampling
+        // cost ~25 ns per alt).
+        thread_local uint64_t rng_state =
+            0x9e3779b97f4a7c15u ^ reinterpret_cast<uintptr_t>(&rng_state);
+        uint64_t x = rng_state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        rng_state = x;
+        offset = int(((x * 0x2545f4914f6cdd1du >> 32) * uint64_t(count)) >> 32);
     }
     Channel::prialt_begin_impl(out, chanops, count, bool(nowait), offset);
 }
@@ -1574,9 +1590,12 @@ namespace csp {
             target->run(status);
             // Re-enter scope if we left it (yield path). For scheduled
             // imps, make_runnable already entered — exchange returns false.
-            if (current_imp()->qs_entered_
-                && current_imp()->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
-                current_imp()->qs_->enter();
+            // self is still this imp after resume (Imp::run restored
+            // current_imp() to it); only the TLS slot must not be cached
+            // across the switch, not the Imp* value.
+            if (self->qs_entered_
+                && self->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                self->qs_->enter();
             }
         }
 
@@ -1818,9 +1837,10 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 }
 
 void suspend() {
-    current_imp()->suspending_.store(true, std::memory_order_release);
+    auto * const self = current_imp();
+    self->suspending_.store(true, std::memory_order_release);
     do_switch(Status::detach);
-    current_imp()->suspending_.store(false, std::memory_order_release);
+    self->suspending_.store(false, std::memory_order_release);
 }
 
 int run() {

@@ -369,9 +369,12 @@ namespace csp {
             target->run(status);
             // Re-enter scope if we left it (yield path). For scheduled
             // imps, make_runnable already entered — exchange returns false.
-            if (current_imp()->qs_entered_
-                && current_imp()->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
-                current_imp()->qs_->enter();
+            // self is still this imp after resume (Imp::run restored
+            // current_imp() to it); only the TLS slot must not be cached
+            // across the switch, not the Imp* value.
+            if (self->qs_entered_
+                && self->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                self->qs_->enter();
             }
         }
 
@@ -613,9 +616,10 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 }
 
 void suspend() {
-    current_imp()->suspending_.store(true, std::memory_order_release);
+    auto * const self = current_imp();
+    self->suspending_.store(true, std::memory_order_release);
     do_switch(Status::detach);
-    current_imp()->suspending_.store(false, std::memory_order_release);
+    self->suspending_.store(false, std::memory_order_release);
 }
 
 int run() {
