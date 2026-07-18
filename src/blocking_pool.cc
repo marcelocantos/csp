@@ -79,10 +79,13 @@ void BlockingPool::worker() {
 namespace csp::internal {
 
 void run_blocking(std::function<void()> fn) {
-    detail::current_imp()->suspending_.store(true, std::memory_order_release);
+    // Announce the suspend window BEFORE submit: the pool thread's
+    // make_runnable must observe SUSP_PENDING (or later) so the wake
+    // defers to CheckWP/drain. TLA:DrainSuspended.BeginSuspend
+    detail::current_imp()->suspend_state_.store(
+        detail::Imp::SUSP_PENDING, std::memory_order_release);
     detail::BlockingPool::instance().submit(detail::current_imp(), std::move(fn));
     detail::do_switch(detail::Status::detach);
-    detail::current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal

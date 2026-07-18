@@ -482,20 +482,21 @@ namespace {
 
             self->chanops_ = chanops;
             self->n_chanops_ = count;
-            // Mark suspending_ before unlock_all so that schedule()
-            // (called by a waker on another thread) will set
-            // wake_pending_ instead of pushing to the global queue.
-            // Without this, there is a race: after unlock_all but
-            // before do_switch completes, a waker could push us to
+            // Announce the suspend window before unlock_all so that
+            // schedule() (called by a waker on another thread) defers
+            // the wake (CAS to SUSP_WAKE) instead of pushing to a run
+            // queue. Without this, there is a race: after unlock_all
+            // but before do_switch completes, a waker could push us to
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
             DD("DD suspend imp=%p §%zu\n",
                (void*)self, self->id_);
-            self->suspending_.store(true, std::memory_order_release);
+            self->suspend_state_.store(Imp::SUSP_PENDING, std::memory_order_release);
             unlock_all();
             do_switch(Status::detach);
-            self->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            // suspend_state_ is SUSP_IDLE here: CheckWP (early wake) or
+            // drain_suspended (context switch) reset it.
             DD("DD woke imp=%p §%zu signal=%d\n",
                (void*)self, self->id_, self->signal_);
 

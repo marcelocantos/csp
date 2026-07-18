@@ -1,152 +1,117 @@
 ---- MODULE DrainSuspended_Bug ----
 (*******************************************************************************
- * BUGGY VERSION — demonstrates the TOCTOU race that global_mu prevents.
+ * Buggy variant of DrainSuspended: drain_suspended reads the state and
+ * clears it in TWO steps (load, then store IDLE) instead of one atomic
+ * exchange.  A waker's CAS(SUSP → WAKE) can land between them; the
+ * store then wipes the WAKE record and nobody queues the MT:
  *
- * In this version, drain_suspended does NOT hold global_mu. The clear-
- * suspending and check-wake_pending steps are separate non-atomic actions,
- * allowing schedule() to interleave between them.
+ *   1. Drain loads state = SUSP (no wake yet).
+ *   2. Waker CASes SUSP → WAKE, returns (wake "recorded").
+ *   3. Drain stores IDLE — the WAKE is erased, no push happens.
+ *   4. MT sleeps forever → NoLostWakeup fails.
  *
- * The dangerous interleaving:
- *   drain: read wake_pending=false
- *   schedule: suspending=true → set wake_pending=true
- *   drain: clear suspending
- *   Result: suspending=false, wake_pending=true, on_queue=false — LOST!
- *
- * Expected result: TLC finds a NoLostWakeup violation.
+ * This is the same TOCTOU shape the old two-flag protocol (separate
+ * suspending_/wake_pending_ booleans) had to close with the global
+ * mutex; the single-word protocol closes it with the atomic exchange
+ * instead.
  *******************************************************************************)
 
 EXTENDS Integers
 
-VARIABLES
-    suspending,
-    wake_pending,
-    on_queue,
-    global_mu,      \* Only used by schedule() in this buggy version
-    pc_mt,
-    pc_waker
+VARIABLES state, on_queue, waker_pushed, pc_mt, pc_waker
 
-vars == <<suspending, wake_pending, on_queue, global_mu, pc_mt, pc_waker>>
+vars == <<state, on_queue, waker_pushed, pc_mt, pc_waker>>
 
 Init ==
-    /\ suspending = FALSE
-    /\ wake_pending = FALSE
+    /\ state = "idle"
     /\ on_queue = TRUE
-    /\ global_mu = "none"
+    /\ waker_pushed = FALSE
     /\ pc_mt = "running"
     /\ pc_waker = "idle"
 
-(*******************************************************************************
- * MT ACTIONS — same as correct version except drain is split.
- *******************************************************************************)
-
 BeginSuspend ==
     /\ pc_mt = "running"
-    /\ suspending' = TRUE
+    /\ state' = "susp"
     /\ on_queue' = FALSE
     /\ pc_mt' = "check_wp"
-    /\ UNCHANGED <<wake_pending, global_mu, pc_waker>>
+    /\ UNCHANGED <<waker_pushed, pc_waker>>
 
 CheckWP ==
     /\ pc_mt = "check_wp"
-    /\ IF wake_pending
-       THEN /\ wake_pending' = FALSE
+    /\ IF state = "wake"
+       THEN /\ state' = "idle"
             /\ on_queue' = TRUE
-            /\ pc_mt' = "clear_susp"
+            /\ pc_mt' = "done"
        ELSE /\ pc_mt' = "switched_out"
-            /\ UNCHANGED <<wake_pending, on_queue>>
-    /\ UNCHANGED <<suspending, global_mu, pc_waker>>
+            /\ UNCHANGED <<state, on_queue>>
+    /\ UNCHANGED <<waker_pushed, pc_waker>>
 
-ClearSusp ==
-    /\ pc_mt = "clear_susp"
-    /\ suspending' = FALSE
-    /\ pc_mt' = "done"
-    /\ UNCHANGED <<wake_pending, on_queue, global_mu, pc_waker>>
-
-(*******************************************************************************
- * BUG: drain without mutex — two separate non-atomic steps.
- *
- * The buggy split checks wake_pending first, THEN clears suspending.
- * schedule() can interleave between them: it sees suspending=true and
- * sets wake_pending=true, but drain already checked wake_pending (saw
- * false) and never looks again.
- *******************************************************************************)
-
-(* Buggy drain step 1: check wake_pending WITHOUT holding lock *)
-DrainCheckWP ==
+(* BUG: the drain is split — load first ... *)
+DrainLoad ==
     /\ pc_mt = "switched_out"
-    /\ IF wake_pending
-       THEN /\ wake_pending' = FALSE
-            /\ on_queue' = TRUE
-       ELSE UNCHANGED <<wake_pending, on_queue>>
-    /\ pc_mt' = "drain_clear"
-    /\ UNCHANGED <<suspending, global_mu, pc_waker>>
+    /\ IF state = "wake"
+       THEN pc_mt' = "drain_push"
+       ELSE pc_mt' = "drain_clear"
+    /\ UNCHANGED <<state, on_queue, waker_pushed, pc_waker>>
 
-(* Buggy drain step 2: clear suspending WITHOUT holding lock *)
-DrainClearSusp ==
-    /\ pc_mt = "drain_clear"
-    /\ suspending' = FALSE
+(* ... then the clear (and push, when the load saw WAKE) happen in
+ * separate steps, so a waker's CAS can slip in between. *)
+DrainPush ==
+    /\ pc_mt = "drain_push"
+    /\ state' = "idle"
+    /\ on_queue' = TRUE
     /\ pc_mt' = "done"
-    /\ UNCHANGED <<wake_pending, on_queue, global_mu, pc_waker>>
+    /\ UNCHANGED <<waker_pushed, pc_waker>>
 
-(*******************************************************************************
- * WAKER ACTIONS — identical to correct version (schedule still uses
- * global_mu; the bug is that drain doesn't).
- *******************************************************************************)
+DrainClear ==
+    /\ pc_mt = "drain_clear"
+    /\ state' = "idle"
+    /\ pc_mt' = "done"
+    /\ UNCHANGED <<on_queue, waker_pushed, pc_waker>>
 
 StartWake ==
     /\ pc_waker = "idle"
     /\ pc_mt /= "running"
-    /\ pc_waker' = "want_lock"
-    /\ UNCHANGED <<suspending, wake_pending, on_queue, global_mu, pc_mt>>
+    /\ pc_waker' = "waking"
+    /\ UNCHANGED <<state, on_queue, waker_pushed, pc_mt>>
 
-AcquireWake ==
-    /\ pc_waker = "want_lock"
-    /\ global_mu = "none"
-    /\ global_mu' = "sched"
-    /\ pc_waker' = "scheduling"
-    /\ UNCHANGED <<suspending, wake_pending, on_queue, pc_mt>>
-
-DoSchedule ==
-    /\ pc_waker = "scheduling"
-    /\ IF suspending
-       THEN /\ wake_pending' = TRUE
-            /\ UNCHANGED on_queue
+WakerStep ==
+    /\ pc_waker = "waking"
+    /\ IF state = "susp"
+       THEN /\ state' = "wake"
+            /\ pc_waker' = "done_waker"
+            /\ UNCHANGED <<on_queue, waker_pushed, pc_mt>>
+       ELSE IF state = "wake"
+       THEN /\ pc_waker' = "done_waker"
+            /\ UNCHANGED <<state, on_queue, waker_pushed, pc_mt>>
        ELSE /\ on_queue' = TRUE
-            /\ UNCHANGED wake_pending
-    /\ global_mu' = "none"
-    /\ pc_waker' = "done_waker"
-    /\ UNCHANGED <<suspending, pc_mt>>
-
-(*******************************************************************************
- * SPECIFICATION
- *******************************************************************************)
+            /\ waker_pushed' = TRUE
+            /\ pc_waker' = "done_waker"
+            /\ UNCHANGED <<state, pc_mt>>
 
 Next ==
     \/ BeginSuspend
     \/ CheckWP
-    \/ ClearSusp
-    \/ DrainCheckWP      \* Replaces AcquireDrain + Drain
-    \/ DrainClearSusp
+    \/ DrainLoad
+    \/ DrainPush
+    \/ DrainClear
     \/ StartWake
-    \/ AcquireWake
-    \/ DoSchedule
+    \/ WakerStep
 
 Spec == Init /\ [][Next]_vars
 
-(*******************************************************************************
- * PROPERTIES
- *******************************************************************************)
-
 TypeOK ==
-    /\ suspending \in BOOLEAN
-    /\ wake_pending \in BOOLEAN
+    /\ state \in {"idle", "susp", "wake"}
     /\ on_queue \in BOOLEAN
-    /\ global_mu \in {"none", "drain", "sched"}
-    /\ pc_mt \in {"running", "check_wp", "clear_susp",
-                   "switched_out", "drain_clear", "done"}
-    /\ pc_waker \in {"idle", "want_lock", "scheduling", "done_waker"}
+    /\ waker_pushed \in BOOLEAN
+    /\ pc_mt \in {"running", "check_wp", "switched_out", "drain_push",
+                  "drain_clear", "done"}
+    /\ pc_waker \in {"idle", "waking", "done_waker"}
 
 NoLostWakeup ==
     (pc_mt = "done" /\ pc_waker = "done_waker") => on_queue
+
+NoPrematurePush ==
+    waker_pushed => pc_mt = "done"
 
 ====

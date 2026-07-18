@@ -84,35 +84,34 @@ namespace csp {
             vsnprintf(buf += n, len -= n, msg, args);
         }
 
-        // After a context save completes, clear the suspended
-        // imp's suspending_ flag and drain any deferred
-        // wake_pending_.  In M:N mode, both operations are done
-        // under global_mu so they are mutually exclusive with
-        // schedule()'s suspending_ check — eliminating the TOCTOU
-        // race where schedule() sees suspending_==true and sets
-        // wake_pending_, but the drain clears suspending_ and checks
-        // wake_pending_ in between (seeing false both times).
+        // After a context save completes, close the suspended imp's
+        // suspend window with ONE atomic exchange on its state word
+        // (🎯T34 O2). Seeing SUSP_WAKE means a waker deferred to us —
+        // queue the imp now. The exchange is what makes the drain and
+        // schedule()'s CAS linearizable without the global mutex: a
+        // split load-then-clear would let the waker's CAS land in
+        // between and be erased (see DrainSuspended_Bug.tla).
         static void drain_suspended(Imp* suspended) {
+            // TLA:DrainSuspended.Drain
+            auto old = suspended->suspend_state_.exchange(
+                Imp::SUSP_IDLE, std::memory_order_acq_rel);
+            if (old != Imp::SUSP_WAKE) {
+                return;
+            }
+            // Deferred wake: the waker returned after its CAS; queuing
+            // is our job.
             auto& rt = Runtime::instance();
-            bool need_unpark = false;
+            if (suspended->qs_entered_
+                && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                suspended->qs_->enter();
+            }
             {
-                std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
-                // TLA:DrainSuspended.Drain
-                suspended->suspending_.store(false, std::memory_order_release);
-                if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
-                    if (!suspended->in_global_) {
-                        if (suspended->qs_entered_
-                            && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
-                            suspended->qs_->enter();
-                        }
-                        rt.push_to_global(suspended);
-                        need_unpark = true;
-                    }
+                std::lock_guard<std::mutex> lk(rt.global_mu);
+                if (!suspended->in_global_) {
+                    rt.push_to_global(suspended);
                 }
             }
-            if (need_unpark) {
-                rt.unpark_one();
-            }
+            rt.unpark_one();
         }
 
         static intptr_t switch_to(Imp & target, intptr_t data) {
@@ -183,21 +182,34 @@ namespace csp {
         void Imp::schedule([[maybe_unused]] bool make_current) {
             auto& rt = Runtime::instance();
 
+            // Suspend-window handshake first, lock-free: if the imp is
+            // in the unlock_all→do_switch window, it's still running
+            // and can't be safely pushed to a queue. One CAS defers
+            // the wake to CheckWP (early) or drain_suspended (after
+            // the context save). TLA:DrainSuspended.WakerCAS
+            for (;;) {
+                uint32_t s = suspend_state_.load(std::memory_order_acquire);
+                if (s == SUSP_PENDING) {
+                    if (suspend_state_.compare_exchange_weak(
+                            s, SUSP_WAKE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
+                        return;
+                    }
+                    continue;  // raced with the drain or a spurious failure
+                }
+                if (s == SUSP_WAKE) {
+                    return;  // wake already pending
+                }
+                break;  // SUSP_IDLE: fully suspended (or never was)
+            }
+
             // Push to the global run queue so any worker can pick
             // it up.
-            // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
+            // TLA:DrainSuspended.WakerPush TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
             {
                 std::lock_guard<std::mutex> lk(rt.global_mu);
                 if (in_global_) {
-                    return;
-                }
-                // TLA:DrainSuspended.DoSchedule
-                // If the imp is in the unlock_all→do_switch
-                // window, it's still running and can't be safely
-                // pushed to the global queue.  Set wake_pending_
-                // so the detach path will re-add it to a queue.
-                if (suspending_.load(std::memory_order_acquire)) {
-                    wake_pending_.store(true, std::memory_order_release);
                     return;
                 }
                 // If the imp is already in a local run queue (next_ set),
@@ -283,9 +295,16 @@ namespace csp {
                     self->next_ = nullptr;
                     self->prev_ = nullptr;
 
-                    // TLA:DrainSuspended.CheckWP
-                    if (status == Status::detach &&
-                        self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                    // TLA:DrainSuspended.CheckWP — early wake: a waker
+                    // CASed to SUSP_WAKE before our context save. Take
+                    // the wake here (CAS back to IDLE), re-add to the
+                    // local queue, and skip the switch entirely.
+                    if (uint32_t wake = Imp::SUSP_WAKE;
+                        status == Status::detach &&
+                        self->suspend_state_.compare_exchange_strong(
+                            wake, Imp::SUSP_IDLE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
                         if (busy) {
                             self->next_ = busy;
                             self->prev_ = busy->prev_;
@@ -615,10 +634,11 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 }
 
 void suspend() {
-    auto * const self = current_imp();
-    self->suspending_.store(true, std::memory_order_release);
+    // TLA:DrainSuspended.BeginSuspend — the state resets to SUSP_IDLE
+    // via CheckWP (early wake) or drain_suspended (context switch).
+    current_imp()->suspend_state_.store(Imp::SUSP_PENDING,
+                                        std::memory_order_release);
     do_switch(Status::detach);
-    self->suspending_.store(false, std::memory_order_release);
 }
 
 int run() {

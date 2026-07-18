@@ -151,8 +151,16 @@ struct alignas(16) Imp {
     class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
     bool qs_entered_ = false;               // true if enter() was called (vs propagate-only)
     std::atomic<bool> qs_sleeping_{false};   // true after leave(), cleared by enter at schedule or resume
-    std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
-    std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
+
+    // Single-word suspend/wake protocol (🎯T34 O2, TLA:DrainSuspended):
+    //   SUSP_IDLE    — not in a suspend window
+    //   SUSP_PENDING — announced suspend; context save not yet drained
+    //   SUSP_WAKE    — a waker arrived during the window; CheckWP or
+    //                  drain_suspended will queue the imp
+    // All transitions are CAS/exchange on this word, so the drain no
+    // longer serializes on the global runtime mutex (paper 33 O2).
+    enum SuspendState : uint32_t { SUSP_IDLE, SUSP_PENDING, SUSP_WAKE };
+    std::atomic<uint32_t> suspend_state_{SUSP_IDLE};
 
 #if CSP_ASAN
     void* asan_fake_stack_ = nullptr;  // ASan fake-stack state for this fiber

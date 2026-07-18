@@ -1,248 +1,174 @@
 ---- MODULE DrainSuspended ----
 (*******************************************************************************
- * Models the drain_suspended / schedule() protocol from csp/src/csp.cc.
+ * Models the suspend/wake protocol from csp/src/csp.cc (🎯T34 O2).
  *
- * The protocol ensures that when an imp (MT) suspends and a waker
- * calls schedule(), the wakeup is never lost — regardless of how the
- * two threads interleave.
+ * An imp (MT) that blocks on a channel/timer suspends in two stages:
+ * it announces the suspend window, detaches from its run queue, and
+ * context-switches; the thread that resumes a different imp then runs
+ * drain_suspended for it.  A waker calling mt->schedule() during the
+ * window must neither lose the wake (imp sleeps forever) nor deliver
+ * it early (imp queued and run before its context is saved — double
+ * execution).
  *
- * Participants:
- *   MT    — the suspending imp (+ the drain context that runs
- *           drain_suspended on its behalf after context switch)
- *   Waker — another thread calling mt->schedule()
+ * Historically this was closed by two flags (suspending_/wake_pending_)
+ * whose drain ran under the GLOBAL runtime mutex on every context
+ * switch — the dominant scalability cost found in paper 33.  The
+ * protocol is now a single per-imp atomic word:
  *
- * Code references (src/csp.cc, src/channel.cc):
- *   BeginSuspend  — channel.cc: suspending_.store(true); unlock_all()
- *   CheckWP       — csp.cc run(): wake_pending_.exchange(false)
- *   AcquireDrain  — csp.cc drain_suspended(): global_mu.lock()
- *   Drain         — csp.cc drain_suspended(): clear suspending, drain wp
- *   StartWake     — channel.cc release(): peer decides to call schedule()
- *   AcquireWake   — csp.cc schedule(): global_mu.lock()
- *   DoSchedule    — csp.cc schedule(): check suspending, act accordingly
+ *   suspend_state_ ∈ { IDLE, SUSP, WAKE }
+ *
+ *   MT begin:   suspend_state_.store(SUSP, release); unlock; run(detach)
+ *   MT CheckWP: (in run(), before the context save, under run_mu)
+ *               CAS(WAKE → IDLE): success ⇒ early wake — re-add self to
+ *               the local queue and return without switching.
+ *   Drain:      (after the context save, on the resuming thread)
+ *               old = suspend_state_.exchange(IDLE, acq_rel)
+ *               old = WAKE ⇒ push MT to a run queue (deferred wake).
+ *   Waker:      loop { s = load(suspend_state_):
+ *                 SUSP → CAS(SUSP → WAKE): success ⇒ done (defer)
+ *                 WAKE → done (wake already pending)
+ *                 IDLE → normal push path (imp fully suspended) }
+ *
+ * Every transition is a CAS/exchange on one word, so drain and waker
+ * are linearizable without the global mutex; only the actual queue
+ * push still takes it.  Wake exclusivity during the window comes from
+ * the alt_state ALT_WAITING→ALT_CLAIMED handshake (AltStateCAS.tla).
+ *
+ * DrainSuspended_Bug.tla replaces Drain's atomic exchange with a
+ * non-atomic load-then-store; TLC finds the lost wakeup.
+ *
+ * Code references (src/csp.cc, src/channel.cc, src/blocking_pool.cc):
+ *   BeginSuspend — suspend_state_.store(SUSP); unlock; do_switch(detach)
+ *   CheckWP      — run() detach path CAS(WAKE→IDLE)
+ *   Drain        — drain_suspended(): exchange(IDLE)
+ *   WakerCAS     — schedule(): CAS(SUSP→WAKE) / observe WAKE
+ *   WakerPush    — schedule(): IDLE ⇒ push under global_mu
  *******************************************************************************)
 
 EXTENDS Integers
 
 VARIABLES
-    suspending,     \* Boolean: MT has signaled it's in the suspend window
-    wake_pending,   \* Boolean: deferred wakeup, set by schedule()
+    state,          \* "idle" | "susp" | "wake" — the per-imp atomic word
     on_queue,       \* Boolean: MT is on some run queue
-    global_mu,      \* "none" | "drain" | "sched" — who holds the mutex
-    pc_mt,          \* MT's program counter (where it is in the protocol)
-    pc_waker        \* Waker's program counter
+    waker_pushed,   \* Boolean: the waker (not MT/drain) queued the MT
+    pc_mt,          \* MT / drain program counter
+    pc_waker        \* Waker program counter
 
-vars == <<suspending, wake_pending, on_queue, global_mu, pc_mt, pc_waker>>
+vars == <<state, on_queue, waker_pushed, pc_mt, pc_waker>>
 
-(*******************************************************************************
- * Initial state: MT is running on a queue, nothing pending.
- *******************************************************************************)
 Init ==
-    /\ suspending = FALSE
-    /\ wake_pending = FALSE
+    /\ state = "idle"
     /\ on_queue = TRUE
-    /\ global_mu = "none"
+    /\ waker_pushed = FALSE
     /\ pc_mt = "running"
     /\ pc_waker = "idle"
 
 (*******************************************************************************
  * MT ACTIONS
- *
- * The MT goes through these phases:
- *   running → check_wp → switched_out → draining → done
- *                    ↘ clear_susp → done  (early wake path)
  *******************************************************************************)
 
-(* MT begins suspending: sets the flag, leaves the run queue.
- * This is one atomic step because it happens before any unlock — no
- * other thread can observe the intermediate state.
- *
- * Code: suspending_.store(true, release); unlock_all();
- *       enter do_switch → run()
- *
- * TLA:DrainSuspended.BeginSuspend *)
+(* MT announces the suspend window and leaves the run queue.  One
+ * action: the store happens before any channel unlock, so no waker can
+ * observe intermediate state (it can only claim the MT after the
+ * unlock).  TLA:DrainSuspended.BeginSuspend *)
 BeginSuspend ==
     /\ pc_mt = "running"
-    /\ suspending' = TRUE
+    /\ state' = "susp"
     /\ on_queue' = FALSE
     /\ pc_mt' = "check_wp"
-    /\ UNCHANGED <<wake_pending, global_mu, pc_waker>>
+    /\ UNCHANGED <<waker_pushed, pc_waker>>
 
-(* Inside run(), MT atomically exchanges wake_pending (under run_mu).
- * This is a single TLA+ action because atomic exchange is indivisible.
- *
- * If wake_pending was TRUE: the wakeup arrived early. MT re-adds itself
- * to the local queue and returns from do_switch (no context switch).
- * It still needs to clear suspending (next step).
- *
- * If wake_pending was FALSE: no wakeup yet. MT context-switches out
- * and awaits drain_suspended.
- *
- * Code: if (g_imp->wake_pending_.exchange(false, acq_rel)) {
- *           re-add to queue; return;
- *       } else { jump_fcontext(...); }
- *
+(* In run()'s detach path, before the context save: CAS(WAKE → IDLE).
+ * Success ⇒ the wake arrived early; re-add to the local queue and keep
+ * running (no context switch, so no drain will follow).
+ * Failure (state is SUSP) ⇒ proceed to the context switch.
  * TLA:DrainSuspended.CheckWP *)
 CheckWP ==
     /\ pc_mt = "check_wp"
-    /\ IF wake_pending
-       THEN /\ wake_pending' = FALSE
+    /\ IF state = "wake"
+       THEN /\ state' = "idle"
             /\ on_queue' = TRUE
-            /\ pc_mt' = "clear_susp"
+            /\ pc_mt' = "done"
        ELSE /\ pc_mt' = "switched_out"
-            /\ UNCHANGED <<wake_pending, on_queue>>
-    /\ UNCHANGED <<suspending, global_mu, pc_waker>>
+            /\ UNCHANGED <<state, on_queue>>
+    /\ UNCHANGED <<waker_pushed, pc_waker>>
 
-(* After early wake: the caller (prialt_begin_impl / sleep_until)
- * clears suspending after do_switch returns. This is a separate
- * action because it happens AFTER run() returns — another thread
- * could observe suspending=TRUE in between.
- *
- * Code: do_switch(Status::detach);
- *       g_imp->suspending_.store(false, release);  // after return
- *
- * TLA:DrainSuspended.ClearSusp *)
-ClearSusp ==
-    /\ pc_mt = "clear_susp"
-    /\ suspending' = FALSE
-    /\ pc_mt' = "done"
-    /\ UNCHANGED <<wake_pending, on_queue, global_mu, pc_waker>>
-
-(* After context switch: another thread runs drain_suspended for this
- * MT. First, acquire global_mu.
- *
- * Code: std::lock_guard<std::mutex> lk(rt.global_mu);
- *
- * TLA:DrainSuspended.AcquireDrain *)
-AcquireDrain ==
-    /\ pc_mt = "switched_out"
-    /\ global_mu = "none"
-    /\ global_mu' = "drain"
-    /\ pc_mt' = "draining"
-    /\ UNCHANGED <<suspending, wake_pending, on_queue, pc_waker>>
-
-(* drain_suspended (under global_mu): clear suspending, atomically
- * exchange wake_pending, push to queue if wake was pending.
- * Release lock.
- *
- * All three operations (clear suspending, check+clear wp, push) are
- * one TLA+ action because they're all under the same lock — no other
- * thread can see intermediate states.
- *
- * Code: suspended->suspending_.store(false, release);
- *       if (suspended->wake_pending_.exchange(false, acq_rel)) {
- *           if (!suspended->in_global_)
- *               rt.push_to_global(suspended);
- *       }
- *
+(* After the context save, the resuming thread drains: one atomic
+ * exchange(IDLE).  Seeing WAKE ⇒ the waker deferred; push now.
  * TLA:DrainSuspended.Drain *)
 Drain ==
-    /\ pc_mt = "draining"
-    /\ suspending' = FALSE
-    /\ IF wake_pending
-       THEN /\ wake_pending' = FALSE
-            /\ on_queue' = TRUE
-       ELSE UNCHANGED <<wake_pending, on_queue>>
-    /\ global_mu' = "none"
+    /\ pc_mt = "switched_out"
+    /\ IF state = "wake"
+       THEN on_queue' = TRUE
+       ELSE UNCHANGED on_queue
+    /\ state' = "idle"
     /\ pc_mt' = "done"
-    /\ UNCHANGED pc_waker
+    /\ UNCHANGED <<waker_pushed, pc_waker>>
 
 (*******************************************************************************
  * WAKER ACTIONS
  *
- * The waker calls mt->schedule(). In the real code, this is triggered
- * by a channel peer (e.g., a writer finding a blocked reader).
- * The waker can only act after the MT has started suspending — before
- * that, the MT isn't registered on any channel wait queue.
+ * Enabled only after BeginSuspend: a peer can claim the MT only after
+ * it registered on channel wait queues, and the SUSP store is ordered
+ * before the channel unlock that exposes the registration.
  *******************************************************************************)
 
-(* Waker decides to call schedule(). Only enabled after MT starts
- * suspending (pc_mt != "running"), modeling the fact that the MT must
- * first register on channel wait queues before a peer can find it.
- *
- * TLA:DrainSuspended.StartWake *)
 StartWake ==
     /\ pc_waker = "idle"
     /\ pc_mt /= "running"
-    /\ pc_waker' = "want_lock"
-    /\ UNCHANGED <<suspending, wake_pending, on_queue, global_mu, pc_mt>>
+    /\ pc_waker' = "waking"
+    /\ UNCHANGED <<state, on_queue, waker_pushed, pc_mt>>
 
-(* Waker acquires global_mu.
- *
- * TLA:DrainSuspended.AcquireWake *)
-AcquireWake ==
-    /\ pc_waker = "want_lock"
-    /\ global_mu = "none"
-    /\ global_mu' = "sched"
-    /\ pc_waker' = "scheduling"
-    /\ UNCHANGED <<suspending, wake_pending, on_queue, pc_mt>>
-
-(* schedule() under global_mu: check suspending flag.
- * If suspending: can't push to queue (MT is mid-switch). Defer via wp.
- * If not suspending: push to queue directly.
- * Release lock.
- *
- * Single TLA+ action because everything is under the same lock.
- *
- * Code: if (suspending_.load(acquire)) {
- *           wake_pending_.store(true, release);
- *           return;
- *       }
- *       rt.push_to_global(this);
- *
- * TLA:DrainSuspended.DoSchedule *)
-DoSchedule ==
-    /\ pc_waker = "scheduling"
-    /\ IF suspending
-       THEN /\ wake_pending' = TRUE
-            /\ UNCHANGED on_queue
-       ELSE /\ on_queue' = TRUE
-            /\ UNCHANGED wake_pending
-    /\ global_mu' = "none"
-    /\ pc_waker' = "done_waker"
-    /\ UNCHANGED <<suspending, pc_mt>>
-
-(*******************************************************************************
- * SPECIFICATION
- *
- * The system starts in Init and takes Next steps forever.
- * [][Next]_vars means: each step either satisfies Next or stutters
- * (leaves all variables unchanged). Stuttering models the environment
- * doing nothing — it lets TLC verify safety without requiring progress.
- *******************************************************************************)
+(* One iteration of schedule()'s state loop, as three atomic cases on
+ * the word.  TLA:DrainSuspended.WakerCAS TLA:DrainSuspended.WakerPush *)
+WakerStep ==
+    /\ pc_waker = "waking"
+    /\ IF state = "susp"
+       THEN \* CAS(SUSP → WAKE) — drain or CheckWP will queue the MT.
+            /\ state' = "wake"
+            /\ pc_waker' = "done_waker"
+            /\ UNCHANGED <<on_queue, waker_pushed, pc_mt>>
+       ELSE IF state = "wake"
+       THEN \* Wake already pending — nothing to do.
+            /\ pc_waker' = "done_waker"
+            /\ UNCHANGED <<state, on_queue, waker_pushed, pc_mt>>
+       ELSE \* IDLE: the MT is fully suspended (drain ran) — normal
+            \* push path under global_mu (in_global_/next_ guards make
+            \* the push idempotent; modeled by setting on_queue).
+            /\ on_queue' = TRUE
+            /\ waker_pushed' = TRUE
+            /\ pc_waker' = "done_waker"
+            /\ UNCHANGED <<state, pc_mt>>
 
 Next ==
     \/ BeginSuspend
     \/ CheckWP
-    \/ ClearSusp
-    \/ AcquireDrain
     \/ Drain
     \/ StartWake
-    \/ AcquireWake
-    \/ DoSchedule
+    \/ WakerStep
 
 Spec == Init /\ [][Next]_vars
 
 (*******************************************************************************
  * PROPERTIES
- *
- * These are checked by TLC in every reachable state.
  *******************************************************************************)
 
-(* Type invariant: variables stay in their expected domains.
- * Catches modeling errors — if a variable takes an unexpected value,
- * the spec has a bug. *)
 TypeOK ==
-    /\ suspending \in BOOLEAN
-    /\ wake_pending \in BOOLEAN
+    /\ state \in {"idle", "susp", "wake"}
     /\ on_queue \in BOOLEAN
-    /\ global_mu \in {"none", "drain", "sched"}
-    /\ pc_mt \in {"running", "check_wp", "clear_susp",
-                   "switched_out", "draining", "done"}
-    /\ pc_waker \in {"idle", "want_lock", "scheduling", "done_waker"}
+    /\ waker_pushed \in BOOLEAN
+    /\ pc_mt \in {"running", "check_wp", "switched_out", "done"}
+    /\ pc_waker \in {"idle", "waking", "done_waker"}
 
-(* Safety: when both threads have completed, the MT must be on a queue.
- * If this is violated, a wakeup was lost — the MT will never run again. *)
+(* Safety: when both sides have completed, the MT is on a queue —
+ * no wake is ever lost. *)
 NoLostWakeup ==
     (pc_mt = "done" /\ pc_waker = "done_waker") => on_queue
+
+(* Safety: the waker only queues the MT itself once the MT is fully
+ * suspended (drain complete).  A push before the context save would be
+ * double execution; a push before drain would race the exchange. *)
+NoPrematurePush ==
+    waker_pushed => pc_mt = "done"
 
 ====
