@@ -251,6 +251,46 @@ Fresh `sample` profiles of the optimized build:
   throughput item: 2,571 ns at 16 procs vs a ~50 ns mutex+memcpy
   potential.
 
+## Round 2 (same day): placement claim, FastMutex, current_p
+
+Guided by the next-round profile above (commits `ec2f5db`, `e933098`,
+`8ee3d4f`):
+
+- **current_p() caching** — same rule as O6: the `Processor&` is
+  stable between switch points and must be re-resolved after
+  `jump_fcontext`; hoisted per region across the switch path.
+- **Placement-claim CAS** — racing placers (duplicate wakers, the
+  deferred-wake drain) claim `Imp::placed_` with one exchange; only
+  the winner inserts. The wake path now touches **no global lock at
+  all** unless it spills — closing acceptance criterion 2 of 🎯T34.
+  Verified in `formal/PlacementClaim.tla` (AtMostOnce +
+  ExactlyOnceAtEnd); the `_Bug` variant shows check-then-set double-
+  placing. The big winner was fan-in: spilling wakers no longer
+  serialize on `global_mu` — the alt/8ch driver went 6,451 →
+  ~1,500 ns at 16 procs.
+- **FastMutex** — channel `mu_`, `run_mu`, and `global_mu` switch to
+  `os_unfair_lock` on macOS (std::mutex elsewhere; park_mu keeps its
+  condvar mutex). A/B: uncontended ping-pong unchanged (Apple's
+  pthread_mutex is already cheap uncontended); contended shapes gain
+  15–20% (buffered chan(1024): 1,871–2,121 → ~1,670 ns).
+
+Final acceptance sweep (`make bench`): `send/recv` **189.6 ns at
+default 16 procs vs 191.9 ns at 2 procs** — ratio ≈1.0 against the
+baseline's 16× gap. All shapes at 2 procs: 150–210 ns. The
+multi-writer shapes at 16 procs remain noisy run-to-run (1.3–5 µs,
+err 8–25%) — residual fan-in churn, next round's target. Oracles:
+757/757 native, 739/739 TSan, 739/739 ASan+UBSan; TLC green on
+DrainSuspended, PlacementClaim, StealWork, ParkGate (+ failing _Bug
+counterparts).
+
+The post-round-2 profile has no syscalls and no pthread mutexes left
+on the hot path — remaining cost is the algorithm itself:
+`prialt_begin_impl` (with inlined unfair locks), `jump_fcontext`
+(intrinsic floor), run-queue DLL ops, and the non-inline TLS
+accessors. Further gains need structural work: a count==1 fast path
+that skips the pin/dedup machinery entirely, sticky alt registration
+(fan-in), and O4 ring-buffer buffered channels.
+
 ## Method note
 
 `bench/channel.bench.cc` had bit-rotted (`csp_chanop`, a removed C-API
