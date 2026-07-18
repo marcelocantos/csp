@@ -197,6 +197,60 @@ With O1–O3+O5–O6 landed, a 16-proc rendezvous should approach the
 ~200–300 ns range (switch + channel mutex + transfer); O4 then takes
 buffered pipelines to memcpy speed.
 
+## Results (same day, 🎯T34 implementation)
+
+O6+O8, O3, O2, O1, O5, O7-lite landed in sequence (commits `041110e`,
+`9659527`, `73d7d54`, `1b54133`). After:
+
+| Configuration | before | after |
+|---|---:|---:|
+| pingpong, 2 procs | 321 | **~185** |
+| pingpong, 4 / 8 / 16 procs | 1,396 / 3,544 / 5,081 | **~189 (flat)** |
+| buffered `chan<int>(1024)`, 2 / 16 procs | 825 / 11,250 | 498 / 2,571 |
+| bench `send/recv` (16 procs) | 5,145 | 188–250 |
+| bench `prialt/2ch` / `alt/2ch` (16 procs) | 4,259 / 5,631 | 417 / 499 |
+| bench `alt/8ch` (16 procs) | 5,216 | ~5,920 (see below) |
+| bench (all shapes) at 2 procs | — | 147–209 |
+
+The negative scaling is gone: ns/op is flat in pool size, and the
+16-proc rendezvous is 27× faster. Wake-to-local (O1) delivered the
+structural change; O2 removed `global_mu` from every context switch;
+O3 removed the broadcast storm and gave `Note` a real futex.
+
+**Known trade — multi-writer fan-in at high proc counts.** `alt/8ch`
+(8 always-ready writers, one reader) reads ~13% slower at 16 procs:
+woken writers land on the reader's P (first) or spill to the global
+queue (rest) instead of re-registering in parallel on remote cores.
+At 2 procs the same shape runs at 209 ns — the multi-proc fan-in
+number is residual scheduler churn, not new serialization. Accepted
+in exchange for the 4–28× wins elsewhere; addressed by the next-round
+items below.
+
+## Next round (profiled after 🎯T34 landed)
+
+Fresh `sample` profiles of the optimized build:
+
+- **Ping-pong (190 ns) is now mutex-pair-bound**: ~4–6 uncontended
+  pthread mutex lock/unlock pairs per rendezvous — channel `mu_`
+  (lock_all in phases 1–3), `global_mu` (schedule placement still
+  serializes there), `run_mu` twice per switch (`do_switch` +
+  `Imp::run`). Candidates: `os_unfair_lock`/futex lock for channel
+  `mu_` (short critical sections); a per-imp placement CAS to get
+  `schedule()` off `global_mu` (completing acceptance criterion 2);
+  merging `do_switch`/`run` queue manipulation into one `run_mu`
+  section. `current_p()` (non-inline TLS, several calls per switch)
+  deserves the O6 treatment — pass `Processor&` through.
+  `jump_fcontext` is the intrinsic floor.
+- **Fan-in is channel-`mu_`-contention-bound**: every `alt` over K
+  channels locks all K channels for phase-2 registration and phase-3
+  deregistration while writers hammer the same locks. A sticky-
+  registration design (waiters stay registered across alt iterations;
+  only the fired op re-arms) would remove most of that traffic — a
+  significant architectural change; model it in TLA+ first.
+- **O4 (ring-buffer buffered channels)** remains the largest
+  throughput item: 2,571 ns at 16 procs vs a ~50 ns mutex+memcpy
+  potential.
+
 ## Method note
 
 `bench/channel.bench.cc` had bit-rotted (`csp_chanop`, a removed C-API
