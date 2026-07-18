@@ -307,10 +307,19 @@ using namespace csp::detail;
 using namespace csp::internal;
 
 
+// Debug/introspection tallies (channel_count). Relaxed ordering: they
+// are monotonic counters with no synchronizing role, and the default
+// seq_cst RMWs put two dmb-fenced ops on a shared cache line into
+// every endpoint create/copy/release (🎯T34 O7).
 struct Counters {
     std::atomic<int> refs{0};
     std::atomic<int> derefs{0};
     std::atomic<int> active{0};
+
+    void ref() { refs.fetch_add(1, std::memory_order_relaxed); }
+    void deref() { derefs.fetch_add(1, std::memory_order_relaxed); }
+    void activate() { active.fetch_add(1, std::memory_order_relaxed); }
+    void deactivate() { active.fetch_sub(1, std::memory_order_relaxed); }
 };
 
 auto & counterses() {
@@ -396,10 +405,10 @@ namespace {
             // Must be 16-byte aligned.
             assert(((uintptr_t)this % 16) == 0);
 
-            ++counterses()[wr].refs;
-            ++counterses()[rd].refs;
-            ++counterses()[wr].active;
-            ++counterses()[rd].active;
+            counterses()[wr].ref();
+            counterses()[rd].ref();
+            counterses()[wr].activate();
+            counterses()[rd].activate();
         }
         ~Channel() {
         }
@@ -437,8 +446,8 @@ namespace {
         // slot->channel still points to this channel (see
         // resolve_endpoint_death).
         void on_endpoint_death_locked(int endpt) {
-            ++counterses()[endpt].derefs;
-            --counterses()[endpt].active;
+            counterses()[endpt].deref();
+            counterses()[endpt].deactivate();
             // Check if the opposite side has live endpoints.
             Slot * other_slot = (endpt == wr) ? read_slot_ : write_slot_;
             DD("DD death ch=%p endpt=%d other_refs=%zu\n", (void*)this, endpt,
@@ -625,9 +634,12 @@ namespace {
                 if (slot) slot->unlock();
             }
 
-            // Sort unique channels by id for lock ordering.
-            std::sort(chans, chans + n_chans,
-                      [](Channel * a, Channel * b) { return a->id_ < b->id_; });
+            // Sort unique channels by id for lock ordering. count==1
+            // (plain send/recv, the dominant call shape) skips the call.
+            if (n_chans > 1) {
+                std::sort(chans, chans + n_chans,
+                          [](Channel * a, Channel * b) { return a->id_ < b->id_; });
+            }
 
             // Copy into persistent storage in AltMatch opaque.
             if (n_chans <= 8) {
@@ -928,7 +940,7 @@ char const * get_chan_flags(void * ch) {
 
 WriterRef writer_addref(WriterRef w) {
     if (w) {
-        ++counterses()[wr].refs;
+        counterses()[wr].ref();
         get_slot(w.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
     }
     return w;
@@ -937,7 +949,7 @@ WriterRef writer_addref(WriterRef w) {
 void writer_release(WriterRef w) {
     if (w) {
         auto * slot = get_slot(w.ptr);
-        ++counterses()[wr].derefs;
+        counterses()[wr].deref();
         if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             Channel::resolve_endpoint_death(slot, wr);
         }
@@ -946,7 +958,7 @@ void writer_release(WriterRef w) {
 
 ReaderRef reader_addref(ReaderRef r) {
     if (r) {
-        ++counterses()[rd].refs;
+        counterses()[rd].ref();
         get_slot(r.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
     }
     return r;
@@ -955,7 +967,7 @@ ReaderRef reader_addref(ReaderRef r) {
 void reader_release(ReaderRef r) {
     if (r) {
         auto * slot = get_slot(r.ptr);
-        ++counterses()[rd].derefs;
+        counterses()[rd].deref();
         if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             Channel::resolve_endpoint_death(slot, rd);
         }
@@ -985,7 +997,7 @@ bool try_upgrade_weak_writer(WriterRef w) {
     while (old > 0) {
         if (slot->refcount.compare_exchange_weak(old, old + 1,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
-            ++counterses()[wr].refs;
+            counterses()[wr].ref();
             return true;
         }
     }
@@ -999,7 +1011,7 @@ bool try_upgrade_weak_reader(ReaderRef r) {
     while (old > 0) {
         if (slot->refcount.compare_exchange_weak(old, old + 1,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
-            ++counterses()[rd].refs;
+            counterses()[rd].ref();
             return true;
         }
     }
@@ -1442,8 +1454,7 @@ namespace csp {
                 break;  // SUSP_IDLE: fully suspended (or never was)
             }
 
-            // Push to the global run queue so any worker can pick
-            // it up.
+            // Place the imp on a run queue.
             // TLA:DrainSuspended.WakerPush TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
             {
                 std::lock_guard<std::mutex> lk(rt.global_mu);
@@ -1453,6 +1464,49 @@ namespace csp {
                 // If the imp is already in a local run queue (next_ set),
                 // a worker will run it — no need to push to global.
                 if (next_) return;
+
+                // 🎯T34 O1 wake-to-local: a wake issued from a worker P
+                // whose local queue has no other waiting imp hands the
+                // woken imp to that P directly — the very next do_switch
+                // runs it, with no futex wake and no cross-core
+                // migration (the dominant rendezvous cost in paper 33).
+                // Still under global_mu so duplicate wakers (e.g. timer
+                // fire vs. cancel) serialize on the next_/in_global_
+                // checks above; run_mu nests inside global_mu in the
+                // same order as take_from_global (steal_work's
+                // try_to_lock covers the reverse). The queued imp stays
+                // stealable, and the watchdog rescues it if this P
+                // wedges in a long compute stretch (100 ms backstop).
+                // Excluded: P0 (its thread runs main_loop, never imps)
+                // and non-P threads (reactor, blocking pool).
+                // TLA:StealWork.WAcquireRunMu TLA:StealWork.WPushLocal
+                if (has_processor() && current_p().id != 0) {
+                    auto& p = current_p();
+                    std::lock_guard<std::mutex> plk(p.run_mu);
+                    bool has_waiting = false;
+                    if (auto* start = p.busy) {
+                        auto* it = start;
+                        do {
+                            if (it != &p.main && it != p.running) {
+                                has_waiting = true;
+                                break;
+                            }
+                            it = it->next_;
+                        } while (it != start);
+                    }
+                    if (!has_waiting) {
+                        if (p.busy) {
+                            next_ = p.busy;
+                            prev_ = p.busy->prev_;
+                            next_->prev_ = prev_->next_ = this;
+                        } else {
+                            p.busy = next_ = prev_ = this;
+                        }
+                        return;  // no unpark: this P runs it next
+                    }
+                    // Local queue already has waiting work — spill to
+                    // the global queue so parked workers share the load.
+                }
                 rt.push_to_global(this); // TLA:StealWork.WPush
             }
             rt.unpark_one();
