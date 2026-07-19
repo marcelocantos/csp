@@ -23,7 +23,10 @@ struct Processor {
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
     Note note;                        // Per-worker futex note (park/unpark)
 
-    std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
+    // Own cache line: written every worker_loop iteration; sharing a
+    // line with thief-scanned fields (parked, note) would invalidate
+    // their cached copies on every heartbeat (🎯T35 cache pass).
+    alignas(64) std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
 
     std::thread worker;                   // Worker thread (empty for P0/main)

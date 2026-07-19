@@ -14,11 +14,14 @@ class RingBuffer {
 public:
     static constexpr size_t npos = size_t(-1);
 
+    // Storage is allocated lazily on first use (🎯T35): channel
+    // endpoints construct four RingBuffers each, and most channels
+    // never enqueue a waiter on most of them.
     explicit RingBuffer(size_t capacity = npos)
         : capacity_(capacity)
         , size_(round_up_pow2(capacity == npos ? 4 : capacity))
         , mask_(size_ - 1)
-        , data_(alloc(size_))
+        , data_(nullptr)
     { }
 
     ~RingBuffer() {
@@ -65,6 +68,9 @@ public:
     T & front() const { return data_[front_]; }
 
     void * next() {
+        if (!data_) [[unlikely]] {
+            data_ = alloc(size_);
+        }
         if (count_ == size_) {
             assert(capacity_ == npos);
             grow();

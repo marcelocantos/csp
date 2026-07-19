@@ -109,11 +109,14 @@ class RingBuffer {
 public:
     static constexpr size_t npos = size_t(-1);
 
+    // Storage is allocated lazily on first use (🎯T35): channel
+    // endpoints construct four RingBuffers each, and most channels
+    // never enqueue a waiter on most of them.
     explicit RingBuffer(size_t capacity = npos)
         : capacity_(capacity)
         , size_(round_up_pow2(capacity == npos ? 4 : capacity))
         , mask_(size_ - 1)
-        , data_(alloc(size_))
+        , data_(nullptr)
     { }
 
     ~RingBuffer() {
@@ -160,6 +163,9 @@ public:
     T & front() const { return data_[front_]; }
 
     void * next() {
+        if (!data_) [[unlikely]] {
+            data_ = alloc(size_);
+        }
         if (count_ == size_) {
             assert(capacity_ == npos);
             grow();
@@ -2351,6 +2357,9 @@ Imp* current_imp();
 void set_current_imp(Imp* p);
 
 void do_switch(Status status = Status::sleep);
+// Overload for callers that already hold the current Imp* — spares a
+// call to the deliberately non-inline TLS accessor.
+void do_switch(Status status, Imp * self);
 
 struct alignas(16) Imp {
     struct alignas(16) StackSlot { char c[16]; };
@@ -2367,61 +2376,17 @@ struct alignas(16) Imp {
     static constexpr size_t stack_size = 32 << 10;
 #endif
 
-    Imp * prev_;
-    Imp * next_;
-    std::atomic<fcontext_t> ctx_;
-    StackRegion stk_;
-    char status_[32];
-    internal::ChanOp const * chanops_;
-    int n_chanops_, signal_;
+    // Field layout is deliberate (🎯T35 cache pass): the first cache
+    // line holds the wake-protocol words that OTHER threads touch
+    // (alt_state claim, suspend/placement handshake, signal/chanops
+    // written by the matcher); the second holds the queue links and
+    // context that the owning P and thieves manipulate under run_mu.
+    // Cold/debug fields (status_, dynamic scope, analysis bookkeeping)
+    // trail at the end.
 
-    size_t id_ = []{
-        static std::atomic<size_t> counter{0};
-        return counter++;
-    }();
-
-    Imp(fcontext_t ctx, StackRegion stk);
-    Imp();
-    ~Imp();
-    Imp(Imp const &) = delete;
-
-    Imp & operator=(Imp const &) = delete;
-
-    char const * getfullstatus_() const {
-        return status_;
-    }
-
-    void schedule(bool make_current = false);
-    void schedule_local(bool make_current = false);
-    void make_runnable();
-    void deschedule();
-
-    void run(Status status = Status::sleep);
-
+    // --- hot line 1: wake protocol (cross-thread) ---
     enum AltState : uint32_t { ALT_IDLE, ALT_WAITING, ALT_CLAIMED };
     std::atomic<uint32_t> alt_state{ALT_IDLE};
-
-    uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
-    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
-
-    // Software stack overflow limit (arena mode only).
-    // Points to the bottom of the usable region (above the software guard zone).
-    // Null for non-arena stacks (hardware guard page used instead).
-    // Checked at every CSP suspend checkpoint via check_stack_overflow().
-    void* stack_overflow_limit_ = nullptr;
-
-    // 🎯T3.4.4: entry function and stack top recorded at spawn time so
-    // suspend checkpoints can compute the running depth and update the
-    // per-entry high-water table. entry_fn_ is null for the main thread's
-    // synthetic imp (no spawn() called).
-    ::csp::internal::EntryFn entry_fn_ = nullptr;
-    void* entry_sp_ = nullptr;
-
-    bool in_global_ = false;  // true while in the global run queue
-    bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
-    class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
-    bool qs_entered_ = false;               // true if enter() was called (vs propagate-only)
-    std::atomic<bool> qs_sleeping_{false};   // true after leave(), cleared by enter at schedule or resume
 
     // Single-word suspend/wake protocol (🎯T34 O2, TLA:DrainSuspended):
     //   SUSP_IDLE    — not in a suspend window
@@ -2442,6 +2407,64 @@ struct alignas(16) Imp {
     // never exposes a FALSE window).  Replaces the global_mu-serialized
     // next_/in_global_ checks on the wake path.
     std::atomic<bool> placed_{false};
+    bool in_global_ = false;  // true while in the global run queue
+
+    int signal_;
+    int n_chanops_;
+    internal::ChanOp const * chanops_;
+
+    // --- hot line 2: run-queue links + context (under run_mu) ---
+    Imp * prev_;
+    Imp * next_;
+    std::atomic<fcontext_t> ctx_;
+    StackRegion stk_;
+
+    // --- warm: checked per suspend ---
+    // Software stack overflow limit (arena mode only).
+    // Points to the bottom of the usable region (above the software guard zone).
+    // Null for non-arena stacks (hardware guard page used instead).
+    // Checked at every CSP suspend checkpoint via check_stack_overflow().
+    void* stack_overflow_limit_ = nullptr;
+    class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
+    bool qs_entered_ = false;               // true if enter() was called (vs propagate-only)
+    bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
+    std::atomic<bool> qs_sleeping_{false};   // true after leave(), cleared by enter at schedule or resume
+
+    // --- cold tail ---
+    char status_[32];
+
+    size_t id_ = []{
+        static std::atomic<size_t> counter{0};
+        return counter++;
+    }();
+
+    uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
+    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
+
+    // 🎯T3.4.4: entry function and stack top recorded at spawn time so
+    // suspend checkpoints can compute the running depth and update the
+    // per-entry high-water table. entry_fn_ is null for the main thread's
+    // synthetic imp (no spawn() called).
+    ::csp::internal::EntryFn entry_fn_ = nullptr;
+    void* entry_sp_ = nullptr;
+
+    Imp(fcontext_t ctx, StackRegion stk);
+    Imp();
+    ~Imp();
+    Imp(Imp const &) = delete;
+
+    Imp & operator=(Imp const &) = delete;
+
+    char const * getfullstatus_() const {
+        return status_;
+    }
+
+    void schedule(bool make_current = false);
+    void schedule_local(bool make_current = false);
+    void make_runnable();
+    void deschedule();
+
+    void run(Status status = Status::sleep);
 
 #if CSP_ASAN
     void* asan_fake_stack_ = nullptr;  // ASan fake-stack state for this fiber
@@ -5165,7 +5188,10 @@ struct Processor {
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
     Note note;                        // Per-worker futex note (park/unpark)
 
-    std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
+    // Own cache line: written every worker_loop iteration; sharing a
+    // line with thief-scanned fields (parked, note) would invalidate
+    // their cached copies on every heartbeat (🎯T35 cache pass).
+    alignas(64) std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
 
     std::thread worker;                   // Worker thread (empty for P0/main)

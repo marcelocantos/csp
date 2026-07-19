@@ -374,6 +374,31 @@ Cross-epoch comparisons of these shapes are unreliable; ping-pong and
 yield are stable and comparable. 🎯T35's criteria are ratios within
 one epoch for exactly this reason.
 
+## Round 4 (2026-07-19): clearing the table
+
+Every remaining identified opportunity evaluated; verdicts:
+
+| Item | Verdict | Result |
+|---|---|---|
+| Worker QoS pinning (macOS) | **inefficacious — reverted** | A/B identical on all shapes; not the fan-shape bimodality driver |
+| `do_switch(Status, Imp*)` overload | implemented | drops one TLS re-read per suspend |
+| Channel-create trims | **implemented** | **156 → 61 ns**: creation did SEVEN allocations (channel + 2 slots + 4 eagerly-allocated waiter/vulture rings) plus an eager `descr_` snprintf+string; rings now allocate lazily on first use, the default "▸N" name formats on demand in `describe()` |
+| Imp/Processor field layout | implemented, **neutral** in measured shapes | wake-protocol words grouped on one line, queue links on another, cold tail; `heartbeat` isolated. Kept: principled, free, benefits migration-heavy loads |
+| ThinLTO (core TUs) | **marginal (~0–4%) — documented only** | the hot chain is already hand-merged; noinline TLS accessors correctly survive LTO; dist's single-TU model already gives users whole-program optimization |
+| **Waker-side deregistration** | **implemented** | **ping-pong 168 → ~146 ns (−13%)**; buffered ~2.7 → ~2.3 µs. Every claim site (match, death ×2, swap ×2) removes a single-op sleeper's registration while holding that channel's `mu_`; the woken side skips its phase-3 relock entirely. `ChannelLifecycle.tla` rewritten (claimer-deregisters actions, new `NoDanglingRegistration` invariant — ring entries point into the sleeper's stack frame, so a missed removal is a UAF) |
+
+Combined with the light switch: **ping-pong ~120 ns/op, flat at 2 and
+16 procs** — 42× from the original 5,081 ns baseline, and the yield
+round-trip stands at 49 ns against a 23 ns raw-jump floor.
+
+At this point the per-rendezvous barrel is scraped: what remains in
+the hot path is the raw switch (at its contract floor), one FastMutex
+pair per side, the UAF pin/unpin, the alt_state claim, and the
+suspend/placement words — each individually justified by a TLA-modeled
+protocol. Further gains are architectural: 🎯T35's sticky registration
+(fan-in is still ~3.2 µs at 16 procs vs 210 ns at 2) and O4
+ring-buffer buffered channels (~2.3 µs vs ~50 ns potential).
+
 ## Method note
 
 `bench/channel.bench.cc` had bit-rotted (`csp_chanop`, a removed C-API

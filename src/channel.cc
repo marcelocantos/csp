@@ -132,23 +132,42 @@ namespace {
                 && read_slot_->refcount.load(std::memory_order_acquire) > 0;
         }
 
+        // Claim + wake every WAITING entry of a ring, assigning signal_
+        // via sig(idx). Caller holds mu_. Single-op sleepers (🎯T35
+        // waker-side deregistration) are removed from the ring at claim
+        // time — their only registration is on this channel, so the
+        // woken side skips its phase-3 relock entirely.
+        // TLA:ChannelLifecycle.WaiterWakeNoCleanup
+        // On removal the ring backfills the hole, so the index is NOT
+        // advanced; entries are copied out before removal.
+        template <typename Ring, typename Sig>
+        static void claim_wake_all(Ring & ring, Sig sig) {
+            for (size_t i = 0; i < ring.count(); ) {
+                auto const & cw = ring.begin()[static_cast<ptrdiff_t>(i)];
+                Imp * t = cw.thread;
+                ChanOp const * chop = cw.chanop;
+                uint32_t expected = Imp::ALT_WAITING;
+                if (!t->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
+                    ++i;
+                    continue;
+                }
+                t->signal_ = sig(int(chop - t->chanops_));
+                bool const single = t->n_chanops_ == 1;
+                if (single) {
+                    ring.remove({chop, t});  // cw is dangling from here
+                }
+                t->make_runnable();
+                if (!single) {
+                    ++i;
+                }
+            }
+        }
+
         // Wake all waiters on a given endpoint side with a swap signal (INT_MIN).
         void wake_all_for_swap(int endpt) {
             auto & ep = endpts_[endpt];
-            for (auto const & cw : ep.waiters) {
-                uint32_t expected = Imp::ALT_WAITING;
-                if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                    cw.thread->signal_ = INT_MIN;
-                    cw.thread->make_runnable();
-                }
-            }
-            for (auto const & cv : ep.vultures) {
-                uint32_t expected = Imp::ALT_WAITING;
-                if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                    cv.thread->signal_ = INT_MIN;
-                    cv.thread->make_runnable();
-                }
-            }
+            claim_wake_all(ep.waiters, [](int) { return INT_MIN; });
+            claim_wake_all(ep.vultures, [](int) { return INT_MIN; });
         }
 
         // Called when a slot's endpoint refcount drops to 0.
@@ -166,32 +185,14 @@ namespace {
             if (other_slot->refcount.load(std::memory_order_acquire) > 0) {
                 // Wake waiters on the opposite side (death signal).
                 auto & ep = endpts_[1 - endpt];
-                for (auto const & cw : ep.waiters) {
-                    uint32_t expected = Imp::ALT_WAITING;
-                    if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                        int idx = int(cw.chanop - cw.thread->chanops_);
-                        cw.thread->signal_ = ~idx;
-                        DD("DD death-wake ch=%p imp=%p §%zu signal=%d\n",
-                           (void*)this, (void*)cw.thread, cw.thread->id_, ~idx);
-                        cw.thread->make_runnable();
-                    } else {
-                        DD("DD death-skip ch=%p imp=%p §%zu state=%u\n",
-                           (void*)this, (void*)cw.thread, cw.thread->id_, expected);
-                    }
-                }
-                for (auto const & cv : ep.vultures) {
-                    uint32_t expected = Imp::ALT_WAITING;
-                    if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                        int idx = int(cv.chanop - cv.thread->chanops_);
-                        cv.thread->signal_ = ~idx;
-                        DD("DD death-wake-vulture ch=%p imp=%p §%zu signal=%d\n",
-                           (void*)this, (void*)cv.thread, cv.thread->id_, ~idx);
-                        cv.thread->make_runnable();
-                    } else {
-                        DD("DD death-skip-vulture ch=%p imp=%p §%zu state=%u\n",
-                           (void*)this, (void*)cv.thread, cv.thread->id_, expected);
-                    }
-                }
+                claim_wake_all(ep.waiters, [this](int idx) {
+                    DD("DD death-wake ch=%p idx=%d\n", (void*)this, idx);
+                    return ~idx;
+                });
+                claim_wake_all(ep.vultures, [this](int idx) {
+                    DD("DD death-wake-vulture ch=%p idx=%d\n", (void*)this, idx);
+                    return ~idx;
+                });
             }
             mu_.unlock();
             // Both endpoint sides decrement alive_. The last one
@@ -427,11 +428,13 @@ namespace {
                         for (auto & cw : them) {
                             uint32_t expected = Imp::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                                int idx = int(cw.chanop - cw.thread->chanops_);
-                                cw.thread->signal_ = idx;
+                                Imp * peer = cw.thread;
+                                ChanOp const * peer_chop = cw.chanop;
+                                int idx = int(peer_chop - peer->chanops_);
+                                peer->signal_ = idx;
                                 DD("DD match matcher=%p §%zu claimed=%p §%zu ch=%p idx=%d\n",
                                    (void*)self, self->id_,
-                                   (void*)cw.thread, cw.thread->id_, (void*)ch, idx);
+                                   (void*)peer, peer->id_, (void*)ch, idx);
 
                                 // Set up match: src is always writer's
                                 // buffer, dst is always reader's buffer.
@@ -439,16 +442,26 @@ namespace {
                                 // optional std::exception_ptr storage).
                                 if (endpt == wr) {
                                     out->src = chop.message;
-                                    out->dst = const_cast<void *>(cw.chanop->message);
-                                    out->eptr_dst = cw.chanop->eptr_dst;
+                                    out->dst = const_cast<void *>(peer_chop->message);
+                                    out->eptr_dst = peer_chop->eptr_dst;
                                 } else {
-                                    out->src = cw.chanop->message;
+                                    out->src = peer_chop->message;
                                     out->dst = const_cast<void *>(chop.message);
                                     out->eptr_dst = chop.eptr_dst;
                                 }
 
+                                // 🎯T35 waker-side deregistration: a
+                                // single-op sleeper's only registration is
+                                // on this channel — remove it now (under
+                                // mu_) so the woken side skips its phase-3
+                                // relock. cw dangles after the remove.
+                                // TLA:ChannelLifecycle.WaiterWakeNoCleanup
+                                if (peer->n_chanops_ == 1) {
+                                    them.remove({peer_chop, peer});
+                                }
+
                                 out->result = i;
-                                mi->peer = cw.thread;
+                                mi->peer = peer;
                                 mi->needs_unlock = true;
                                 return;  // locks + pins held → alt_end_impl unpins
                             }
@@ -504,22 +517,28 @@ namespace {
                (void*)self, self->id_);
             self->suspend_state_.store(Imp::SUSP_PENDING, std::memory_order_release);
             unlock_all();
-            do_switch(Status::detach);
+            do_switch(Status::detach, self);
             // suspend_state_ is SUSP_IDLE here: CheckWP (early wake) or
             // drain_suspended (context switch) reset it.
             DD("DD woke imp=%p §%zu signal=%d\n",
                (void*)self, self->id_, self->signal_);
 
-            // Phase 3: Woken up — clean up registrations under sorted locks.
-            lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < self->n_chanops_; ++i) {
-                auto const & chop = self->chanops_[i];
-                if (Channel * ch = get_chan(chop)) {
-                    auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, self);
+            // Phase 3: Woken up — clean up registrations under sorted
+            // locks. Single-op fast path (🎯T35): the claimer removed
+            // our only registration while holding that channel's lock,
+            // so there is nothing to relock or scan.
+            // TLA:ChannelLifecycle.WaiterWakeNoCleanup
+            if (count > 1) {
+                lock_all();
+                for (int i = 0; i < self->n_chanops_; ++i) {
+                    auto const & chop = self->chanops_[i];
+                    if (Channel * ch = get_chan(chop)) {
+                        auto flags = (uintptr_t)chop.waiter.ptr;
+                        ch->endpts_[flags & endpt_flag].remove(&chop, self);
+                    }
                 }
+                unlock_all();
             }
-            unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
 
             // Unpin channels.  If an endpoint died while we slept,
             // alive_ may reach 0 here, triggering deferred deletion.
@@ -566,7 +585,10 @@ namespace {
         using Vultures = detail::RingBuffer<ChanopWaiter>;
 
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
-        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%zu", id_); return std::string(b); }();
+        // Empty until set_descr(): the default "▸N" form is formatted on
+        // demand in describe() (debug paths only) instead of paying a
+        // snprintf + string per channel create (🎯T35: ~37 of 156 ns).
+        std::string descr_;
         std::atomic<int> alive_{2};  // endpoints (2) + sleeping waiters; last to 0 deletes
         FastMutex mu_;
         Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot
@@ -603,7 +625,13 @@ namespace {
         auto p = (uintptr_t)ptr & ~uintptr_t{15};
         if (p) {
             auto * ch = reinterpret_cast<Channel *>(p);
-            return ch->descr_.c_str();
+            if (!ch->descr_.empty()) {
+                return ch->descr_.c_str();
+            }
+            // Default "▸N" form, formatted on demand (debug paths only).
+            thread_local char buf[25];
+            snprintf(buf, sizeof(buf), "▸%zu", ch->id_);
+            return buf;
         }
         return "▸Ø";
     }

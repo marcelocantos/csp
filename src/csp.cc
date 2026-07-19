@@ -415,7 +415,10 @@ namespace csp {
 
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
-            auto* self = current_imp();
+            do_switch(status, current_imp());
+        }
+
+        void do_switch(Status status, Imp * self) {
             if (self->qs_entered_) {
                 self->qs_sleeping_.store(true, std::memory_order_release);
                 self->qs_->leave();
@@ -784,9 +787,9 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 void suspend() {
     // TLA:DrainSuspended.BeginSuspend — the state resets to SUSP_IDLE
     // via CheckWP (early wake) or drain_suspended (context switch).
-    current_imp()->suspend_state_.store(Imp::SUSP_PENDING,
-                                        std::memory_order_release);
-    do_switch(Status::detach);
+    auto * const self = current_imp();
+    self->suspend_state_.store(Imp::SUSP_PENDING, std::memory_order_release);
+    do_switch(Status::detach, self);
 }
 
 int run() {
