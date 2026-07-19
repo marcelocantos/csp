@@ -243,15 +243,22 @@ namespace csp {
             if (has_processor()) {
                 if (auto& p = current_p(); p.id != 0) {
                     // Fairness budget: after kLocalWakeBudget consecutive
-                    // local wakes, route one wake through the global queue.
-                    // The woken peer then leaves this P's ring; on the
-                    // waker's next block this P falls back to worker_loop
-                    // and drains global work — so a hot rendezvous pair
-                    // cannot starve spawned imps sitting in the global
-                    // queue (the flat_map balloon: merge+producer
-                    // monopolized their P while sub-stream imps waited).
-                    constexpr int kLocalWakeBudget = 64;
+                    // local wakes, PULL one batch of global work into this
+                    // P's ring (take_from_global below). A hot rendezvous
+                    // pair otherwise monopolizes its P while spawned imps
+                    // starve in the global queue — the flat_map balloon:
+                    // merge+producer looped locally, sub-stream imps never
+                    // ran, the input arm stayed the only ready one, and the
+                    // merge's vector alt grew by one channel per iteration
+                    // (measured: 5001 arms after 5000 consecutive spins).
+                    // Pulling (rather than spilling our peer to the global
+                    // queue) keeps the pair's locality: a spill design
+                    // measured +170 ns/op at 16 procs from pair migration.
+                    // 32 keeps a ballooned alt's lock_all under TSan's
+                    // 64-entry deadlock-detector table as defense in depth.
+                    constexpr int kLocalWakeBudget = 32;
                     bool queued = false;
+                    bool pull = false;
                     {
                         std::lock_guard plk(p.run_mu);
                         bool has_waiting = false;
@@ -268,7 +275,7 @@ namespace csp {
                         if (!has_waiting
                             && ++p.local_wake_streak_ >= kLocalWakeBudget) {
                             p.local_wake_streak_ = 0;
-                            has_waiting = true;  // treat as spill this time
+                            pull = true;
                         }
                         if (!has_waiting) {
                             if (p.busy) {
@@ -285,6 +292,13 @@ namespace csp {
                         // share the load.
                     }
                     if (queued) {
+                        if (pull
+                            && rt.has_global_work_.load(std::memory_order_acquire)) {
+                            // TLA:StealWork.TkAcquireGlobal — same
+                            // take path a worker uses; global work lands
+                            // in this ring and runs when the pair blocks.
+                            rt.take_from_global(p);
+                        }
                         return;  // no unpark: this P runs it next
                     }
                 }
