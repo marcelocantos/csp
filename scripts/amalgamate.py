@@ -334,6 +334,25 @@ def amalgamate_fcontext(fcontext_dir, output):
     sections.append('#error "Unsupported architecture for CSP fcontext"')
     sections.append('#endif')
 
+    # 🎯T35.1 minimal-save switch (arm64 only; emitted under the
+    # CSP_USE_LIGHT_SWITCH gate computed in csp.h, so it costs nothing
+    # unless the user opts in with -DCSP_LIGHT_SWITCH).
+    light_dir = Path(__file__).resolve().parent.parent / 'src'
+    sections += [
+        '\n/* Minimal-save context switch (CSP_LIGHT_SWITCH, arm64 only) */',
+        '#if CSP_USE_LIGHT_SWITCH',
+        '#if defined(__APPLE__)',
+        '/* light_switch_arm64_macho.S */',
+        _convert_s(light_dir / 'light_switch_arm64_macho.S', FCONTEXT_UNDEF,
+                   is_macho=True),
+        '#else /* ELF */',
+        '/* light_switch_arm64_elf.S */',
+        _convert_s(light_dir / 'light_switch_arm64_elf.S', FCONTEXT_UNDEF,
+                   is_macho=False),
+        '#endif',
+        '#endif /* CSP_USE_LIGHT_SWITCH */',
+    ]
+
     text = '\n'.join(sections) + '\n'
     with open(output, 'a') as f:
         f.write(text)

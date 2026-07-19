@@ -347,10 +347,14 @@ and is **dominated at every pressure level** (13.6–19.6 ns): the
 static subset pays unconditionally, while the clobber contract is
 already the adaptive version of that idea — the compiler saves
 exactly the live subset per call site, and its spill code schedules
-better than the asm's serial store chain. Adoption sketch: a `CSP_LIGHT_SWITCH`
-variant for arm64 (macOS/Linux), Boost fcontext retained for Windows
-(TIB bookkeeping), for sanitizer builds, and as the portable default.
-Tracked under 🎯T35. The `alt_state` claim CAS stays seq_cst
+better than the asm's serial store chain. **Shipped** (🎯T35.1): `make
+LIGHT_SWITCH=1` selects it on arm64 macOS/Linux; Boost fcontext stays
+the default and is always used on Windows, under sanitizers, and on
+other architectures — the gate self-disables (verified: TSan suite
+with the flag builds the Boost path, 739/739). The dist amalgamation
+carries the assembly under the same gate. Realized, same epoch:
+yield 71.3 → 49.1 ns (−31%); ping-pong 173.8 → 145.4 ns (−16%),
+flat across 2–16 procs. The `alt_state` claim CAS stays seq_cst
 deliberately (protocol margin over ~1 ns). TLS accessors at 1.5 ns
 are no longer worth chasing — their earlier profile weight was call
 frequency, already removed.

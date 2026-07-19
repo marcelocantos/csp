@@ -77,6 +77,16 @@ CXXFLAGS += -DCSP_ANALYSE_STACKS
 BUILDDIR := $(BUILDDIR)-analyse
 endif
 
+# --- Minimal-save context switch (🎯T35.1) ---
+# LIGHT_SWITCH=1 opts into the fp/lr-only switch with a clobber-list
+# call site (arm64, non-Windows, non-sanitizer — the gate in
+# csp/fcontext.h self-disables elsewhere). Own build dir so toggling
+# never mixes objects.
+ifeq ($(LIGHT_SWITCH),1)
+CXXFLAGS += -DCSP_LIGHT_SWITCH
+BUILDDIR := $(BUILDDIR)-light
+endif
+
 # --- Auto-dependencies ---
 # -MMD generates .d files alongside .o files listing header deps.
 # -MP adds phony targets for each header, preventing errors when
@@ -423,6 +433,12 @@ FCONTEXT_SRCS   := $(FCONTEXT_DIR)/jump_$(FCONTEXT_SUFFIX) \
                    $(FCONTEXT_DIR)/make_$(FCONTEXT_SUFFIX)
 FCONTEXT_OBJS   := $(patsubst $(FCONTEXT_DIR)/%.S,$(BUILDDIR)/fcontext/%.o,$(FCONTEXT_SRCS))
 
+# 🎯T35.1: minimal-save switch assembly (arm64 only; the gate in
+# csp/fcontext.h decides whether it is used — compiling it is harmless).
+ifeq ($(FCONTEXT_ARCH),arm64)
+FCONTEXT_OBJS += $(BUILDDIR)/src/light_switch_arm64_$(FCONTEXT_FMT).o
+endif
+
 # --- Sources ---
 
 ifeq ($(CSP_INCLUDE),dist)
@@ -603,6 +619,11 @@ $(BUILDDIR)/src/%.o: src/%.cpp
 
 # Vendored fcontext assembly
 $(BUILDDIR)/fcontext/%.o: $(FCONTEXT_DIR)/%.S
+	@mkdir -p $(dir $@)
+	$(CXX) -c -o $@ $<
+
+# 🎯T35.1 minimal-save switch assembly
+$(BUILDDIR)/src/%.o: src/%.S
 	@mkdir -p $(dir $@)
 	$(CXX) -c -o $@ $<
 

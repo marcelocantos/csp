@@ -33,3 +33,15 @@ pressure level, including 12 live values.
 
 Build:  c++ -O2 -c light_jump.S light_mid.S
         c++ -std=c++20 -O2 -DVARIANT={0|1|2} -DLIVE={0|4|8|12} switchcmp.cc *.o <fcontext objs>
+
+## Production wiring (🎯T35.1, achieved 2026-07-19)
+
+The full-clobber contract shipped: `make LIGHT_SWITCH=1` (own build
+dir `build/normal-light`). Gate: `CSP_USE_LIGHT_SWITCH` in
+`csp/fcontext.h` — active on arm64 non-Windows non-sanitizer builds;
+Boost fcontext everywhere else. Assembly: `src/light_switch_arm64_
+{macho,elf}.S`; dist amalgamation emits it under the same gate
+(`-DCSP_LIGHT_SWITCH` on the dist build enables it).
+
+Realized (M4 Max, same epoch): yield 71.3 → 49.1 ns (−31%); pingpong
+173.8 → 145.4 ns (−16%), flat across 2–16 procs.

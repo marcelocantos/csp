@@ -138,7 +138,7 @@ namespace csp {
 #if CSP_TSAN
             __tsan_switch_to_fiber(target.tsan_fiber_, 0);
 #endif
-            auto t = jump_fcontext(ctx, (void *)data);
+            auto t = csp_jump(ctx, (void *)data);
 #if CSP_ASAN
             __sanitizer_finish_switch_fiber(
                 self->asan_fake_stack_, nullptr, nullptr);
@@ -715,7 +715,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         *reinterpret_cast<void**>(
             static_cast<char*>(ctx) + 0xb8) = usable_base;
 #else
-        auto ctx = make_fcontext(imp, usable_size, start);
+        auto ctx = csp_make(imp, usable_size, start);
 #endif
         new (imp) Imp(ctx, region);
         imp->stack_overflow_limit_ = region.overflow_limit;
@@ -730,7 +730,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto* stk = static_cast<Imp::StackSlot*>(region.base);
         auto* imp = reinterpret_cast<Imp*>(stk + S) - 1;
         assert(((uintptr_t)imp % 16) == 0);
-        auto ctx = make_fcontext(imp, (char*)imp - (char*)stk, start);
+        auto ctx = csp_make(imp, (char*)imp - (char*)stk, start);
         new (imp) Imp(ctx, region);
         imp->entry_fn_ = start_f;
         imp->entry_sp_ = static_cast<void*>(imp);

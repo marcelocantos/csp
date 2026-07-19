@@ -1386,7 +1386,7 @@ namespace csp {
 #if CSP_TSAN
             __tsan_switch_to_fiber(target.tsan_fiber_, 0);
 #endif
-            auto t = jump_fcontext(ctx, (void *)data);
+            auto t = csp_jump(ctx, (void *)data);
 #if CSP_ASAN
             __sanitizer_finish_switch_fiber(
                 self->asan_fake_stack_, nullptr, nullptr);
@@ -1963,7 +1963,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         *reinterpret_cast<void**>(
             static_cast<char*>(ctx) + 0xb8) = usable_base;
 #else
-        auto ctx = make_fcontext(imp, usable_size, start);
+        auto ctx = csp_make(imp, usable_size, start);
 #endif
         new (imp) Imp(ctx, region);
         imp->stack_overflow_limit_ = region.overflow_limit;
@@ -1978,7 +1978,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto* stk = static_cast<Imp::StackSlot*>(region.base);
         auto* imp = reinterpret_cast<Imp*>(stk + S) - 1;
         assert(((uintptr_t)imp % 16) == 0);
-        auto ctx = make_fcontext(imp, (char*)imp - (char*)stk, start);
+        auto ctx = csp_make(imp, (char*)imp - (char*)stk, start);
         new (imp) Imp(ctx, region);
         imp->entry_fn_ = start_f;
         imp->entry_sp_ = static_cast<void*>(imp);
@@ -7823,3 +7823,91 @@ asm(
 #else
 #error "Unsupported architecture for CSP fcontext"
 #endif
+
+/* Minimal-save context switch (CSP_LIGHT_SWITCH, arm64 only) */
+#if CSP_USE_LIGHT_SWITCH
+#if defined(__APPLE__)
+/* light_switch_arm64_macho.S */
+asm(
+"; Minimal-save context switch, ARM64 macOS (🎯T35.1, paper 33 round 3).\n"
+";\n"
+"; Contract: unlike Boost fcontext (which preserves all AAPCS\n"
+"; callee-saved registers), this switch saves only fp/lr (+ resume PC).\n"
+"; The C++ call-site wrapper (csp/fcontext.h) declares x19-x28 and the\n"
+"; full vector file as clobbers, so the compiler spills exactly the\n"
+"; live subset — measured 2.4x faster than fcontext, and still faster\n"
+"; at 12 live values (bench/lightswitch/switchcmp.cc).\n"
+";\n"
+"; Frame layout (0x20 bytes, sp stays 16-aligned):\n"
+";   [0x00] fp   [0x08] lr   [0x10] resume PC   [0x18] pad\n"
+"\n"
+".text\n"
+".private_extern _csp_light_jump\n"
+".globl _csp_light_jump\n"
+".balign 16\n"
+"_csp_light_jump:\n"
+"    sub  sp, sp, #0x20\n"
+"    stp  fp, lr, [sp, #0x00]\n"
+"    str  lr, [sp, #0x10]        ; resume PC = return address\n"
+"    mov  x4, sp                 ; from-context\n"
+"    mov  sp, x0                 ; to-context\n"
+"    ldp  fp, lr, [sp, #0x00]\n"
+"    ldr  x5, [sp, #0x10]        ; resume PC\n"
+"    add  sp, sp, #0x20\n"
+"    mov  x0, x4                 ; transfer_t.fctx\n"
+"                                ; x1 = data, unchanged\n"
+"    ret  x5\n"
+"\n"
+".private_extern _csp_light_make\n"
+".globl _csp_light_make\n"
+".balign 16\n"
+"; x0 = stack top (16-aligned), x1 = entry fn taking transfer_t in x0/x1.\n"
+"; Returns the initial context sp. fp = 0 terminates backtraces; the\n"
+"; entry function never returns (imps exit via do_switch(exit)).\n"
+"_csp_light_make:\n"
+"    sub  x0, x0, #0x20\n"
+"    str  x1, [x0, #0x10]        ; resume PC = entry\n"
+"    stp  xzr, x1, [x0, #0x00]   ; fp = 0, lr = entry\n"
+"    ret\n"
+);
+#else /* ELF */
+/* light_switch_arm64_elf.S */
+asm(
+"// Minimal-save context switch, ARM64 ELF (🎯T35.1, paper 33 round 3).\n"
+"// See light_switch_arm64_macho.S for the contract and frame layout.\n"
+"\n"
+".text\n"
+".align 2\n"
+".global csp_light_jump\n"
+".hidden csp_light_jump\n"
+".type csp_light_jump, %function\n"
+"csp_light_jump:\n"
+"    sub  sp, sp, #0x20\n"
+"    stp  x29, x30, [sp, #0x00]\n"
+"    str  x30, [sp, #0x10]       // resume PC = return address\n"
+"    mov  x4, sp                 // from-context\n"
+"    mov  sp, x0                 // to-context\n"
+"    ldp  x29, x30, [sp, #0x00]\n"
+"    ldr  x5, [sp, #0x10]        // resume PC\n"
+"    add  sp, sp, #0x20\n"
+"    mov  x0, x4                 // transfer_t.fctx\n"
+"                                // x1 = data, unchanged\n"
+"    ret  x5\n"
+".size csp_light_jump,.-csp_light_jump\n"
+"\n"
+".global csp_light_make\n"
+".hidden csp_light_make\n"
+".type csp_light_make, %function\n"
+".align 2\n"
+"// x0 = stack top (16-aligned), x1 = entry fn taking transfer_t in x0/x1.\n"
+"csp_light_make:\n"
+"    sub  x0, x0, #0x20\n"
+"    str  x1, [x0, #0x10]        // resume PC = entry\n"
+"    stp  xzr, x1, [x0, #0x00]   // fp = 0, lr = entry\n"
+"    ret\n"
+".size csp_light_make,.-csp_light_make\n"
+"\n"
+"/* Mark that we don't need executable stack. */\n"
+);
+#endif
+#endif /* CSP_USE_LIGHT_SWITCH */
