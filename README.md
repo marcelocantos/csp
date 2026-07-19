@@ -121,6 +121,12 @@ make check  # run TLA+ model checker
 make clean  # remove build artifacts
 ```
 
+On arm64 (macOS/Linux), `make LIGHT_SWITCH=1` — or `-DCSP_LIGHT_SWITCH`
+when compiling the dist files — opts into a minimal-save context switch
+that roughly halves switch cost. The flag self-disables where it doesn't
+apply (other architectures, Windows, sanitizer builds), so it is always
+safe to pass.
+
 ## For coding agents
 
 If you use an agentic coding tool, include [`dist/AGENTS-CSP.md`](dist/AGENTS-CSP.md)

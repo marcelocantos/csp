@@ -7374,7 +7374,14 @@ void raise(DWORD event) {
 
 #endif // _WIN32
 
-/* fcontext — context-switching primitives (from Boost.Context) */
+/* fcontext — context-switching primitives (from Boost.Context)
+ *
+ * Copyright Oliver Kowalke 2009; ARM64 variants Copyright
+ * Edward Nevill + Oliver Kowalke 2015.
+ * Distributed under the Boost Software License, Version 1.0.
+ * (See accompanying file LICENSE_1_0.txt or copy at
+ * http://www.boost.org/LICENSE_1_0.txt)
+ */
 #if defined(__aarch64__) || defined(_M_ARM64)
 #if defined(__APPLE__)
 /* jump_arm64_aapcs_macho_gas.S */

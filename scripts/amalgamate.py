@@ -311,7 +311,20 @@ def amalgamate_fcontext(fcontext_dir, output):
          'jump_x86_64_sysv_elf_gas.S',   'make_x86_64_sysv_elf_gas.S'),
     ]
 
-    sections = ['\n/* fcontext — context-switching primitives (from Boost.Context) */']
+    # The .S→asm() conversion strips each file's leading comment block,
+    # which carries the Boost copyright notice — re-emit the attribution
+    # here so distributed copies retain it (Boost Software License
+    # requires the notice in all source copies).
+    sections = [
+        '\n/* fcontext — context-switching primitives (from Boost.Context)',
+        ' *',
+        ' * Copyright Oliver Kowalke 2009; ARM64 variants Copyright',
+        ' * Edward Nevill + Oliver Kowalke 2015.',
+        ' * Distributed under the Boost Software License, Version 1.0.',
+        ' * (See accompanying file LICENSE_1_0.txt or copy at',
+        ' * http://www.boost.org/LICENSE_1_0.txt)',
+        ' */',
+    ]
 
     for idx, (arch, arch_alt, plat, mj, mm, ej, em) in enumerate(variants):
         guard = f'#{"if" if idx == 0 else "elif"} defined({arch}) || defined({arch_alt})'
