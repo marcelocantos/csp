@@ -291,6 +291,68 @@ accessors. Further gains need structural work: a count==1 fast path
 that skips the pin/dedup machinery entirely, sticky alt registration
 (fan-in), and O4 ring-buffer buffered channels.
 
+## Round 3 (2026-07-19): instruction-level and assembly research
+
+Micro-costs of the primitives on the M4 Max (scratchpad `prims`
+driver, 2-proc runtime):
+
+| Primitive | ns |
+|---|---:|
+| `current_imp()` / `current_p()` (non-inline TLS) | 1.5 / 1.9 |
+| FastMutex pair / std::mutex pair (uncontended) | 2.2 / 4.7 |
+| atomic exchange (acq_rel) | 0.8 |
+| `jump_fcontext` (raw, per jump) | **11.6** |
+| yield round-trip (full scheduler path) | 82.6 → **68.2** |
+
+Fixes landed (commits `64e73e0`, `acb96bc`):
+
+- **`record_stack_high_water` ran on every suspend** — a mutex + hash
+  probe whose only consumer (spawn's `CSP_ANALYSE_STACKS` slot sizing)
+  is compiled out by default. Now compiled out together. This was the
+  single largest per-suspend parasite (~8 ns).
+- DD death-trace guard: function-local static (init-guard check ×8
+  sites per prialt) → namespace-scope const bool.
+- `StackPool::maybe_shrink`: out-of-line no-op call ×2 per op in arena
+  builds → header inline no-op.
+- **`do_switch`/`Imp::run` critical-section merge**: the suspend path
+  took `run_mu` twice per switch; now once, with the departure
+  bookkeeping (delink, CheckWP, placement clear) inline. The
+  main()-misuse check became a direct `self == &p.main` test at entry.
+  `switch_to` takes the caller's `Imp*` instead of re-reading TLS.
+  (One lesson: the first cut asserted `target->next_` *outside*
+  `run_mu` — TSan caught the racy read against concurrent thieves;
+  the assert moved inside the lock.)
+
+Net: yield 82.6 → 68.2 ns; ping-pong ~166–169 ns at 2 and 16 procs.
+
+**Assembly findings.** The vendored Boost fcontext ARM64 jump saves
+d8–d15 + x19–x30 (+PC): 10 stp / 10 ldp — essentially the AAPCS
+minimum, measured at 11.6 ns/jump. The known deeper play is the
+clobber-list trick (declare the switch as clobbering all callee-saved
+registers so the compiler spills only live values, and let the asm
+save just sp/fp/lr) — plausibly halves switch memory traffic
+(~3–5 ns/jump) at the cost of rewriting the contract of the most
+safety-critical assembly per platform. Deferred: the measured floor
+puts the ceiling of that whole project at ~10 ns/rendezvous. The
+`alt_state` claim CAS stays seq_cst deliberately (protocol margin
+over ~1 ns). TLS accessors at 1.5 ns are no longer worth chasing —
+their earlier profile weight was call frequency, already removed.
+
+A bespoke count==1 prialt path was evaluated and **rejected**: with
+the sort call gated and dedup trivially short, the n=1 flow is
+protocol-minimal — its remaining cost is ~14 safety-required atomic
+operations (slot spinlock, UAF pin/unpin, channel lock, alt_state
+claim, suspend/placement words, run-queue insert), not generic-path
+overhead.
+
+**Measurement caveat.** The 16-proc fan-in/buffered shapes are
+bimodal across measurement epochs (machine state; same binary varies
+1.5–4.4 µs between sessions). Within-epoch A/B holds: FastMutex
+improved fan-in ~4.4 → ~3.2 µs and buffered ~2.0 → ~1.7 µs alongside.
+Cross-epoch comparisons of these shapes are unreliable; ping-pong and
+yield are stable and comparable. 🎯T35's criteria are ratios within
+one epoch for exactly this reason.
+
 ## Method note
 
 `bench/channel.bench.cc` had bit-rotted (`csp_chanop`, a removed C-API
