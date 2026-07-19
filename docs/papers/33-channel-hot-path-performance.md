@@ -439,6 +439,31 @@ pre-existing ~4%-per-suite-run SIGABRT in network-suite teardown
 `coin-flip---entropy` hang (2/45 branch, 0/25 master, 0/200
 isolated — not statistically attributable). Tracked as 🎯T36.
 
+## Round 5 (2026-07-19): 🎯T35 O4 Channel-owned ring buffer
+
+Buffered `chan<T>(N)` no longer spawns a filter imp. The Channel
+owns a type-erased ring (`BufOps` vtable for relocate_in/out/destroy)
+and phase-1 of `prialt_begin_impl` services free-slot writes and
+non-empty reads under `mu_` alone — TLA: `formal/BufferedChanRing.tla`
+(+ `_Bug` no-wake counterexample). FIFO is preserved: readers drain
+the buffer before taking from waiting writers; a free slot after pop
+immediately parks one waiting writer's value.
+
+| Configuration | before (filter imp) | after (O4 ring) |
+|---|---:|---:|
+| buffered `chan<int>(1024)`, 2 procs | ~500–1700 ns | **~45 ns** |
+| buffered `chan<int>(1024)`, 16 procs | ~1670–2570 ns | **~45–60 ns** |
+
+Acceptance criterion 2 of 🎯T35 (under 500 ns/element at 16 procs) is
+met with margin. Oracles: 757/757 native, 739/739 TSan; TLC green on
+BufferedChanRing / OptimisticAlt (+ failing _Bug counterparts).
+
+**Remaining (🎯T35 criterion 1):** multi-writer `alt/8ch` still degrades
+at high proc counts (~300 ns @ 2 vs ~3 µs @ 16). Sticky multi-op
+registration was prototyped then reverted (lost-wakeup / dangling
+ChanOp* hazards across alt() returns); TLA scaffold lives in
+`formal/OptimisticAlt.tla`. Tracked as remaining parent acceptance.
+
 ## Method note
 
 `bench/channel.bench.cc` had bit-rotted (`csp_chanop`, a removed C-API

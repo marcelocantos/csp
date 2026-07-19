@@ -118,6 +118,22 @@ int main() {
         ankerl::nanobench::doNotOptimizeAway(sum);
     });
 
+    // --- Buffered channel throughput (🎯T35 O4) ---
+    bench.batch(BATCH).run("buffered/1024", [&] {
+        chan<int> ch(1024);
+        csp::spawn([w = ch.w.copy()] {
+            for (int i = 0; i < BATCH; i++) w << i;
+        });
+        int sum = 0;
+        csp::spawn([r = ch.r.copy(), &sum] {
+            int n;
+            for (int i = 0; i < BATCH; i++) { r >> n; sum += n; }
+        });
+        ch.release();
+        csp::schedule();
+        ankerl::nanobench::doNotOptimizeAway(sum);
+    });
+
     // --- Isolated: RNG + shuffle overhead (no channel work) ---
     bench.batch(1).run("rng+shuffle/2", [&] {
         csp::internal::ChanOp ops[2] = {};

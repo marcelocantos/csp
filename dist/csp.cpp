@@ -299,6 +299,7 @@ std::exception_ptr cancel_reason() {
 #include <cstdlib>
 #include <exception>
 #include <mutex>
+#include <new>
 #include <string>
 
 
@@ -409,6 +410,7 @@ namespace {
             counterses()[rd].activate();
         }
         ~Channel() {
+            buf_destroy_all();
         }
 
         void set_descr(char const * d) { descr_ = d; }
@@ -690,7 +692,18 @@ namespace {
                     auto flags = (uintptr_t)chop.waiter.ptr;
                     int endpt = flags & endpt_flag;
 
-                    if (!*ch) {
+                    // 🎯T35 O4: buffered reader may drain remaining slots
+                    // after the writer endpoint dies (filter-imp semantics).
+                    bool const writer_alive =
+                        ch->write_slot_->refcount.load(std::memory_order_acquire) > 0;
+                    bool const reader_alive =
+                        ch->read_slot_->refcount.load(std::memory_order_acquire) > 0;
+                    bool const ch_live = writer_alive && reader_alive;
+                    bool const buf_drain =
+                        ch->buf_cap_ > 0 && endpt == rd && (flags & ready_flag)
+                        && ch->buf_count_ > 0 && reader_alive;
+
+                    if (!ch_live && !buf_drain) {
                         DD("DD dead-scan imp=%p §%zu ch=%p i=%d ready=%d\n",
                            (void*)self, self->id_, (void*)ch,
                            i, int(flags & ready_flag));
@@ -711,6 +724,68 @@ namespace {
 
                     auto & them = ch->endpts_[1 - endpt].waiters;
                     if ((flags & ready_flag)) {
+                        // 🎯T35 O4: Channel-owned ring buffer (TLA:BufferedChanRing).
+                        // FIFO order (Go hchan):
+                        //   Reader: drain buffer first; if a writer is waiting
+                        //           after a pop, park their value into the free
+                        //           slot (relocate_in) then wake them.
+                        //   Writer: if a reader is waiting and buffer empty,
+                        //           direct rendezvous; else enqueue if space.
+                        if (ch->buf_cap_ > 0) {
+                            if (endpt == rd && reader_alive && ch->buf_count_ > 0) {
+                                void * slot = ch->buf_slot(ch->buf_head_);
+                                ch->buf_ops_.relocate_out(
+                                    const_cast<void *>(chop.message),
+                                    chop.eptr_dst, slot);
+                                ch->buf_head_ = (ch->buf_head_ + 1) % ch->buf_cap_;
+                                --ch->buf_count_;
+                                // Free slot: park one waiting writer's value.
+                                auto & wwait = ch->endpts_[wr].waiters;
+                                for (auto & cw : wwait) {
+                                    uint32_t expected = Imp::ALT_WAITING;
+                                    if (!cw.thread->alt_state.compare_exchange_strong(
+                                            expected, Imp::ALT_CLAIMED)) {
+                                        continue;
+                                    }
+                                    Imp * peer = cw.thread;
+                                    ChanOp const * peer_chop = cw.chanop;
+                                    peer->signal_ = int(peer_chop - peer->chanops_);
+                                    void * free_slot = ch->buf_slot(ch->buf_tail_);
+                                    ch->buf_ops_.relocate_in(free_slot, peer_chop->message);
+                                    ch->buf_tail_ = (ch->buf_tail_ + 1) % ch->buf_cap_;
+                                    ++ch->buf_count_;
+                                    if (peer->n_chanops_ == 1) {
+                                        wwait.remove({peer_chop, peer});
+                                    }
+                                    mi->peer = peer;
+                                    break;
+                                }
+                                out->src = nullptr;
+                                out->dst = nullptr;
+                                out->result = i;
+                                mi->needs_unlock = true;
+                                return;
+                            }
+                            if (endpt == wr && writer_alive && reader_alive) {
+                                // Prefer direct rendezvous with a waiting
+                                // reader only when the buffer is empty (FIFO).
+                                if (ch->buf_count_ == 0 && them.count() > 0) {
+                                    // fall through to claim loop
+                                } else if (ch->buf_count_ < ch->buf_cap_) {
+                                    void * slot = ch->buf_slot(ch->buf_tail_);
+                                    ch->buf_ops_.relocate_in(slot, chop.message);
+                                    ch->buf_tail_ = (ch->buf_tail_ + 1) % ch->buf_cap_;
+                                    ++ch->buf_count_;
+                                    out->src = nullptr;
+                                    out->dst = nullptr;
+                                    out->result = i;
+                                    mi->needs_unlock = true;
+                                    return;
+                                }
+                                // else full → fall through to claim/register
+                            }
+                        }
+
                         // TLA:AltStateCAS.WakerStart TLA:AltStateCAS.WakerCAS
                         for (auto & cw : them) {
                             uint32_t expected = Imp::ALT_WAITING;
@@ -880,6 +955,33 @@ namespace {
         FastMutex mu_;
         Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot
         Slot * read_slot_ = nullptr;    // back-pointer to read endpoint slot
+
+        // 🎯T35 O4 Channel-owned ring (TLA:BufferedChanRing). buf_cap_==0
+        // means unbuffered (rendezvous only). Storage is a contiguous
+        // array of elemsize-aligned slots; head/tail are indices mod cap.
+        size_t buf_cap_ = 0;
+        size_t buf_count_ = 0;
+        size_t buf_head_ = 0;
+        size_t buf_tail_ = 0;
+        size_t buf_stride_ = 0;   // elemsize rounded up to align
+        char * buf_data_ = nullptr;
+        BufOps buf_ops_{};
+
+        void * buf_slot(size_t i) const {
+            return buf_data_ + i * buf_stride_;
+        }
+
+        void buf_destroy_all() {
+            if (!buf_data_) return;
+            for (size_t n = 0; n < buf_count_; ++n) {
+                size_t i = (buf_head_ + n) % buf_cap_;
+                buf_ops_.destroy(buf_slot(i));
+            }
+            buf_count_ = 0;
+            ::operator delete(buf_data_, std::align_val_t{buf_ops_.align ? buf_ops_.align : 1});
+            buf_data_ = nullptr;
+        }
+
         struct EndPoint {
             Waiters waiters;
             Vultures vultures;
@@ -905,6 +1007,7 @@ namespace {
 
         friend char const * describe(void *);
         friend bool csp::internal::make_chan(WriterRef*, ReaderRef*);
+        friend bool csp::internal::make_buffered_chan(WriterRef*, ReaderRef*, size_t, BufOps);
         friend void csp::internal::swap_slots(void*, void*);
     };
 
@@ -936,6 +1039,32 @@ int channel_count(int endpt) {
 bool make_chan(WriterRef * w, ReaderRef * r) {
     try {
         auto ch = new Channel{};
+        auto ws = new Slot{ch};
+        auto rs = new Slot{ch};
+        ch->write_slot_ = ws;
+        ch->read_slot_ = rs;
+        *w = {reinterpret_cast<void *>(ws)};
+        *r = {reinterpret_cast<void *>((uintptr_t)rs | 1)};
+        return true;
+    } catch (std::exception const &) {
+    } catch (...) {
+    }
+    return false;
+}
+
+bool make_buffered_chan(WriterRef * w, ReaderRef * r, size_t capacity, BufOps ops) {
+    if (capacity == 0 || !ops.relocate_in || !ops.relocate_out || !ops.destroy) {
+        return false;
+    }
+    try {
+        auto ch = new Channel{};
+        ch->buf_cap_ = capacity;
+        ch->buf_ops_ = ops;
+        // Stride: elemsize rounded up to alignment.
+        size_t align = ops.align ? ops.align : 1;
+        ch->buf_stride_ = (ops.elemsize + align - 1) / align * align;
+        ch->buf_data_ = static_cast<char *>(
+            ::operator new(ch->buf_stride_ * capacity, std::align_val_t{align}));
         auto ws = new Slot{ch};
         auto rs = new Slot{ch};
         ch->write_slot_ = ws;
@@ -6609,7 +6738,6 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
 #endif
 #endif
 
-#include <new>
 
 namespace csp::detail {
 
