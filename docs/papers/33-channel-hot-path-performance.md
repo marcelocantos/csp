@@ -327,16 +327,27 @@ Net: yield 82.6 → 68.2 ns; ping-pong ~166–169 ns at 2 and 16 procs.
 
 **Assembly findings.** The vendored Boost fcontext ARM64 jump saves
 d8–d15 + x19–x30 (+PC): 10 stp / 10 ldp — essentially the AAPCS
-minimum, measured at 11.6 ns/jump. The known deeper play is the
-clobber-list trick (declare the switch as clobbering all callee-saved
-registers so the compiler spills only live values, and let the asm
-save just sp/fp/lr) — plausibly halves switch memory traffic
-(~3–5 ns/jump) at the cost of rewriting the contract of the most
-safety-critical assembly per platform. Deferred: the measured floor
-puts the ceiling of that whole project at ~10 ns/rendezvous. The
-`alt_state` claim CAS stays seq_cst deliberately (protocol margin
-over ~1 ns). TLS accessors at 1.5 ns are no longer worth chasing —
-their earlier profile weight was call frequency, already removed.
+minimum for its contract, measured at 11.6 ns/jump. Porting the hot
+C++ *to* assembly was evaluated and rejected: the channel/scheduler
+cost is semantics-bound (required atomics + cache traffic that clang
+already compiles near-optimally), and hand-ported code goes dark to
+TSan/ASan — the load-bearing oracles for every scheduler change here.
+
+The one asm project with measured headroom is redesigning the switch
+*contract* rather than its instructions: a **minimal-save switch**
+(asm saves only fp/lr/PC; the call site declares x19–x28 and the full
+vector file as clobbers, so the compiler spills exactly the live
+subset). Prototyped (scratchpad `light_jump.S` + inline-asm call
+wrapper): **9.4 ns round-trip vs Boost's 22.3 ns — 2.4×**. In real
+code some spills return (prialt frames keep values live across the
+switch), so the realized win is bounded by ~6–13 ns per rendezvous of
+the current ~68 ns yield. Adoption sketch: a `CSP_LIGHT_SWITCH`
+variant for arm64 (macOS/Linux), Boost fcontext retained for Windows
+(TIB bookkeeping), for sanitizer builds, and as the portable default.
+Tracked under 🎯T35. The `alt_state` claim CAS stays seq_cst
+deliberately (protocol margin over ~1 ns). TLS accessors at 1.5 ns
+are no longer worth chasing — their earlier profile weight was call
+frequency, already removed.
 
 A bespoke count==1 prialt path was evaluated and **rejected**: with
 the sort call gated and dedup trivially short, the n=1 flow is
