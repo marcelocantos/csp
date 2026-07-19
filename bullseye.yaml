@@ -1150,7 +1150,7 @@ targets:
     discovered: 2026-07-18
   T35.1:
     name: A minimal-save (clobber-list) context switch is available on arm64 and cuts the measured switch cost roughly in half
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1164,6 +1164,7 @@ targets:
     - scheduler
     origin: 'Session 2026-07-19: assembly-opportunity research (user prompt: port to asm, not just optimize existing asm)'
     discovered: 2026-07-19
+    achieved: 2026-07-19
   T4:
     name: API safety gaps are closed
     status: achieved
