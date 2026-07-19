@@ -1518,6 +1518,15 @@ namespace csp {
             // TLA:PlacementClaim.Insert
             if (has_processor()) {
                 if (auto& p = current_p(); p.id != 0) {
+                    // Fairness budget: after kLocalWakeBudget consecutive
+                    // local wakes, route one wake through the global queue.
+                    // The woken peer then leaves this P's ring; on the
+                    // waker's next block this P falls back to worker_loop
+                    // and drains global work — so a hot rendezvous pair
+                    // cannot starve spawned imps sitting in the global
+                    // queue (the flat_map balloon: merge+producer
+                    // monopolized their P while sub-stream imps waited).
+                    constexpr int kLocalWakeBudget = 64;
                     bool queued = false;
                     {
                         std::lock_guard plk(p.run_mu);
@@ -1531,6 +1540,11 @@ namespace csp {
                                 }
                                 it = it->next_;
                             } while (it != start);
+                        }
+                        if (!has_waiting
+                            && ++p.local_wake_streak_ >= kLocalWakeBudget) {
+                            p.local_wake_streak_ = 0;
+                            has_waiting = true;  // treat as spill this time
                         }
                         if (!has_waiting) {
                             if (p.busy) {

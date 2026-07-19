@@ -5185,6 +5185,12 @@ struct Processor {
 
     FastMutex run_mu;                 // Protects busy queue DLL
     Imp* running = nullptr;   // Imp claimed by local_next (steal-safe)
+    // Fairness budget for wake-to-local (🎯T34 O1): consecutive local
+    // wake count; every kLocalWakeBudget-th wake routes to the global
+    // queue instead, so a hot rendezvous pair cannot monopolize this P
+    // while spawned/global work goes underserved (paper 33; the
+    // flat_map balloon). Mutated under run_mu.
+    int local_wake_streak_ = 0;
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
     Note note;                        // Per-worker futex note (park/unpark)
 

@@ -219,11 +219,14 @@ TEST_CASE("Channel---NReaders") {
 
     auto [w, r] = chan<int>{};
 
-    int total = 0;
+    // Ten readers run concurrently on different Ps: the accumulator
+    // must be atomic (a plain int loses updates — latent race exposed
+    // by wake-to-local scheduling, 🎯T34).
+    std::atomic<int> total{0};
 
     for (int i = 0; i < 10; ++i) {
         stats.spawn([in = r.copy(), &total]{
-            total += in.read();
+            total.fetch_add(in.read(), std::memory_order_relaxed);
         });
     }
 
@@ -235,7 +238,7 @@ TEST_CASE("Channel---NReaders") {
 
     csp::schedule();
 
-    CHECK(1023 == total);
+    CHECK(1023 == total.load(std::memory_order_relaxed));
 }
 
 // We don't want channel.test.cc to depend on rpc.h.
