@@ -1148,6 +1148,22 @@ targets:
     - scheduler
     origin: 'Session 2026-07-18: T34 round-2 profiling'
     discovered: 2026-07-18
+  T35.1:
+    name: A minimal-save (clobber-list) context switch is available on arm64 and cuts the measured switch cost roughly in half
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - CSP_LIGHT_SWITCH (or equivalent gate) selects a fp/lr/PC-only switch with a clobber-list call site on arm64 macOS/Linux; Boost fcontext remains the default and is always used on Windows and under sanitizers
+    - 'Raw switch round-trip under the light variant is ≤1/2 of the Boost figure on the same machine (prototype 2026-07-19: 9.4 vs 22.3 ns), and yield round-trip improves measurably in the prims harness'
+    - Full suite green natively AND with the light switch enabled; sanitizer suites unaffected (they compile the Boost path)
+    context: 'Paper 33 round 3: hand-porting hot C++ to asm rejected (semantics-bound + sanitizer blindness), but redesigning the switch contract measured 2.4x on a scratchpad prototype (light_jump.S: asm saves only fp/lr/PC; inline-asm call site clobbers x19-x28 + v0-v31 so the compiler spills only live registers). Production wiring needs: light_make counterpart, integration at switch_to/spawn/start, flag plumbing through Makefile and dist, and the fallback matrix. Realized win bounded ~6-13 ns/rendezvous of the ~68 ns yield.'
+    tags:
+    - performance
+    - assembly
+    - scheduler
+    origin: 'Session 2026-07-19: assembly-opportunity research (user prompt: port to asm, not just optimize existing asm)'
+    discovered: 2026-07-19
   T4:
     name: API safety gaps are closed
     status: achieved
