@@ -1165,6 +1165,23 @@ targets:
     origin: 'Session 2026-07-19: assembly-opportunity research (user prompt: port to asm, not just optimize existing asm)'
     discovered: 2026-07-19
     achieved: 2026-07-19
+  T36:
+    name: The full test suite is abort-free and hang-free across 100 consecutive in-suite runs on both macOS and Linux
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Root cause identified for the intermittent SIGABRT/std::terminate in network-suite teardown (shutdown_runtime + set_maxprocs re-init pattern; observed ~1/25 on v0.22.0-era master in ws.test.cc and ~2/30 on the T34 branch in http.test.cc — PRE-EXISTING, evades lldb timing)
+    - Root cause identified for the rare in-suite coin-flip---entropy hang (2/45 branch runs, 0/200 isolated, 0/25 master — suite-context-dependent)
+    - 100 consecutive full-suite runs with zero non-zero exits on the M4 (hunt_hang.sh harness) and CI green streak maintained
+    - Paper-stub written per the debugging-hard-concurrency-bugs convention before any systematic tooling
+    context: 'Found during the v0.23.0 release gate (PR #95 CI triage, paper 33 postmortem). Both flakes evade isolation (context-dependent runtime state from earlier tests: shutdown/re-init cycles, maxprocs changes). The terminate shows ''libc++abi: terminating'' with the reactor thread active — likely an exception escaping a noexcept context or double-exception during network teardown unwind. Not release-blocking: pre-existing on master (v0.22.0 ships it), CI green across 15 jobs on the release SHA. Hunt harness: scratchpad hunt_hang.sh pattern (stall-detection + sample capture) — recreate as scripts/hunt.sh if pursuing.'
+    tags:
+    - flaky-tests
+    - shutdown
+    - concurrency
+    origin: 'Session 2026-07-19: v0.23.0 release CI triage'
+    discovered: 2026-07-19
   T4:
     name: API safety gaps are closed
     status: achieved
