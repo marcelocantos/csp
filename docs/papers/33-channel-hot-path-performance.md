@@ -464,6 +464,41 @@ registration was prototyped then reverted (lost-wakeup / dangling
 ChanOp* hazards across alt() returns); TLA scaffold lives in
 `formal/OptimisticAlt.tla`. Tracked as remaining parent acceptance.
 
+## Round 6 (2026-07-19): 🎯T35.3 OptimisticAlt (channel layer)
+
+Implemented the TLA:OptimisticAlt design in `prialt_begin_impl`:
+
+1. **Before** bulk pin/sort/`lock_all`, multi-channel alts resolve and
+   pin **one channel at a time**.
+2. Pass 1: `try_lock` each arm (skip contended writers so a ready peer
+   on a quiet arm can win). Pass 2: blocking lock on deferred arms.
+3. On match: hold only that channel's `mu_` (`unlock_only`) and that
+   one pin; `alt_end` unlocks/unpins the single channel.
+4. On miss: classical pin-all + `lock_all` re-scan before sleep
+   (lost-wakeup + dead-data deferral unchanged).
+
+`CSP_ALT_STATS=1` hit rates on the full bench suite:
+
+| MAXPROCS | opt_hit | opt_miss | classic_match | alt/8ch ns |
+|---:|---:|---:|---:|---:|
+| 2 | 12.6M | 24.4M | 15.2M | ~300 |
+| 16 (default) | 31.6M | 5.4M | 8.6M | ~3200 |
+
+At default maxprocs the optimistic path hits ~86% of multi-channel
+attempts — so residual cost is **not** classical `lock_all` of K.
+
+`sample` of the 16-proc fan-in shape is dominated by worker
+`park`/`unpark`, `steal_work`, and `take_from_global` (idle-worker
+thrash with 9 imps on 16 Ps), not by `prialt_begin_impl` critical
+sections. alt/8ch scales roughly linearly with MAXPROCS (2→300 ns,
+4→540, 8→1.7 µs, 16→3.2 µs).
+
+**Channel-layer conclusion:** OptimisticAlt is the right "or equivalent"
+to sticky registration for the ready path; suite 757/757 native, TLC
+green. The original 2× ratio acceptance is a **scheduler** problem
+(park/steal thrash), tracked as 🎯T37 — not a further channel
+protocol gap.
+
 ## Method note
 
 `bench/channel.bench.cc` had bit-rotted (`csp_chanop`, a removed C-API

@@ -48,6 +48,25 @@ namespace {
     // initializer (not a function-local static): access is a plain load
     // with no init-guard check at the ~8 DD sites on the prialt path.
     bool const g_debug_death = std::getenv("CSP_DEBUG_DEATH") != nullptr;
+
+    // 🎯T35.3 diagnostics: optimistic multi-channel phase-1 hit rate.
+    // Enable with CSP_ALT_STATS=1; printed at process exit.
+    bool const g_alt_stats = std::getenv("CSP_ALT_STATS") != nullptr;
+    std::atomic<uint64_t> g_alt_opt_hit{0};
+    std::atomic<uint64_t> g_alt_opt_miss{0};
+    std::atomic<uint64_t> g_alt_classic_match{0};
+    struct AltStatsPrinter {
+        ~AltStatsPrinter() {
+            if (!g_alt_stats) return;
+            auto h = g_alt_opt_hit.load(std::memory_order_relaxed);
+            auto m = g_alt_opt_miss.load(std::memory_order_relaxed);
+            auto c = g_alt_classic_match.load(std::memory_order_relaxed);
+            std::fprintf(stderr,
+                "CSP_ALT_STATS opt_hit=%llu opt_miss=%llu classic_match=%llu\n",
+                (unsigned long long)h, (unsigned long long)m,
+                (unsigned long long)c);
+        }
+    } g_alt_stats_printer;
 #define DD(...) do { if (g_debug_death) [[unlikely]] fprintf(stderr, __VA_ARGS__); } while (0)
 
     class Channel;
@@ -246,7 +265,10 @@ namespace {
             int n_sorted;
             Imp* peer;
             bool needs_unlock;
-            // (removed: use_run field was for single-P cooperative path)
+            // When needs_unlock: if unlock_only != nullptr, release only that
+            // channel's mu_ (TLA:OptimisticAlt single-lock match). Otherwise
+            // unlock every channel in sorted[] (classical lock_all match).
+            Channel* unlock_only;
             bool has_pins;          // re-resolution alive_ pins active
         };
         static_assert(sizeof(match_internal) <= 128, "match_internal too large for opaque_");
@@ -291,46 +313,265 @@ namespace {
 
             mi->peer = nullptr;
             mi->needs_unlock = false;
+            mi->unlock_only = nullptr;
             out->src = nullptr;
             out->dst = nullptr;
             out->result = 0;
 
-            // Re-resolve each chanop's Channel* through its Slot under the
-            // slot spinlock, and build the unique channel set with alive_
-            // pins.  Pinning under the spinlock prevents the channel from
-            // being freed between the load and the pin (see
-            // docs/papers/11-channel-reresolution-uaf.md).
+            // True if slot re-resolution drifted under the channel lock.
+            auto slot_stale = [&](ChanOp const & chop) -> bool {
+                if (!chop.slot) return false;
+                auto * slot = static_cast<Slot *>(chop.slot);
+                auto * now = slot->channel.load(std::memory_order_acquire);
+                return now != get_chan(chop);
+            };
+
+            // Resolve one chanop under its slot spinlock, optionally pin.
+            // Pinning under the spinlock prevents free between load and pin
+            // (docs/papers/11-channel-reresolution-uaf.md).
+            auto resolve_one = [&](ChanOp const & chop, bool pin) -> Channel * {
+                auto * slot = chop.slot ? static_cast<Slot *>(chop.slot) : nullptr;
+                if (slot) slot->lock();
+                Channel * new_ch;
+                if (slot) {
+                    new_ch = static_cast<Channel *>(
+                        slot->channel.load(std::memory_order_acquire));
+                    auto flags = (uintptr_t)chop.waiter.ptr & uintptr_t{15};
+                    const_cast<ChanOp &>(chop).waiter.ptr =
+                        (void *)((uintptr_t)new_ch | flags);
+                } else {
+                    new_ch = get_chan(chop);
+                }
+                if (new_ch && pin) {
+                    new_ch->alive_.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (slot) slot->unlock();
+                return new_ch;
+            };
+
+            // 🎯T35 O4 + rendezvous claim under a held channel lock.
+            // Returns true if a ready match was recorded (caller returns to
+            // alt_end). Caller sets mi->unlock_only when the match is under
+            // a single-channel lock (TLA:OptimisticAlt).
+            auto try_data_match = [&](int i, ChanOp const & chop, Channel * ch,
+                                      int endpt, bool writer_alive,
+                                      bool reader_alive) -> bool {
+                auto & them = ch->endpts_[1 - endpt].waiters;
+                if (ch->buf_cap_ > 0) {
+                    if (endpt == rd && reader_alive && ch->buf_count_ > 0) {
+                        void * slot = ch->buf_slot(ch->buf_head_);
+                        ch->buf_ops_.relocate_out(
+                            const_cast<void *>(chop.message),
+                            chop.eptr_dst, slot);
+                        ch->buf_head_ = (ch->buf_head_ + 1) % ch->buf_cap_;
+                        --ch->buf_count_;
+                        auto & wwait = ch->endpts_[wr].waiters;
+                        for (auto & cw : wwait) {
+                            uint32_t expected = Imp::ALT_WAITING;
+                            if (!cw.thread->alt_state.compare_exchange_strong(
+                                    expected, Imp::ALT_CLAIMED)) {
+                                continue;
+                            }
+                            Imp * peer = cw.thread;
+                            ChanOp const * peer_chop = cw.chanop;
+                            peer->signal_ = int(peer_chop - peer->chanops_);
+                            void * free_slot = ch->buf_slot(ch->buf_tail_);
+                            ch->buf_ops_.relocate_in(free_slot, peer_chop->message);
+                            ch->buf_tail_ = (ch->buf_tail_ + 1) % ch->buf_cap_;
+                            ++ch->buf_count_;
+                            if (peer->n_chanops_ == 1) {
+                                wwait.remove({peer_chop, peer});
+                            }
+                            mi->peer = peer;
+                            break;
+                        }
+                        out->src = nullptr;
+                        out->dst = nullptr;
+                        out->result = i;
+                        mi->needs_unlock = true;
+                        return true;
+                    }
+                    if (endpt == wr && writer_alive && reader_alive) {
+                        if (ch->buf_count_ == 0 && them.count() > 0) {
+                            // fall through to claim loop
+                        } else if (ch->buf_count_ < ch->buf_cap_) {
+                            void * slot = ch->buf_slot(ch->buf_tail_);
+                            ch->buf_ops_.relocate_in(slot, chop.message);
+                            ch->buf_tail_ = (ch->buf_tail_ + 1) % ch->buf_cap_;
+                            ++ch->buf_count_;
+                            out->src = nullptr;
+                            out->dst = nullptr;
+                            out->result = i;
+                            mi->needs_unlock = true;
+                            return true;
+                        }
+                    }
+                }
+
+                // TLA:AltStateCAS.WakerStart TLA:AltStateCAS.WakerCAS
+                for (auto & cw : them) {
+                    uint32_t expected = Imp::ALT_WAITING;
+                    if (cw.thread->alt_state.compare_exchange_strong(
+                            expected, Imp::ALT_CLAIMED)) {
+                        Imp * peer = cw.thread;
+                        ChanOp const * peer_chop = cw.chanop;
+                        int idx = int(peer_chop - peer->chanops_);
+                        peer->signal_ = idx;
+                        DD("DD match matcher=%p §%zu claimed=%p §%zu ch=%p idx=%d\n",
+                           (void*)self, self->id_,
+                           (void*)peer, peer->id_, (void*)ch, idx);
+
+                        if (endpt == wr) {
+                            out->src = chop.message;
+                            out->dst = const_cast<void *>(peer_chop->message);
+                            out->eptr_dst = peer_chop->eptr_dst;
+                        } else {
+                            out->src = peer_chop->message;
+                            out->dst = const_cast<void *>(chop.message);
+                            out->eptr_dst = chop.eptr_dst;
+                        }
+
+                        // 🎯T35 waker-side deregistration for single-op sleepers.
+                        // TLA:ChannelLifecycle.WaiterWakeNoCleanup
+                        if (peer->n_chanops_ == 1) {
+                            them.remove({peer_chop, peer});
+                        }
+
+                        out->result = i;
+                        mi->peer = peer;
+                        mi->needs_unlock = true;
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            // TLA:OptimisticAlt — multi-channel hot path BEFORE bulk pin/sort.
+            // Resolve+pin one channel at a time; on match hold only that lock
+            // and that pin (alt_end unlocks via unlock_only and unpins the
+            // single entry). Avoids O(K) pin/sort traffic on the common
+            // always-ready fan-in path (🎯T35.3).
+            //
+            // Two passes: first try_lock (skip contended arms so a ready peer
+            // on a quiet channel can win without waiting behind a writer
+            // hammering another arm); second pass blocking lock on deferred
+            // arms. Priority/rotation order is preserved within each pass.
+            if (count > 1) {
+                int deferred_idx[64];
+                int n_deferred = 0;
+                bool need_retry = false;
+
+                auto run_one = [&](int i, bool blocking) -> bool {
+                    // true → caller should return (match or vulture set).
+                    auto const & chop = chanops[i];
+                    Channel * ch = resolve_one(chop, /*pin=*/true);
+                    if (!ch) return false;
+
+                    if (blocking) {
+                        ch->mu_.lock();
+                    } else if (!ch->mu_.try_lock()) {
+                        unpin_channel(ch);
+                        if (n_deferred < 64) deferred_idx[n_deferred++] = i;
+                        return false;
+                    }
+
+                    if (slot_stale(chop)) {
+                        ch->mu_.unlock();
+                        unpin_channel(ch);
+                        need_retry = true;
+                        return true;
+                    }
+
+                    auto flags = (uintptr_t)chop.waiter.ptr;
+                    int endpt = flags & endpt_flag;
+                    bool const writer_alive =
+                        ch->write_slot_->refcount.load(
+                            std::memory_order_acquire) > 0;
+                    bool const reader_alive =
+                        ch->read_slot_->refcount.load(
+                            std::memory_order_acquire) > 0;
+                    bool const ch_live = writer_alive && reader_alive;
+                    bool const buf_drain =
+                        ch->buf_cap_ > 0 && endpt == rd
+                        && (flags & ready_flag)
+                        && ch->buf_count_ > 0 && reader_alive;
+
+                    if (!ch_live && !buf_drain) {
+                        if (!(flags & ready_flag)) {
+                            ch->mu_.unlock();
+                            unpin_channel(ch);
+                            out->result = ~i;
+                            return true;
+                        }
+                        ch->mu_.unlock();
+                        unpin_channel(ch);
+                        return false;
+                    }
+
+                    if ((flags & ready_flag)
+                        && try_data_match(i, chop, ch, endpt,
+                                          writer_alive, reader_alive)) {
+                        mi->unlock_only = ch;
+                        mi->fixed_sorted[0] = ch;
+                        mi->sorted = mi->fixed_sorted;
+                        mi->n_sorted = 1;
+                        mi->has_pins = true;
+                        if (g_alt_stats) {
+                            g_alt_opt_hit.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        return true;
+                    }
+                    ch->mu_.unlock();
+                    unpin_channel(ch);
+                    return false;
+                };
+
+                for (int k = 0; k < count; ++k) {
+                    int i = (offset + k) % count;
+                    if (run_one(i, /*blocking=*/false)) {
+                        if (need_retry) goto retry;
+                        return;
+                    }
+                }
+                for (int d = 0; d < n_deferred; ++d) {
+                    if (run_one(deferred_idx[d], /*blocking=*/true)) {
+                        if (need_retry) goto retry;
+                        return;
+                    }
+                }
+                if (g_alt_stats) {
+                    g_alt_opt_miss.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+
+            // Classical path: re-resolve all, pin unique set under slot lock,
+            // then lock_all (docs/papers/11-channel-reresolution-uaf.md).
             Channel* fixed_chans[8];
             std::vector<Channel*> variable_chans;
             Channel** chans = fixed_chans;
             int n_chans = 0;
 
             for (int i = 0; i < count; ++i) {
-                Channel* new_ch;
-                auto * slot = chanops[i].slot
-                    ? static_cast<Slot *>(chanops[i].slot) : nullptr;
-
+                auto const & chop = chanops[i];
+                auto * slot = chop.slot ? static_cast<Slot *>(chop.slot) : nullptr;
                 if (slot) slot->lock();
-
+                Channel * new_ch;
                 if (slot) {
-                    new_ch = static_cast<Channel*>(
+                    new_ch = static_cast<Channel *>(
                         slot->channel.load(std::memory_order_acquire));
-                    auto flags = (uintptr_t)chanops[i].waiter.ptr & uintptr_t{15};
-                    const_cast<ChanOp &>(chanops[i]).waiter.ptr =
+                    auto flags = (uintptr_t)chop.waiter.ptr & uintptr_t{15};
+                    const_cast<ChanOp &>(chop).waiter.ptr =
                         (void *)((uintptr_t)new_ch | flags);
                 } else {
-                    new_ch = get_chan(chanops[i]);
+                    new_ch = get_chan(chop);
                 }
-
                 if (new_ch) {
-                    // Dedup: check if already in unique set.
                     bool found = false;
                     for (int j = 0; j < n_chans; ++j) {
                         if (chans[j] == new_ch) { found = true; break; }
                     }
                     if (!found) {
-                        // Pin to prevent deletion between slot unlock
-                        // and lock_all (see paper §Fix).
+                        // Pin under slot lock to close the free race.
                         new_ch->alive_.fetch_add(1, std::memory_order_relaxed);
                         if (n_chans < 8) {
                             fixed_chans[n_chans++] = new_ch;
@@ -344,7 +585,6 @@ namespace {
                         }
                     }
                 }
-
                 if (slot) slot->unlock();
             }
 
@@ -355,7 +595,6 @@ namespace {
                           [](Channel * a, Channel * b) { return a->id_ < b->id_; });
             }
 
-            // Copy into persistent storage in AltMatch opaque.
             if (n_chans <= 8) {
                 memcpy(mi->fixed_sorted, chans, n_chans * sizeof(Channel*));
                 mi->sorted = mi->fixed_sorted;
@@ -376,13 +615,7 @@ namespace {
             {
                 bool stale = false;
                 for (int i = 0; i < count && !stale; ++i) {
-                    if (chanops[i].slot) {
-                        auto * slot = static_cast<Slot *>(chanops[i].slot);
-                        auto * now = slot->channel.load(std::memory_order_acquire);
-                        if (now != get_chan(chanops[i])) {
-                            stale = true;
-                        }
-                    }
+                    if (slot_stale(chanops[i])) stale = true;
                 }
                 if (stale) {
                     unlock_all();
@@ -435,112 +668,16 @@ namespace {
                         continue;
                     }
 
-                    auto & them = ch->endpts_[1 - endpt].waiters;
-                    if ((flags & ready_flag)) {
-                        // 🎯T35 O4: Channel-owned ring buffer (TLA:BufferedChanRing).
-                        // FIFO order (Go hchan):
-                        //   Reader: drain buffer first; if a writer is waiting
-                        //           after a pop, park their value into the free
-                        //           slot (relocate_in) then wake them.
-                        //   Writer: if a reader is waiting and buffer empty,
-                        //           direct rendezvous; else enqueue if space.
-                        if (ch->buf_cap_ > 0) {
-                            if (endpt == rd && reader_alive && ch->buf_count_ > 0) {
-                                void * slot = ch->buf_slot(ch->buf_head_);
-                                ch->buf_ops_.relocate_out(
-                                    const_cast<void *>(chop.message),
-                                    chop.eptr_dst, slot);
-                                ch->buf_head_ = (ch->buf_head_ + 1) % ch->buf_cap_;
-                                --ch->buf_count_;
-                                // Free slot: park one waiting writer's value.
-                                auto & wwait = ch->endpts_[wr].waiters;
-                                for (auto & cw : wwait) {
-                                    uint32_t expected = Imp::ALT_WAITING;
-                                    if (!cw.thread->alt_state.compare_exchange_strong(
-                                            expected, Imp::ALT_CLAIMED)) {
-                                        continue;
-                                    }
-                                    Imp * peer = cw.thread;
-                                    ChanOp const * peer_chop = cw.chanop;
-                                    peer->signal_ = int(peer_chop - peer->chanops_);
-                                    void * free_slot = ch->buf_slot(ch->buf_tail_);
-                                    ch->buf_ops_.relocate_in(free_slot, peer_chop->message);
-                                    ch->buf_tail_ = (ch->buf_tail_ + 1) % ch->buf_cap_;
-                                    ++ch->buf_count_;
-                                    if (peer->n_chanops_ == 1) {
-                                        wwait.remove({peer_chop, peer});
-                                    }
-                                    mi->peer = peer;
-                                    break;
-                                }
-                                out->src = nullptr;
-                                out->dst = nullptr;
-                                out->result = i;
-                                mi->needs_unlock = true;
-                                return;
-                            }
-                            if (endpt == wr && writer_alive && reader_alive) {
-                                // Prefer direct rendezvous with a waiting
-                                // reader only when the buffer is empty (FIFO).
-                                if (ch->buf_count_ == 0 && them.count() > 0) {
-                                    // fall through to claim loop
-                                } else if (ch->buf_count_ < ch->buf_cap_) {
-                                    void * slot = ch->buf_slot(ch->buf_tail_);
-                                    ch->buf_ops_.relocate_in(slot, chop.message);
-                                    ch->buf_tail_ = (ch->buf_tail_ + 1) % ch->buf_cap_;
-                                    ++ch->buf_count_;
-                                    out->src = nullptr;
-                                    out->dst = nullptr;
-                                    out->result = i;
-                                    mi->needs_unlock = true;
-                                    return;
-                                }
-                                // else full → fall through to claim/register
-                            }
+                    if ((flags & ready_flag)
+                        && try_data_match(i, chop, ch, endpt,
+                                          writer_alive, reader_alive)) {
+                        // Classical path: all sorted locks held.
+                        mi->unlock_only = nullptr;
+                        if (g_alt_stats) {
+                            g_alt_classic_match.fetch_add(
+                                1, std::memory_order_relaxed);
                         }
-
-                        // TLA:AltStateCAS.WakerStart TLA:AltStateCAS.WakerCAS
-                        for (auto & cw : them) {
-                            uint32_t expected = Imp::ALT_WAITING;
-                            if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                                Imp * peer = cw.thread;
-                                ChanOp const * peer_chop = cw.chanop;
-                                int idx = int(peer_chop - peer->chanops_);
-                                peer->signal_ = idx;
-                                DD("DD match matcher=%p §%zu claimed=%p §%zu ch=%p idx=%d\n",
-                                   (void*)self, self->id_,
-                                   (void*)peer, peer->id_, (void*)ch, idx);
-
-                                // Set up match: src is always writer's
-                                // buffer, dst is always reader's buffer.
-                                // eptr_dst comes from the reader side (its
-                                // optional std::exception_ptr storage).
-                                if (endpt == wr) {
-                                    out->src = chop.message;
-                                    out->dst = const_cast<void *>(peer_chop->message);
-                                    out->eptr_dst = peer_chop->eptr_dst;
-                                } else {
-                                    out->src = peer_chop->message;
-                                    out->dst = const_cast<void *>(chop.message);
-                                    out->eptr_dst = chop.eptr_dst;
-                                }
-
-                                // 🎯T35 waker-side deregistration: a
-                                // single-op sleeper's only registration is
-                                // on this channel — remove it now (under
-                                // mu_) so the woken side skips its phase-3
-                                // relock. cw dangles after the remove.
-                                // TLA:ChannelLifecycle.WaiterWakeNoCleanup
-                                if (peer->n_chanops_ == 1) {
-                                    them.remove({peer_chop, peer});
-                                }
-
-                                out->result = i;
-                                mi->peer = peer;
-                                mi->needs_unlock = true;
-                                return;  // locks + pins held → alt_end_impl unpins
-                            }
-                        }
+                        return;
                     }
                     all_null = false;
                 }
@@ -639,7 +776,12 @@ namespace {
         static void alt_end_impl(AltMatch * m) {
             auto * mi = reinterpret_cast<match_internal *>(m->opaque_);
             if (mi->needs_unlock) {
-                for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
+                // TLA:OptimisticAlt — single-lock match holds only unlock_only.
+                if (mi->unlock_only) {
+                    mi->unlock_only->mu_.unlock();
+                } else {
+                    for (int i = 0; i < mi->n_sorted; ++i) mi->sorted[i]->mu_.unlock();
+                }
             }
             if (mi->has_pins) {
                 for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
