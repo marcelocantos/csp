@@ -337,11 +337,17 @@ The one asm project with measured headroom is redesigning the switch
 *contract* rather than its instructions: a **minimal-save switch**
 (asm saves only fp/lr/PC; the call site declares x19–x28 and the full
 vector file as clobbers, so the compiler spills exactly the live
-subset). Prototyped (scratchpad `light_jump.S` + inline-asm call
-wrapper): **9.4 ns round-trip vs Boost's 22.3 ns — 2.4×**. In real
-code some spills return (prialt frames keep values live across the
-switch), so the realized win is bounded by ~6–13 ns per rendezvous of
-the current ~68 ns yield. Adoption sketch: a `CSP_LIGHT_SWITCH`
+subset). Prototyped (`bench/lightswitch/`): **9.4 ns round-trip vs
+Boost's 22.3 ns — 2.4×**. A register-pressure sweep (accumulators
+held live across every switch) shows the win survives real liveness:
+full-clobber stays at ~9 ns with 8 live values and beats Boost even
+at 12 (18.4 vs 25.4). An in-between contract (asm saves a "commonly
+live" subset, x19–x24; call site clobbers the rest) was also measured
+and is **dominated at every pressure level** (13.6–19.6 ns): the
+static subset pays unconditionally, while the clobber contract is
+already the adaptive version of that idea — the compiler saves
+exactly the live subset per call site, and its spill code schedules
+better than the asm's serial store chain. Adoption sketch: a `CSP_LIGHT_SWITCH`
 variant for arm64 (macOS/Linux), Boost fcontext retained for Windows
 (TIB bookkeeping), for sanitizer builds, and as the portable default.
 Tracked under 🎯T35. The `alt_state` claim CAS stays seq_cst
