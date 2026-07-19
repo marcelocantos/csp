@@ -399,6 +399,46 @@ protocol. Further gains are architectural: 🎯T35's sticky registration
 (fan-in is still ~3.2 µs at 16 procs vs 210 ns at 2) and O4
 ring-buffer buffered channels (~2.3 µs vs ~50 ns potential).
 
+## Postmortem: the release-gate CI reds (2026-07-19)
+
+PR #95's first CI run failed three jobs; every failure traced to the
+new scheduling dynamics exposing latent problems rather than protocol
+bugs (all TLA-verified protocols held):
+
+1. **Latent test race** — `Channel---NReaders` summed into a plain
+   `int` from ten imps; wake-to-local made them truly concurrent
+   (measured `total==63` of 1023). One-line atomic fix; a fanned-out
+   audit of all ~75 by-ref spawn captures found every other site
+   already hardened by the 🎯T29-era passes.
+2. **Fake-clock orchestrator flake** — `Timer---MultipleTimersOrdering`
+   ran its `alt` in the binding imp, which is deliberately NOT a
+   quiescence-scope member, so fake time could advance past both
+   deadlines before the alt registered — and `alt` picks randomly
+   between two ready arms. The alt now runs in a spawned participant.
+3. **TSan deadlock detector** — its per-OS-thread 64-entry held-lock
+   table is incompatible with M:N fiber runtimes; overflow wedges the
+   process (`CHECK failed: sanitizer_deadlock_detector.h`). Disabled
+   in CI (`detect_deadlocks=0`); deadlock assurance comes from the
+   TLA+ specs and the test watchdog.
+4. **The real find: wake-to-local starvation compounding.** With one
+   worker, `flat_map`'s merge and its outer producer monopolized the
+   P's ring; 4,999 spawned sub-stream imps never left the global
+   queue, so the input arm stayed the only ready one and the merge's
+   vector alt grew by one channel per iteration (instrumented: 5,001
+   arms after 5,000 consecutive input fires; each cycle paying O(N²)
+   dedup + three O(N) lock passes). Fix: a **pull-based fairness
+   budget** — every 32nd consecutive local wake pulls a
+   `take_from_global` batch into the monopolized ring instead of
+   spilling the woken peer (a spill design cost +170 ns/op at 16
+   procs from pair migration). Measured after: 135–142 ns/op at both
+   2 and 16 procs — no fairness tax — and the reproducer is gone.
+
+Also surfaced, attributed, and deliberately not blocking: a
+pre-existing ~4%-per-suite-run SIGABRT in network-suite teardown
+(reproduced 1/25 on v0.22.0-era master) and a rare in-suite
+`coin-flip---entropy` hang (2/45 branch, 0/25 master, 0/200
+isolated — not statistically attributable). Tracked as 🎯T36.
+
 ## Method note
 
 `bench/channel.bench.cc` had bit-rotted (`csp_chanop`, a removed C-API
