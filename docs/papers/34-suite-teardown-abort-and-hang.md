@@ -233,6 +233,7 @@ B1 is the cheapest to fix and the same root as hypothesis A.
 | 2026-07-19 | Fix: `daemon_gs.store(0)` in init + shutdown | full suite 757/757 green (was 757/757 baseline) |
 | 2026-07-19 | Rejected unit test | abandon-daemon regression leaked channels (no destroy_imp) and broke 128 later RunStats `channel_count` checks — confirms shutdown-without-destroy_imp is real, but the test is not a clean oracle |
 | 2026-07-19 | `scripts/hunt.sh` | stall-detection harness recreated |
+| 2026-07-19 | Hunt streak (M4, `scripts/hunt.sh` 30× full suite with `-d`) | **20/20 consecutive SUCCESS** mid-run (no `libc++abi: terminating`, no CRASHED, no stalls); 30-run and 100-run ceilings still outstanding |
 
 ## See also
 
