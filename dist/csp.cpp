@@ -1365,8 +1365,9 @@ namespace csp {
             rt.unpark_one();
         }
 
-        static intptr_t switch_to(Imp & target, intptr_t data) {
-            auto self = current_imp();
+        // self must be current_imp() — passed through to spare the
+        // (deliberately non-inline) TLS accessor another call.
+        static intptr_t switch_to(Imp & target, intptr_t data, Imp * self) {
             // Acquire-load ctx_ to synchronize with the release-store
             // that saved the target's context on a (possibly different)
             // OS thread.  This ensures the saved register data on the
@@ -1650,7 +1651,7 @@ namespace csp {
             }
 
             auto killme = status == Status::exit ? self : nullptr;
-            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
+            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme), self));
             if (killyou) {
                 destroy_imp(killyou);
             }
@@ -1691,9 +1692,19 @@ namespace csp {
 #endif
                 StackPool::instance().maybe_shrink(self->stk_, fp);
             }
+            auto& p = current_p();
+            // A synthetic main imp only calls do_switch when CSP
+            // operations are attempted outside spawn() — reject before
+            // touching the run queue (the merged section below would
+            // otherwise delink it from its own ring first).
+            if (self == &p.main) {
+                throw error(
+                    "channel operation attempted from main() — "
+                    "CSP operations must run inside spawn()");
+            }
             Imp* target;
+            bool stay = false;  // CheckWP took an early wake — no switch
             {
-                auto& p = current_p();
                 std::lock_guard lk(p.run_mu);
                 // Update running to the active MT so steal_work skips it.
                 // (local_next sets running for the initial pick; chained
@@ -1704,14 +1715,74 @@ namespace csp {
                 if (busy == self) {
                     busy = busy->next_;
                 }
+                // Self's departure bookkeeping — merged from Imp::run()
+                // (🎯T35): one run_mu section per switch instead of two.
+                switch (status) {
+                case Status::sleep:
+                    // busy already advanced past self; it stays linked.
+                    break;
+                case Status::detach: // TLA:StealWork.VDeschedule
+                case Status::exit:
+                    // Inline deschedule.
+                    assert(self->next_);
+                    if (busy == self && (busy = self->next_) == self) {
+                        busy = nullptr;
+                    }
+                    if (self->next_) self->next_->prev_ = self->prev_;
+                    if (self->prev_) self->prev_->next_ = self->next_;
+                    self->next_ = nullptr;
+                    self->prev_ = nullptr;
+
+                    // TLA:DrainSuspended.CheckWP — early wake: a waker
+                    // CASed to SUSP_WAKE before our context save. Take
+                    // the wake here (CAS back to IDLE), re-add to the
+                    // local queue, and skip the switch entirely.
+                    if (uint32_t wake = Imp::SUSP_WAKE;
+                        status == Status::detach &&
+                        self->suspend_state_.compare_exchange_strong(
+                            wake, Imp::SUSP_IDLE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
+                        if (busy) {
+                            self->next_ = busy;
+                            self->prev_ = busy->prev_;
+                            self->next_->prev_ = self->prev_->next_ = self;
+                        } else {
+                            busy = self->next_ = self->prev_ = self;
+                        }
+                        stay = true;
+                        break;
+                    }
+                    // Committed to switching out: release the placement
+                    // claim. Ordered after CheckWP so an early-woken imp
+                    // (which stays queued) never exposes placed_ == FALSE.
+                    // TLA:PlacementClaim
+                    self->placed_.store(false, std::memory_order_release);
+                    break;
+                default: CSP_UNREACHABLE();
+                }
                 target = busy;
+                // The ring always contains this P's sentinel (misuse was
+                // rejected above), so a target exists and is not self.
+                // Checked under run_mu: target's links are shared with
+                // concurrent thieves.
+                assert(stay || (target && target != self && target->next_));
             }
-            target->run(status);
+            if (!stay) {
+                auto killme = status == Status::exit ? self : nullptr;
+                auto killyou = reinterpret_cast<Imp*>(switch_to(
+                    *target, reinterpret_cast<intptr_t>(killme), self));
+                if (killyou) {
+                    destroy_imp(killyou);
+                }
+                if (!killme) {
+                    set_current_imp(self);
+                }
+            }
             // Re-enter scope if we left it (yield path). For scheduled
             // imps, make_runnable already entered — exchange returns false.
-            // self is still this imp after resume (Imp::run restored
-            // current_imp() to it); only the TLS slot must not be cached
-            // across the switch, not the Imp* value.
+            // self is still this imp after resume; only the TLS slot must
+            // not be cached across the switch, not the Imp* value.
             if (self->qs_entered_
                 && self->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
                 self->qs_->enter();
@@ -1774,7 +1845,7 @@ static void start(transfer_t t) {
     if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
     self->dyn_ctx_ = parent_dyn_ctx;
     set_current_imp(self);
-    auto killyou_val = switch_to(sd.caller, 0);
+    auto killyou_val = switch_to(sd.caller, 0, self);
     // After warmup switch, sd may be invalid. Use local copies only.
     set_current_imp(self);
 
@@ -1917,7 +1988,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 #endif
 
         StartData const start_data = {start_f, data, *imp, *self};
-        switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
+        switch_to(*imp, reinterpret_cast<intptr_t>(&start_data), self);
         set_current_imp(self);
 
         // Inherit quiescence scope from parent.
