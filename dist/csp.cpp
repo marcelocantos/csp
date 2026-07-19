@@ -82,10 +82,13 @@ void BlockingPool::worker() {
 namespace csp::internal {
 
 void run_blocking(std::function<void()> fn) {
-    detail::current_imp()->suspending_.store(true, std::memory_order_release);
+    // Announce the suspend window BEFORE submit: the pool thread's
+    // make_runnable must observe SUSP_PENDING (or later) so the wake
+    // defers to CheckWP/drain. TLA:DrainSuspended.BeginSuspend
+    detail::current_imp()->suspend_state_.store(
+        detail::Imp::SUSP_PENDING, std::memory_order_release);
     detail::BlockingPool::instance().submit(detail::current_imp(), std::move(fn));
     detail::do_switch(detail::Status::detach);
-    detail::current_imp()->suspending_.store(false, std::memory_order_release);
 }
 
 } // namespace csp::internal
@@ -296,7 +299,6 @@ std::exception_ptr cancel_reason() {
 #include <cstdlib>
 #include <exception>
 #include <mutex>
-#include <random>
 #include <string>
 
 
@@ -305,10 +307,19 @@ using namespace csp::detail;
 using namespace csp::internal;
 
 
+// Debug/introspection tallies (channel_count). Relaxed ordering: they
+// are monotonic counters with no synchronizing role, and the default
+// seq_cst RMWs put two dmb-fenced ops on a shared cache line into
+// every endpoint create/copy/release (🎯T34 O7).
 struct Counters {
     std::atomic<int> refs{0};
     std::atomic<int> derefs{0};
     std::atomic<int> active{0};
+
+    void ref() { refs.fetch_add(1, std::memory_order_relaxed); }
+    void deref() { derefs.fetch_add(1, std::memory_order_relaxed); }
+    void activate() { active.fetch_add(1, std::memory_order_relaxed); }
+    void deactivate() { active.fetch_sub(1, std::memory_order_relaxed); }
 };
 
 auto & counterses() {
@@ -319,13 +330,11 @@ auto & counterses() {
 namespace {
 
     // 🎯T29 hang diagnosis scaffolding: env-gated one-line traces of the
-    // endpoint-death / registration / wake protocol. Cost when off: one
-    // predictable branch on a static bool.
-    bool debug_death() {
-        static bool const on = std::getenv("CSP_DEBUG_DEATH") != nullptr;
-        return on;
-    }
-#define DD(...) do { if (debug_death()) fprintf(stderr, __VA_ARGS__); } while (0)
+    // endpoint-death / registration / wake protocol. Namespace-scope
+    // initializer (not a function-local static): access is a plain load
+    // with no init-guard check at the ~8 DD sites on the prialt path.
+    bool const g_debug_death = std::getenv("CSP_DEBUG_DEATH") != nullptr;
+#define DD(...) do { if (g_debug_death) [[unlikely]] fprintf(stderr, __VA_ARGS__); } while (0)
 
     class Channel;
 
@@ -394,10 +403,10 @@ namespace {
             // Must be 16-byte aligned.
             assert(((uintptr_t)this % 16) == 0);
 
-            ++counterses()[wr].refs;
-            ++counterses()[rd].refs;
-            ++counterses()[wr].active;
-            ++counterses()[rd].active;
+            counterses()[wr].ref();
+            counterses()[rd].ref();
+            counterses()[wr].activate();
+            counterses()[rd].activate();
         }
         ~Channel() {
         }
@@ -410,23 +419,42 @@ namespace {
                 && read_slot_->refcount.load(std::memory_order_acquire) > 0;
         }
 
+        // Claim + wake every WAITING entry of a ring, assigning signal_
+        // via sig(idx). Caller holds mu_. Single-op sleepers (🎯T35
+        // waker-side deregistration) are removed from the ring at claim
+        // time — their only registration is on this channel, so the
+        // woken side skips its phase-3 relock entirely.
+        // TLA:ChannelLifecycle.WaiterWakeNoCleanup
+        // On removal the ring backfills the hole, so the index is NOT
+        // advanced; entries are copied out before removal.
+        template <typename Ring, typename Sig>
+        static void claim_wake_all(Ring & ring, Sig sig) {
+            for (size_t i = 0; i < ring.count(); ) {
+                auto const & cw = ring.begin()[static_cast<ptrdiff_t>(i)];
+                Imp * t = cw.thread;
+                ChanOp const * chop = cw.chanop;
+                uint32_t expected = Imp::ALT_WAITING;
+                if (!t->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
+                    ++i;
+                    continue;
+                }
+                t->signal_ = sig(int(chop - t->chanops_));
+                bool const single = t->n_chanops_ == 1;
+                if (single) {
+                    ring.remove({chop, t});  // cw is dangling from here
+                }
+                t->make_runnable();
+                if (!single) {
+                    ++i;
+                }
+            }
+        }
+
         // Wake all waiters on a given endpoint side with a swap signal (INT_MIN).
         void wake_all_for_swap(int endpt) {
             auto & ep = endpts_[endpt];
-            for (auto const & cw : ep.waiters) {
-                uint32_t expected = Imp::ALT_WAITING;
-                if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                    cw.thread->signal_ = INT_MIN;
-                    cw.thread->make_runnable();
-                }
-            }
-            for (auto const & cv : ep.vultures) {
-                uint32_t expected = Imp::ALT_WAITING;
-                if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                    cv.thread->signal_ = INT_MIN;
-                    cv.thread->make_runnable();
-                }
-            }
+            claim_wake_all(ep.waiters, [](int) { return INT_MIN; });
+            claim_wake_all(ep.vultures, [](int) { return INT_MIN; });
         }
 
         // Called when a slot's endpoint refcount drops to 0.
@@ -435,41 +463,23 @@ namespace {
         // slot->channel still points to this channel (see
         // resolve_endpoint_death).
         void on_endpoint_death_locked(int endpt) {
-            ++counterses()[endpt].derefs;
-            --counterses()[endpt].active;
+            counterses()[endpt].deref();
+            counterses()[endpt].deactivate();
             // Check if the opposite side has live endpoints.
             Slot * other_slot = (endpt == wr) ? read_slot_ : write_slot_;
-            DD("DD death ch=%p endpt=%d other_refs=%d\n", (void*)this, endpt,
+            DD("DD death ch=%p endpt=%d other_refs=%zu\n", (void*)this, endpt,
                other_slot->refcount.load(std::memory_order_acquire));
             if (other_slot->refcount.load(std::memory_order_acquire) > 0) {
                 // Wake waiters on the opposite side (death signal).
                 auto & ep = endpts_[1 - endpt];
-                for (auto const & cw : ep.waiters) {
-                    uint32_t expected = Imp::ALT_WAITING;
-                    if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                        int idx = int(cw.chanop - cw.thread->chanops_);
-                        cw.thread->signal_ = ~idx;
-                        DD("DD death-wake ch=%p imp=%p §%zu signal=%d\n",
-                           (void*)this, (void*)cw.thread, cw.thread->id_, ~idx);
-                        cw.thread->make_runnable();
-                    } else {
-                        DD("DD death-skip ch=%p imp=%p §%zu state=%u\n",
-                           (void*)this, (void*)cw.thread, cw.thread->id_, expected);
-                    }
-                }
-                for (auto const & cv : ep.vultures) {
-                    uint32_t expected = Imp::ALT_WAITING;
-                    if (cv.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                        int idx = int(cv.chanop - cv.thread->chanops_);
-                        cv.thread->signal_ = ~idx;
-                        DD("DD death-wake-vulture ch=%p imp=%p §%zu signal=%d\n",
-                           (void*)this, (void*)cv.thread, cv.thread->id_, ~idx);
-                        cv.thread->make_runnable();
-                    } else {
-                        DD("DD death-skip-vulture ch=%p imp=%p §%zu state=%u\n",
-                           (void*)this, (void*)cv.thread, cv.thread->id_, expected);
-                    }
-                }
+                claim_wake_all(ep.waiters, [this](int idx) {
+                    DD("DD death-wake ch=%p idx=%d\n", (void*)this, idx);
+                    return ~idx;
+                });
+                claim_wake_all(ep.vultures, [this](int idx) {
+                    DD("DD death-wake-vulture ch=%p idx=%d\n", (void*)this, idx);
+                    return ~idx;
+                });
             }
             mu_.unlock();
             // Both endpoint sides decrement alive_. The last one
@@ -537,11 +547,18 @@ namespace {
         }
 
         static void prialt_begin_impl(AltMatch * out, ChanOp const * chanops, int count, bool nowait, int offset = 0) {
+            // Cache the current imp. The pointer stays valid across
+            // do_switch below: it names this imp, and Imp::run restores
+            // current_imp() to it before control returns here. Only the
+            // TLS *slot* must not be cached across a switch (see
+            // docs/tls-caching-bug.md); the Imp* value is stable.
+            auto * const self = current_imp();
+
             // Reclaim unused stack pages at this API boundary.
-            if (current_imp()->stk_) {
+            if (self->stk_) {
                 auto* fp = CSP_FRAME_ADDRESS();
-                check_stack_overflow(current_imp(), fp);
-                StackPool::instance().maybe_shrink(current_imp()->stk_, fp);
+                check_stack_overflow(self, fp);
+                StackPool::instance().maybe_shrink(self->stk_, fp);
             }
 
             auto * mi = reinterpret_cast<match_internal *>(out->opaque_);
@@ -616,9 +633,12 @@ namespace {
                 if (slot) slot->unlock();
             }
 
-            // Sort unique channels by id for lock ordering.
-            std::sort(chans, chans + n_chans,
-                      [](Channel * a, Channel * b) { return a->id_ < b->id_; });
+            // Sort unique channels by id for lock ordering. count==1
+            // (plain send/recv, the dominant call shape) skips the call.
+            if (n_chans > 1) {
+                std::sort(chans, chans + n_chans,
+                          [](Channel * a, Channel * b) { return a->id_ < b->id_; });
+            }
 
             // Copy into persistent storage in AltMatch opaque.
             if (n_chans <= 8) {
@@ -672,7 +692,7 @@ namespace {
 
                     if (!*ch) {
                         DD("DD dead-scan imp=%p §%zu ch=%p i=%d ready=%d\n",
-                           (void*)current_imp(), current_imp()->id_, (void*)ch,
+                           (void*)self, self->id_, (void*)ch,
                            i, int(flags & ready_flag));
                         if (flags & ready_flag) {
                             // Data chanop on dead channel: defer until
@@ -695,11 +715,13 @@ namespace {
                         for (auto & cw : them) {
                             uint32_t expected = Imp::ALT_WAITING;
                             if (cw.thread->alt_state.compare_exchange_strong(expected, Imp::ALT_CLAIMED)) {
-                                int idx = int(cw.chanop - cw.thread->chanops_);
-                                cw.thread->signal_ = idx;
+                                Imp * peer = cw.thread;
+                                ChanOp const * peer_chop = cw.chanop;
+                                int idx = int(peer_chop - peer->chanops_);
+                                peer->signal_ = idx;
                                 DD("DD match matcher=%p §%zu claimed=%p §%zu ch=%p idx=%d\n",
-                                   (void*)current_imp(), current_imp()->id_,
-                                   (void*)cw.thread, cw.thread->id_, (void*)ch, idx);
+                                   (void*)self, self->id_,
+                                   (void*)peer, peer->id_, (void*)ch, idx);
 
                                 // Set up match: src is always writer's
                                 // buffer, dst is always reader's buffer.
@@ -707,16 +729,26 @@ namespace {
                                 // optional std::exception_ptr storage).
                                 if (endpt == wr) {
                                     out->src = chop.message;
-                                    out->dst = const_cast<void *>(cw.chanop->message);
-                                    out->eptr_dst = cw.chanop->eptr_dst;
+                                    out->dst = const_cast<void *>(peer_chop->message);
+                                    out->eptr_dst = peer_chop->eptr_dst;
                                 } else {
-                                    out->src = cw.chanop->message;
+                                    out->src = peer_chop->message;
                                     out->dst = const_cast<void *>(chop.message);
                                     out->eptr_dst = chop.eptr_dst;
                                 }
 
+                                // 🎯T35 waker-side deregistration: a
+                                // single-op sleeper's only registration is
+                                // on this channel — remove it now (under
+                                // mu_) so the woken side skips its phase-3
+                                // relock. cw dangles after the remove.
+                                // TLA:ChannelLifecycle.WaiterWakeNoCleanup
+                                if (peer->n_chanops_ == 1) {
+                                    them.remove({peer_chop, peer});
+                                }
+
                                 out->result = i;
-                                mi->peer = cw.thread;
+                                mi->peer = peer;
                                 mi->needs_unlock = true;
                                 return;  // locks + pins held → alt_end_impl unpins
                             }
@@ -746,66 +778,73 @@ namespace {
             // Re-resolution pins (alive_++) serve double duty: they keep
             // channels alive while we sleep.  No separate pin loop needed.
             // TLA:ChannelLifecycle.RegisterWaiter TLA:AltStateCAS.WaiterRegister
-            current_imp()->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
+            self->alt_state.store(Imp::ALT_WAITING, std::memory_order_release);
             for (int i = 0; i < count; ++i) {
                 auto const & chop = chanops[i];
                 if (Channel * ch = get_chan(chop)) {
                     auto flags = (uintptr_t)chop.waiter.ptr;
                     DD("DD reg imp=%p §%zu ch=%p endpt=%d i=%d ready=%d\n",
-                       (void*)current_imp(), current_imp()->id_, (void*)ch,
+                       (void*)self, self->id_, (void*)ch,
                        int(flags & endpt_flag), i, int(flags & ready_flag));
-                    ch->endpts_[flags & endpt_flag].wait(&chop);
+                    ch->endpts_[flags & endpt_flag].wait(&chop, self);
                 }
             }
 
-            current_imp()->chanops_ = chanops;
-            current_imp()->n_chanops_ = count;
-            // Mark suspending_ before unlock_all so that schedule()
-            // (called by a waker on another thread) will set
-            // wake_pending_ instead of pushing to the global queue.
-            // Without this, there is a race: after unlock_all but
-            // before do_switch completes, a waker could push us to
+            self->chanops_ = chanops;
+            self->n_chanops_ = count;
+            // Announce the suspend window before unlock_all so that
+            // schedule() (called by a waker on another thread) defers
+            // the wake (CAS to SUSP_WAKE) instead of pushing to a run
+            // queue. Without this, there is a race: after unlock_all
+            // but before do_switch completes, a waker could push us to
             // the global queue and a worker could run us while we
             // haven't finished suspending — double execution.
             // TLA:ChannelLifecycle.WaiterSleep TLA:DrainSuspended.BeginSuspend
             DD("DD suspend imp=%p §%zu\n",
-               (void*)current_imp(), current_imp()->id_);
-            current_imp()->suspending_.store(true, std::memory_order_release);
+               (void*)self, self->id_);
+            self->suspend_state_.store(Imp::SUSP_PENDING, std::memory_order_release);
             unlock_all();
-            do_switch(Status::detach);
-            current_imp()->suspending_.store(false, std::memory_order_release); // TLA:DrainSuspended.ClearSusp
+            do_switch(Status::detach, self);
+            // suspend_state_ is SUSP_IDLE here: CheckWP (early wake) or
+            // drain_suspended (context switch) reset it.
             DD("DD woke imp=%p §%zu signal=%d\n",
-               (void*)current_imp(), current_imp()->id_, current_imp()->signal_);
+               (void*)self, self->id_, self->signal_);
 
-            // Phase 3: Woken up — clean up registrations under sorted locks.
-            lock_all(); // TLA:ChannelLifecycle.WaiterWakeAcquire
-            for (int i = 0; i < current_imp()->n_chanops_; ++i) {
-                auto const & chop = current_imp()->chanops_[i];
-                if (Channel * ch = get_chan(chop)) {
-                    auto flags = (uintptr_t)chop.waiter.ptr;
-                    ch->endpts_[flags & endpt_flag].remove(&chop, current_imp());
+            // Phase 3: Woken up — clean up registrations under sorted
+            // locks. Single-op fast path (🎯T35): the claimer removed
+            // our only registration while holding that channel's lock,
+            // so there is nothing to relock or scan.
+            // TLA:ChannelLifecycle.WaiterWakeNoCleanup
+            if (count > 1) {
+                lock_all();
+                for (int i = 0; i < self->n_chanops_; ++i) {
+                    auto const & chop = self->chanops_[i];
+                    if (Channel * ch = get_chan(chop)) {
+                        auto flags = (uintptr_t)chop.waiter.ptr;
+                        ch->endpts_[flags & endpt_flag].remove(&chop, self);
+                    }
                 }
+                unlock_all();
             }
-            unlock_all(); // TLA:ChannelLifecycle.WaiterCleanup
 
             // Unpin channels.  If an endpoint died while we slept,
             // alive_ may reach 0 here, triggering deferred deletion.
             for (int i = 0; i < mi->n_sorted; ++i) unpin_channel(mi->sorted[i]);
             mi->has_pins = false;
 
-            current_imp()->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
+            self->alt_state.store(Imp::ALT_IDLE, std::memory_order_release); // TLA:AltStateCAS.WaiterDone
 
             // Check for swap wake-up: if signal_ is INT_MIN, a channel swap
             // occurred. Re-resolve happens at retry: label.
-            if (current_imp()->signal_ == INT_MIN) {
-                current_imp()->chanops_ = nullptr;
-                current_imp()->n_chanops_ = 0;
+            if (self->signal_ == INT_MIN) {
+                self->chanops_ = nullptr;
+                self->n_chanops_ = 0;
                 goto retry;
             }
 
-            out->result = current_imp()->signal_;
-            current_imp()->chanops_ = nullptr;
-            current_imp()->n_chanops_ = 0;
+            out->result = self->signal_;
+            self->chanops_ = nullptr;
+            self->n_chanops_ = 0;
             // src/dst/peer remain null — transfer was done by the waker.
         }
 
@@ -833,21 +872,24 @@ namespace {
         using Vultures = detail::RingBuffer<ChanopWaiter>;
 
         size_t id_ = []{ static std::atomic<size_t> last{0}; return ++last; }();
-        std::string descr_ = [this]{ char b[25]; snprintf(b, sizeof(b), "▸%zu", id_); return std::string(b); }();
+        // Empty until set_descr(): the default "▸N" form is formatted on
+        // demand in describe() (debug paths only) instead of paying a
+        // snprintf + string per channel create (🎯T35: ~37 of 156 ns).
+        std::string descr_;
         std::atomic<int> alive_{2};  // endpoints (2) + sleeping waiters; last to 0 deletes
-        std::mutex mu_;
+        FastMutex mu_;
         Slot * write_slot_ = nullptr;   // back-pointer to write endpoint slot
         Slot * read_slot_ = nullptr;    // back-pointer to read endpoint slot
         struct EndPoint {
             Waiters waiters;
             Vultures vultures;
 
-            void wait(ChanOp const * chop) {
+            void wait(ChanOp const * chop, Imp * t) {
                 auto flags = (uintptr_t)chop->waiter.ptr;
                 if (flags & ready_flag) {
-                    waiters.emplace(chop, current_imp());
+                    waiters.emplace(chop, t);
                 } else {
-                    vultures.emplace(chop, current_imp());
+                    vultures.emplace(chop, t);
                 }
             }
 
@@ -870,7 +912,13 @@ namespace {
         auto p = (uintptr_t)ptr & ~uintptr_t{15};
         if (p) {
             auto * ch = reinterpret_cast<Channel *>(p);
-            return ch->descr_.c_str();
+            if (!ch->descr_.empty()) {
+                return ch->descr_.c_str();
+            }
+            // Default "▸N" form, formatted on demand (debug paths only).
+            thread_local char buf[25];
+            snprintf(buf, sizeof(buf), "▸%zu", ch->id_);
+            return buf;
         }
         return "▸Ø";
     }
@@ -918,7 +966,7 @@ char const * get_chan_flags(void * ch) {
 
 WriterRef writer_addref(WriterRef w) {
     if (w) {
-        ++counterses()[wr].refs;
+        counterses()[wr].ref();
         get_slot(w.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
     }
     return w;
@@ -927,7 +975,7 @@ WriterRef writer_addref(WriterRef w) {
 void writer_release(WriterRef w) {
     if (w) {
         auto * slot = get_slot(w.ptr);
-        ++counterses()[wr].derefs;
+        counterses()[wr].deref();
         if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             Channel::resolve_endpoint_death(slot, wr);
         }
@@ -936,7 +984,7 @@ void writer_release(WriterRef w) {
 
 ReaderRef reader_addref(ReaderRef r) {
     if (r) {
-        ++counterses()[rd].refs;
+        counterses()[rd].ref();
         get_slot(r.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
     }
     return r;
@@ -945,7 +993,7 @@ ReaderRef reader_addref(ReaderRef r) {
 void reader_release(ReaderRef r) {
     if (r) {
         auto * slot = get_slot(r.ptr);
-        ++counterses()[rd].derefs;
+        counterses()[rd].deref();
         if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             Channel::resolve_endpoint_death(slot, rd);
         }
@@ -975,7 +1023,7 @@ bool try_upgrade_weak_writer(WriterRef w) {
     while (old > 0) {
         if (slot->refcount.compare_exchange_weak(old, old + 1,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
-            ++counterses()[wr].refs;
+            counterses()[wr].ref();
             return true;
         }
     }
@@ -989,7 +1037,7 @@ bool try_upgrade_weak_reader(ReaderRef r) {
     while (old > 0) {
         if (slot->refcount.compare_exchange_weak(old, old + 1,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
-            ++counterses()[rd].refs;
+            counterses()[rd].ref();
             return true;
         }
     }
@@ -1068,8 +1116,18 @@ void prialt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait)
 void alt_begin(AltMatch * out, ChanOp const * chanops, int count, int nowait) {
     int offset = 0;
     if (count > 1) {
-        thread_local std::mt19937 rng{std::random_device{}()};
-        offset = std::uniform_int_distribution<int>(0, count - 1)(rng);
+        // xorshift64* + Lemire reduction: the offset only needs to be
+        // uniform-ish for fairness, not cryptographic, and this stays
+        // off the syscall/heavy-math path (mt19937 + rejection sampling
+        // cost ~25 ns per alt).
+        thread_local uint64_t rng_state =
+            0x9e3779b97f4a7c15u ^ reinterpret_cast<uintptr_t>(&rng_state);
+        uint64_t x = rng_state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        rng_state = x;
+        offset = int(((x * 0x2545f4914f6cdd1du >> 32) * uint64_t(count)) >> 32);
     }
     Channel::prialt_begin_impl(out, chanops, count, bool(nowait), offset);
 }
@@ -1120,9 +1178,14 @@ time_point fake_clock::now() const {
 fake_clock::~fake_clock() {
     // Unregister quiescence hook.
     auto& rt = detail::Runtime::instance();
-    std::lock_guard<std::mutex> lk(rt.hook_mu_);
-    rt.quiescence_hook_ = nullptr;
-    rt.has_hook_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(rt.hook_mu_);
+        rt.quiescence_hook_ = nullptr;
+        rt.has_hook_.store(false, std::memory_order_release);
+    }
+    // Wake main_loop so it re-registers without the quiescence-watcher
+    // flag (🎯T34 O3; cold path).
+    rt.broadcast_park();
 }
 
 void fake_clock::sleep_until(time_point tp) {
@@ -1136,15 +1199,23 @@ void fake_clock::sleep_until(time_point tp) {
     // the runtime to be initialized at fake_clock construction time).
     auto& rt = detail::Runtime::instance();
     {
-        std::lock_guard<std::mutex> lk(rt.hook_mu_);
-        if (!rt.quiescence_hook_) {
-            rt.quiescence_hook_ = [this]() -> bool {
-                // Only advance time when ALL scope members are sleeping.
-                if (!qs_.is_quiescent()) return true;  // imps still active
-                return advance_to_next();  // true=advanced, false=no timers
-            };
-            rt.has_hook_.store(true, std::memory_order_release);
+        bool installed = false;
+        {
+            std::lock_guard<std::mutex> lk(rt.hook_mu_);
+            if (!rt.quiescence_hook_) {
+                rt.quiescence_hook_ = [this]() -> bool {
+                    // Only advance time when ALL scope members are sleeping.
+                    if (!qs_.is_quiescent()) return true;  // imps still active
+                    return advance_to_next();  // true=advanced, false=no timers
+                };
+                rt.has_hook_.store(true, std::memory_order_release);
+                installed = true;
+            }
         }
+        // main_loop may already be waiting, registered without the
+        // quiescence-watcher flag. Wake it unconditionally so it
+        // re-registers and starts reacting to worker parks (🎯T34 O3).
+        if (installed) rt.broadcast_park();
     }
     internal::suspend();
     // Imp woke (timer fired or cancelled). Mark the timer entry
@@ -1253,14 +1324,14 @@ namespace csp::detail {
 
 void record_stack_high_water(::csp::internal::EntryFn fn, size_t depth_bytes) {
     if (!fn) return;
-    std::lock_guard<std::mutex> lk(g_high_water_mu);
+    std::lock_guard lk(g_high_water_mu);
     auto& slot = g_high_water[fn];
     if (depth_bytes > slot) slot = depth_bytes;
 }
 
 size_t get_stack_high_water(::csp::internal::EntryFn fn) {
     if (!fn) return 0;
-    std::lock_guard<std::mutex> lk(g_high_water_mu);
+    std::lock_guard lk(g_high_water_mu);
     auto it = g_high_water.find(fn);
     return it == g_high_water.end() ? 0 : it->second;
 }
@@ -1289,46 +1360,52 @@ namespace csp {
             vsnprintf(buf += n, len -= n, msg, args);
         }
 
-        // After a context save completes, clear the suspended
-        // imp's suspending_ flag and drain any deferred
-        // wake_pending_.  In M:N mode, both operations are done
-        // under global_mu so they are mutually exclusive with
-        // schedule()'s suspending_ check — eliminating the TOCTOU
-        // race where schedule() sees suspending_==true and sets
-        // wake_pending_, but the drain clears suspending_ and checks
-        // wake_pending_ in between (seeing false both times).
+        // After a context save completes, close the suspended imp's
+        // suspend window with ONE atomic exchange on its state word
+        // (🎯T34 O2). Seeing SUSP_WAKE means a waker deferred to us —
+        // queue the imp now. The exchange is what makes the drain and
+        // schedule()'s CAS linearizable without the global mutex: a
+        // split load-then-clear would let the waker's CAS land in
+        // between and be erased (see DrainSuspended_Bug.tla).
         static void drain_suspended(Imp* suspended) {
+            // TLA:DrainSuspended.Drain
+            auto old = suspended->suspend_state_.exchange(
+                Imp::SUSP_IDLE, std::memory_order_acq_rel);
+            if (old != Imp::SUSP_WAKE) {
+                return;
+            }
+            // Deferred wake: the waker returned after its CAS; queuing
+            // is our job.
             auto& rt = Runtime::instance();
-            bool need_unpark = false;
+            if (suspended->qs_entered_
+                && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                suspended->qs_->enter();
+            }
+            // Claim placement against late wakers that observed
+            // SUSP_IDLE after our exchange above. TLA:PlacementClaim.Claim
+            if (suspended->placed_.exchange(true, std::memory_order_acq_rel)) {
+                return;
+            }
             {
-                std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
-                // TLA:DrainSuspended.Drain
-                suspended->suspending_.store(false, std::memory_order_release);
-                if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
-                    if (!suspended->in_global_) {
-                        if (suspended->qs_entered_
-                            && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
-                            suspended->qs_->enter();
-                        }
-                        rt.push_to_global(suspended);
-                        need_unpark = true;
-                    }
-                }
+                std::lock_guard lk(rt.global_mu);
+                rt.push_to_global(suspended);
             }
-            if (need_unpark) {
-                rt.unpark_one();
-            }
+            rt.unpark_one();
         }
 
-        static intptr_t switch_to(Imp & target, intptr_t data) {
-            auto self = current_imp();
+        // self must be current_imp() — passed through to spare the
+        // (deliberately non-inline) TLS accessor another call.
+        static intptr_t switch_to(Imp & target, intptr_t data, Imp * self) {
             // Acquire-load ctx_ to synchronize with the release-store
             // that saved the target's context on a (possibly different)
             // OS thread.  This ensures the saved register data on the
             // target's stack is visible to us before we jump.
             auto ctx = target.ctx_.load(std::memory_order_acquire);
-            current_p().save_ctx = &self->ctx_;
-            current_p().save_imp = self;
+            {
+                auto& p = current_p();
+                p.save_ctx = &self->ctx_;
+                p.save_imp = self;
+            }
 #if CSP_ASAN
             __sanitizer_start_switch_fiber(
                 &self->asan_fake_stack_,
@@ -1337,7 +1414,7 @@ namespace csp {
 #if CSP_TSAN
             __tsan_switch_to_fiber(target.tsan_fiber_, 0);
 #endif
-            auto t = jump_fcontext(ctx, (void *)data);
+            auto t = csp_jump(ctx, (void *)data);
 #if CSP_ASAN
             __sanitizer_finish_switch_fiber(
                 self->asan_fake_stack_, nullptr, nullptr);
@@ -1345,8 +1422,11 @@ namespace csp {
             // Release-store our caller's saved SP so that any thread
             // that later acquire-loads ctx_ will also see the register
             // data that jump_fcontext wrote to the caller's stack.
-            current_p().save_ctx->store(t.fctx, std::memory_order_release);
-            drain_suspended(current_p().save_imp);
+            // Re-resolve the processor: we may have resumed on a
+            // different OS thread than the one that jumped.
+            auto& p_after = current_p();
+            p_after.save_ctx->store(t.fctx, std::memory_order_release);
+            drain_suspended(p_after.save_imp);
             return (intptr_t)t.data;
         }
 
@@ -1357,6 +1437,8 @@ namespace csp {
 
         Imp::Imp() : Imp(nullptr, {}) {
             prev_ = next_ = this;
+            // The synthetic main imp is born linked into its P's ring.
+            placed_.store(true, std::memory_order_relaxed);
             snprintf(status_, sizeof(status_), "§main");
         }
 
@@ -1366,13 +1448,12 @@ namespace csp {
         }
 
         void Imp::schedule_local(bool make_current) {
-            std::lock_guard<std::mutex> lk(current_p().run_mu);
+            auto& p = current_p();
+            std::lock_guard lk(p.run_mu);
             if (next_) {
                 return;
             }
-            auto& busy = current_p().busy;
-            if (busy == &current_p().main) {
-            }
+            auto& busy = p.busy;
             if (busy) {
                 next_ = busy;
                 prev_ = busy->prev_;
@@ -1388,27 +1469,122 @@ namespace csp {
         void Imp::schedule([[maybe_unused]] bool make_current) {
             auto& rt = Runtime::instance();
 
-            // Push to the global run queue so any worker can pick
-            // it up.
-            // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
+            // Suspend-window handshake first, lock-free: if the imp is
+            // in the unlock_all→do_switch window, it's still running
+            // and can't be safely pushed to a queue. One CAS defers
+            // the wake to CheckWP (early) or drain_suspended (after
+            // the context save). TLA:DrainSuspended.WakerCAS
+            for (;;) {
+                uint32_t s = suspend_state_.load(std::memory_order_acquire);
+                if (s == SUSP_PENDING) {
+                    if (suspend_state_.compare_exchange_weak(
+                            s, SUSP_WAKE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
+                        return;
+                    }
+                    continue;  // raced with the drain or a spurious failure
+                }
+                if (s == SUSP_WAKE) {
+                    return;  // wake already pending
+                }
+                break;  // SUSP_IDLE: fully suspended (or never was)
+            }
+
+            // Claim placement — exactly one racing placer (duplicate
+            // wakers, deferred-wake drain) inserts the imp; a TRUE
+            // result means it is already queued, running, or another
+            // placer is committed. Replaces the global_mu-serialized
+            // next_/in_global_ checks: the wake path no longer touches
+            // the global lock at all unless it spills.
+            // TLA:PlacementClaim.Claim
+            if (placed_.exchange(true, std::memory_order_acq_rel)) {
+                return;
+            }
+            assert(!next_ && !in_global_);
+
+            // 🎯T34 O1 wake-to-local: a wake issued from a worker P
+            // whose local queue has no other waiting imp hands the
+            // woken imp to that P directly — the very next do_switch
+            // runs it, with no futex wake and no cross-core migration
+            // (the dominant rendezvous cost in paper 33). run_mu alone
+            // suffices: the placement claim above makes this placer
+            // exclusive. The queued imp stays stealable, and the
+            // watchdog rescues it if this P wedges in a long compute
+            // stretch (100 ms backstop). Excluded: P0 (its thread runs
+            // main_loop, never imps) and non-P threads (reactor,
+            // blocking pool).
+            // TLA:StealWork.WAcquireRunMu TLA:StealWork.WPushLocal
+            // TLA:PlacementClaim.Insert
+            if (has_processor()) {
+                if (auto& p = current_p(); p.id != 0) {
+                    // Fairness budget: after kLocalWakeBudget consecutive
+                    // local wakes, PULL one batch of global work into this
+                    // P's ring (take_from_global below). A hot rendezvous
+                    // pair otherwise monopolizes its P while spawned imps
+                    // starve in the global queue — the flat_map balloon:
+                    // merge+producer looped locally, sub-stream imps never
+                    // ran, the input arm stayed the only ready one, and the
+                    // merge's vector alt grew by one channel per iteration
+                    // (measured: 5001 arms after 5000 consecutive spins).
+                    // Pulling (rather than spilling our peer to the global
+                    // queue) keeps the pair's locality: a spill design
+                    // measured +170 ns/op at 16 procs from pair migration.
+                    // 32 keeps a ballooned alt's lock_all under TSan's
+                    // 64-entry deadlock-detector table as defense in depth.
+                    constexpr int kLocalWakeBudget = 32;
+                    bool queued = false;
+                    bool pull = false;
+                    {
+                        std::lock_guard plk(p.run_mu);
+                        bool has_waiting = false;
+                        if (auto* start = p.busy) {
+                            auto* it = start;
+                            do {
+                                if (it != &p.main && it != p.running) {
+                                    has_waiting = true;
+                                    break;
+                                }
+                                it = it->next_;
+                            } while (it != start);
+                        }
+                        if (!has_waiting
+                            && ++p.local_wake_streak_ >= kLocalWakeBudget) {
+                            p.local_wake_streak_ = 0;
+                            pull = true;
+                        }
+                        if (!has_waiting) {
+                            if (p.busy) {
+                                next_ = p.busy;
+                                prev_ = p.busy->prev_;
+                                next_->prev_ = prev_->next_ = this;
+                            } else {
+                                p.busy = next_ = prev_ = this;
+                            }
+                            queued = true;
+                        }
+                        // else: local queue already has waiting work —
+                        // spill to the global queue so parked workers
+                        // share the load.
+                    }
+                    if (queued) {
+                        if (pull
+                            && rt.has_global_work_.load(std::memory_order_acquire)) {
+                            // TLA:StealWork.TkAcquireGlobal — same
+                            // take path a worker uses; global work lands
+                            // in this ring and runs when the pair blocks.
+                            rt.take_from_global(p);
+                        }
+                        return;  // no unpark: this P runs it next
+                    }
+                }
+            }
+            // Spill path: global queue + worker wake.
+            // TLA:DrainSuspended.WakerPush TLA:StealWork.WStartSchedule
+            // TLA:StealWork.WAcquireLock TLA:StealWork.WPush
             {
-                std::lock_guard<std::mutex> lk(rt.global_mu);
-                if (in_global_) {
-                    return;
-                }
-                // TLA:DrainSuspended.DoSchedule
-                // If the imp is in the unlock_all→do_switch
-                // window, it's still running and can't be safely
-                // pushed to the global queue.  Set wake_pending_
-                // so the detach path will re-add it to a queue.
-                if (suspending_.load(std::memory_order_acquire)) {
-                    wake_pending_.store(true, std::memory_order_release);
-                    return;
-                }
-                // If the imp is already in a local run queue (next_ set),
-                // a worker will run it — no need to push to global.
-                if (next_) return;
-                rt.push_to_global(this); // TLA:StealWork.WPush
+                std::lock_guard lk(rt.global_mu);
+                rt.push_to_global(this);
             }
             rt.unpark_one();
         }
@@ -1424,9 +1600,10 @@ namespace csp {
         }
 
         void Imp::deschedule() {
-            std::lock_guard<std::mutex> lk(current_p().run_mu);
+            auto& p = current_p();
+            std::lock_guard lk(p.run_mu);
             assert(next_);
-            auto& busy = current_p().busy;
+            auto& busy = p.busy;
             if (busy == this && (busy = next_) == this) {
                 busy = nullptr;
             }
@@ -1434,6 +1611,7 @@ namespace csp {
             if (prev_) prev_->next_ = next_;
             next_ = nullptr;
             prev_ = nullptr;
+            placed_.store(false, std::memory_order_release);
         }
 
         static void destroy_imp(Imp* imp) {
@@ -1450,8 +1628,7 @@ namespace csp {
             auto daemon = rt.daemon_gs.load(std::memory_order_acquire);
             if (live - 1 <= daemon) {
                 // All non-daemon imps are done.
-                { std::lock_guard<std::mutex> lk(rt.park_mu); }
-                rt.park_cv.notify_all();
+                rt.notify_watchers();
             }
         }
 
@@ -1467,7 +1644,7 @@ namespace csp {
 
             // Manipulate run queue under lock, but release before context switch.
             {
-                std::lock_guard<std::mutex> lk(p.run_mu);
+                std::lock_guard lk(p.run_mu);
 
                 switch (status) {
                 case Status::run:
@@ -1489,9 +1666,16 @@ namespace csp {
                     self->next_ = nullptr;
                     self->prev_ = nullptr;
 
-                    // TLA:DrainSuspended.CheckWP
-                    if (status == Status::detach &&
-                        self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                    // TLA:DrainSuspended.CheckWP — early wake: a waker
+                    // CASed to SUSP_WAKE before our context save. Take
+                    // the wake here (CAS back to IDLE), re-add to the
+                    // local queue, and skip the switch entirely.
+                    if (uint32_t wake = Imp::SUSP_WAKE;
+                        status == Status::detach &&
+                        self->suspend_state_.compare_exchange_strong(
+                            wake, Imp::SUSP_IDLE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
                         if (busy) {
                             self->next_ = busy;
                             self->prev_ = busy->prev_;
@@ -1501,6 +1685,11 @@ namespace csp {
                         }
                         return;
                     }
+                    // Committed to switching out: release the placement
+                    // claim. Ordered after CheckWP so an early-woken imp
+                    // (which stays queued) never exposes placed_ == FALSE.
+                    // TLA:PlacementClaim
+                    self->placed_.store(false, std::memory_order_release);
                     break;
                 default: CSP_UNREACHABLE();
                 }
@@ -1508,8 +1697,6 @@ namespace csp {
                 // Inline schedule without re-acquiring run_mu.
                 if (!next_) {
                     if (busy) {
-                        if (busy == &current_p().main) {
-                        }
                         next_ = busy;
                         prev_ = busy->prev_;
                         next_->prev_ = prev_->next_ = this;
@@ -1520,7 +1707,7 @@ namespace csp {
             }
 
             auto killme = status == Status::exit ? self : nullptr;
-            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
+            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme), self));
             if (killyou) {
                 destroy_imp(killyou);
             }
@@ -1532,7 +1719,10 @@ namespace csp {
 
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
-            auto* self = current_imp();
+            do_switch(status, current_imp());
+        }
+
+        void do_switch(Status status, Imp * self) {
             if (self->qs_entered_) {
                 self->qs_sleeping_.store(true, std::memory_order_release);
                 self->qs_->leave();
@@ -1541,12 +1731,15 @@ namespace csp {
             if (self->stk_) {
                 auto* fp = CSP_FRAME_ADDRESS();
                 check_stack_overflow(self, fp);
+#ifdef CSP_ANALYSE_STACKS
                 // 🎯T3.4.4: profile this suspend's depth into the per-entry
                 // high-water table. The recorded value refines the analyser's
                 // indirect_call_budget on the next spawn() of the same entry
                 // function. It never selects the slot class directly (🎯T33):
                 // a checkpoint sample is not a sound upper bound, so it must
-                // not gate the Small slot.
+                // not gate the Small slot. Compiled out with the analyser
+                // (its only consumer): a mutex + hash lookup per suspend is
+                // pure waste otherwise (🎯T35 profiling).
                 if (self->entry_fn_ && self->entry_sp_) {
                     auto* top = static_cast<char*>(self->entry_sp_);
                     auto* cur = static_cast<char*>(fp);
@@ -1555,28 +1748,103 @@ namespace csp {
                             self->entry_fn_, static_cast<size_t>(top - cur));
                     }
                 }
+#endif
                 StackPool::instance().maybe_shrink(self->stk_, fp);
             }
+            auto& p = current_p();
+            // A synthetic main imp only calls do_switch when CSP
+            // operations are attempted outside spawn() — reject before
+            // touching the run queue (the merged section below would
+            // otherwise delink it from its own ring first).
+            if (self == &p.main) {
+                throw error(
+                    "channel operation attempted from main() — "
+                    "CSP operations must run inside spawn()");
+            }
             Imp* target;
+            bool stay = false;  // CheckWP took an early wake — no switch
             {
-                std::lock_guard<std::mutex> lk(current_p().run_mu);
+                std::lock_guard lk(p.run_mu);
                 // Update running to the active MT so steal_work skips it.
                 // (local_next sets running for the initial pick; chained
                 // do_switch calls keep it current as execution moves
                 // between imps.)
-                current_p().running = self;
-                auto& busy = current_p().busy;
+                p.running = self;
+                auto& busy = p.busy;
                 if (busy == self) {
                     busy = busy->next_;
                 }
+                // Self's departure bookkeeping — merged from Imp::run()
+                // (🎯T35): one run_mu section per switch instead of two.
+                switch (status) {
+                case Status::sleep:
+                    // busy already advanced past self; it stays linked.
+                    break;
+                case Status::detach: // TLA:StealWork.VDeschedule
+                case Status::exit:
+                    // Inline deschedule.
+                    assert(self->next_);
+                    if (busy == self && (busy = self->next_) == self) {
+                        busy = nullptr;
+                    }
+                    if (self->next_) self->next_->prev_ = self->prev_;
+                    if (self->prev_) self->prev_->next_ = self->next_;
+                    self->next_ = nullptr;
+                    self->prev_ = nullptr;
+
+                    // TLA:DrainSuspended.CheckWP — early wake: a waker
+                    // CASed to SUSP_WAKE before our context save. Take
+                    // the wake here (CAS back to IDLE), re-add to the
+                    // local queue, and skip the switch entirely.
+                    if (uint32_t wake = Imp::SUSP_WAKE;
+                        status == Status::detach &&
+                        self->suspend_state_.compare_exchange_strong(
+                            wake, Imp::SUSP_IDLE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
+                        if (busy) {
+                            self->next_ = busy;
+                            self->prev_ = busy->prev_;
+                            self->next_->prev_ = self->prev_->next_ = self;
+                        } else {
+                            busy = self->next_ = self->prev_ = self;
+                        }
+                        stay = true;
+                        break;
+                    }
+                    // Committed to switching out: release the placement
+                    // claim. Ordered after CheckWP so an early-woken imp
+                    // (which stays queued) never exposes placed_ == FALSE.
+                    // TLA:PlacementClaim
+                    self->placed_.store(false, std::memory_order_release);
+                    break;
+                default: CSP_UNREACHABLE();
+                }
                 target = busy;
+                // The ring always contains this P's sentinel (misuse was
+                // rejected above), so a target exists and is not self.
+                // Checked under run_mu: target's links are shared with
+                // concurrent thieves.
+                assert(stay || (target && target != self && target->next_));
             }
-            target->run(status);
+            if (!stay) {
+                auto killme = status == Status::exit ? self : nullptr;
+                auto killyou = reinterpret_cast<Imp*>(switch_to(
+                    *target, reinterpret_cast<intptr_t>(killme), self));
+                if (killyou) {
+                    destroy_imp(killyou);
+                }
+                if (!killme) {
+                    set_current_imp(self);
+                }
+            }
             // Re-enter scope if we left it (yield path). For scheduled
             // imps, make_runnable already entered — exchange returns false.
-            if (current_imp()->qs_entered_
-                && current_imp()->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
-                current_imp()->qs_->enter();
+            // self is still this imp after resume; only the TLS slot must
+            // not be cached across the switch, not the Imp* value.
+            if (self->qs_entered_
+                && self->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                self->qs_->enter();
             }
         }
 
@@ -1636,7 +1904,7 @@ static void start(transfer_t t) {
     if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
     self->dyn_ctx_ = parent_dyn_ctx;
     set_current_imp(self);
-    auto killyou_val = switch_to(sd.caller, 0);
+    auto killyou_val = switch_to(sd.caller, 0, self);
     // After warmup switch, sd may be invalid. Use local copies only.
     set_current_imp(self);
 
@@ -1754,7 +2022,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         *reinterpret_cast<void**>(
             static_cast<char*>(ctx) + 0xb8) = usable_base;
 #else
-        auto ctx = make_fcontext(imp, usable_size, start);
+        auto ctx = csp_make(imp, usable_size, start);
 #endif
         new (imp) Imp(ctx, region);
         imp->stack_overflow_limit_ = region.overflow_limit;
@@ -1769,7 +2037,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto* stk = static_cast<Imp::StackSlot*>(region.base);
         auto* imp = reinterpret_cast<Imp*>(stk + S) - 1;
         assert(((uintptr_t)imp % 16) == 0);
-        auto ctx = make_fcontext(imp, (char*)imp - (char*)stk, start);
+        auto ctx = csp_make(imp, (char*)imp - (char*)stk, start);
         new (imp) Imp(ctx, region);
         imp->entry_fn_ = start_f;
         imp->entry_sp_ = static_cast<void*>(imp);
@@ -1779,7 +2047,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 #endif
 
         StartData const start_data = {start_f, data, *imp, *self};
-        switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
+        switch_to(*imp, reinterpret_cast<intptr_t>(&start_data), self);
         set_current_imp(self);
 
         // Inherit quiescence scope from parent.
@@ -1797,8 +2065,11 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
 
         // Push to the global queue for workers to pick up and run.
+        // The spawner is the sole owner pre-publication — a plain
+        // placement store suffices (no racing placers yet).
+        imp->placed_.store(true, std::memory_order_relaxed);
         {
-            std::lock_guard<std::mutex> lk(rt.global_mu);
+            std::lock_guard lk(rt.global_mu);
             rt.push_to_global(imp);
         }
         // Wake a sleeping worker so it picks up the new imp.
@@ -1818,9 +2089,11 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 }
 
 void suspend() {
-    current_imp()->suspending_.store(true, std::memory_order_release);
-    do_switch(Status::detach);
-    current_imp()->suspending_.store(false, std::memory_order_release);
+    // TLA:DrainSuspended.BeginSuspend — the state resets to SUSP_IDLE
+    // via CheckWP (early wake) or drain_suspended (context switch).
+    auto * const self = current_imp();
+    self->suspend_state_.store(Imp::SUSP_PENDING, std::memory_order_release);
+    do_switch(Status::detach, self);
 }
 
 int run() {
@@ -1833,8 +2106,7 @@ int run() {
     // Wait for either completion or quiescence (all workers parked +
     // no global work + no pending signals = deadlock or external
     // action needed).
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&] {
+    rt.park_wait([&] {
         if (user_done()) return true;
         // Check quiescence: all workers parked, no global work, no signals.
         if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
@@ -1847,7 +2119,7 @@ int run() {
             }
         }
         return true;  // quiescent — deadlock or done
-    });
+    }, /*quiescence=*/true);
     return 0;
 }
 
@@ -1855,8 +2127,7 @@ void await_idle() {
     // Wait for ALL imps (including daemons) to exit.
     // Used by test cleanup after killing daemon handlers.
     auto& rt = Runtime::instance();
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&rt] {
+    rt.park_wait([&rt] {
         return rt.live_gs.load(std::memory_order_acquire) == 0;
     });
 }
@@ -1877,8 +2148,7 @@ void await_quiescent() {
     // At this point every live imp has registered its channel/timer
     // waiters and yielded — the system is in a deterministic state.
     auto& rt = Runtime::instance();
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&rt] {
+    rt.park_wait([&rt] {
         if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
         if (csp::detail::Reactor::instance().has_pending_signals()) return false;
         int np = rt.num_procs_.load(std::memory_order_acquire);
@@ -1889,15 +2159,15 @@ void await_quiescent() {
             }
         }
         return true;
-    });
+    }, /*quiescence=*/true);
 }
 
 void yield() {
     bool should_switch;
     {
-        std::lock_guard<std::mutex> lk(current_p().run_mu);
-        auto& busy = current_p().busy;
-        should_switch = busy->next_ != busy;
+        auto& p = current_p();
+        std::lock_guard lk(p.run_mu);
+        should_switch = p.busy->next_ != p.busy;
     }
     if (should_switch) {
         do_switch();
@@ -3828,7 +4098,7 @@ namespace csp {
             live_gs.store(0, std::memory_order_release);
 
             {
-                std::lock_guard<std::mutex> lk(global_mu);
+                std::lock_guard lk(global_mu);
                 global_run_queue.clear();
             }
 
@@ -3909,9 +4179,10 @@ namespace csp {
             // all of which wait on park_cv. Acquire-release park_mu before
             // notifying so any waiter that has evaluated the predicate as false
             // (but hasn't entered cv.wait yet) will have entered cv.wait before
-            // we notify. This prevents lost wakeups. // TLA:WorkerParking.ShutdownAcquireMu
-            { std::lock_guard<std::mutex> lk(park_mu); } // TLA:WorkerParking.ShutdownReleaseMu
-            park_cv.notify_all(); // TLA:WorkerParking.ShutdownNotify
+            // we notify. This prevents lost wakeups. The empty critical
+            // section + broadcast live inside notify_watchers().
+            // TLA:WorkerParking.ShutdownAcquireMu TLA:WorkerParking.ShutdownReleaseMu
+            notify_watchers(); // TLA:WorkerParking.ShutdownNotify
 
             if (watchdog_.joinable()) {
                 watchdog_.join();
@@ -3924,8 +4195,7 @@ namespace csp {
             for (int i = 1; i < n; ++i) {
                 if (procs[i]) procs[i]->note.wake();
             }
-            { std::lock_guard<std::mutex> lk(park_mu); }
-            park_cv.notify_all();
+            notify_watchers();
 
             for (int i = 1; i < n; ++i) {
                 if (procs[i] && procs[i]->worker.joinable()) {
@@ -3935,6 +4205,37 @@ namespace csp {
 
             procs.clear();
             num_procs_.store(0, std::memory_order_release);
+        }
+
+        void Runtime::notify_watchers() {
+            // Publish → fence → count read: pairs with park_wait's
+            // register → fence → predicate read. TLA:ParkGate.NReadCount
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            if (park_waiters_.load(std::memory_order_relaxed) == 0) {
+                return;
+            }
+            // Empty critical section: a watcher that evaluated its
+            // predicate false still holds park_mu until cv.wait blocks;
+            // serialize so the notify lands after it (same shape as the
+            // shutdown fix, bug #8). TLA:ParkGate.NAcquireMu
+            { std::lock_guard lk(park_mu); }
+            park_cv.notify_all();
+        }
+
+        void Runtime::notify_quiesce_watchers() {
+            // Same gate protocol, second instance (TLA:ParkGate) —
+            // counts only watchers whose predicate reads parked state.
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            if (quiesce_waiters_.load(std::memory_order_relaxed) == 0) {
+                return;
+            }
+            { std::lock_guard lk(park_mu); }
+            park_cv.notify_all();
+        }
+
+        void Runtime::broadcast_park() {
+            { std::lock_guard lk(park_mu); }
+            park_cv.notify_all();
         }
 
         void Runtime::unpark_one() {
@@ -3951,11 +4252,6 @@ namespace csp {
                 if (!p || !p->alive.load(std::memory_order_acquire)) continue;
                 if (p->note.is_sleeping()) {
                     p->note.wake();
-                    // Also wake main_loop / run() / quiescent_loop which wait
-                    // on the shared park_cv. They use park_cv.wait with
-                    // has_global_work_ in the predicate and need notification
-                    // when the scheduler adds work.
-                    park_cv.notify_all();
                     return;
                 }
             }
@@ -3966,20 +4262,21 @@ namespace csp {
                 if (!p || !p->alive.load(std::memory_order_acquire)) continue;
                 if (p->parked.load(std::memory_order_acquire)) {
                     p->note.wake();
-                    park_cv.notify_all();
                     return;
                 }
             }
-            // All workers are active — no action needed.
-            // Still notify park_cv: main_loop checks has_global_work_ and
-            // needs to be woken when work is pushed to the global queue.
-            park_cv.notify_all();
+            // All workers are active — no action needed.  park_cv
+            // watchers are NOT notified here (🎯T34 O3): no watcher's
+            // predicate becomes true because work arrived — main_loop
+            // acts on completion (imp exit) and quiescence (worker
+            // parks), each of which has its own notifier.
         }
 
         void Runtime::push_to_global(Imp* imp) {
-            // Caller must hold global_mu.
+            // Caller must hold global_mu and hold the placement claim.
             assert(!imp->next_);
             assert(!imp->in_global_);
+            assert(imp->placed_.load(std::memory_order_relaxed));
             imp->in_global_ = true;
             global_run_queue.push_back(imp);
             has_global_work_.store(true, std::memory_order_release);
@@ -4023,12 +4320,11 @@ namespace csp {
                 // false and p.parked being set, unpark_one() will see parked=true
                 // and wake us, OR we see has_work() here and skip the sleep.
                 p.parked.store(true, std::memory_order_release); // TLA:PerWorkerWake.WorkerSetParked
-                {
-                    // Notify main_loop / quiescent_loop while holding park_mu
-                    // so they see a consistent parked snapshot.
-                    std::lock_guard<std::mutex> lk(park_mu);
-                    park_cv.notify_all();  // wake main_loop quiescence check
-                }
+                // Wake main_loop / quiescent_loop's quiescence check.
+                // Skipped entirely when no quiescence watcher is
+                // registered (TLA:ParkGate) — this used to be a mutex +
+                // broadcast syscall on every park.
+                notify_quiesce_watchers();
 
                 // Check for work that arrived after steal_work but before we
                 // set parked. If found, skip the sleep (unpark_one may not have
@@ -4055,6 +4351,11 @@ namespace csp {
                     && !stopping.load(std::memory_order_acquire)
                     && !has_work(p)) {
                     p.alive.store(false, std::memory_order_release);
+                    // A dead P is skipped by all_parked scans, so this
+                    // exit can complete quiescence — tell the watchers.
+                    // (Latent before 🎯T34 O3: unpark_one's unconditional
+                    // broadcasts papered over the missing notify here.)
+                    notify_quiesce_watchers();
                     return;
                 }
             }
@@ -4076,24 +4377,30 @@ namespace csp {
             };
 
             for (;;) {
-                {
-                    std::unique_lock<std::mutex> lk(park_mu);
-                    park_cv.wait(lk, [&] {
-                        if (user_done()) return true;
-                        if (has_global_work_.load(std::memory_order_acquire)) return true;
-                        // Only wake for quiescence when a hook is registered
-                        // (e.g. fake_clock). Without a hook there is nothing
-                        // useful to do when all workers are parked — sleeping
-                        // is correct; busy-spinning is not.
-                        if (has_hook_.load(std::memory_order_acquire) && all_parked()) return true;
-                        return false;
-                    });
-                }
+                // Register as a quiescence watcher only while a hook is
+                // installed (fake_clock).  Without one, worker parks are
+                // irrelevant here and must not wake this thread — and
+                // work arriving never wakes it (nothing to do with work;
+                // workers are unparked directly via their Notes).
+                bool const hook = has_hook_.load(std::memory_order_acquire);
+                park_wait([&] {
+                    if (user_done()) return true;
+                    // Hook installed/uninstalled while we waited
+                    // (broadcast_park wakes us unconditionally): loop
+                    // around and re-register with fresh parameters.
+                    if (has_hook_.load(std::memory_order_acquire) != hook) return true;
+                    // Only wake for quiescence when a hook is registered
+                    // (e.g. fake_clock). Without a hook there is nothing
+                    // useful to do when all workers are parked — sleeping
+                    // is correct; busy-spinning is not.
+                    if (hook && all_parked()) return true;
+                    return false;
+                }, /*quiescence=*/hook);
                 if (user_done()) break;
                 if (has_global_work_.load(std::memory_order_acquire)) continue;
                 // Quiescent: all workers parked. Call hook if registered.
                 {
-                    std::lock_guard<std::mutex> hlk(hook_mu_);
+                    std::lock_guard hlk(hook_mu_);
                     if (quiescence_hook_) {
                         if (!quiescence_hook_()) {
                             // Hook has no more fake-clock work. Live imps
@@ -4116,8 +4423,7 @@ namespace csp {
             // global queue empty).  Unlike main_loop(), suspended imps that
             // are waiting for external events (e.g. fake_clock timers) do NOT
             // prevent this from returning — they are not in any run queue.
-            std::unique_lock<std::mutex> lk(park_mu);
-            park_cv.wait(lk, [this] {
+            park_wait([this] {
                 if (has_global_work_.load(std::memory_order_acquire)) {
                     return false;
                 }
@@ -4128,7 +4434,7 @@ namespace csp {
                     if (!p.parked.load(std::memory_order_acquire)) return false;
                 }
                 return true;
-            });
+            }, /*quiescence=*/true);
         }
 
         void Runtime::watchdog_loop() {
@@ -4184,7 +4490,7 @@ namespace csp {
                         // suite run — paper 32, C1).
                         bool rescuable = false;
                         {
-                            std::lock_guard<std::mutex> lk(p.run_mu);
+                            std::lock_guard lk(p.run_mu);
                             if (auto* start = p.busy) {
                                 auto* it = start;
                                 do {
@@ -4243,7 +4549,7 @@ namespace csp {
         }
 
         void Runtime::add_processor() {
-            std::lock_guard<std::mutex> lk(global_mu);
+            std::lock_guard lk(global_mu);
             int n = num_procs_.load(std::memory_order_relaxed);
 
             // Try to reuse a dead surplus slot.
@@ -4282,7 +4588,7 @@ namespace csp {
 
         // TLA:StealWork.VLocalNext
         Imp* Runtime::local_next(Processor& p) {
-            std::lock_guard<std::mutex> lk(p.run_mu);
+            std::lock_guard lk(p.run_mu);
             auto& busy = p.busy;
             if (!busy) {
                 p.running = nullptr;
@@ -4306,7 +4612,7 @@ namespace csp {
 
         // TLA:StealWork.TkAcquireGlobal TLA:StealWork.TkPopAndSchedule
         bool Runtime::take_from_global([[maybe_unused]] Processor& p) {
-            std::lock_guard<std::mutex> lk(global_mu);
+            std::lock_guard lk(global_mu);
             if (global_run_queue.empty()) {
                 has_global_work_.store(false, std::memory_order_release);
                 return false;
@@ -4337,12 +4643,12 @@ namespace csp {
 
                 Imp* stolen = nullptr;
                 {
-                    std::lock_guard<std::mutex> lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
+                    std::lock_guard lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
 
                     // Try to acquire global_mu without blocking to avoid
                     // deadlock (take_from_global holds global_mu then
                     // acquires run_mu via schedule_local).
-                    std::unique_lock<std::mutex> glk(global_mu, std::try_to_lock); // TLA:StealWork.TStealTryGlobalOK TLA:StealWork.TStealTryGlobalFail
+                    std::unique_lock glk(global_mu, std::try_to_lock); // TLA:StealWork.TStealTryGlobalOK TLA:StealWork.TStealTryGlobalFail
                     if (!glk) continue;
 
                     if (!victim.busy) continue;
@@ -4376,7 +4682,7 @@ namespace csp {
 
         bool Runtime::has_work(Processor& p) {
             {
-                std::lock_guard<std::mutex> lk(p.run_mu);
+                std::lock_guard lk(p.run_mu);
                 // Queue has real work if there's more than just the sentinel.
                 if (p.busy && p.busy->next_ != p.busy) {
                     return true;
@@ -4384,7 +4690,7 @@ namespace csp {
             }
 
             {
-                std::lock_guard<std::mutex> lk(global_mu);
+                std::lock_guard lk(global_mu);
                 if (!global_run_queue.empty()) {
                     return true;
                 }
@@ -6463,11 +6769,7 @@ void StackPool::release(StackRegion region) {
     }
 }
 
-void StackPool::maybe_shrink(StackRegion const&, void*) {
-    // No-op for arena stacks: the entire slab is one VMA; we cannot reclaim
-    // individual slot pages without splitting the mapping. The software
-    // overflow limit (overflow_limit) replaces guard-page overflow detection.
-}
+// maybe_shrink: inline no-op in the header for arena builds.
 
 void StackPool::drain() {
     std::lock_guard<std::mutex> lk(mu_);
@@ -7100,7 +7402,14 @@ void raise(DWORD event) {
 
 #endif // _WIN32
 
-/* fcontext — context-switching primitives (from Boost.Context) */
+/* fcontext — context-switching primitives (from Boost.Context)
+ *
+ * Copyright Oliver Kowalke 2009; ARM64 variants Copyright
+ * Edward Nevill + Oliver Kowalke 2015.
+ * Distributed under the Boost Software License, Version 1.0.
+ * (See accompanying file LICENSE_1_0.txt or copy at
+ * http://www.boost.org/LICENSE_1_0.txt)
+ */
 #if defined(__aarch64__) || defined(_M_ARM64)
 #if defined(__APPLE__)
 /* jump_arm64_aapcs_macho_gas.S */
@@ -7580,3 +7889,91 @@ asm(
 #else
 #error "Unsupported architecture for CSP fcontext"
 #endif
+
+/* Minimal-save context switch (CSP_LIGHT_SWITCH, arm64 only) */
+#if CSP_USE_LIGHT_SWITCH
+#if defined(__APPLE__)
+/* light_switch_arm64_macho.S */
+asm(
+"; Minimal-save context switch, ARM64 macOS (🎯T35.1, paper 33 round 3).\n"
+";\n"
+"; Contract: unlike Boost fcontext (which preserves all AAPCS\n"
+"; callee-saved registers), this switch saves only fp/lr (+ resume PC).\n"
+"; The C++ call-site wrapper (csp/fcontext.h) declares x19-x28 and the\n"
+"; full vector file as clobbers, so the compiler spills exactly the\n"
+"; live subset — measured 2.4x faster than fcontext, and still faster\n"
+"; at 12 live values (bench/lightswitch/switchcmp.cc).\n"
+";\n"
+"; Frame layout (0x20 bytes, sp stays 16-aligned):\n"
+";   [0x00] fp   [0x08] lr   [0x10] resume PC   [0x18] pad\n"
+"\n"
+".text\n"
+".private_extern _csp_light_jump\n"
+".globl _csp_light_jump\n"
+".balign 16\n"
+"_csp_light_jump:\n"
+"    sub  sp, sp, #0x20\n"
+"    stp  fp, lr, [sp, #0x00]\n"
+"    str  lr, [sp, #0x10]        ; resume PC = return address\n"
+"    mov  x4, sp                 ; from-context\n"
+"    mov  sp, x0                 ; to-context\n"
+"    ldp  fp, lr, [sp, #0x00]\n"
+"    ldr  x5, [sp, #0x10]        ; resume PC\n"
+"    add  sp, sp, #0x20\n"
+"    mov  x0, x4                 ; transfer_t.fctx\n"
+"                                ; x1 = data, unchanged\n"
+"    ret  x5\n"
+"\n"
+".private_extern _csp_light_make\n"
+".globl _csp_light_make\n"
+".balign 16\n"
+"; x0 = stack top (16-aligned), x1 = entry fn taking transfer_t in x0/x1.\n"
+"; Returns the initial context sp. fp = 0 terminates backtraces; the\n"
+"; entry function never returns (imps exit via do_switch(exit)).\n"
+"_csp_light_make:\n"
+"    sub  x0, x0, #0x20\n"
+"    str  x1, [x0, #0x10]        ; resume PC = entry\n"
+"    stp  xzr, x1, [x0, #0x00]   ; fp = 0, lr = entry\n"
+"    ret\n"
+);
+#else /* ELF */
+/* light_switch_arm64_elf.S */
+asm(
+"// Minimal-save context switch, ARM64 ELF (🎯T35.1, paper 33 round 3).\n"
+"// See light_switch_arm64_macho.S for the contract and frame layout.\n"
+"\n"
+".text\n"
+".align 2\n"
+".global csp_light_jump\n"
+".hidden csp_light_jump\n"
+".type csp_light_jump, %function\n"
+"csp_light_jump:\n"
+"    sub  sp, sp, #0x20\n"
+"    stp  x29, x30, [sp, #0x00]\n"
+"    str  x30, [sp, #0x10]       // resume PC = return address\n"
+"    mov  x4, sp                 // from-context\n"
+"    mov  sp, x0                 // to-context\n"
+"    ldp  x29, x30, [sp, #0x00]\n"
+"    ldr  x5, [sp, #0x10]        // resume PC\n"
+"    add  sp, sp, #0x20\n"
+"    mov  x0, x4                 // transfer_t.fctx\n"
+"                                // x1 = data, unchanged\n"
+"    ret  x5\n"
+".size csp_light_jump,.-csp_light_jump\n"
+"\n"
+".global csp_light_make\n"
+".hidden csp_light_make\n"
+".type csp_light_make, %function\n"
+".align 2\n"
+"// x0 = stack top (16-aligned), x1 = entry fn taking transfer_t in x0/x1.\n"
+"csp_light_make:\n"
+"    sub  x0, x0, #0x20\n"
+"    str  x1, [x0, #0x10]        // resume PC = entry\n"
+"    stp  xzr, x1, [x0, #0x00]   // fp = 0, lr = entry\n"
+"    ret\n"
+".size csp_light_make,.-csp_light_make\n"
+"\n"
+"/* Mark that we don't need executable stack. */\n"
+);
+#endif
+#endif /* CSP_USE_LIGHT_SWITCH */

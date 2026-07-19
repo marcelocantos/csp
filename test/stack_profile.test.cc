@@ -64,6 +64,15 @@ TEST_CASE("null-entry-function-is-noop") {
 }
 
 TEST_CASE("spawn-records-high-water-via-suspend") {
+#ifndef CSP_ANALYSE_STACKS
+    // Suspend-checkpoint recording is compiled out with the analyser —
+    // its only consumer is spawn()'s CSP_ANALYSE_STACKS slot-sizing
+    // path, and the record cost (mutex + hash probe per suspend) is
+    // pure hot-path waste otherwise (🎯T35). Same gating convention as
+    // StackSlotSizing.
+    MESSAGE("Recording at suspend checkpoints requires -DCSP_ANALYSE_STACKS; "
+            "skipping on this build.");
+#else
     // The first time we run spawned_entry in this process, its high-water
     // should be zero (no prior observation).
     auto* fn = static_cast<csp::internal::EntryFn>(&spawned_entry);
@@ -84,6 +93,7 @@ TEST_CASE("spawn-records-high-water-via-suspend") {
     // And bounded by the slot size (we're not corrupting memory).
     CHECK(after < 200 * 1024);
     MESSAGE("spawned_entry recorded high-water: ", after, " bytes");
+#endif
 }
 
 } // TEST_SUITE("StackProfile")

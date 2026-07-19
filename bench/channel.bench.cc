@@ -120,7 +120,7 @@ int main() {
 
     // --- Isolated: RNG + shuffle overhead (no channel work) ---
     bench.batch(1).run("rng+shuffle/2", [&] {
-        csp_chanop ops[2] = {};
+        csp::internal::ChanOp ops[2] = {};
         std::random_device rdev;
         std::mt19937 rng(rdev());
         std::shuffle(ops, ops + 2, rng);
@@ -128,7 +128,7 @@ int main() {
     });
 
     bench.batch(1).run("rng+shuffle/8", [&] {
-        csp_chanop ops[8] = {};
+        csp::internal::ChanOp ops[8] = {};
         std::random_device rdev;
         std::mt19937 rng(rdev());
         std::shuffle(ops, ops + 8, rng);

@@ -40,9 +40,14 @@ time_point fake_clock::now() const {
 fake_clock::~fake_clock() {
     // Unregister quiescence hook.
     auto& rt = detail::Runtime::instance();
-    std::lock_guard<std::mutex> lk(rt.hook_mu_);
-    rt.quiescence_hook_ = nullptr;
-    rt.has_hook_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(rt.hook_mu_);
+        rt.quiescence_hook_ = nullptr;
+        rt.has_hook_.store(false, std::memory_order_release);
+    }
+    // Wake main_loop so it re-registers without the quiescence-watcher
+    // flag (🎯T34 O3; cold path).
+    rt.broadcast_park();
 }
 
 void fake_clock::sleep_until(time_point tp) {
@@ -56,15 +61,23 @@ void fake_clock::sleep_until(time_point tp) {
     // the runtime to be initialized at fake_clock construction time).
     auto& rt = detail::Runtime::instance();
     {
-        std::lock_guard<std::mutex> lk(rt.hook_mu_);
-        if (!rt.quiescence_hook_) {
-            rt.quiescence_hook_ = [this]() -> bool {
-                // Only advance time when ALL scope members are sleeping.
-                if (!qs_.is_quiescent()) return true;  // imps still active
-                return advance_to_next();  // true=advanced, false=no timers
-            };
-            rt.has_hook_.store(true, std::memory_order_release);
+        bool installed = false;
+        {
+            std::lock_guard<std::mutex> lk(rt.hook_mu_);
+            if (!rt.quiescence_hook_) {
+                rt.quiescence_hook_ = [this]() -> bool {
+                    // Only advance time when ALL scope members are sleeping.
+                    if (!qs_.is_quiescent()) return true;  // imps still active
+                    return advance_to_next();  // true=advanced, false=no timers
+                };
+                rt.has_hook_.store(true, std::memory_order_release);
+                installed = true;
+            }
         }
+        // main_loop may already be waiting, registered without the
+        // quiescence-watcher flag. Wake it unconditionally so it
+        // re-registers and starts reacting to worker parks (🎯T34 O3).
+        if (installed) rt.broadcast_park();
     }
     internal::suspend();
     // Imp woke (timer fired or cancelled). Mark the timer entry

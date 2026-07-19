@@ -7,9 +7,9 @@
 
 /* csp/csp.h */
 
-#define CSP_VERSION "0.22.0"
+#define CSP_VERSION "0.23.0"
 #define CSP_VERSION_MAJOR 0
-#define CSP_VERSION_MINOR 22
+#define CSP_VERSION_MINOR 23
 #define CSP_VERSION_PATCH 0
 
 
@@ -109,11 +109,14 @@ class RingBuffer {
 public:
     static constexpr size_t npos = size_t(-1);
 
+    // Storage is allocated lazily on first use (🎯T35): channel
+    // endpoints construct four RingBuffers each, and most channels
+    // never enqueue a waiter on most of them.
     explicit RingBuffer(size_t capacity = npos)
         : capacity_(capacity)
         , size_(round_up_pow2(capacity == npos ? 4 : capacity))
         , mask_(size_ - 1)
-        , data_(alloc(size_))
+        , data_(nullptr)
     { }
 
     ~RingBuffer() {
@@ -160,6 +163,9 @@ public:
     T & front() const { return data_[front_]; }
 
     void * next() {
+        if (!data_) [[unlikely]] {
+            data_ = alloc(size_);
+        }
         if (count_ == size_) {
             assert(capacity_ == npos);
             grow();
@@ -2000,6 +2006,27 @@ public:
 // (vendor/github.com/boostorg/context/src/asm/).  The assembly uses C linkage,
 // so we declare extern "C" to suppress name mangling.
 
+// 🎯T35.1: minimal-save ("light") context switch. Opt-in via
+// -DCSP_LIGHT_SWITCH; active only on arm64 non-Windows builds without
+// sanitizers (Boost fcontext remains the default everywhere else —
+// Windows needs its TIB bookkeeping, and the sanitizer runtimes'
+// fiber support is validated against the fcontext contract).
+#if defined(CSP_LIGHT_SWITCH) && defined(__aarch64__) && !defined(_WIN32)
+#  if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#    define CSP_USE_LIGHT_SWITCH 0
+#  elif defined(__has_feature)
+#    if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#      define CSP_USE_LIGHT_SWITCH 0
+#    else
+#      define CSP_USE_LIGHT_SWITCH 1
+#    endif
+#  else
+#    define CSP_USE_LIGHT_SWITCH 1
+#  endif
+#else
+#  define CSP_USE_LIGHT_SWITCH 0
+#endif
+
 namespace csp {
 
 using fcontext_t = void *;
@@ -2013,6 +2040,59 @@ extern "C" {
 transfer_t jump_fcontext(fcontext_t to, void * vp);
 fcontext_t make_fcontext(void * sp, std::size_t size, void (* fn)(transfer_t));
 }
+
+#if CSP_USE_LIGHT_SWITCH
+
+#if defined(__APPLE__)
+#define CSP_LIGHT_JUMP_SYM "_csp_light_jump"
+#else
+#define CSP_LIGHT_JUMP_SYM "csp_light_jump"
+#endif
+
+extern "C" {
+fcontext_t csp_light_make(void * stack_top, void (* fn)(transfer_t));
+}
+
+// The switch assembly (src/light_switch_arm64_*.S) saves only fp/lr
+// (+PC). This wrapper declares every other callee-saved register —
+// x19-x28 and the full vector file — as clobbered, so the compiler
+// saves exactly the values that are live at each call site instead of
+// the asm unconditionally saving all 20 AAPCS callee-saved registers.
+// An in-between contract (asm saves a "commonly live" subset) was
+// measured and is dominated at every register-pressure level — see
+// bench/lightswitch/ and paper 33 round 3.
+inline transfer_t csp_jump(fcontext_t to, void * vp) {
+    register void * r0 asm("x0") = to;
+    register void * r1 asm("x1") = vp;
+    asm volatile(
+        "bl " CSP_LIGHT_JUMP_SYM
+        : "+r"(r0), "+r"(r1)
+        :
+        : "x2","x3","x4","x5","x6","x7","x8","x9","x10","x11","x12",
+          "x13","x14","x15","x16","x17","x19","x20","x21","x22","x23",
+          "x24","x25","x26","x27","x28","lr",
+          "v0","v1","v2","v3","v4","v5","v6","v7","v8","v9","v10","v11",
+          "v12","v13","v14","v15","v16","v17","v18","v19","v20","v21",
+          "v22","v23","v24","v25","v26","v27","v28","v29","v30","v31",
+          "cc","memory");
+    return {r0, r1};
+}
+
+inline fcontext_t csp_make(void * sp, std::size_t, void (* fn)(transfer_t)) {
+    return csp_light_make(sp, fn);
+}
+
+#else  // !CSP_USE_LIGHT_SWITCH
+
+inline transfer_t csp_jump(fcontext_t to, void * vp) {
+    return jump_fcontext(to, vp);
+}
+
+inline fcontext_t csp_make(void * sp, std::size_t size, void (* fn)(transfer_t)) {
+    return make_fcontext(sp, size, fn);
+}
+
+#endif
 
 }
 
@@ -2084,8 +2164,14 @@ public:
     void release(StackRegion region);
 
     // Reclaim unused stack pages below the current SP.
-    // No-op for arena stacks (no per-page reclaim supported).
+#if CSP_USE_ARENA_STACKS
+    // No-op for arena stacks (no per-page reclaim supported): the whole
+    // slab is one VMA. Inline so the hot-path call sites (prialt entry,
+    // do_switch, spawn) compile to nothing (🎯T35 profiling).
+    void maybe_shrink(StackRegion const&, void*) {}
+#else
     void maybe_shrink(StackRegion const& region, void* current_sp);
+#endif
 
     // Unmap all pooled stacks. Called during shutdown.
     void drain();
@@ -2271,6 +2357,9 @@ Imp* current_imp();
 void set_current_imp(Imp* p);
 
 void do_switch(Status status = Status::sleep);
+// Overload for callers that already hold the current Imp* — spares a
+// call to the deliberately non-inline TLS accessor.
+void do_switch(Status status, Imp * self);
 
 struct alignas(16) Imp {
     struct alignas(16) StackSlot { char c[16]; };
@@ -2287,18 +2376,77 @@ struct alignas(16) Imp {
     static constexpr size_t stack_size = 32 << 10;
 #endif
 
+    // Field layout is deliberate (🎯T35 cache pass): the first cache
+    // line holds the wake-protocol words that OTHER threads touch
+    // (alt_state claim, suspend/placement handshake, signal/chanops
+    // written by the matcher); the second holds the queue links and
+    // context that the owning P and thieves manipulate under run_mu.
+    // Cold/debug fields (status_, dynamic scope, analysis bookkeeping)
+    // trail at the end.
+
+    // --- hot line 1: wake protocol (cross-thread) ---
+    enum AltState : uint32_t { ALT_IDLE, ALT_WAITING, ALT_CLAIMED };
+    std::atomic<uint32_t> alt_state{ALT_IDLE};
+
+    // Single-word suspend/wake protocol (🎯T34 O2, TLA:DrainSuspended):
+    //   SUSP_IDLE    — not in a suspend window
+    //   SUSP_PENDING — announced suspend; context save not yet drained
+    //   SUSP_WAKE    — a waker arrived during the window; CheckWP or
+    //                  drain_suspended will queue the imp
+    // All transitions are CAS/exchange on this word, so the drain no
+    // longer serializes on the global runtime mutex (paper 33 O2).
+    enum SuspendState : uint32_t { SUSP_IDLE, SUSP_PENDING, SUSP_WAKE };
+    std::atomic<uint32_t> suspend_state_{SUSP_IDLE};
+
+    // Run-queue placement claim (🎯T34 round 2, TLA:PlacementClaim):
+    // TRUE while the imp is in (or committed to) a run queue.  Racing
+    // placers — duplicate wakers, the deferred-wake drain — each do
+    // one exchange(TRUE); only the one that observed FALSE inserts.
+    // Cleared by the imp itself when it delinks to suspend/exit
+    // (after the CheckWP early-wake decision, so a woken-early imp
+    // never exposes a FALSE window).  Replaces the global_mu-serialized
+    // next_/in_global_ checks on the wake path.
+    std::atomic<bool> placed_{false};
+    bool in_global_ = false;  // true while in the global run queue
+
+    int signal_;
+    int n_chanops_;
+    internal::ChanOp const * chanops_;
+
+    // --- hot line 2: run-queue links + context (under run_mu) ---
     Imp * prev_;
     Imp * next_;
     std::atomic<fcontext_t> ctx_;
     StackRegion stk_;
+
+    // --- warm: checked per suspend ---
+    // Software stack overflow limit (arena mode only).
+    // Points to the bottom of the usable region (above the software guard zone).
+    // Null for non-arena stacks (hardware guard page used instead).
+    // Checked at every CSP suspend checkpoint via check_stack_overflow().
+    void* stack_overflow_limit_ = nullptr;
+    class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
+    bool qs_entered_ = false;               // true if enter() was called (vs propagate-only)
+    bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
+    std::atomic<bool> qs_sleeping_{false};   // true after leave(), cleared by enter at schedule or resume
+
+    // --- cold tail ---
     char status_[32];
-    internal::ChanOp const * chanops_;
-    int n_chanops_, signal_;
 
     size_t id_ = []{
         static std::atomic<size_t> counter{0};
         return counter++;
     }();
+
+    uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
+    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
+
+    // 🎯T3.4.4: entry function and stack top recorded at spawn time so
+    // suspend checkpoints can compute the running depth and update the
+    // per-entry high-water table. entry_fn_ is null for the main thread's
+    // synthetic imp (no spawn() called).
+    ::csp::internal::EntryFn entry_fn_ = nullptr;
+    void* entry_sp_ = nullptr;
 
     Imp(fcontext_t ctx, StackRegion stk);
     Imp();
@@ -2317,33 +2465,6 @@ struct alignas(16) Imp {
     void deschedule();
 
     void run(Status status = Status::sleep);
-
-    enum AltState : uint32_t { ALT_IDLE, ALT_WAITING, ALT_CLAIMED };
-    std::atomic<uint32_t> alt_state{ALT_IDLE};
-
-    uintptr_t dyn_ctx_{0};  // HAMT root for dynamic scope
-    std::unordered_map<uint64_t, std::any>* local_ctx_{nullptr};  // imp_local storage
-
-    // Software stack overflow limit (arena mode only).
-    // Points to the bottom of the usable region (above the software guard zone).
-    // Null for non-arena stacks (hardware guard page used instead).
-    // Checked at every CSP suspend checkpoint via check_stack_overflow().
-    void* stack_overflow_limit_ = nullptr;
-
-    // 🎯T3.4.4: entry function and stack top recorded at spawn time so
-    // suspend checkpoints can compute the running depth and update the
-    // per-entry high-water table. entry_fn_ is null for the main thread's
-    // synthetic imp (no spawn() called).
-    ::csp::internal::EntryFn entry_fn_ = nullptr;
-    void* entry_sp_ = nullptr;
-
-    bool in_global_ = false;  // true while in the global run queue
-    bool daemon_ = false;     // daemon imps don't prevent schedule() from returning
-    class quiescence_scope* qs_ = nullptr;  // quiescence scope (inherited by children)
-    bool qs_entered_ = false;               // true if enter() was called (vs propagate-only)
-    std::atomic<bool> qs_sleeping_{false};   // true after leave(), cleared by enter at schedule or resume
-    std::atomic<bool> wake_pending_{false};  // set by schedule() during suspending_ window
-    std::atomic<bool> suspending_{false};  // true from unlock_all to do_switch completion
 
 #if CSP_ASAN
     void* asan_fake_stack_ = nullptr;  // ASan fake-stack state for this fiber
@@ -4457,6 +4578,61 @@ private:
 
 }
 
+/* csp/internal/fast_mutex.h */
+
+// FastMutex: low-overhead mutual exclusion for short critical sections
+// (🎯T34 round 2). The scheduler's hot locks (channel mu_, per-P
+// run_mu, global_mu) are held for tens of nanoseconds with no
+// syscalls, no allocation on the common path, and never across a
+// context switch — but they were std::mutex, which on macOS is a full
+// pthread_mutex (~3× the uncontended cost of os_unfair_lock and a
+// heavier contended path).
+//
+// macOS: os_unfair_lock — kernel-assisted (no userspace spin storm),
+// priority-donating, with trylock. Constraints honored by all users:
+// not recursive, unlocked by the locking thread (no lock is ever held
+// across jump_fcontext, so imp migration cannot split a lock/unlock
+// pair across OS threads).
+//
+// Linux: std::mutex is already a lightweight futex lock in glibc;
+// Windows MSVC STL uses SRWLOCK. The fallback alias is fine there.
+//
+// NOTE: no condition_variable may wait on a FastMutex — park_mu stays
+// std::mutex for exactly that reason.
+
+#if defined(__APPLE__)
+
+#include <os/lock.h>
+
+namespace csp::detail {
+
+class FastMutex {
+public:
+    FastMutex() = default;
+    FastMutex(FastMutex const&) = delete;
+    FastMutex& operator=(FastMutex const&) = delete;
+
+    void lock() noexcept { os_unfair_lock_lock(&l_); }
+    bool try_lock() noexcept { return os_unfair_lock_trylock(&l_); }
+    void unlock() noexcept { os_unfair_lock_unlock(&l_); }
+
+private:
+    os_unfair_lock l_ = OS_UNFAIR_LOCK_INIT;
+};
+
+}  // namespace csp::detail
+
+#else
+
+
+namespace csp::detail {
+
+using FastMutex = std::mutex;
+
+}  // namespace csp::detail
+
+#endif
+
 /* csp/internal/flat_hash_set.h */
 
 
@@ -4712,12 +4888,77 @@ auto apply(F && f, Tuple && t) {
 //   reset()         — restore to AWAKE; call only from the owning thread
 //                      before it starts its next sleep cycle.
 //
-// Implementation: uses platform futex primitives for low-latency wakeup
-// (macOS __ulock_wait, Linux futex, Windows WaitOnAddress). Falls back to
-// a per-note condvar if the platform support is unavailable.
+// Blocking primitive (🎯T34 O3): a single-word futex where the platform
+// has one — __ulock_wait/__ulock_wake on macOS, futex(2) on Linux — so a
+// wake is one syscall with no mutex or condvar involved. Windows and
+// other platforms use the mutex+condvar fallback (WaitOnAddress would
+// add a synchronization.lib link requirement for dist users). The
+// AWAKE/SLEEPING/FLAGGED state machine is identical in both modes and
+// is modeled in formal/PerWorkerWake.tla; the futex kernel-side value
+// check (block only if *addr == expected) closes the CAS-then-sleep
+// race the same way the condvar predicate re-check does.
 
+
+#if defined(__APPLE__)
+#define CSP_NOTE_FUTEX 1
+extern "C" {
+    // Private-but-stable Darwin ulock API (used by libc++, libdispatch).
+    int __ulock_wait(uint32_t operation, void *addr, uint64_t value,
+                     uint32_t timeout_us);
+    int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
+}
+#elif defined(__linux__)
+#define CSP_NOTE_FUTEX 1
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <time.h>
+#else
+#define CSP_NOTE_FUTEX 0
+#endif
 
 namespace csp::detail {
+
+#if CSP_NOTE_FUTEX
+
+namespace note_futex {
+
+#if defined(__APPLE__)
+    inline constexpr uint32_t kUlockCompareAndWait = 1;      // UL_COMPARE_AND_WAIT
+    inline constexpr uint32_t kUlockNoErrno = 0x01000000;    // ULF_NO_ERRNO
+
+    // Block while *addr == expected. timeout_us == 0 means forever.
+    inline void wait(std::atomic<int32_t>* addr, int32_t expected,
+                     uint32_t timeout_us) {
+        __ulock_wait(kUlockCompareAndWait | kUlockNoErrno,
+                     addr, uint64_t(uint32_t(expected)), timeout_us);
+    }
+
+    inline void wake(std::atomic<int32_t>* addr) {
+        __ulock_wake(kUlockCompareAndWait | kUlockNoErrno, addr, 0);
+    }
+#else  // __linux__
+    inline void wait(std::atomic<int32_t>* addr, int32_t expected,
+                     uint32_t timeout_us) {
+        struct timespec ts;
+        struct timespec* tsp = nullptr;
+        if (timeout_us != 0) {
+            ts.tv_sec = timeout_us / 1'000'000u;
+            ts.tv_nsec = long(timeout_us % 1'000'000u) * 1000;
+            tsp = &ts;
+        }
+        syscall(SYS_futex, reinterpret_cast<int32_t*>(addr),
+                FUTEX_WAIT_PRIVATE, expected, tsp, nullptr, 0);
+    }
+
+    inline void wake(std::atomic<int32_t>* addr) {
+        syscall(SYS_futex, reinterpret_cast<int32_t*>(addr),
+                FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
+    }
+#endif
+
+}  // namespace note_futex
+
+#endif  // CSP_NOTE_FUTEX
 
 class Note {
 public:
@@ -4731,30 +4972,25 @@ public:
     // Returns immediately if the note was FLAGGED (consumes the flag).
     // Otherwise: transitions AWAKE->SLEEPING and blocks until wake().
     void sleep() noexcept {
-        // Consume a pending flag.
-        int32_t expected = FLAGGED;
-        if (val_.compare_exchange_strong(expected, AWAKE,
-                std::memory_order_acquire, std::memory_order_relaxed)) {
+        if (!begin_sleep()) {
             return;
         }
 
-        // Transition AWAKE -> SLEEPING.
-        expected = AWAKE;
-        if (!val_.compare_exchange_strong(expected, SLEEPING,
-                std::memory_order_acquire, std::memory_order_relaxed)) {
-            if (expected == FLAGGED) {
-                val_.store(AWAKE, std::memory_order_release);
-            }
-            return;
+#if CSP_NOTE_FUTEX
+        // Block until woken. The kernel re-checks val_ == SLEEPING under
+        // its own lock, so a wake() that lands between our CAS and the
+        // wait syscall is never lost. Loop on spurious returns.
+        while (val_.load(std::memory_order_acquire) == SLEEPING) {
+            note_futex::wait(&val_, SLEEPING, 0);
         }
-
-        // Block until woken (val_ changes from SLEEPING).
+#else
         {
             std::unique_lock<std::mutex> lk(mu_);
             cv_.wait(lk, [this] {
                 return val_.load(std::memory_order_acquire) != SLEEPING;
             });
         }
+#endif
 
         val_.store(AWAKE, std::memory_order_release);
     }
@@ -4763,59 +4999,65 @@ public:
     // false if the timeout expired.
     template <class Rep, class Period>
     bool sleep_for(std::chrono::duration<Rep, Period> dur) noexcept {
-        // Consume flag.
-        int32_t expected = FLAGGED;
-        if (val_.compare_exchange_strong(expected, AWAKE,
-                std::memory_order_acquire, std::memory_order_relaxed)) {
-            return true;
-        }
-
-        // Transition AWAKE -> SLEEPING.
-        expected = AWAKE;
-        if (!val_.compare_exchange_strong(expected, SLEEPING,
-                std::memory_order_acquire, std::memory_order_relaxed)) {
-            if (expected == FLAGGED) {
-                val_.store(AWAKE, std::memory_order_release);
-            }
+        if (!begin_sleep()) {
             return true;
         }
 
         bool woken;
+#if CSP_NOTE_FUTEX
+        auto deadline = std::chrono::steady_clock::now() + dur;
+        // Loop with remaining-time recomputation so a spurious futex
+        // return doesn't masquerade as a timeout.
+        for (;;) {
+            if (val_.load(std::memory_order_acquire) != SLEEPING) {
+                woken = true;
+                break;
+            }
+            auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                woken = false;
+                break;
+            }
+            auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                deadline - now).count();
+            if (us < 1) us = 1;
+            if (us > 0xffffffffll) us = 0xffffffffll;
+            note_futex::wait(&val_, SLEEPING, uint32_t(us));
+        }
+#else
         {
             std::unique_lock<std::mutex> lk(mu_);
             woken = cv_.wait_for(lk, dur, [this] {
                 return val_.load(std::memory_order_acquire) != SLEEPING;
             });
         }
+#endif
 
         val_.store(AWAKE, std::memory_order_release);
         return woken;
     }
 
     // Called by any thread to wake the note's owner.
-    // If the owner is SLEEPING: transition SLEEPING->AWAKE and notify cv.
+    // If the owner is SLEEPING: transition SLEEPING->AWAKE and wake it.
     // If the owner is AWAKE: set FLAGGED so next sleep() returns immediately.
     // If already FLAGGED: no-op (flag already pending).
     void wake() noexcept {
         int32_t expected = SLEEPING;
         if (val_.compare_exchange_strong(expected, AWAKE,
                 std::memory_order_release, std::memory_order_relaxed)) {
+#if CSP_NOTE_FUTEX
+            // The sleeper either hasn't entered the wait syscall yet (the
+            // kernel's value check sees AWAKE and returns immediately) or
+            // is blocked and this wake releases it.
+            note_futex::wake(&val_);
+#else
             // Notify the condvar. The sleeping thread will see val_!=SLEEPING
-            // and return from cv_.wait().
-            //
-            // We must acquire the lock before notify to prevent this race:
-            //   Thread A: CAS SLEEPING->AWAKE (done)
-            //   Thread B: (in cv_.wait_for) predicate true, wakeup pending
-            //   Thread A: notify_one (but thread B hasn't re-blocked yet)
-            // Actually, notify without holding the lock is safe here because:
-            // the predicate checks val_ atomically, and val_ is already AWAKE
-            // before we notify. If the sleeping thread checks the predicate
-            // between our CAS and our notify, it sees AWAKE and exits without
-            // blocking. If it's already blocked in cv_.wait, our notify wakes it.
-            // The key: there is NO window where val_=AWAKE and the thread is
-            // re-entering cv_.wait (it only enters once per sleep() call).
+            // and return from cv_.wait(). Acquiring the lock first closes the
+            // gap where the sleeper has evaluated the predicate as false but
+            // has not yet blocked.
             std::lock_guard<std::mutex> lk(mu_);
             cv_.notify_one();
+#endif
             return;
         }
         // Not SLEEPING. Try to set FLAGGED.
@@ -4836,9 +5078,32 @@ public:
     }
 
 private:
+    // Common entry for sleep/sleep_for: consume a pending flag (return
+    // false = don't block), else transition AWAKE -> SLEEPING (return
+    // true = caller blocks until val_ != SLEEPING).
+    bool begin_sleep() noexcept {
+        int32_t expected = FLAGGED;
+        if (val_.compare_exchange_strong(expected, AWAKE,
+                std::memory_order_acquire, std::memory_order_relaxed)) {
+            return false;
+        }
+
+        expected = AWAKE;
+        if (!val_.compare_exchange_strong(expected, SLEEPING,
+                std::memory_order_acquire, std::memory_order_relaxed)) {
+            if (expected == FLAGGED) {
+                val_.store(AWAKE, std::memory_order_release);
+            }
+            return false;
+        }
+        return true;
+    }
+
     std::atomic<int32_t> val_;
+#if !CSP_NOTE_FUTEX
     std::mutex mu_;
     std::condition_variable cv_;
+#endif
 };
 
 }  // namespace csp::detail
@@ -4918,12 +5183,21 @@ struct Processor {
     std::atomic<fcontext_t>*  save_ctx;   // Where to store suspended imp's ctx
     Imp*  save_imp;    // The imp being suspended
 
-    std::mutex run_mu;                // Protects busy queue DLL
+    FastMutex run_mu;                 // Protects busy queue DLL
     Imp* running = nullptr;   // Imp claimed by local_next (steal-safe)
+    // Fairness budget for wake-to-local (🎯T34 O1): consecutive local
+    // wake count; every kLocalWakeBudget-th wake routes to the global
+    // queue instead, so a hot rendezvous pair cannot monopolize this P
+    // while spawned/global work goes underserved (paper 33; the
+    // flat_map balloon). Mutated under run_mu.
+    int local_wake_streak_ = 0;
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
     Note note;                        // Per-worker futex note (park/unpark)
 
-    std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
+    // Own cache line: written every worker_loop iteration; sharing a
+    // line with thief-scanned fields (parked, note) would invalidate
+    // their cached copies on every heartbeat (🎯T35 cache pass).
+    alignas(64) std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
 
     std::thread worker;                   // Worker thread (empty for P0/main)
@@ -5235,11 +5509,26 @@ struct Runtime {
 
     std::vector<std::unique_ptr<Processor>> procs;  // P0 = main thread
 
-    std::mutex global_mu;
+    FastMutex global_mu;
     std::deque<Imp*> global_run_queue;
 
     std::mutex park_mu;
     std::condition_variable park_cv;
+    // Watcher-count gates for park_cv broadcasts (🎯T34 O3).  Only
+    // completion/quiescence watchers (main_loop, run, await_idle,
+    // await_quiescent, quiescent_loop) wait on park_cv; scheduler-side
+    // notifiers skip the broadcast syscall when none is registered.
+    // Two classes, two instances of the gate protocol verified in
+    // formal/ParkGate.tla:
+    //   park_waiters_    — all watchers; notified on completion events
+    //                      (imp exit, shutdown).
+    //   quiesce_waiters_ — the subset whose predicate reads worker
+    //                      parked state; notified when a worker parks
+    //                      or winds down.
+    // A watcher's predicate must only read state whose publishers
+    // notify a counter the watcher registered on.
+    std::atomic<int> park_waiters_{0};
+    std::atomic<int> quiesce_waiters_{0};
 
     std::atomic<bool> stopping{false};
     std::atomic<bool> has_global_work_{false};  // Set by push_to_global, cleared by drain
@@ -5266,6 +5555,39 @@ struct Runtime {
     void init(int num_procs);   // 0 = hardware_concurrency
     void shutdown();
     void unpark_one();
+
+    // Register as a park_cv watcher and wait for pred.  quiescence
+    // selects the additional quiesce_waiters_ registration for
+    // predicates that read worker parked state.
+    // TLA:ParkGate.WRegister TLA:ParkGate.WEval
+    template <typename Pred>
+    void park_wait(Pred&& pred, bool quiescence = false) {
+        std::unique_lock<std::mutex> lk(park_mu);
+        park_waiters_.fetch_add(1, std::memory_order_relaxed);
+        if (quiescence) {
+            quiesce_waiters_.fetch_add(1, std::memory_order_relaxed);
+        }
+        // Pairs with the fence in notify_watchers (eventcount): either
+        // the notifier sees our registration, or our predicate read
+        // sees its published state.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        park_cv.wait(lk, std::forward<Pred>(pred));
+        if (quiescence) {
+            quiesce_waiters_.fetch_sub(1, std::memory_order_relaxed);
+        }
+        park_waiters_.fetch_sub(1, std::memory_order_relaxed);
+    }
+
+    // Broadcast park_cv iff a watcher is registered.  Callers must
+    // have published the state the watchers' predicates read (release
+    // stores suffice; the fence supplies the SC pairing).
+    void notify_watchers();          // completion events (imp exit, shutdown)
+    void notify_quiesce_watchers();  // worker park / wind-down events
+
+    // Unconditional broadcast for cold reconfiguration events
+    // (quiescence-hook install/uninstall): wakes every watcher so it
+    // re-enters park_wait and re-registers with fresh parameters.
+    void broadcast_park();
 
     // Push an imp to the global run queue.  Caller must hold
     // global_mu.  The imp must already be delinked from any local

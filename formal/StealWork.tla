@@ -300,6 +300,38 @@ WPush ==
     /\ UNCHANGED <<local, running, run_mu,
                    pc_victim, pc_thief, pc_taker, steal_cand>>
 
+(* 🎯T34 O1 wake-to-local: a P-bound waker may instead hand the MT to
+ * its own P's local queue (modeled on the Thief's P — the waker runs
+ * there).  Still under global_mu (placement serialization with
+ * duplicate wakers), plus the P's run_mu — the same global_mu→run_mu
+ * order as take_from_global; steal_work's try_to_lock on global_mu
+ * prevents the reverse-order deadlock.
+ *
+ * TLA:StealWork.WAcquireRunMu *)
+WAcquireRunMu ==
+    /\ pc_waker = "w_push"
+    /\ waker_mt /= "none"
+    /\ run_mu[Thief] = "none"
+    /\ run_mu' = [run_mu EXCEPT ![Thief] = "sched"]
+    /\ pc_waker' = "w_push_local"
+    /\ UNCHANGED <<local, global, running, in_global, global_mu,
+                   pc_victim, pc_thief, pc_taker, steal_cand, waker_mt>>
+
+(* Insert into the local DLL; release both locks.  No unpark: the
+ * waker's P runs the MT on its next do_switch.
+ *
+ * TLA:StealWork.WPushLocal *)
+WPushLocal ==
+    /\ pc_waker = "w_push_local"
+    /\ waker_mt /= "none"
+    /\ local' = [local EXCEPT ![Thief] = @ \union {waker_mt}]
+    /\ run_mu' = [run_mu EXCEPT ![Thief] = "none"]
+    /\ global_mu' = "none"
+    /\ pc_waker' = "w_idle"
+    /\ waker_mt' = "none"
+    /\ UNCHANGED <<global, running, in_global,
+                   pc_victim, pc_thief, pc_taker, steal_cand>>
+
 (*******************************************************************************
  * TAKE FROM GLOBAL ACTIONS
  ******************************************************************************)
@@ -354,6 +386,8 @@ Next ==
     \/ WStartSchedule
     \/ WAcquireLock
     \/ WPush
+    \/ WAcquireRunMu
+    \/ WPushLocal
     \/ TkAcquireGlobal
     \/ TkPopAndSchedule
 
@@ -368,12 +402,12 @@ TypeOK ==
     /\ global \subseteq MTs
     /\ \A P \in Procs : running[P] \in MTs \union {"none"}
     /\ \A mt \in MTs : in_global[mt] \in BOOLEAN
-    /\ \A P \in Procs : run_mu[P] \in {"none", "thief"}
+    /\ \A P \in Procs : run_mu[P] \in {"none", "thief", "sched"}
     /\ global_mu \in {"none", "thief", "sched", "taker"}
     /\ pc_victim \in {"v_local_next", "v_running"}
     /\ pc_thief \in {"t_idle", "t_try_global", "t_check_busy",
                       "t_delink_push", "t_release_ok", "t_release_fail"}
-    /\ pc_waker \in {"w_idle", "w_want_lock", "w_push"}
+    /\ pc_waker \in {"w_idle", "w_want_lock", "w_push", "w_push_local"}
     /\ pc_taker \in {"tk_idle", "tk_pop"}
     /\ steal_cand \in MTs \union {"none"}
     /\ waker_mt \in MTs \union {"none"}

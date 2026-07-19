@@ -175,11 +175,7 @@ void StackPool::release(StackRegion region) {
     }
 }
 
-void StackPool::maybe_shrink(StackRegion const&, void*) {
-    // No-op for arena stacks: the entire slab is one VMA; we cannot reclaim
-    // individual slot pages without splitting the mapping. The software
-    // overflow limit (overflow_limit) replaces guard-page overflow detection.
-}
+// maybe_shrink: inline no-op in the header for arena builds.
 
 void StackPool::drain() {
     std::lock_guard<std::mutex> lk(mu_);

@@ -93,13 +93,22 @@ TEST_CASE("Timer---MultipleTimersOrdering") {
     RunStats stats;
     fake_clock fc;
 
-    int which_result = 0;
+    int which_result = -1;
 
     csp::run([&] {
         csp::local l{fc.binding()};
         auto slow = csp::after(20ms);
         auto fast = csp::after(5ms);
-        which_result = alt(slow >> nullptr, fast >> nullptr);
+        // The alt must run in a scope PARTICIPANT (a child imp inherits
+        // the quiescence scope): the binding imp is the orchestrator and
+        // not a member, so if it alt-ed directly, fake time could advance
+        // past BOTH deadlines before the alt registers — and alt picks
+        // randomly between two ready arms (latent flake exposed by
+        // 🎯T34's scheduling changes).
+        join(spawn([&which_result, slow = std::move(slow),
+                    fast = std::move(fast)]() mutable {
+            which_result = alt(slow >> nullptr, fast >> nullptr);
+        }));
     });
 
     CHECK(1 == which_result);

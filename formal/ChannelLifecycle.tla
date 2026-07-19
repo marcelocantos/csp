@@ -148,39 +148,21 @@ WaiterSleep ==
     /\ UNCHANGED <<endpt_dead, alive, channel_live, waiter_set,
                    alt_state, pc_cw, pc_cr>>
 
-(* Waiter wakes up (scheduled by closer). Re-acquires lock for cleanup.
- * Enabled only after being claimed (on_queue) and channel still exists.
+(* Waiter wakes: its registration was already removed by the claimer
+ * while the claimer held this channel's mu_ (waker-side
+ * deregistration, ð¯T35).  The woken side touches no channel state
+ * at all -- no relock, no ring scan -- and only resets alt_state.
  *
- * Code: channel.cc:325 lock_all()
+ * Code: channel.cc phase 3, count == 1 fast path
  *
- * TLA:ChannelLifecycle.WaiterWakeAcquire *)
-WaiterWakeAcquire ==
+ * TLA:ChannelLifecycle.WaiterWakeNoCleanup *)
+WaiterWakeNoCleanup ==
     /\ pc_waiter = "asleep"
     /\ on_queue
-    /\ channel_live
-    /\ ch_mu = "none"
-    /\ ch_mu' = "wa"
-    /\ pc_waiter' = "cleaning"
-    /\ UNCHANGED <<endpt_dead, alive, channel_live, waiter_set,
-                   alt_state, on_queue, pc_cw, pc_cr>>
-
-(* Waiter cleans up: removes from waiters, sets alt_state=IDLE, unlocks.
- * Single action: all under mu_.
- *
- * Code: channel.cc:326-335
- *   ch->endpts_[endpt].remove(&chop, g_imp);
- *   unlock_all();
- *   g_imp->alt_state.store(ALT_IDLE, release);
- *
- * TLA:ChannelLifecycle.WaiterCleanup *)
-WaiterCleanup ==
-    /\ pc_waiter = "cleaning"
-    /\ waiter_set' = waiter_set \ {"wa"}
     /\ alt_state' = "IDLE"
-    /\ ch_mu' = "none"
     /\ pc_waiter' = "release_ref"
-    /\ UNCHANGED <<endpt_dead, alive, channel_live, on_queue,
-                   pc_cw, pc_cr>>
+    /\ UNCHANGED <<endpt_dead, alive, channel_live, ch_mu, waiter_set,
+                   on_queue, pc_cw, pc_cr>>
 
 (* Waiter releases its reader endpoint reference. This enables CloserR.
  * Models the chan_op destructor calling reader_release after
@@ -238,10 +220,14 @@ CloserWWakeWaiters ==
     /\ IF "wa" \in waiter_set /\ alt_state = "WAITING"
        THEN /\ alt_state' = "CLAIMED"
             /\ on_queue' = TRUE
-       ELSE UNCHANGED <<alt_state, on_queue>>
+            \* Waker-side deregistration (ð¯T35): the single-op
+            \* waiter's only registration is on THIS channel, whose
+            \* mu_ the claimer holds -- remove it at claim time.
+            /\ waiter_set' = waiter_set \ {"wa"}
+       ELSE UNCHANGED <<alt_state, on_queue, waiter_set>>
     /\ pc_cw' = "unlock_mu"
     /\ UNCHANGED <<endpt_dead, alive, channel_live, ch_mu,
-                   waiter_set, pc_cr, pc_waiter>>
+                   pc_cr, pc_waiter>>
 
 (* CloserW releases mu_.
  * Code: channel.cc:149
@@ -309,10 +295,11 @@ CloserRWakeWaiters ==
     /\ IF "wa" \in waiter_set /\ alt_state = "WAITING"
        THEN /\ alt_state' = "CLAIMED"
             /\ on_queue' = TRUE
-       ELSE UNCHANGED <<alt_state, on_queue>>
+            /\ waiter_set' = waiter_set \ {"wa"}
+       ELSE UNCHANGED <<alt_state, on_queue, waiter_set>>
     /\ pc_cr' = "unlock_mu"
     /\ UNCHANGED <<endpt_dead, alive, channel_live, ch_mu,
-                   waiter_set, pc_cw, pc_waiter>>
+                   pc_cw, pc_waiter>>
 
 (* CloserR releases mu_.
  * Code: channel.cc:149
@@ -347,8 +334,7 @@ Next ==
     \/ WaiterPhase1
     \/ RegisterWaiter
     \/ WaiterSleep
-    \/ WaiterWakeAcquire
-    \/ WaiterCleanup
+    \/ WaiterWakeNoCleanup
     \/ WaiterReleaseRef
     \/ CloserWDecRef
     \/ CloserWAcquire
@@ -381,7 +367,7 @@ TypeOK ==
     /\ pc_cr \in {"idle", "start", "want_mu", "waking", "unlock_mu",
                    "dec_alive", "done_cr"}
     /\ pc_waiter \in {"start", "phase1", "registering", "sleeping",
-                       "asleep", "cleaning", "release_ref", "done_w"}
+                       "asleep", "release_ref", "done_w"}
 
 (* Safety: no thread accesses channel state after deletion. Any thread
  * in a state that will access channel state must have channel_live. *)
@@ -390,7 +376,7 @@ NoUseAfterFree ==
         => channel_live
     /\ pc_cr \in {"want_mu", "waking", "unlock_mu", "dec_alive"}
         => channel_live
-    /\ pc_waiter \in {"phase1", "registering", "sleeping", "cleaning"}
+    /\ pc_waiter \in {"phase1", "registering", "sleeping"}
         => channel_live
 
 (* Safety: once both closers are done, a waiter still in WAITING state
@@ -399,6 +385,13 @@ NoLostWaiter ==
     (pc_cw = "done_cw" /\ pc_cr = "done_cr") =>
         (alt_state = "WAITING" => on_queue)
 
+(* Safety: a completed alt leaves no registration behind.  Ring
+ * entries point into the waiter's prialt stack frame; an entry that
+ * survives the frame is a use-after-free time bomb, so the claimer
+ * MUST have removed it before the waiter can finish. *)
+NoDanglingRegistration ==
+    pc_waiter \in {"release_ref", "done_w"} => "wa" \notin waiter_set
+
 (* Safety: alive never goes negative. *)
 AliveNonNegative ==
     alive >= 0
@@ -406,6 +399,6 @@ AliveNonNegative ==
 (* Safety: if the waiter is CLAIMED, it is on queue or already cleaning. *)
 ClaimedImpliesScheduled ==
     (alt_state = "CLAIMED") =>
-        (on_queue \/ pc_waiter \in {"cleaning", "release_ref", "done_w"})
+        (on_queue \/ pc_waiter \in {"release_ref", "done_w"})
 
 ====

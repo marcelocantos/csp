@@ -1112,6 +1112,16 @@ c++ -std=c++20 -O2 -DCSP_TLS -ffunction-sections -fdata-sections \
        vendor/picotls/lib/*.c vendor/ngtcp2/lib/*.c
 ```
 
+### Minimal-save context switch (arm64, opt-in)
+
+Compiling `csp.cpp` with `-DCSP_LIGHT_SWITCH` on arm64 macOS/Linux
+selects a minimal-save context switch (~2x faster switches; pingpong
+rendezvous ~120 ns vs ~146 ns). The gate self-disables on other
+architectures, on Windows, and under ASan/TSan, falling back to the
+standard Boost fcontext path — the flag is always safe to pass.
+Source-drop-in only: the pre-built release libraries are compiled
+without it.
+
 ### Linker dead-code elimination
 
 The per-protocol model relies on three flags:

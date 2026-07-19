@@ -39,7 +39,12 @@ jobs:
   test:
     name: test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # 45 not 30: the macOS row runs two full builds + two suites (source
+    # + dist) and sat within a few minutes of the old ceiling on slow
+    # runner days — dying at the JOB timeout preempts the per-test
+    # TEST_TIMEOUT watchdog (🎯T29) that would otherwise produce cores
+    # and backtraces for a genuine hang.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -228,7 +233,7 @@ jobs:
   sanitize:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -306,7 +311,16 @@ jobs:
           # libc++abi on Linux frees std::logic_error strings with free()
           # instead of operator delete, triggering false positives under ASan.
           ASAN_OPTIONS: alloc_dealloc_mismatch=0
-          TSAN_OPTIONS: suppressions=test/tsan_suppressions.txt
+          # detect_deadlocks=0: TSan's deadlock detector keeps its
+          # held-lock table per OS THREAD (64 entries), which is
+          # incompatible with M:N fiber runtimes — its bookkeeping
+          # accumulates across imp migrations until the table overflows
+          # (CHECK failed: sanitizer_deadlock_detector.h) and wedges the
+          # process. Same class as the per-thread mutex-tracking
+          # limitation documented in test/tsan_suppressions.txt.
+          # Deadlock assurance comes from the TLA+ specs (formal/) and
+          # the test watchdog, not TSan's lock graph.
+          TSAN_OPTIONS: suppressions=test/tsan_suppressions.txt detect_deadlocks=0
 
       - name: GDB backtrace on crash
         if: failure() && runner.os == 'Linux'

@@ -48,14 +48,14 @@ namespace csp::detail {
 
 void record_stack_high_water(::csp::internal::EntryFn fn, size_t depth_bytes) {
     if (!fn) return;
-    std::lock_guard<std::mutex> lk(g_high_water_mu);
+    std::lock_guard lk(g_high_water_mu);
     auto& slot = g_high_water[fn];
     if (depth_bytes > slot) slot = depth_bytes;
 }
 
 size_t get_stack_high_water(::csp::internal::EntryFn fn) {
     if (!fn) return 0;
-    std::lock_guard<std::mutex> lk(g_high_water_mu);
+    std::lock_guard lk(g_high_water_mu);
     auto it = g_high_water.find(fn);
     return it == g_high_water.end() ? 0 : it->second;
 }
@@ -84,46 +84,52 @@ namespace csp {
             vsnprintf(buf += n, len -= n, msg, args);
         }
 
-        // After a context save completes, clear the suspended
-        // imp's suspending_ flag and drain any deferred
-        // wake_pending_.  In M:N mode, both operations are done
-        // under global_mu so they are mutually exclusive with
-        // schedule()'s suspending_ check — eliminating the TOCTOU
-        // race where schedule() sees suspending_==true and sets
-        // wake_pending_, but the drain clears suspending_ and checks
-        // wake_pending_ in between (seeing false both times).
+        // After a context save completes, close the suspended imp's
+        // suspend window with ONE atomic exchange on its state word
+        // (🎯T34 O2). Seeing SUSP_WAKE means a waker deferred to us —
+        // queue the imp now. The exchange is what makes the drain and
+        // schedule()'s CAS linearizable without the global mutex: a
+        // split load-then-clear would let the waker's CAS land in
+        // between and be erased (see DrainSuspended_Bug.tla).
         static void drain_suspended(Imp* suspended) {
+            // TLA:DrainSuspended.Drain
+            auto old = suspended->suspend_state_.exchange(
+                Imp::SUSP_IDLE, std::memory_order_acq_rel);
+            if (old != Imp::SUSP_WAKE) {
+                return;
+            }
+            // Deferred wake: the waker returned after its CAS; queuing
+            // is our job.
             auto& rt = Runtime::instance();
-            bool need_unpark = false;
+            if (suspended->qs_entered_
+                && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                suspended->qs_->enter();
+            }
+            // Claim placement against late wakers that observed
+            // SUSP_IDLE after our exchange above. TLA:PlacementClaim.Claim
+            if (suspended->placed_.exchange(true, std::memory_order_acq_rel)) {
+                return;
+            }
             {
-                std::lock_guard<std::mutex> lk(rt.global_mu); // TLA:DrainSuspended.AcquireDrain
-                // TLA:DrainSuspended.Drain
-                suspended->suspending_.store(false, std::memory_order_release);
-                if (suspended->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
-                    if (!suspended->in_global_) {
-                        if (suspended->qs_entered_
-                            && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
-                            suspended->qs_->enter();
-                        }
-                        rt.push_to_global(suspended);
-                        need_unpark = true;
-                    }
-                }
+                std::lock_guard lk(rt.global_mu);
+                rt.push_to_global(suspended);
             }
-            if (need_unpark) {
-                rt.unpark_one();
-            }
+            rt.unpark_one();
         }
 
-        static intptr_t switch_to(Imp & target, intptr_t data) {
-            auto self = current_imp();
+        // self must be current_imp() — passed through to spare the
+        // (deliberately non-inline) TLS accessor another call.
+        static intptr_t switch_to(Imp & target, intptr_t data, Imp * self) {
             // Acquire-load ctx_ to synchronize with the release-store
             // that saved the target's context on a (possibly different)
             // OS thread.  This ensures the saved register data on the
             // target's stack is visible to us before we jump.
             auto ctx = target.ctx_.load(std::memory_order_acquire);
-            current_p().save_ctx = &self->ctx_;
-            current_p().save_imp = self;
+            {
+                auto& p = current_p();
+                p.save_ctx = &self->ctx_;
+                p.save_imp = self;
+            }
 #if CSP_ASAN
             __sanitizer_start_switch_fiber(
                 &self->asan_fake_stack_,
@@ -132,7 +138,7 @@ namespace csp {
 #if CSP_TSAN
             __tsan_switch_to_fiber(target.tsan_fiber_, 0);
 #endif
-            auto t = jump_fcontext(ctx, (void *)data);
+            auto t = csp_jump(ctx, (void *)data);
 #if CSP_ASAN
             __sanitizer_finish_switch_fiber(
                 self->asan_fake_stack_, nullptr, nullptr);
@@ -140,8 +146,11 @@ namespace csp {
             // Release-store our caller's saved SP so that any thread
             // that later acquire-loads ctx_ will also see the register
             // data that jump_fcontext wrote to the caller's stack.
-            current_p().save_ctx->store(t.fctx, std::memory_order_release);
-            drain_suspended(current_p().save_imp);
+            // Re-resolve the processor: we may have resumed on a
+            // different OS thread than the one that jumped.
+            auto& p_after = current_p();
+            p_after.save_ctx->store(t.fctx, std::memory_order_release);
+            drain_suspended(p_after.save_imp);
             return (intptr_t)t.data;
         }
 
@@ -152,6 +161,8 @@ namespace csp {
 
         Imp::Imp() : Imp(nullptr, {}) {
             prev_ = next_ = this;
+            // The synthetic main imp is born linked into its P's ring.
+            placed_.store(true, std::memory_order_relaxed);
             snprintf(status_, sizeof(status_), "§main");
         }
 
@@ -161,13 +172,12 @@ namespace csp {
         }
 
         void Imp::schedule_local(bool make_current) {
-            std::lock_guard<std::mutex> lk(current_p().run_mu);
+            auto& p = current_p();
+            std::lock_guard lk(p.run_mu);
             if (next_) {
                 return;
             }
-            auto& busy = current_p().busy;
-            if (busy == &current_p().main) {
-            }
+            auto& busy = p.busy;
             if (busy) {
                 next_ = busy;
                 prev_ = busy->prev_;
@@ -183,27 +193,122 @@ namespace csp {
         void Imp::schedule([[maybe_unused]] bool make_current) {
             auto& rt = Runtime::instance();
 
-            // Push to the global run queue so any worker can pick
-            // it up.
-            // TLA:DrainSuspended.AcquireWake TLA:StealWork.WStartSchedule TLA:StealWork.WAcquireLock
+            // Suspend-window handshake first, lock-free: if the imp is
+            // in the unlock_all→do_switch window, it's still running
+            // and can't be safely pushed to a queue. One CAS defers
+            // the wake to CheckWP (early) or drain_suspended (after
+            // the context save). TLA:DrainSuspended.WakerCAS
+            for (;;) {
+                uint32_t s = suspend_state_.load(std::memory_order_acquire);
+                if (s == SUSP_PENDING) {
+                    if (suspend_state_.compare_exchange_weak(
+                            s, SUSP_WAKE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
+                        return;
+                    }
+                    continue;  // raced with the drain or a spurious failure
+                }
+                if (s == SUSP_WAKE) {
+                    return;  // wake already pending
+                }
+                break;  // SUSP_IDLE: fully suspended (or never was)
+            }
+
+            // Claim placement — exactly one racing placer (duplicate
+            // wakers, deferred-wake drain) inserts the imp; a TRUE
+            // result means it is already queued, running, or another
+            // placer is committed. Replaces the global_mu-serialized
+            // next_/in_global_ checks: the wake path no longer touches
+            // the global lock at all unless it spills.
+            // TLA:PlacementClaim.Claim
+            if (placed_.exchange(true, std::memory_order_acq_rel)) {
+                return;
+            }
+            assert(!next_ && !in_global_);
+
+            // 🎯T34 O1 wake-to-local: a wake issued from a worker P
+            // whose local queue has no other waiting imp hands the
+            // woken imp to that P directly — the very next do_switch
+            // runs it, with no futex wake and no cross-core migration
+            // (the dominant rendezvous cost in paper 33). run_mu alone
+            // suffices: the placement claim above makes this placer
+            // exclusive. The queued imp stays stealable, and the
+            // watchdog rescues it if this P wedges in a long compute
+            // stretch (100 ms backstop). Excluded: P0 (its thread runs
+            // main_loop, never imps) and non-P threads (reactor,
+            // blocking pool).
+            // TLA:StealWork.WAcquireRunMu TLA:StealWork.WPushLocal
+            // TLA:PlacementClaim.Insert
+            if (has_processor()) {
+                if (auto& p = current_p(); p.id != 0) {
+                    // Fairness budget: after kLocalWakeBudget consecutive
+                    // local wakes, PULL one batch of global work into this
+                    // P's ring (take_from_global below). A hot rendezvous
+                    // pair otherwise monopolizes its P while spawned imps
+                    // starve in the global queue — the flat_map balloon:
+                    // merge+producer looped locally, sub-stream imps never
+                    // ran, the input arm stayed the only ready one, and the
+                    // merge's vector alt grew by one channel per iteration
+                    // (measured: 5001 arms after 5000 consecutive spins).
+                    // Pulling (rather than spilling our peer to the global
+                    // queue) keeps the pair's locality: a spill design
+                    // measured +170 ns/op at 16 procs from pair migration.
+                    // 32 keeps a ballooned alt's lock_all under TSan's
+                    // 64-entry deadlock-detector table as defense in depth.
+                    constexpr int kLocalWakeBudget = 32;
+                    bool queued = false;
+                    bool pull = false;
+                    {
+                        std::lock_guard plk(p.run_mu);
+                        bool has_waiting = false;
+                        if (auto* start = p.busy) {
+                            auto* it = start;
+                            do {
+                                if (it != &p.main && it != p.running) {
+                                    has_waiting = true;
+                                    break;
+                                }
+                                it = it->next_;
+                            } while (it != start);
+                        }
+                        if (!has_waiting
+                            && ++p.local_wake_streak_ >= kLocalWakeBudget) {
+                            p.local_wake_streak_ = 0;
+                            pull = true;
+                        }
+                        if (!has_waiting) {
+                            if (p.busy) {
+                                next_ = p.busy;
+                                prev_ = p.busy->prev_;
+                                next_->prev_ = prev_->next_ = this;
+                            } else {
+                                p.busy = next_ = prev_ = this;
+                            }
+                            queued = true;
+                        }
+                        // else: local queue already has waiting work —
+                        // spill to the global queue so parked workers
+                        // share the load.
+                    }
+                    if (queued) {
+                        if (pull
+                            && rt.has_global_work_.load(std::memory_order_acquire)) {
+                            // TLA:StealWork.TkAcquireGlobal — same
+                            // take path a worker uses; global work lands
+                            // in this ring and runs when the pair blocks.
+                            rt.take_from_global(p);
+                        }
+                        return;  // no unpark: this P runs it next
+                    }
+                }
+            }
+            // Spill path: global queue + worker wake.
+            // TLA:DrainSuspended.WakerPush TLA:StealWork.WStartSchedule
+            // TLA:StealWork.WAcquireLock TLA:StealWork.WPush
             {
-                std::lock_guard<std::mutex> lk(rt.global_mu);
-                if (in_global_) {
-                    return;
-                }
-                // TLA:DrainSuspended.DoSchedule
-                // If the imp is in the unlock_all→do_switch
-                // window, it's still running and can't be safely
-                // pushed to the global queue.  Set wake_pending_
-                // so the detach path will re-add it to a queue.
-                if (suspending_.load(std::memory_order_acquire)) {
-                    wake_pending_.store(true, std::memory_order_release);
-                    return;
-                }
-                // If the imp is already in a local run queue (next_ set),
-                // a worker will run it — no need to push to global.
-                if (next_) return;
-                rt.push_to_global(this); // TLA:StealWork.WPush
+                std::lock_guard lk(rt.global_mu);
+                rt.push_to_global(this);
             }
             rt.unpark_one();
         }
@@ -219,9 +324,10 @@ namespace csp {
         }
 
         void Imp::deschedule() {
-            std::lock_guard<std::mutex> lk(current_p().run_mu);
+            auto& p = current_p();
+            std::lock_guard lk(p.run_mu);
             assert(next_);
-            auto& busy = current_p().busy;
+            auto& busy = p.busy;
             if (busy == this && (busy = next_) == this) {
                 busy = nullptr;
             }
@@ -229,6 +335,7 @@ namespace csp {
             if (prev_) prev_->next_ = next_;
             next_ = nullptr;
             prev_ = nullptr;
+            placed_.store(false, std::memory_order_release);
         }
 
         static void destroy_imp(Imp* imp) {
@@ -245,8 +352,7 @@ namespace csp {
             auto daemon = rt.daemon_gs.load(std::memory_order_acquire);
             if (live - 1 <= daemon) {
                 // All non-daemon imps are done.
-                { std::lock_guard<std::mutex> lk(rt.park_mu); }
-                rt.park_cv.notify_all();
+                rt.notify_watchers();
             }
         }
 
@@ -262,7 +368,7 @@ namespace csp {
 
             // Manipulate run queue under lock, but release before context switch.
             {
-                std::lock_guard<std::mutex> lk(p.run_mu);
+                std::lock_guard lk(p.run_mu);
 
                 switch (status) {
                 case Status::run:
@@ -284,9 +390,16 @@ namespace csp {
                     self->next_ = nullptr;
                     self->prev_ = nullptr;
 
-                    // TLA:DrainSuspended.CheckWP
-                    if (status == Status::detach &&
-                        self->wake_pending_.exchange(false, std::memory_order_acq_rel)) {
+                    // TLA:DrainSuspended.CheckWP — early wake: a waker
+                    // CASed to SUSP_WAKE before our context save. Take
+                    // the wake here (CAS back to IDLE), re-add to the
+                    // local queue, and skip the switch entirely.
+                    if (uint32_t wake = Imp::SUSP_WAKE;
+                        status == Status::detach &&
+                        self->suspend_state_.compare_exchange_strong(
+                            wake, Imp::SUSP_IDLE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
                         if (busy) {
                             self->next_ = busy;
                             self->prev_ = busy->prev_;
@@ -296,6 +409,11 @@ namespace csp {
                         }
                         return;
                     }
+                    // Committed to switching out: release the placement
+                    // claim. Ordered after CheckWP so an early-woken imp
+                    // (which stays queued) never exposes placed_ == FALSE.
+                    // TLA:PlacementClaim
+                    self->placed_.store(false, std::memory_order_release);
                     break;
                 default: CSP_UNREACHABLE();
                 }
@@ -303,8 +421,6 @@ namespace csp {
                 // Inline schedule without re-acquiring run_mu.
                 if (!next_) {
                     if (busy) {
-                        if (busy == &current_p().main) {
-                        }
                         next_ = busy;
                         prev_ = busy->prev_;
                         next_->prev_ = prev_->next_ = this;
@@ -315,7 +431,7 @@ namespace csp {
             }
 
             auto killme = status == Status::exit ? self : nullptr;
-            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme)));
+            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme), self));
             if (killyou) {
                 destroy_imp(killyou);
             }
@@ -327,7 +443,10 @@ namespace csp {
 
         // TLA:StealWork.VDoSwitch
         void do_switch(Status status) {
-            auto* self = current_imp();
+            do_switch(status, current_imp());
+        }
+
+        void do_switch(Status status, Imp * self) {
             if (self->qs_entered_) {
                 self->qs_sleeping_.store(true, std::memory_order_release);
                 self->qs_->leave();
@@ -336,12 +455,15 @@ namespace csp {
             if (self->stk_) {
                 auto* fp = CSP_FRAME_ADDRESS();
                 check_stack_overflow(self, fp);
+#ifdef CSP_ANALYSE_STACKS
                 // 🎯T3.4.4: profile this suspend's depth into the per-entry
                 // high-water table. The recorded value refines the analyser's
                 // indirect_call_budget on the next spawn() of the same entry
                 // function. It never selects the slot class directly (🎯T33):
                 // a checkpoint sample is not a sound upper bound, so it must
-                // not gate the Small slot.
+                // not gate the Small slot. Compiled out with the analyser
+                // (its only consumer): a mutex + hash lookup per suspend is
+                // pure waste otherwise (🎯T35 profiling).
                 if (self->entry_fn_ && self->entry_sp_) {
                     auto* top = static_cast<char*>(self->entry_sp_);
                     auto* cur = static_cast<char*>(fp);
@@ -350,28 +472,103 @@ namespace csp {
                             self->entry_fn_, static_cast<size_t>(top - cur));
                     }
                 }
+#endif
                 StackPool::instance().maybe_shrink(self->stk_, fp);
             }
+            auto& p = current_p();
+            // A synthetic main imp only calls do_switch when CSP
+            // operations are attempted outside spawn() — reject before
+            // touching the run queue (the merged section below would
+            // otherwise delink it from its own ring first).
+            if (self == &p.main) {
+                throw error(
+                    "channel operation attempted from main() — "
+                    "CSP operations must run inside spawn()");
+            }
             Imp* target;
+            bool stay = false;  // CheckWP took an early wake — no switch
             {
-                std::lock_guard<std::mutex> lk(current_p().run_mu);
+                std::lock_guard lk(p.run_mu);
                 // Update running to the active MT so steal_work skips it.
                 // (local_next sets running for the initial pick; chained
                 // do_switch calls keep it current as execution moves
                 // between imps.)
-                current_p().running = self;
-                auto& busy = current_p().busy;
+                p.running = self;
+                auto& busy = p.busy;
                 if (busy == self) {
                     busy = busy->next_;
                 }
+                // Self's departure bookkeeping — merged from Imp::run()
+                // (🎯T35): one run_mu section per switch instead of two.
+                switch (status) {
+                case Status::sleep:
+                    // busy already advanced past self; it stays linked.
+                    break;
+                case Status::detach: // TLA:StealWork.VDeschedule
+                case Status::exit:
+                    // Inline deschedule.
+                    assert(self->next_);
+                    if (busy == self && (busy = self->next_) == self) {
+                        busy = nullptr;
+                    }
+                    if (self->next_) self->next_->prev_ = self->prev_;
+                    if (self->prev_) self->prev_->next_ = self->next_;
+                    self->next_ = nullptr;
+                    self->prev_ = nullptr;
+
+                    // TLA:DrainSuspended.CheckWP — early wake: a waker
+                    // CASed to SUSP_WAKE before our context save. Take
+                    // the wake here (CAS back to IDLE), re-add to the
+                    // local queue, and skip the switch entirely.
+                    if (uint32_t wake = Imp::SUSP_WAKE;
+                        status == Status::detach &&
+                        self->suspend_state_.compare_exchange_strong(
+                            wake, Imp::SUSP_IDLE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
+                        if (busy) {
+                            self->next_ = busy;
+                            self->prev_ = busy->prev_;
+                            self->next_->prev_ = self->prev_->next_ = self;
+                        } else {
+                            busy = self->next_ = self->prev_ = self;
+                        }
+                        stay = true;
+                        break;
+                    }
+                    // Committed to switching out: release the placement
+                    // claim. Ordered after CheckWP so an early-woken imp
+                    // (which stays queued) never exposes placed_ == FALSE.
+                    // TLA:PlacementClaim
+                    self->placed_.store(false, std::memory_order_release);
+                    break;
+                default: CSP_UNREACHABLE();
+                }
                 target = busy;
+                // The ring always contains this P's sentinel (misuse was
+                // rejected above), so a target exists and is not self.
+                // Checked under run_mu: target's links are shared with
+                // concurrent thieves.
+                assert(stay || (target && target != self && target->next_));
             }
-            target->run(status);
+            if (!stay) {
+                auto killme = status == Status::exit ? self : nullptr;
+                auto killyou = reinterpret_cast<Imp*>(switch_to(
+                    *target, reinterpret_cast<intptr_t>(killme), self));
+                if (killyou) {
+                    destroy_imp(killyou);
+                }
+                if (!killme) {
+                    set_current_imp(self);
+                }
+            }
             // Re-enter scope if we left it (yield path). For scheduled
             // imps, make_runnable already entered — exchange returns false.
-            if (current_imp()->qs_entered_
-                && current_imp()->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
-                current_imp()->qs_->enter();
+            // self is still this imp after resume; only the TLS slot must
+            // not be cached across the switch, not the Imp* value.
+            if (self->qs_entered_
+                && self->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+                self->qs_->enter();
             }
         }
 
@@ -431,7 +628,7 @@ static void start(transfer_t t) {
     if (parent_dyn_ctx) csp::internal::hamt_retain(parent_dyn_ctx);
     self->dyn_ctx_ = parent_dyn_ctx;
     set_current_imp(self);
-    auto killyou_val = switch_to(sd.caller, 0);
+    auto killyou_val = switch_to(sd.caller, 0, self);
     // After warmup switch, sd may be invalid. Use local copies only.
     set_current_imp(self);
 
@@ -549,7 +746,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         *reinterpret_cast<void**>(
             static_cast<char*>(ctx) + 0xb8) = usable_base;
 #else
-        auto ctx = make_fcontext(imp, usable_size, start);
+        auto ctx = csp_make(imp, usable_size, start);
 #endif
         new (imp) Imp(ctx, region);
         imp->stack_overflow_limit_ = region.overflow_limit;
@@ -564,7 +761,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         auto* stk = static_cast<Imp::StackSlot*>(region.base);
         auto* imp = reinterpret_cast<Imp*>(stk + S) - 1;
         assert(((uintptr_t)imp % 16) == 0);
-        auto ctx = make_fcontext(imp, (char*)imp - (char*)stk, start);
+        auto ctx = csp_make(imp, (char*)imp - (char*)stk, start);
         new (imp) Imp(ctx, region);
         imp->entry_fn_ = start_f;
         imp->entry_sp_ = static_cast<void*>(imp);
@@ -574,7 +771,7 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 #endif
 
         StartData const start_data = {start_f, data, *imp, *self};
-        switch_to(*imp, reinterpret_cast<intptr_t>(&start_data));
+        switch_to(*imp, reinterpret_cast<intptr_t>(&start_data), self);
         set_current_imp(self);
 
         // Inherit quiescence scope from parent.
@@ -592,8 +789,11 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         rt.live_gs.fetch_add(1, std::memory_order_relaxed);
 
         // Push to the global queue for workers to pick up and run.
+        // The spawner is the sole owner pre-publication — a plain
+        // placement store suffices (no racing placers yet).
+        imp->placed_.store(true, std::memory_order_relaxed);
         {
-            std::lock_guard<std::mutex> lk(rt.global_mu);
+            std::lock_guard lk(rt.global_mu);
             rt.push_to_global(imp);
         }
         // Wake a sleeping worker so it picks up the new imp.
@@ -613,9 +813,11 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
 }
 
 void suspend() {
-    current_imp()->suspending_.store(true, std::memory_order_release);
-    do_switch(Status::detach);
-    current_imp()->suspending_.store(false, std::memory_order_release);
+    // TLA:DrainSuspended.BeginSuspend — the state resets to SUSP_IDLE
+    // via CheckWP (early wake) or drain_suspended (context switch).
+    auto * const self = current_imp();
+    self->suspend_state_.store(Imp::SUSP_PENDING, std::memory_order_release);
+    do_switch(Status::detach, self);
 }
 
 int run() {
@@ -628,8 +830,7 @@ int run() {
     // Wait for either completion or quiescence (all workers parked +
     // no global work + no pending signals = deadlock or external
     // action needed).
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&] {
+    rt.park_wait([&] {
         if (user_done()) return true;
         // Check quiescence: all workers parked, no global work, no signals.
         if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
@@ -642,7 +843,7 @@ int run() {
             }
         }
         return true;  // quiescent — deadlock or done
-    });
+    }, /*quiescence=*/true);
     return 0;
 }
 
@@ -650,8 +851,7 @@ void await_idle() {
     // Wait for ALL imps (including daemons) to exit.
     // Used by test cleanup after killing daemon handlers.
     auto& rt = Runtime::instance();
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&rt] {
+    rt.park_wait([&rt] {
         return rt.live_gs.load(std::memory_order_acquire) == 0;
     });
 }
@@ -672,8 +872,7 @@ void await_quiescent() {
     // At this point every live imp has registered its channel/timer
     // waiters and yielded — the system is in a deterministic state.
     auto& rt = Runtime::instance();
-    std::unique_lock<std::mutex> lk(rt.park_mu);
-    rt.park_cv.wait(lk, [&rt] {
+    rt.park_wait([&rt] {
         if (rt.has_global_work_.load(std::memory_order_acquire)) return false;
         if (csp::detail::Reactor::instance().has_pending_signals()) return false;
         int np = rt.num_procs_.load(std::memory_order_acquire);
@@ -684,15 +883,15 @@ void await_quiescent() {
             }
         }
         return true;
-    });
+    }, /*quiescence=*/true);
 }
 
 void yield() {
     bool should_switch;
     {
-        std::lock_guard<std::mutex> lk(current_p().run_mu);
-        auto& busy = current_p().busy;
-        should_switch = busy->next_ != busy;
+        auto& p = current_p();
+        std::lock_guard lk(p.run_mu);
+        should_switch = p.busy->next_ != p.busy;
     }
     if (should_switch) {
         do_switch();

@@ -1,9 +1,9 @@
 #pragma once
 
 #include <csp/internal/csp_internal.h>
+#include <csp/internal/fast_mutex.h>
 #include <csp/internal/note.h>
 
-#include <mutex>
 #include <thread>
 
 namespace csp::detail {
@@ -18,12 +18,21 @@ struct Processor {
     std::atomic<fcontext_t>*  save_ctx;   // Where to store suspended imp's ctx
     Imp*  save_imp;    // The imp being suspended
 
-    std::mutex run_mu;                // Protects busy queue DLL
+    FastMutex run_mu;                 // Protects busy queue DLL
     Imp* running = nullptr;   // Imp claimed by local_next (steal-safe)
+    // Fairness budget for wake-to-local (🎯T34 O1): consecutive local
+    // wake count; every kLocalWakeBudget-th wake routes to the global
+    // queue instead, so a hot rendezvous pair cannot monopolize this P
+    // while spawned/global work goes underserved (paper 33; the
+    // flat_map balloon). Mutated under run_mu.
+    int local_wake_streak_ = 0;
     std::atomic<bool> parked{false};  // Is this P's worker thread parked?
     Note note;                        // Per-worker futex note (park/unpark)
 
-    std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
+    // Own cache line: written every worker_loop iteration; sharing a
+    // line with thief-scanned fields (parked, note) would invalidate
+    // their cached copies on every heartbeat (🎯T35 cache pass).
+    alignas(64) std::atomic<uint64_t> heartbeat{0};  // Incremented each worker_loop iter
     std::atomic<bool> alive{true};       // False when surplus worker exits
 
     std::thread worker;                   // Worker thread (empty for P0/main)

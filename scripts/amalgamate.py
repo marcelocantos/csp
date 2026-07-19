@@ -311,7 +311,20 @@ def amalgamate_fcontext(fcontext_dir, output):
          'jump_x86_64_sysv_elf_gas.S',   'make_x86_64_sysv_elf_gas.S'),
     ]
 
-    sections = ['\n/* fcontext — context-switching primitives (from Boost.Context) */']
+    # The .S→asm() conversion strips each file's leading comment block,
+    # which carries the Boost copyright notice — re-emit the attribution
+    # here so distributed copies retain it (Boost Software License
+    # requires the notice in all source copies).
+    sections = [
+        '\n/* fcontext — context-switching primitives (from Boost.Context)',
+        ' *',
+        ' * Copyright Oliver Kowalke 2009; ARM64 variants Copyright',
+        ' * Edward Nevill + Oliver Kowalke 2015.',
+        ' * Distributed under the Boost Software License, Version 1.0.',
+        ' * (See accompanying file LICENSE_1_0.txt or copy at',
+        ' * http://www.boost.org/LICENSE_1_0.txt)',
+        ' */',
+    ]
 
     for idx, (arch, arch_alt, plat, mj, mm, ej, em) in enumerate(variants):
         guard = f'#{"if" if idx == 0 else "elif"} defined({arch}) || defined({arch_alt})'
@@ -333,6 +346,25 @@ def amalgamate_fcontext(fcontext_dir, output):
     sections.append('#else')
     sections.append('#error "Unsupported architecture for CSP fcontext"')
     sections.append('#endif')
+
+    # 🎯T35.1 minimal-save switch (arm64 only; emitted under the
+    # CSP_USE_LIGHT_SWITCH gate computed in csp.h, so it costs nothing
+    # unless the user opts in with -DCSP_LIGHT_SWITCH).
+    light_dir = Path(__file__).resolve().parent.parent / 'src'
+    sections += [
+        '\n/* Minimal-save context switch (CSP_LIGHT_SWITCH, arm64 only) */',
+        '#if CSP_USE_LIGHT_SWITCH',
+        '#if defined(__APPLE__)',
+        '/* light_switch_arm64_macho.S */',
+        _convert_s(light_dir / 'light_switch_arm64_macho.S', FCONTEXT_UNDEF,
+                   is_macho=True),
+        '#else /* ELF */',
+        '/* light_switch_arm64_elf.S */',
+        _convert_s(light_dir / 'light_switch_arm64_elf.S', FCONTEXT_UNDEF,
+                   is_macho=False),
+        '#endif',
+        '#endif /* CSP_USE_LIGHT_SWITCH */',
+    ]
 
     text = '\n'.join(sections) + '\n'
     with open(output, 'a') as f:
