@@ -4367,6 +4367,13 @@ namespace csp {
             stopping.store(false, std::memory_order_release);
             has_global_work_.store(false, std::memory_order_release);
             live_gs.store(0, std::memory_order_release);
+            // 🎯T36 / paper 34: daemon_gs must share the accounting epoch
+            // with live_gs. A daemon abandoned by shutdown_runtime (workers
+            // joined without destroy_imp) otherwise leaves daemon_gs elevated
+            // forever, so main_loop's `live_gs <= daemon_gs` can fire while
+            // non-daemon imps still run (premature schedule return → straggler
+            // throw → spawn_entry std::terminate).
+            daemon_gs.store(0, std::memory_order_release);
 
             {
                 std::lock_guard lk(global_mu);
@@ -4476,6 +4483,10 @@ namespace csp {
 
             procs.clear();
             num_procs_.store(0, std::memory_order_release);
+            // Imp stacks may have been abandoned without destroy_imp; the
+            // counters must not carry into the next epoch (🎯T36 / paper 34).
+            live_gs.store(0, std::memory_order_release);
+            daemon_gs.store(0, std::memory_order_release);
         }
 
         void Runtime::notify_watchers() {
