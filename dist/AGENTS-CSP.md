@@ -90,7 +90,7 @@ spawn(supervised([]() { serve(); }));
 ```cpp
 // Create a channel.
 auto [w, r] = chan<int>{};       // synchronous (rendezvous)
-auto [bw, br] = chan<int>(16);   // buffered (capacity 16, spawns buffer imp)
+auto [bw, br] = chan<int>(16);   // buffered (capacity 16, Channel-owned ring)
 
 // Shorthand: create channel from endpoint reference.
 reader<int> r = --w;   // w must be unattached

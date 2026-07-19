@@ -430,6 +430,20 @@ void descr(char const * fmt, ...);
 
 // Channel creation and refcounting.
 bool make_chan(WriterRef * w, ReaderRef * r);
+
+// 🎯T35 O4: buffered channel with a Channel-owned ring (no filter imp).
+// `ops` is a type-erased vtable for element relocate/destroy; capacity >= 1.
+struct BufOps {
+    size_t elemsize = 0;
+    size_t align = 1;
+    // Move writer message (ChanOp::message, low bit = exception) into slot.
+    void (*relocate_in)(void * slot, void * src_msg) = nullptr;
+    // Move slot into reader destinations (message + optional eptr_dst).
+    void (*relocate_out)(void * dst_msg, void * eptr_dst, void * slot) = nullptr;
+    void (*destroy)(void * slot) = nullptr;
+};
+bool make_buffered_chan(WriterRef * w, ReaderRef * r, size_t capacity, BufOps ops);
+
 WriterRef writer_addref(WriterRef w);
 void writer_release(WriterRef w);
 ReaderRef reader_addref(ReaderRef r);
@@ -1866,62 +1880,61 @@ inline auto write_op_for(writer<T>& out, buffered_slot<T>& slot) {
 
 }
 
+// 🎯T35 O4 type-erased buffer ops for buffered_slot<T>.
+namespace detail {
+
+template <typename T>
+inline void buf_relocate_in(void * slot, void * src_msg) {
+    auto * s = new (slot) buffered_slot<T>{};
+    auto isrc = reinterpret_cast<uintptr_t>(src_msg);
+    if (isrc & 1) {
+        s->exc = *reinterpret_cast<std::exception_ptr *>(isrc & ~uintptr_t{1});
+    } else {
+        s->value = std::move(*static_cast<T *>(src_msg));
+    }
+}
+
+template <typename T>
+inline void buf_relocate_out(void * dst_msg, void * eptr_dst, void * slot) {
+    auto * s = static_cast<buffered_slot<T> *>(slot);
+    if (s->exc) {
+        if (eptr_dst) {
+            *static_cast<std::exception_ptr *>(eptr_dst) = std::move(s->exc);
+        }
+    } else if (dst_msg) {
+        *static_cast<T *>(dst_msg) = std::move(s->value);
+    }
+    s->~buffered_slot<T>();
+}
+
+template <typename T>
+inline void buf_destroy(void * slot) {
+    static_cast<buffered_slot<T> *>(slot)->~buffered_slot<T>();
+}
+
+}  // namespace detail
+
 template <typename T>
 chan<T>::chan(size_t capacity) {
     if (capacity == 0)
         throw std::invalid_argument("buffer capacity must be at least 1");
-    auto ch = spawn_filter<T>([capacity](reader<T> in, writer<T> out) {
-        internal::descr("buffer");
-        // RingBuffer<T> allocates raw storage; slots are constructed at
-        // push and destructed at pop.  For non-trivial T (here, the slot
-        // holds a std::exception_ptr) we must NOT touch a slot's bytes
-        // before placement-new construction — staging the value or
-        // exception in a local first lets us push via placement-new.
-        detail::RingBuffer<detail::buffered_slot<T>> buf(capacity);
-        for (;;) {
-            detail::buffered_slot<T> staging;
-            int idx;
-            try {
-                idx = alt(
-                    buf.full()  ? ~in  : in  >> staging.value,
-                    buf.empty() ? ~out : detail::write_op_for(out, buf.front()));
-            } catch (...) {
-                // Read fired with an exception payload.  Land it in
-                // staging and push as an exception slot.
-                staging.exc = std::current_exception();
-                new (buf.next()) detail::buffered_slot<T>(std::move(staging));
-                buf.push();
-                continue;
-            }
-            switch (idx) {
-            case 0:
-                new (buf.next()) detail::buffered_slot<T>(std::move(staging));
-                buf.push();
-                break;
-            case ~0:
-                // Upstream died — drain remaining buffered values and
-                // exceptions to downstream before exiting.
-                while (!buf.empty()) {
-                    if (buf.front().exc) {
-                        if (!out._throw(buf.front().exc)) return;
-                    } else {
-                        if (!(out << std::move(buf.front().value))) return;
-                    }
-                    buf.pop();
-                }
-                return;
-            case 1: buf.pop(); break;
-            case ~1: return;
-#ifdef _MSC_VER
-            default: __assume(0);
-#else
-            default: __builtin_unreachable();
-#endif
-            }
-        }
-    });
-    w = std::move(ch.w);
-    r = std::move(ch.r);
+    // 🎯T35 O4: Channel-owned ring buffer (paper 33). No filter imp —
+    // uncontended send/recv is mutex + relocate under mu_.
+    // TLA:BufferedChanRing
+    internal::BufOps ops{
+        sizeof(detail::buffered_slot<T>),
+        alignof(detail::buffered_slot<T>),
+        &detail::buf_relocate_in<T>,
+        &detail::buf_relocate_out<T>,
+        &detail::buf_destroy<T>,
+    };
+    internal::WriterRef cw;
+    internal::ReaderRef cr;
+    if (!internal::make_buffered_chan(&cw, &cr, capacity, ops)) {
+        throw std::bad_alloc();
+    }
+    w.assign(cw);
+    r.assign(cr);
 }
 
 }
