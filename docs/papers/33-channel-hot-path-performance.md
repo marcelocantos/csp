@@ -458,11 +458,10 @@ Acceptance criterion 2 of 🎯T35 (under 500 ns/element at 16 procs) is
 met with margin. Oracles: 757/757 native, 739/739 TSan; TLC green on
 BufferedChanRing / OptimisticAlt (+ failing _Bug counterparts).
 
-**Remaining (🎯T35 criterion 1):** multi-writer `alt/8ch` still degrades
-at high proc counts (~300 ns @ 2 vs ~3 µs @ 16). Sticky multi-op
-registration was prototyped then reverted (lost-wakeup / dangling
-ChanOp* hazards across alt() returns); TLA scaffold lives in
-`formal/OptimisticAlt.tla`. Tracked as remaining parent acceptance.
+**Was remaining (old 🎯T35 criterion 1):** multi-writer `alt/8ch` still
+degrades at high proc counts (~300 ns @ 2 vs ~3 µs @ 16). Addressed
+at the channel layer by Round 6 OptimisticAlt; residual ratio moved to
+🎯T37 (scheduler thrash).
 
 ## Round 6 (2026-07-19): 🎯T35.3 OptimisticAlt (channel layer)
 
