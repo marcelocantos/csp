@@ -103,3 +103,12 @@ debugging of the CSP imp-based concurrency library.
     channels. Closes the push/pull gap at the `net::connection`
     boundary and the TLS composition gap; enables streaming HTTP
     bodies and a route out of `http::serve`'s direct-fd bypass.
+
+20–34. Additional papers live as numbered files under this directory
+    (HTTP/3 design, stack reclamation, channel hot-path performance,
+    suite teardown, …). Index catch-up is not part of 🎯T38.
+
+35. **[Non-Channel Performance Surfaces](35-non-channel-performance-surfaces.md)**
+    — 🎯T38 ranking of reactor/I/O, HTTP/TLS, stack pool/spawn, and
+    Linux-vs-macOS (honest skip when unmeasurable). Channel/scheduler
+    work from paper 33 is closed background; no large follow-ups filed.
