@@ -1239,6 +1239,26 @@ targets:
     origin: manual
     discovered: 2026-07-19
     achieved: 2026-07-20
+  T38:
+    name: Non-channel performance surfaces are profiled and ranked (I/O, HTTP stack, stack pool, Linux vs macOS, dist LTO)
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 3.0
+    acceptance:
+    - 'A paper stub or section documents profiled hotspots outside the channel/scheduler hot path: reactor/I/O, HTTP/1–3 and TLS, stack pool / spawn path, and at least one Linux-vs-macOS comparison where tooling allows'
+    - 'Each surface has a verdict: no action / micro-opt opportunity / architectural follow-up, with rough magnitude if measurable'
+    - Any opportunity that is both large and actionable is filed as its own bullseye target; pure user-workload or dist-consumer LTO notes stay documentation-only
+    - Channel hot-path conclusions from paper 33 are not re-litigated unless a new sample contradicts them
+    context: 'Filed 2026-07-20 after T34–T37 closed the paper-33 channel/scheduler program. Item 6 of the residual list: other surfaces (I/O, HTTP stack, stack pool, Linux vs macOS, LTO for dist users) were never the paper-33 target and remain unprofiled as a portfolio. Investigation only — not a commitment to optimise every surface.'
+    tags:
+    - performance
+    - profiling
+    - io
+    - http
+    origin: 'Session 2026-07-20: residual perf stones after T37'
+    discovered: 2026-07-20
+    achieved: 2026-07-20
   T4:
     name: API safety gaps are closed
     status: achieved
