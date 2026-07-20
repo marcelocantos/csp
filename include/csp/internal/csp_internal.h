@@ -184,6 +184,11 @@ struct alignas(16) Imp {
 
     void schedule(bool make_current = false);
     void schedule_local(bool make_current = false);
+    // Place this imp on a run queue after the caller has already claimed
+    // placement (placed_ == true, next_ == null).  Shared by schedule()
+    // and drain_suspended() so deferred wakes take the same wake-to-local
+    // fast path (🎯T37).
+    void place_on_run_queue();
     void make_runnable();
     void deschedule();
 

@@ -99,8 +99,10 @@ namespace csp {
                 return;
             }
             // Deferred wake: the waker returned after its CAS; queuing
-            // is our job.
-            auto& rt = Runtime::instance();
+            // is our job. Same placement path as schedule()'s IDLE arm
+            // so the drain also gets wake-to-local (🎯T37) — previously
+            // this always hit global_mu + unpark_one, which reintroduced
+            // the park/steal thrash on every close-race rendezvous.
             if (suspended->qs_entered_
                 && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
                 suspended->qs_->enter();
@@ -110,11 +112,7 @@ namespace csp {
             if (suspended->placed_.exchange(true, std::memory_order_acq_rel)) {
                 return;
             }
-            {
-                std::lock_guard lk(rt.global_mu);
-                rt.push_to_global(suspended);
-            }
-            rt.unpark_one();
+            suspended->place_on_run_queue();
         }
 
         // self must be current_imp() — passed through to spare the
@@ -190,41 +188,10 @@ namespace csp {
             }
         }
 
-        void Imp::schedule([[maybe_unused]] bool make_current) {
+        void Imp::place_on_run_queue() {
+            // Caller has claimed placed_ and asserts !next_ && !in_global_.
             auto& rt = Runtime::instance();
-
-            // Suspend-window handshake first, lock-free: if the imp is
-            // in the unlock_all→do_switch window, it's still running
-            // and can't be safely pushed to a queue. One CAS defers
-            // the wake to CheckWP (early) or drain_suspended (after
-            // the context save). TLA:DrainSuspended.WakerCAS
-            for (;;) {
-                uint32_t s = suspend_state_.load(std::memory_order_acquire);
-                if (s == SUSP_PENDING) {
-                    if (suspend_state_.compare_exchange_weak(
-                            s, SUSP_WAKE,
-                            std::memory_order_acq_rel,
-                            std::memory_order_acquire)) {
-                        return;
-                    }
-                    continue;  // raced with the drain or a spurious failure
-                }
-                if (s == SUSP_WAKE) {
-                    return;  // wake already pending
-                }
-                break;  // SUSP_IDLE: fully suspended (or never was)
-            }
-
-            // Claim placement — exactly one racing placer (duplicate
-            // wakers, deferred-wake drain) inserts the imp; a TRUE
-            // result means it is already queued, running, or another
-            // placer is committed. Replaces the global_mu-serialized
-            // next_/in_global_ checks: the wake path no longer touches
-            // the global lock at all unless it spills.
-            // TLA:PlacementClaim.Claim
-            if (placed_.exchange(true, std::memory_order_acq_rel)) {
-                return;
-            }
+            assert(placed_.load(std::memory_order_relaxed));
             assert(!next_ && !in_global_);
 
             // 🎯T34 O1 wake-to-local: a wake issued from a worker P
@@ -311,6 +278,42 @@ namespace csp {
                 rt.push_to_global(this);
             }
             rt.unpark_one();
+        }
+
+        void Imp::schedule([[maybe_unused]] bool make_current) {
+            // Suspend-window handshake first, lock-free: if the imp is
+            // in the unlock_all→do_switch window, it's still running
+            // and can't be safely pushed to a queue. One CAS defers
+            // the wake to CheckWP (early) or drain_suspended (after
+            // the context save). TLA:DrainSuspended.WakerCAS
+            for (;;) {
+                uint32_t s = suspend_state_.load(std::memory_order_acquire);
+                if (s == SUSP_PENDING) {
+                    if (suspend_state_.compare_exchange_weak(
+                            s, SUSP_WAKE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
+                        return;
+                    }
+                    continue;  // raced with the drain or a spurious failure
+                }
+                if (s == SUSP_WAKE) {
+                    return;  // wake already pending
+                }
+                break;  // SUSP_IDLE: fully suspended (or never was)
+            }
+
+            // Claim placement — exactly one racing placer (duplicate
+            // wakers, deferred-wake drain) inserts the imp; a TRUE
+            // result means it is already queued, running, or another
+            // placer is committed. Replaces the global_mu-serialized
+            // next_/in_global_ checks: the wake path no longer touches
+            // the global lock at all unless it spills.
+            // TLA:PlacementClaim.Claim
+            if (placed_.exchange(true, std::memory_order_acq_rel)) {
+                return;
+            }
+            place_on_run_queue();
         }
 
         void Imp::make_runnable() {

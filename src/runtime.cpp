@@ -607,6 +607,12 @@ namespace csp {
 
         // TLA:StealWork.TkAcquireGlobal TLA:StealWork.TkPopAndSchedule
         bool Runtime::take_from_global([[maybe_unused]] Processor& p) {
+            // Fast negative: avoid contending on global_mu when the
+            // publisher-side release store already says empty (🎯T37 —
+            // idle workers used to serialize here every park cycle).
+            if (!has_global_work_.load(std::memory_order_acquire)) {
+                return false;
+            }
             std::lock_guard lk(global_mu);
             if (global_run_queue.empty()) {
                 has_global_work_.store(false, std::memory_order_release);
@@ -630,8 +636,25 @@ namespace csp {
         }
 
         bool Runtime::steal_work(Processor& thief) {
+            // 🎯T37 steal-to-local: move a waiting MT from the victim's
+            // ring straight onto the thief's local queue. The old path
+            // (delink → push_to_global → unpark_one → take_from_global)
+            // bounced every steal through the global queue and woke a
+            // second idle worker to race for it — with ~9 imps on 16 Ps
+            // that was the park/unpark + steal thrash dominating alt/8ch
+            // (paper 33 Round 6). placed_ already serializes against
+            // schedule(), so the dual-lock with global_mu is unnecessary:
+            // victim.run_mu covers the delink; thief.run_mu (via
+            // schedule_local) covers the insert. No unpark: the thief is
+            // already awake and will run the MT on the next local_next.
+            // TLA:StealWork.TStealDelinkLocal
             int n = num_procs_.load(std::memory_order_acquire);
-            for (int i = 0; i < n; ++i) {
+            // Spread thieves across victims so idle workers don't convoy
+            // on the same first live P (run_mu ping-pong under fan-in).
+            int start = thief.id;
+            for (int k = 0; k < n; ++k) {
+                int i = start + k;
+                if (i >= n) i -= n;
                 auto& victim = *procs[i];
                 if (&victim == &thief) continue;
                 if (!victim.alive.load(std::memory_order_acquire)) continue;
@@ -639,12 +662,6 @@ namespace csp {
                 Imp* stolen = nullptr;
                 {
                     std::lock_guard lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
-
-                    // Try to acquire global_mu without blocking to avoid
-                    // deadlock (take_from_global holds global_mu then
-                    // acquires run_mu via schedule_local).
-                    std::unique_lock glk(global_mu, std::try_to_lock); // TLA:StealWork.TStealTryGlobalOK TLA:StealWork.TStealTryGlobalFail
-                    if (!glk) continue;
 
                     if (!victim.busy) continue;
 
@@ -656,19 +673,19 @@ namespace csp {
                         continue; // TLA:StealWork.TStealReleaseFail
                     }
 
-                    // TLA:StealWork.TStealDelinkPush
-                    // Delink from victim's DLL and push to global
-                    // atomically (both locks held) so schedule() cannot
-                    // see the MT with next_==null / in_global_==false.
+                    // Delink under victim.run_mu only. placed_ stays true
+                    // across the transfer, so a concurrent schedule() on
+                    // this MT returns early (already placed) even while
+                    // next_ is transiently null. TLA:StealWork.TStealDelinkLocal
                     candidate->prev_->next_ = candidate->next_;
                     candidate->next_->prev_ = candidate->prev_;
                     candidate->next_ = nullptr;
                     candidate->prev_ = nullptr;
-                    push_to_global(candidate);
                     stolen = candidate;
                 } // TLA:StealWork.TStealReleaseOK
                 if (stolen) {
-                    unpark_one();
+                    // Link into this thief's ring (acquires thief.run_mu).
+                    stolen->schedule_local();
                     return true;
                 }
             }
@@ -683,15 +700,11 @@ namespace csp {
                     return true;
                 }
             }
-
-            {
-                std::lock_guard lk(global_mu);
-                if (!global_run_queue.empty()) {
-                    return true;
-                }
-            }
-
-            return false;
+            // has_global_work_ is release-stored by push_to_global and
+            // cleared under global_mu when the queue drains — sufficient
+            // for the park TOCTOU check without taking global_mu (which
+            // was a major idle-worker cost under high MAXPROCS).
+            return has_global_work_.load(std::memory_order_acquire);
         }
 
     }

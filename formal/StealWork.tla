@@ -1,10 +1,17 @@
 ---- MODULE StealWork ----
 (*******************************************************************************
- * Models the work-stealing dual-lock protocol from csp/src/runtime.cpp.
+ * Models the work-stealing protocol from csp/src/runtime.cpp.
  *
  * The protocol ensures that when a thief steals an imp (MT) from a
  * victim processor's local queue, the MT is never lost, duplicated, or
  * stolen while actively executing.
+ *
+ * 🎯T37 steal-to-local: the thief delinks under victim.run_mu only and
+ * inserts into its own local queue under thief.run_mu (schedule_local).
+ * Global_mu is no longer held across the steal — placed_ serializes
+ * against concurrent schedule(), so the old dual-lock (run_mu+global_mu
+ * then push_to_global+unpark) is unnecessary and was the park/steal
+ * thrash on multi-writer fan-in.
  *
  * Participants:
  *   Victim — a worker thread running MTs from its local queue (P0)
@@ -17,14 +24,14 @@
  * in local[Victim] while also recording it in running[Victim].
  *
  * Code references:
- *   DoSwitch          — src/csp.cc:244-265    (set running under run_mu)
- *   LocalNext         — src/runtime.cpp:224-244 (pick next, set running)
- *   Deschedule        — src/csp.cc:149-160    (remove from DLL)
- *   StealAcquireLocks — src/runtime.cpp:298-304 (victim.run_mu + try global_mu)
- *   StealCheck        — src/runtime.cpp:306-313 (check busy, skip running)
- *   StealDelink       — src/runtime.cpp:318-322 (delink + push_to_global)
- *   TakeFromGlobal    — src/runtime.cpp:246-263 (pop global, schedule_local)
- *   Schedule          — src/csp.cc:120-143     (push to global under global_mu)
+ *   DoSwitch          — src/csp.cc (set running under run_mu)
+ *   LocalNext         — src/runtime.cpp (pick next, set running)
+ *   Deschedule        — src/csp.cc (remove from DLL)
+ *   StealAcquire      — src/runtime.cpp (victim.run_mu only)
+ *   StealCheck        — src/runtime.cpp (check busy, skip running)
+ *   StealDelinkLocal  — src/runtime.cpp (delink + schedule_local on thief)
+ *   TakeFromGlobal    — src/runtime.cpp (pop global, schedule_local)
+ *   Schedule          — src/csp.cc (wake-to-local or push to global)
  ******************************************************************************)
 
 EXTENDS FiniteSets
@@ -152,52 +159,23 @@ VDeschedule ==
 (*******************************************************************************
  * THIEF ACTIONS
  *
- * steal_work protocol: acquire victim.run_mu, try global_mu, check
- * busy queue skipping running MT, delink+push under both locks.
+ * steal_work protocol (🎯T37): acquire victim.run_mu, check busy queue
+ * skipping running MT, delink, release, then schedule_local on thief
+ * (thief.run_mu). No global_mu, no unpark.
  ******************************************************************************)
 
 (* Acquire victim.run_mu.
- * Code: runtime.cpp:298
  *
  * TLA:StealWork.TStealAcquireRunMu *)
 TStealAcquireRunMu ==
     /\ pc_thief = "t_idle"
     /\ run_mu[Victim] = "none"
     /\ run_mu' = [run_mu EXCEPT ![Victim] = "thief"]
-    /\ pc_thief' = "t_try_global"
-    /\ UNCHANGED <<local, global, running, in_global, global_mu,
-                   pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
-
-(* try_to_lock on global_mu succeeds.
- * Code: runtime.cpp:303
- *
- * TLA:StealWork.TStealTryGlobalOK *)
-TStealTryGlobalOK ==
-    /\ pc_thief = "t_try_global"
-    /\ global_mu = "none"
-    /\ global_mu' = "thief"
     /\ pc_thief' = "t_check_busy"
-    /\ UNCHANGED <<local, global, running, in_global, run_mu,
-                   pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
-
-(* try_to_lock fails — release run_mu, back off.
- * Code: runtime.cpp:304
- *
- * TLA:StealWork.TStealTryGlobalFail *)
-TStealTryGlobalFail ==
-    /\ pc_thief = "t_try_global"
-    /\ global_mu /= "none"
-    /\ run_mu' = [run_mu EXCEPT ![Victim] = "none"]
-    /\ pc_thief' = "t_idle"
     /\ UNCHANGED <<local, global, running, in_global, global_mu,
                    pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
 
-(* Check busy queue (both locks held). Skip the running MT.
- *
- * Code: runtime.cpp:306-313
- *   if (!victim.busy) continue;
- *   auto* candidate = victim.busy->prev_;
- *   if (candidate == victim.running) continue;
+(* Check busy queue (victim.run_mu held). Skip the running MT.
  *
  * TLA:StealWork.TStealCheck *)
 TStealCheck ==
@@ -208,48 +186,43 @@ TStealCheck ==
        IN IF candidates /= {}
           THEN \E m \in candidates :
                /\ steal_cand' = m
-               /\ pc_thief' = "t_delink_push"
+               /\ pc_thief' = "t_delink_local"
           ELSE /\ steal_cand' = "none"
                /\ pc_thief' = "t_release_fail"
     /\ UNCHANGED <<local, global, running, in_global, run_mu, global_mu,
                    pc_victim, pc_waker, pc_taker, waker_mt>>
 
-(* Release both locks — no candidate found.
+(* Release victim.run_mu — no candidate found.
  *
  * TLA:StealWork.TStealReleaseFail *)
 TStealReleaseFail ==
     /\ pc_thief = "t_release_fail"
     /\ run_mu' = [run_mu EXCEPT ![Victim] = "none"]
-    /\ global_mu' = "none"
     /\ pc_thief' = "t_idle"
-    /\ UNCHANGED <<local, global, running, in_global,
+    /\ UNCHANGED <<local, global, running, in_global, global_mu,
                    pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
 
-(* Delink from victim DLL + push to global. Both locks held — atomic.
- * Code: runtime.cpp:318-322
+(* Delink from victim DLL under victim.run_mu, then (modeled atomically
+ * with the release) insert onto the thief's local queue. In C++ the
+ * schedule_local call re-acquires thief.run_mu after releasing
+ * victim.run_mu; placed_ stays true across the gap so schedule() is
+ * a no-op. We collapse the gap here because no other action can place
+ * the MT while it is in limbo (placed_ not modeled separately, but
+ * OnLocal is false only between delink and insert — and no waker
+ * targets an already-placed MT that still has a claim).
  *
- * TLA:StealWork.TStealDelinkPush *)
-TStealDelinkPush ==
-    /\ pc_thief = "t_delink_push"
+ * TLA:StealWork.TStealDelinkLocal *)
+TStealDelinkLocal ==
+    /\ pc_thief = "t_delink_local"
     /\ steal_cand /= "none"
     /\ steal_cand \in local[Victim]
-    /\ local' = [local EXCEPT ![Victim] = @ \ {steal_cand}]
-    /\ global' = global \union {steal_cand}
-    /\ in_global' = [in_global EXCEPT ![steal_cand] = TRUE]
-    /\ pc_thief' = "t_release_ok"
-    /\ UNCHANGED <<running, run_mu, global_mu,
-                   pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
-
-(* Release both locks after successful steal.
- *
- * TLA:StealWork.TStealReleaseOK *)
-TStealReleaseOK ==
-    /\ pc_thief = "t_release_ok"
+    /\ local' = [local EXCEPT ![Victim] = @ \ {steal_cand},
+                              ![Thief]  = @ \union {steal_cand}]
     /\ run_mu' = [run_mu EXCEPT ![Victim] = "none"]
-    /\ global_mu' = "none"
     /\ pc_thief' = "t_idle"
-    /\ UNCHANGED <<local, global, running, in_global,
-                   pc_victim, pc_waker, pc_taker, steal_cand, waker_mt>>
+    /\ steal_cand' = "none"
+    /\ UNCHANGED <<global, running, in_global, global_mu,
+                   pc_victim, pc_waker, pc_taker, waker_mt>>
 
 (*******************************************************************************
  * WAKER ACTIONS
@@ -377,12 +350,9 @@ Next ==
     \/ VDoSwitch
     \/ VDeschedule
     \/ TStealAcquireRunMu
-    \/ TStealTryGlobalOK
-    \/ TStealTryGlobalFail
     \/ TStealCheck
     \/ TStealReleaseFail
-    \/ TStealDelinkPush
-    \/ TStealReleaseOK
+    \/ TStealDelinkLocal
     \/ WStartSchedule
     \/ WAcquireLock
     \/ WPush
@@ -405,8 +375,8 @@ TypeOK ==
     /\ \A P \in Procs : run_mu[P] \in {"none", "thief", "sched"}
     /\ global_mu \in {"none", "thief", "sched", "taker"}
     /\ pc_victim \in {"v_local_next", "v_running"}
-    /\ pc_thief \in {"t_idle", "t_try_global", "t_check_busy",
-                      "t_delink_push", "t_release_ok", "t_release_fail"}
+    /\ pc_thief \in {"t_idle", "t_check_busy",
+                      "t_delink_local", "t_release_fail"}
     /\ pc_waker \in {"w_idle", "w_want_lock", "w_push", "w_push_local"}
     /\ pc_taker \in {"tk_idle", "tk_pop"}
     /\ steal_cand \in MTs \union {"none"}
@@ -430,9 +400,10 @@ NoDanglingState ==
         in_global[mt] => mt \in global
 
 (* RunningNotStealable: the thief's chosen steal candidate is never the
- * victim's currently running MT. *)
+ * victim's currently running MT. Holds while the candidate is still
+ * selected (between check and delink). *)
 RunningNotStealable ==
-    pc_thief \in {"t_delink_push", "t_release_ok"}
+    pc_thief = "t_delink_local"
         => steal_cand /= running[Victim]
 
 ====
