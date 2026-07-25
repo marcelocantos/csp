@@ -143,7 +143,7 @@ auto [w, r] = chan<int>(16);
 ```
 
 Note: `chan<T>(n)` is the preferred way to create buffered channels. It
-spawns an internal buffer imp with the given capacity.
+uses a channel-owned ring buffer of the given capacity (no middleman imp).
 
 ## Building pipelines
 

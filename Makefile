@@ -713,7 +713,8 @@ run-examples: $(EXAMPLE_BINS)
 
 # Run only examples that terminate on their own.
 #   chat_server    — TCP server, runs until killed.
-EXAMPLE_CI_SKIP := chat_server
+#   t38_surfaces   — microbench (many iterations); exceeds 60s CI cap; not a demo.
+EXAMPLE_CI_SKIP := chat_server t38_surfaces
 EXAMPLE_CI_BINS := $(filter-out $(patsubst %,$(BUILDDIR)/examples/%,$(EXAMPLE_CI_SKIP)),$(EXAMPLE_BINS))
 
 # Wall-clock cap per example so a runaway example can't wedge CI for

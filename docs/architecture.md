@@ -64,9 +64,9 @@ Key fields:
 | `stk_`           | `StackRegion`             | Stack region (base pointer + total size)  |
 | `dyn_ctx_`       | `uintptr_t`               | Dynamic scoping HAMT root (0 = empty)     |
 | `alt_state`      | `atomic<uint32_t>`        | ALT_IDLE / ALT_WAITING / ALT_CLAIMED     |
+| `suspend_state_` | `atomic<uint32_t>`        | SUSP_IDLE / SUSP_PENDING / SUSP_WAKE (T34 O2) |
+| `placed_`        | `atomic<bool>`            | Placement claim: on or committed to a run queue |
 | `in_global_`     | `bool`                    | Currently in the global run queue         |
-| `suspending_`    | `atomic<bool>`            | In the unlock-to-switch window            |
-| `wake_pending_`  | `atomic<bool>`            | Woken during `suspending_` window         |
 | `id_`            | `size_t`                  | Monotonically increasing unique ID        |
 | `status_`        | `char[32]`                | Human-readable debug description          |
 
@@ -275,9 +275,9 @@ and calls `alt_end` to unlock the channels and schedule the woken peer.
 This eliminates the need for a type-erased transfer function pointer
 (`tx_`) on the Channel, removing indirect calls from the hot path.
 
-In single-processor mode, the woken peer is run immediately via
-`run(Status::run)`, giving synchronous rendez-vous semantics. In M:N mode,
-the peer is pushed to the global run queue via `schedule()`.
+In M:N mode the peer is made runnable via `schedule()` / `place_on_run_queue()`
+(wake-to-local on the waker's P when possible; otherwise global queue +
+`unpark_one`). See paper 33 / 🎯T34 O1.
 
 Dead-channel handling: data chanops on dead channels defer reporting until
 after scanning all channels for ready peers (ensuring a ready peer on
@@ -291,20 +291,19 @@ If no peer is ready:
 ```
 Set alt_state = ALT_WAITING
 Register on each channel's waiters or vultures queue
-Set suspending_ = true
+suspend_state_ = SUSP_PENDING     // before unlock (T34 O2 / DrainSuspended)
 Unlock all channels
-do_switch(Status::detach)        // context switch away
-suspending_ = false
+do_switch(Status::detach)         // context switch away; CheckWP may early-wake
+// after switch: drain_suspended exchanges SUSP_IDLE and places if SUSP_WAKE
 ```
 
-The `suspending_` flag is set **before** unlocking. This is critical: after
-the unlock, a waker on another OS thread could immediately find this
-imp in a channel's waiters queue and call `schedule()`. If the
-imp hasn't finished its context switch yet (the `do_switch` hasn't
-completed), running it would cause double execution. The `suspending_` flag
-tells `schedule()` to set `wake_pending_` instead of pushing to the global
-queue. After the context switch completes, `drain_suspended()` checks
-`wake_pending_` and pushes to the global queue if set.
+`suspend_state_` is set to `SUSP_PENDING` **before** unlocking. After the
+unlock, a waker on another OS thread could find this imp on a waiters
+queue and call `schedule()`. If the context switch has not completed,
+running it would double-execute. The waker CAS-es `SUSP_PENDING → SUSP_WAKE`
+and returns without placing; `CheckWP` (in `run` detach) or
+`drain_suspended` (after the context save) is responsible for queuing.
+`placed_` serializes duplicate placers.
 
 ### Phase 3: Cleanup
 
@@ -382,51 +381,48 @@ from the global queue to the local run queue via `schedule_local()`.
 
 ### Parking
 
-When a worker has no work, it parks on `park_cv` with a predicate:
+Workers park on a **per-worker `Note`** (futex / `__ulock_*`), not on
+`park_cv`. The loop is:
 
 ```
-park_cv.wait(lock, [&] {
-    return stopping || has_work(p);
-});
+local_next → take_from_global (if has_global_work_) → steal_work → park:
+  parked = true
+  notify_quiesce_watchers()   // gated; only if a quiescence watcher is registered
+  if !has_work(p): note.sleep()   // or sleep_for(5s) for surplus Ps
+  parked = false
 ```
 
-`has_work` checks the local queue and global queue.
+`has_work` checks the local ring under `run_mu` and the empty signal
+`has_global_work_` (no `global_mu` on the empty path — 🎯T37).
 
-The `unpark_one()` function wakes parked workers (currently via
-`notify_all`). It is called after pushing to the global queue and after
-successful work stealing.
+`unpark_one()` scans for a sleeping / parked worker Note and wakes
+exactly one. It does **not** broadcast `park_cv`. `park_cv` is only for
+completion / quiescence watchers (`main_loop`, `run`, `quiescent_loop`),
+gated by watcher counts (T34 O3).
 
 ### Shutdown
 
-`shutdown()` sets `stopping = true`, briefly locks `park_mu` to synchronise
-with any worker that is between checking the predicate and entering `wait()`,
-then calls `notify_all()` and joins all worker threads.
+`shutdown()` sets `stopping = true`, wakes parked workers via their Notes
+and any `park_cv` watchers, then joins worker threads.
 
 ---
 
 ## 7. Work Stealing
 
 When a worker's local queue is empty and the global queue is also empty,
-it attempts to steal work from another processor:
+it attempts to steal work from another processor (**steal-to-local**, 🎯T37):
 
 ```
 steal_work(thief):
-    for each victim processor (skipping self):
+    for each victim (round-robin from thief.id, skip self / !alive):
         lock victim.run_mu
-        try_lock global_mu              // non-blocking to avoid deadlock
-        if !locked: skip
-
-        if !victim.alive: skip           // dynamic pool: skip dead P
         candidate = victim.busy->prev_  // steal from tail
         if candidate is sentinel or busy or running:
             skip
-
-        delink candidate from victim's DLL
-        push_to_global(candidate)       // both locks held: atomic
-        unlock both
-        unpark_one()
+        delink candidate                // placed_ stays true
+        unlock victim.run_mu
+        candidate->schedule_local()     // thief's ring; no unpark
         return true
-
     return false
 ```
 
@@ -448,17 +444,13 @@ The `running` pointer is maintained in two places:
   the next target. This keeps `running` current as execution chains through
   imps via yield, channel operations, and exit.
 
-### Lock Ordering
+### Placement claim vs dual-lock
 
-`steal_work` acquires `victim.run_mu` first, then `global_mu` via
-`std::try_to_lock`. This avoids deadlock with `take_from_global`, which
-holds `global_mu` and then acquires `run_mu` (via `schedule_local`). If
-`try_to_lock` fails, the thief skips that victim and tries the next.
-
-By holding both locks during the delink-and-push sequence, the stolen
-imp is never in a state where `next_ == nullptr` and
-`in_global_ == false` simultaneously---preventing `schedule()` on another
-thread from seeing inconsistent state.
+`placed_` (exchange on schedule / drain) means steal no longer needs
+`global_mu` for a delink+push atomic with `schedule()`. The thief holds
+only `victim.run_mu` for the delink; `schedule_local` takes
+`thief.run_mu`. Between delink and link, `next_` is null but `placed_`
+is true so concurrent `schedule()` is a no-op.
 
 ---
 
@@ -470,8 +462,8 @@ thread from seeing inconsistent state.
 |----------------------|-----------------|--------------------------------------|
 | `Imp::ctx_`  | acquire/release | Cross-thread context visibility      |
 | `alt_state`          | CAS (seq_cst)   | Exclusive wakeup claim               |
-| `suspending_`        | acquire/release | Prevent premature scheduling         |
-| `wake_pending_`      | acq_rel exchange| Deferred wakeup during suspension    |
+| `suspend_state_`     | CAS / exchange  | Suspend window + deferred wake (T34) |
+| `placed_`            | acq_rel exchange| Exactly-one placer for run queues    |
 | `in_global_`         | (under mutex)   | Prevent duplicate global queue entry |
 | `Runtime::stopping`  | acquire/release | Shutdown coordination                |
 | `Runtime::live_gs`   | acq_rel         | Track active imp count       |
@@ -486,27 +478,22 @@ window:
 ```
 Thread A (suspending)          Thread B (waking)
 ─────────────────────          ──────────────────
-suspending_ = true
+suspend_state_ = SUSP_PENDING
 unlock_all()
                                CAS alt_state → CLAIMED
                                schedule(mt_A):
-                                 sees suspending_ == true
-                                 sets wake_pending_ = true
-                                 returns (does NOT push to global)
+                                 CAS SUSP_PENDING → SUSP_WAKE
+                                 returns (does NOT place)
 do_switch(detach)
   ... context switch ...
 drain_suspended(mt_A):
-  lock global_mu
-  suspending_ = false
-  if wake_pending_:
-    push_to_global(mt_A)
-  unlock global_mu
+  old = exchange(SUSP_IDLE)
+  if old == SUSP_WAKE:
+    claim placed_; place_on_run_queue()  // wake-to-local or global
 ```
 
-`drain_suspended` executes under `global_mu`, making it mutually exclusive
-with `schedule()` (which also acquires `global_mu`). This eliminates the
-race where `schedule()` sets `wake_pending_` concurrently with
-`drain_suspended` clearing `suspending_` and checking `wake_pending_`.
+No `global_mu` on the drain path. Linearizability is the exchange on
+`suspend_state_`; exclusivity of placement is `placed_`.
 
 ### Lock Hierarchy
 
@@ -518,8 +505,8 @@ signal_mu_  (reactor signal create/cancel/fire)
             └── global_mu
                  └── run_mu (via schedule_local from take_from_global)
 
-run_mu
-    └── global_mu (via try_to_lock in steal_work only)
+victim.run_mu alone for steal delink; thief.run_mu for schedule_local
+  (no reverse order with global_mu on the steal path after T37)
 ```
 
 `signal_mu_` is the outermost lock. It is acquired by signal
@@ -529,9 +516,9 @@ may acquire channel locks, which in turn may acquire `global_mu` via
 `schedule()`.
 
 Channel locks are acquired in `Channel::id_` order. `global_mu` is acquired
-after channel locks (in `schedule()`) and before `run_mu` (in
-`take_from_global`). `steal_work` reverses the run_mu/global_mu order but
-uses `try_to_lock` to avoid deadlock.
+after channel locks on the spill path of `schedule()` / `place_on_run_queue`
+and before `run_mu` in `take_from_global`. `steal_work` no longer takes
+`global_mu` (T37 steal-to-local).
 
 ---
 
@@ -862,17 +849,16 @@ follows the same suspension pattern as the reactor:
 
 ```
 run_blocking(fn):
-    suspending_ = true
+    suspend_state_ = SUSP_PENDING   // same window as channel suspend
     pool.submit(self, fn)
     do_switch(detach)
-    suspending_ = false
+    // drain_suspended places if the pool thread woke during the window
 ```
 
-As with I/O waits, `suspending_` is set before `submit` because the pool
-thread can call `mt->schedule()` immediately upon completion. The
-`suspending_`/`wake_pending_`/`drain_suspended` protocol prevents the
-imp from being pushed to the global queue before its context switch
-completes.
+As with I/O waits, `SUSP_PENDING` is published before `submit` because the
+pool thread can call `mt->schedule()` immediately upon completion. The
+`suspend_state_` / `drain_suspended` protocol prevents placement before
+the context switch completes.
 
 ### Return Value Forwarding
 

@@ -217,9 +217,12 @@ first `spawn()` or `schedule()` call).
 When the processor count is > 1, the runtime enters M:N mode:
 
 - Worker threads run a loop that checks the local run queue, the global run
-  queue, and attempts work stealing from other processors, in that order.
-- Workers park on a condition variable when no work is available and are
-  unparked when new imps are scheduled or timers fire.
+  queue, and attempts work stealing (steal-to-local) from other processors,
+  in that order.
+- Channel wakes prefer the waker's local queue when it has no waiting work
+  (wake-to-local); overload and spawns use the global queue.
+- Workers park on a per-worker Note (futex) when no work is available and
+  are woken by `unpark_one` when work is published.
 - A watchdog thread monitors processor heartbeats and can add new processors
   if a worker appears stalled (e.g., blocked in a system call).
 

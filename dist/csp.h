@@ -7,9 +7,9 @@
 
 /* csp/csp.h */
 
-#define CSP_VERSION "0.24.0"
+#define CSP_VERSION "0.25.0"
 #define CSP_VERSION_MAJOR 0
-#define CSP_VERSION_MINOR 24
+#define CSP_VERSION_MINOR 25
 #define CSP_VERSION_PATCH 0
 
 
@@ -2474,6 +2474,11 @@ struct alignas(16) Imp {
 
     void schedule(bool make_current = false);
     void schedule_local(bool make_current = false);
+    // Place this imp on a run queue after the caller has already claimed
+    // placement (placed_ == true, next_ == null).  Shared by schedule()
+    // and drain_suspended() so deferred wakes take the same wake-to-local
+    // fast path (🎯T37).
+    void place_on_run_queue();
     void make_runnable();
     void deschedule();
 

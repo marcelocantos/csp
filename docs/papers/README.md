@@ -6,100 +6,38 @@ debugging of the CSP imp-based concurrency library.
 ## Papers
 
 1. **[When Context Switching Breaks Your Compiler](01-tls-caching.md)**
-   — How Clang's TLS address caching interacts with userspace context
-   switching to produce crashes invisible to every standard debugging
-   tool.
-
-2. **[Channels That Know When to Die](02-channel-lifecycle.md)** —
-   Per-endpoint lifecycle, death as a first-class event, and how the
-   model enables 50+ composable stream combinators.
-
+2. **[Channels That Know When to Die](02-channel-lifecycle.md)**
 3. **[Zero-Overhead Channel Synchronization](03-two-phase-prialt.md)**
-   — A two-phase protocol that eliminates indirect function calls from
-   channel operations while maintaining type safety through a
-   compilation firewall.
-
 4. **[Verifying a Imp Scheduler with TLA+](04-tla-verification.md)**
-   — Five TLA+ specifications that formally verify the scheduler's
-   suspension, work-stealing, lifecycle, claiming, and parking
-   protocols.
-
-5. **[A Million Threads on a Megabyte](05-stack-engineering.md)** —
-   Demand-paged virtual stacks, a recycling pool, and an ARM64
-   instruction walker that estimates stack depth at spawn time.
-
-6. **[Dynamic Scoping for Imps](06-dynamic-scoping.md)** — A
-   persistent HAMT provides inherited, copy-on-write-isolated,
-   channel-sendable per-imp variables.
-
+5. **[A Million Threads on a Megabyte](05-stack-engineering.md)**
+6. **[Dynamic Scoping for Imps](06-dynamic-scoping.md)**
 7. **[Topology Surgery on Live Channels](07-channel-fuse-split.md)**
-   — Fuse and split splice instrumentation, diagnostics, and
-   replacement processes into live channel graphs without modifying
-   application logic.
-
 8. **[Context-Aware Stack Depth Analysis](08-context-aware-stack-analysis.md)**
-   — Spawn-time analysis occupies a unique point between static analysis
-   and profiling: it can read live runtime state to resolve indirect calls,
-   prune unreachable paths, and calibrate budgets.
-
-9. **[The Spawn HAMT Race](09-spawn-hamt-race.md)** *(stub)* — A
-   use-after-free in the spawn warmup handshake freed a HAMT node
-   before the child imp could retain it, plus an open investigation
-   into a related exception-lifetime race in the supervisor restart
-   path.
-
-10. **[The Teddy Bear Paper](10-teddy-bear-paper.md)** — Diagnosing
-    a C++ exception ABI race through structured articulation.
-
+9. **[The Spawn HAMT Race and Catch-Block Migration Bug](09-spawn-hamt-race.md)**
+10. **[The Teddy Bear Paper: diagnosing a C++ exception ABI race through structured articulation](10-teddy-bear-paper.md)**
 11. **[The Channel Re-Resolution Use-After-Free](11-channel-reresolution-uaf.md)**
-    — A use-after-free triggered by channel swap topology changes,
-    endpoint death, and the lock-free re-resolution window in the
-    prialt retry path.
-
 12. **[Verification Architecture for CSP Programs](12-verification-architecture.md)**
-    — A layered verification framework — session types, graph
-    validation, deadlock detection, and model extraction — that
-    exploits CSP's ownership model to make concurrency proofs
-    compositional.
-
 13. **[Formal Foundations of CSP Verification](13-formal-foundations.md)**
-    — Four axioms (linearity, rendezvous atomicity, death
-    propagation, death observability) from which race freedom,
-    orphan-block freedom, and cleanup completeness follow as
-    local, compositional properties.
-
-14. **[The Mutex-to-Channel Transformation](14-mutex-to-channel.md)**
-    — Porting a Go task broker to CSP as a case study: every mutex
-    becomes a channel-owning imp, shutdown reduces from 25 lines to
-    one, and the total line count stays the same.
-
+14. **[The Mutex-to-Channel Transformation: Porting a Go Broker to CSP](14-mutex-to-channel.md)**
 15. **[Channels as Interfaces](15-channels-as-interfaces.md)**
-    — Bidirectional lifecycle observability as a design principle:
-    how independent endpoint death signals enable a compositional
-    architecture where components are wired via channel topology
-    instead of called via APIs, and fuse/splice/swap become
-    the composition operators.
-
 16. **[TSan Cannot Track Mutex Ownership Across Fiber Migrations](16-tsan-fiber-mutex-interaction.md)**
-    — Discovery and diagnosis of a TSan limitation: fiber annotations
-    don't extend to pthread mutex tracking. When M:N-scheduled imps
-    migrate between OS threads while holding mbedTLS mutexes, TSan
-    reports false races. Root cause, investigation timeline, and
-    implications for M:N schedulers.
-
-17. **[net::listen Lifecycle and Shutdown](17-net-listen-lifecycle.md)**
-    — Investigation of the net::listen accept loop lifecycle, stopper
-    pattern, and fcontext terminate interaction with the M:N scheduler.
-
+17. **[net::listen Accept Loop Lifecycle — Investigation](17-net-listen-lifecycle.md)**
 18. **[Dynamic Scope Alternatives to HAMT](18-dynamic-scope-alternatives.md)**
-    — Exploration of alternative designs for dynamic scoping: chained
-    stack arrays, segment lists, garbage collection with opaque handles,
-    and flat root optimisation. All parked — the HAMT works and isn't a
-    bottleneck.
-
-19. **[Pull-Based Sources](19-pull-based-sources.md)** *(design)*
-    — A `source = writer<request<size_t, bytes>>` abstraction that
-    gives consumers size-control over reads while still composing as
-    channels. Closes the push/pull gap at the `net::connection`
-    boundary and the TLS composition gap; enables streaming HTTP
-    bodies and a route out of `http::serve`'s direct-fd bypass.
+19. **[Quiescence Scope Gap: Analysis and Proposed Fix](18-quiescence-gap.md)**
+20. **[Pull-Based Sources: Composable Sized Reads for CSP](19-pull-based-sources.md)**
+21. **[Paper 20: Arena-Based Stack Scaling for 100K+ Imps](20-arena-stack-scaling.md)**
+22. **[Paper 20: HTTP/3 over QUIC — Design and Integration Contract](20-http3-design.md)**
+23. **[22. Main-loop busy-spin when quiescent without hook](22-main-loop-busy-spin.md)**
+24. **[23. Stack Analysis Gap Audit (🎯T3.4 scoping)](23-stack-analysis-gaps.md)**
+25. **[24 — Signal Handling Audit: Async-Signal-Safety](24-signal-handling-audit.md)**
+26. **[Paper 24: Stack Pool Reclamation Race](25-stack-pool-reclamation.md)**
+27. **[Paper 25: M:N Worker Join — Stability Loop and Watchdog Race](26-mn-worker-join.md)**
+28. **[Paper 27 — `web_crawler` Linux-only deadlock](27-web-crawler-linux-hang.md)**
+29. **[Streaming an HTTP Body Without Deadlocking the Connection](28-streaming-http-body-handoff.md)**
+30. **[Paper 29: `tls::conn` over `tls::stream` — Wire-Synchronous Write *(design + implemented)*](29-tls-conn-over-stream.md)**
+31. **[30. Walker Register Provenance Across BL Boundaries (🎯T3.10) *(design + implemented)*](30-walker-register-provenance.md)**
+32. **[Paper 31 — tls::stream close_notify shutdown hang](31-buffered-chan-close-notify-hang.md)**
+33. **[Paper 32 — Linux arm64 dist-TSan CI hang: analytic scan](32-arm64-tsan-hang-analysis.md)**
+34. **[33 — Channel hot-path performance analysis](33-channel-hot-path-performance.md)**
+35. **[Paper 34 — Suite-context SIGABRT and coin-flip hang](34-suite-teardown-abort-and-hang.md)**
+36. **[35 — Non-channel performance surfaces (🎯T38)](35-non-channel-performance-surfaces.md)**

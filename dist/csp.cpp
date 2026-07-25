@@ -1646,8 +1646,10 @@ namespace csp {
                 return;
             }
             // Deferred wake: the waker returned after its CAS; queuing
-            // is our job.
-            auto& rt = Runtime::instance();
+            // is our job. Same placement path as schedule()'s IDLE arm
+            // so the drain also gets wake-to-local (🎯T37) — previously
+            // this always hit global_mu + unpark_one, which reintroduced
+            // the park/steal thrash on every close-race rendezvous.
             if (suspended->qs_entered_
                 && suspended->qs_sleeping_.exchange(false, std::memory_order_acq_rel)) {
                 suspended->qs_->enter();
@@ -1657,11 +1659,7 @@ namespace csp {
             if (suspended->placed_.exchange(true, std::memory_order_acq_rel)) {
                 return;
             }
-            {
-                std::lock_guard lk(rt.global_mu);
-                rt.push_to_global(suspended);
-            }
-            rt.unpark_one();
+            suspended->place_on_run_queue();
         }
 
         // self must be current_imp() — passed through to spare the
@@ -1737,41 +1735,10 @@ namespace csp {
             }
         }
 
-        void Imp::schedule([[maybe_unused]] bool make_current) {
+        void Imp::place_on_run_queue() {
+            // Caller has claimed placed_ and asserts !next_ && !in_global_.
             auto& rt = Runtime::instance();
-
-            // Suspend-window handshake first, lock-free: if the imp is
-            // in the unlock_all→do_switch window, it's still running
-            // and can't be safely pushed to a queue. One CAS defers
-            // the wake to CheckWP (early) or drain_suspended (after
-            // the context save). TLA:DrainSuspended.WakerCAS
-            for (;;) {
-                uint32_t s = suspend_state_.load(std::memory_order_acquire);
-                if (s == SUSP_PENDING) {
-                    if (suspend_state_.compare_exchange_weak(
-                            s, SUSP_WAKE,
-                            std::memory_order_acq_rel,
-                            std::memory_order_acquire)) {
-                        return;
-                    }
-                    continue;  // raced with the drain or a spurious failure
-                }
-                if (s == SUSP_WAKE) {
-                    return;  // wake already pending
-                }
-                break;  // SUSP_IDLE: fully suspended (or never was)
-            }
-
-            // Claim placement — exactly one racing placer (duplicate
-            // wakers, deferred-wake drain) inserts the imp; a TRUE
-            // result means it is already queued, running, or another
-            // placer is committed. Replaces the global_mu-serialized
-            // next_/in_global_ checks: the wake path no longer touches
-            // the global lock at all unless it spills.
-            // TLA:PlacementClaim.Claim
-            if (placed_.exchange(true, std::memory_order_acq_rel)) {
-                return;
-            }
+            assert(placed_.load(std::memory_order_relaxed));
             assert(!next_ && !in_global_);
 
             // 🎯T34 O1 wake-to-local: a wake issued from a worker P
@@ -1858,6 +1825,42 @@ namespace csp {
                 rt.push_to_global(this);
             }
             rt.unpark_one();
+        }
+
+        void Imp::schedule([[maybe_unused]] bool make_current) {
+            // Suspend-window handshake first, lock-free: if the imp is
+            // in the unlock_all→do_switch window, it's still running
+            // and can't be safely pushed to a queue. One CAS defers
+            // the wake to CheckWP (early) or drain_suspended (after
+            // the context save). TLA:DrainSuspended.WakerCAS
+            for (;;) {
+                uint32_t s = suspend_state_.load(std::memory_order_acquire);
+                if (s == SUSP_PENDING) {
+                    if (suspend_state_.compare_exchange_weak(
+                            s, SUSP_WAKE,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire)) {
+                        return;
+                    }
+                    continue;  // raced with the drain or a spurious failure
+                }
+                if (s == SUSP_WAKE) {
+                    return;  // wake already pending
+                }
+                break;  // SUSP_IDLE: fully suspended (or never was)
+            }
+
+            // Claim placement — exactly one racing placer (duplicate
+            // wakers, deferred-wake drain) inserts the imp; a TRUE
+            // result means it is already queued, running, or another
+            // placer is committed. Replaces the global_mu-serialized
+            // next_/in_global_ checks: the wake path no longer touches
+            // the global lock at all unless it spills.
+            // TLA:PlacementClaim.Claim
+            if (placed_.exchange(true, std::memory_order_acq_rel)) {
+                return;
+            }
+            place_on_run_queue();
         }
 
         void Imp::make_runnable() {
@@ -2343,12 +2346,8 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
             std::lock_guard lk(rt.global_mu);
             rt.push_to_global(imp);
         }
-        // Wake a sleeping worker so it picks up the new imp.
-        // On master, unpark_one() == park_cv.notify_all(), so this was
-        // fine there; after the per-worker-wake change workers sleep on
-        // their per-worker Note, not on park_cv, so we must call
-        // unpark_one() explicitly in addition to notifying park_cv
-        // (which wakes main_loop / run() / quiescent_loop).
+        // Wake one sleeping worker Note (not park_cv — that is only for
+        // completion/quiescence watchers, gated separately).
         rt.unpark_one();
 
         return 1;
@@ -4894,6 +4893,12 @@ namespace csp {
 
         // TLA:StealWork.TkAcquireGlobal TLA:StealWork.TkPopAndSchedule
         bool Runtime::take_from_global([[maybe_unused]] Processor& p) {
+            // Fast negative: avoid contending on global_mu when the
+            // publisher-side release store already says empty (🎯T37 —
+            // idle workers used to serialize here every park cycle).
+            if (!has_global_work_.load(std::memory_order_acquire)) {
+                return false;
+            }
             std::lock_guard lk(global_mu);
             if (global_run_queue.empty()) {
                 has_global_work_.store(false, std::memory_order_release);
@@ -4917,8 +4922,25 @@ namespace csp {
         }
 
         bool Runtime::steal_work(Processor& thief) {
+            // 🎯T37 steal-to-local: move a waiting MT from the victim's
+            // ring straight onto the thief's local queue. The old path
+            // (delink → push_to_global → unpark_one → take_from_global)
+            // bounced every steal through the global queue and woke a
+            // second idle worker to race for it — with ~9 imps on 16 Ps
+            // that was the park/unpark + steal thrash dominating alt/8ch
+            // (paper 33 Round 6). placed_ already serializes against
+            // schedule(), so the dual-lock with global_mu is unnecessary:
+            // victim.run_mu covers the delink; thief.run_mu (via
+            // schedule_local) covers the insert. No unpark: the thief is
+            // already awake and will run the MT on the next local_next.
+            // TLA:StealWork.TStealDelinkLocal
             int n = num_procs_.load(std::memory_order_acquire);
-            for (int i = 0; i < n; ++i) {
+            // Spread thieves across victims so idle workers don't convoy
+            // on the same first live P (run_mu ping-pong under fan-in).
+            int start = thief.id;
+            for (int k = 0; k < n; ++k) {
+                int i = start + k;
+                if (i >= n) i -= n;
                 auto& victim = *procs[i];
                 if (&victim == &thief) continue;
                 if (!victim.alive.load(std::memory_order_acquire)) continue;
@@ -4926,12 +4948,6 @@ namespace csp {
                 Imp* stolen = nullptr;
                 {
                     std::lock_guard lk(victim.run_mu); // TLA:StealWork.TStealAcquireRunMu
-
-                    // Try to acquire global_mu without blocking to avoid
-                    // deadlock (take_from_global holds global_mu then
-                    // acquires run_mu via schedule_local).
-                    std::unique_lock glk(global_mu, std::try_to_lock); // TLA:StealWork.TStealTryGlobalOK TLA:StealWork.TStealTryGlobalFail
-                    if (!glk) continue;
 
                     if (!victim.busy) continue;
 
@@ -4943,19 +4959,19 @@ namespace csp {
                         continue; // TLA:StealWork.TStealReleaseFail
                     }
 
-                    // TLA:StealWork.TStealDelinkPush
-                    // Delink from victim's DLL and push to global
-                    // atomically (both locks held) so schedule() cannot
-                    // see the MT with next_==null / in_global_==false.
+                    // Delink under victim.run_mu only. placed_ stays true
+                    // across the transfer, so a concurrent schedule() on
+                    // this MT returns early (already placed) even while
+                    // next_ is transiently null. TLA:StealWork.TStealDelinkLocal
                     candidate->prev_->next_ = candidate->next_;
                     candidate->next_->prev_ = candidate->prev_;
                     candidate->next_ = nullptr;
                     candidate->prev_ = nullptr;
-                    push_to_global(candidate);
                     stolen = candidate;
                 } // TLA:StealWork.TStealReleaseOK
                 if (stolen) {
-                    unpark_one();
+                    // Link into this thief's ring (acquires thief.run_mu).
+                    stolen->schedule_local();
                     return true;
                 }
             }
@@ -4970,15 +4986,11 @@ namespace csp {
                     return true;
                 }
             }
-
-            {
-                std::lock_guard lk(global_mu);
-                if (!global_run_queue.empty()) {
-                    return true;
-                }
-            }
-
-            return false;
+            // has_global_work_ is release-stored by push_to_global and
+            // cleared under global_mu when the queue drains — sufficient
+            // for the park TOCTOU check without taking global_mu (which
+            // was a major idle-worker cost under high MAXPROCS).
+            return has_global_work_.load(std::memory_order_acquire);
         }
 
     }
