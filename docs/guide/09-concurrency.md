@@ -73,8 +73,9 @@ graph TD
     P2 --- M2
 ```
 
-Each processor has its own local run queue. Newly spawned and woken imps
-go to a shared global queue, and idle processors pull work from it.
+Each processor has its own local run queue. Spawns and overload spills go
+to a shared global queue; channel wakes prefer the waker's local queue
+(wake-to-local) when it has no waiting work.
 
 ### When to use M:N mode
 
@@ -88,31 +89,30 @@ go to a shared global queue, and idle processors pull work from it.
 
 ### Scheduling
 
-When a new imp is spawned or a blocked imp is woken (by a
-channel peer or timer), it is pushed to the **global run queue**. Each worker
+When a new imp is spawned it is pushed to the **global run queue**. Channel
+wakeups prefer the **waker's local queue** (wake-to-local) when that queue
+has no other waiting work; otherwise they spill to global. Each worker
 thread loops through a priority list of work sources:
 
-1. **Fire expired timers** on the local processor.
-2. **Local run queue** -- pick the next imp from the processor's
+1. **Local run queue** — pick the next imp from the processor's
    circular doubly-linked list.
-3. **Global run queue** -- pull a fair share (total / num_processors, at least
+2. **Global run queue** — pull a fair share (total / num_processors, at least
    1) into the local queue.
-4. **Work stealing** -- steal an imp from another processor's local
-   queue.
-5. **Park** -- sleep on a condition variable until work arrives or a timer
-   expires.
+3. **Work stealing** — steal an imp from another processor's local
+   queue onto this worker's local queue.
+4. **Park** — sleep on a per-worker Note (futex) until `unpark_one` wakes
+   this worker.
 
 ```mermaid
 flowchart TD
-    START["Worker loop iteration"] --> TIMERS["Fire expired timers"]
-    TIMERS --> LOCAL{"Local queue\nnon-empty?"}
+    START["Worker loop iteration"] --> LOCAL{"Local queue\nnon-empty?"}
     LOCAL -- yes --> RUN["Run imp"]
     LOCAL -- no --> GLOBAL{"Global queue\nnon-empty?"}
     GLOBAL -- yes --> TAKE["Take fair share\ninto local queue"]
     TAKE --> RUN
     GLOBAL -- no --> STEAL{"Steal from\nanother P?"}
     STEAL -- yes --> RUN
-    STEAL -- no --> PARK["Park on CV"]
+    STEAL -- no --> PARK["Park on Note"]
     PARK --> START
     RUN --> START
 ```
@@ -122,7 +122,8 @@ flowchart TD
 When a processor's local queue is empty and the global queue is also empty, the
 worker attempts to steal from another processor. It locks the victim's run queue
 and takes an imp from the tail (the opposite end from where the victim
-picks work), then pushes it to the global queue so any worker can pick it up.
+picks work), then places it on the **thief's local queue** (steal-to-local;
+no global bounce).
 
 Three kinds of imps are never stolen:
 
@@ -132,16 +133,15 @@ Three kinds of imps are never stolen:
 
 ### Parking and unparking
 
-When there is no work anywhere, the worker parks on a condition variable. It is
-woken when:
+When there is no work anywhere, the worker parks on its per-worker Note.
+It is woken by `unpark_one` when:
 
-- A imp is pushed to the global queue (spawn, channel wakeup).
-- Work is stolen and deposited in the global queue.
-- A timer expires.
+- An imp is pushed to the global queue (spawn, channel spill).
+- The watchdog redirects work to a parked P.
 - The runtime is shutting down.
 
-If the processor has pending timers, the park uses `wait_until` with the
-earliest deadline so timers fire on time even during idle periods.
+Completion/quiescence watchers (`main_loop`, `run`) wait on a separate
+gated `park_cv`, not on worker Notes.
 
 ### Watchdog
 

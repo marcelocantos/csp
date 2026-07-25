@@ -111,8 +111,8 @@ int, N)`). In CSP, if you want buffering, create a buffered channel with
 auto [w, r] = csp::chan<int>(16);  // buffered channel with capacity 16
 ```
 
-This spawns an internal buffer imp. See [Combinators](05-combinators.md)
-for more details.
+This uses a channel-owned ring buffer (no middleman imp). See
+[Combinators](05-combinators.md) and paper 33 (O4) for details.
 
 ## Sending and receiving
 
