@@ -1,15 +1,11 @@
 // Structural + functional checks for 🎯T38 / paper 35.
 // Proves the shipped measurement entry point still runs and the paper
 // documents the required surfaces (no hard-coded ns/op floors).
+//
+// Uses only "csp.h" via testutil (works for both source and dist builds).
 
 #include "testutil.h"
 
-#include <csp/csp.h>
-#include <csp/http.h>
-#include <csp/io.h>
-#include <csp/net.h>
-
-#include <chrono>
 #include <fstream>
 #include <string>
 #include <vector>
