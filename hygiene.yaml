@@ -349,14 +349,14 @@ items:
     tier: 3
     evidence: {make_target: check-tla-tags}
 
-  - id: docs.todo
+  - id: docs.bullseye
     dim: docs
-    desc: docs/todo.md exists as the repo TODO sink
+    desc: bullseye.yaml is the intent ledger for followable work (not docs/todo.md)
     state: present
     cadence: once-must-hold
     enforce: informational
     tier: 1
-    evidence: {file: {path: docs/todo.md}}
+    evidence: {file: {path: bullseye.yaml}}
 
   # ============================== PERFORMANCE ===========================
   - id: perf.benchmarks

@@ -7,7 +7,8 @@ based on Communicating Sequential Processes. Namespace: `csp`.
 
 ## Task Tracking
 
-TODO items are tracked in `docs/todo.md`.
+Followable work is tracked as bullseye targets in `bullseye.yaml`
+(not `docs/todo.md`).
 
 ## Release
 
