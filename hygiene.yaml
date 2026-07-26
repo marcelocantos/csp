@@ -55,13 +55,17 @@ items:
 
   - id: correctness.windows
     dim: correctness
-    desc: Windows x86_64 builds & tests via CMake, with TLS deliberately off (-DCSP_TLS=OFF)
+    desc: Windows builds & tests via CMake (-DCSP_TLS=OFF); authoritative on local Parallels VM (scripts/win-validate.sh), cloud Windows x86_64 is advisory only
     state: enforced
     cadence: continuous
-    enforce: blocking
+    enforce: warning
     tier: 2
-    reason: Windows TLS path (picotls) unported; channels/http/ws covered, QUIC+TLS excluded on Windows.
-    evidence: {ci_job: ci.yml#windows}
+    reason: |
+      Mirrors mnemo: cloud Windows is non-required (continue-on-error + short
+      timeout; master ruleset omits it). Merge gate is windows-vm-validated on
+      hms-vm (MSVC ARM64). Cloud remains an amd64 cross-check. TLS/picotls
+      unported on Windows; channels/http/ws covered, QUIC+TLS excluded.
+    evidence: {script: scripts/win-validate.sh, ci_job: ci.yml#windows}
 
   - id: correctness.examples-run
     dim: correctness

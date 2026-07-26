@@ -18,6 +18,25 @@ CSP is a C++ source library distributed as three files in `dist/` — users
 vendor them into their own project. There is no binary to install, so the
 release skill's Homebrew tap plumbing does not apply.
 
+## Gates
+
+profile: csp
+
+The `csp` gate profile (`~/.claude/gates/csp.yaml`, merged over
+`base.yaml`) adds a **`windows-vm-validated`** pre-merge gate: the
+Windows build + test suite is validated on the local Parallels VM
+(`ssh hms-vm`, Win11 ARM64) by `scripts/win-validate.sh`, not by the
+cloud CI Windows job. Cloud `Windows x86_64` still runs on every PR but
+is **non-required** (master ruleset omits it; job has
+`continue-on-error: true` + `timeout-minutes: 15`) — it is an amd64
+cross-check and must not block merges or burn runners on hang (🎯T39).
+
+Flow is **push-first**: push the branch, then run
+`scripts/win-validate.sh` (it validates the *pushed* commit), which
+builds with VS/MSVC ARM64 on the VM and runs `csp_tests.exe`. One-time
+VM provisioning: Visual Studio 18 Community with ARM64 C++ tools + the
+bundled CMake, Git.
+
 ## Build System
 
 ```bash

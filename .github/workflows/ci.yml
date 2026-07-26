@@ -409,10 +409,16 @@ jobs:
       - name: Run subset_check.sh
         run: scripts/subset_check.sh "${{ matrix.subset }}"
 
-  # --- Windows: CMake-based build + test ---
+  # --- Windows: CMake-based build + test (advisory) ---
+  # Non-required merge check (master ruleset + continue-on-error). Authoritative
+  # Windows signal is the local Parallels VM gate (scripts/win-validate.sh /
+  # windows-vm-validated). timeout-minutes so a hang (🎯T39) fails the job
+  # instead of burning a runner for hours. Historical green: ~5–7 min full job.
   windows:
     name: Windows x86_64
     runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v6
