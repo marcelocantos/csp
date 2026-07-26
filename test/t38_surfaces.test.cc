@@ -10,6 +10,13 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#endif
+
 using namespace csp;
 
 namespace {
@@ -21,13 +28,21 @@ std::string read_file(const char* path) {
                        std::istreambuf_iterator<char>());
 }
 
+// Prefer IPv4 loopback for listen+dial pairs so dual-stack / IPv6-only
+// hosts (and Windows without working IPv6 dual-stack) cannot leave the
+// dialer blocked forever on the port channel — that hang was the
+// Windows full-suite stall after paper-35 (🎯T39).
+net::listener listen_loopback(uint16_t port = 0) {
+    return net::listen("127.0.0.1", port);
+}
+
 }  // namespace
 
 TEST_SUITE("T38Surfaces") {
 
 TEST_CASE("paper-35-documents-required-surfaces") {
     // Drive the real artifact path relative to the repo root (tests run
-    // with cwd = project root via the Makefile).
+    // with cwd = project root via Makefile / win-validate WorkingDirectory).
     auto body = read_file("docs/papers/35-non-channel-performance-surfaces.md");
 
     // Required surface headings (or equivalent).
@@ -61,21 +76,29 @@ TEST_CASE("paper-35-documents-required-surfaces") {
 TEST_CASE("shipped-surface-paths-still-run") {
     // Functional smoke of the same entry points the t38_surfaces driver
     // uses — proves the measured code path is live, not a reimplementation.
+#ifdef _WIN32
+    WSADATA wsa{};
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+    // RunStats installs global_exception_handler so imp failures become
+    // CHECK failures instead of std::terminate / suite hang.
+    RunStats stats;
+
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
 
     // Spawn empty (stack pool + schedule).
     {
         constexpr int N = 100;
-        for (int i = 0; i < N; ++i) spawn([] {});
+        for (int i = 0; i < N; ++i) stats.spawn([] {});
         schedule();
     }
 
     // Net echo one-shot.
     {
         chan<uint16_t> port_ch;
-        spawn([w = std::move(port_ch.w)] {
-            auto srv = net::listen(0);
+        stats.spawn([w = std::move(port_ch.w)] {
+            auto srv = listen_loopback(0);
             w << srv.port;
             net::connection conn;
             if (srv.connections >> conn) {
@@ -84,7 +107,7 @@ TEST_CASE("shipped-surface-paths-still-run") {
                 if (rr >> buf) conn.output << buf;
             }
         });
-        spawn([r = std::move(port_ch.r)] {
+        stats.spawn([r = std::move(port_ch.r)] {
             uint16_t port;
             r >> port;
             auto conn = net::dial("127.0.0.1", port);
@@ -101,11 +124,13 @@ TEST_CASE("shipped-surface-paths-still-run") {
         schedule();
     }
 
-    // HTTP GET one-shot.
+    // HTTP GET one-shot (http.cc is linked on Windows; http.test.cc is
+    // still CMake-excluded for broader suite reasons).
     {
         chan<uint16_t> port_ch;
-        spawn([w = std::move(port_ch.w)] {
-            auto srv = http::serve(0);
+        stats.spawn([w = std::move(port_ch.w)] {
+            // Match net path: IPv4 loopback, not dual-stack "::".
+            auto srv = http::serve("127.0.0.1", 0);
             w << srv.port;
             http::endpoint ep;
             if (srv.endpoints >> ep) {
@@ -118,7 +143,7 @@ TEST_CASE("shipped-surface-paths-still-run") {
                 }
             }
         });
-        spawn([r = std::move(port_ch.r)] {
+        stats.spawn([r = std::move(port_ch.r)] {
             uint16_t port;
             r >> port;
             auto conn = net::dial("127.0.0.1", port);

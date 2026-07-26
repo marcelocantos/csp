@@ -227,20 +227,19 @@ endif()
 if(CSP_BUILD_TESTS)
     file(GLOB TEST_SRCS test/*.test.cc)
 
-    # Exclude tests for features not in the dist amalgamation.
-    list(FILTER TEST_SRCS EXCLUDE REGEX "net\\.test\\.cc$")
-
     if(WIN32)
         # Exclude tests that depend on TLS (PicoTLS not built by default on Windows)
         list(FILTER TEST_SRCS EXCLUDE REGEX "tls\\.test\\.cc$")
-        # HTTP tests not yet verified on Windows
-        list(FILTER TEST_SRCS EXCLUDE REGEX "http\\.test\\.cc$")
         # HTTP/2 not built on Windows (nghttp2 not wired through CMake yet)
         list(FILTER TEST_SRCS EXCLUDE REGEX "http2\\.test\\.cc$")
         # HTTP/3 not built on Windows (nghttp3/ngtcp2 not wired through CMake yet)
         list(FILTER TEST_SRCS EXCLUDE REGEX "http3\\.test\\.cc$")
         # WebSocket not built on Windows (wslay not wired through CMake yet)
         list(FILTER TEST_SRCS EXCLUDE REGEX "ws\\.test\\.cc$")
+        # http.test.cc still broad; net + t38 cover listen/dial smoke.
+        # (net.test.cc is intentionally included — 🎯T39 hang was listen
+        # on "::" + dial 127.0.0.1 leaving schedule() stuck.)
+        list(FILTER TEST_SRCS EXCLUDE REGEX "http\\.test\\.cc$")
     endif()
 
     add_executable(csp_tests test/main.cc ${TEST_SRCS})
