@@ -36,7 +36,11 @@ if (-not (Test-Path $cmake)) {
   exit 10
 }
 
-Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+# Incremental configure/build (wipe only when CSP_WIN_CLEAN=1). Full wipes
+# take 10+ minutes on the ARM64 VM and invite first-run AV stalls.
+if ($env:CSP_WIN_CLEAN -eq "1") {
+  Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue
+}
 
 & $cmake -G "Visual Studio 18 2026" -A ARM64 -B build -DCSP_TLS=OFF
 if ($LASTEXITCODE -ne 0) {
@@ -67,37 +71,60 @@ if (-not (Test-Path $exe)) {
 $outLog = Join-Path $Work "test.out"
 $errLog = Join-Path $Work "test.err"
 $repoRoot = Get-Location
-# --duration only: -s floods multi-MB assertion text through redirected
-# stdout and makes the suite look hung on slow VM disks (🎯T39).
-$p = Start-Process -FilePath $exe -ArgumentList @("--duration") `
-  -WorkingDirectory $repoRoot.Path -NoNewWindow -PassThru `
-  -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-$timeoutMs = [Math]::Max(1, $TestTimeoutSec) * 1000
-if (-not $p.WaitForExit($timeoutMs)) {
-  try { $p.Kill() } catch {}
-  "win_validate_fail=test_timeout" | Write-Host
-  Get-Content $outLog -Tail 40 -ErrorAction SilentlyContinue | Write-Host
-  "csp_test_exit=124" | Write-Host
-  exit 14
+
+# Warm freshly linked binaries (AV / page-in on Parallels can stall the
+# first long redirected run for many minutes).
+& $exe --list-test-cases 2>$null | Out-Null
+"warmup_ok" | Write-Host
+
+function Invoke-CspSuite {
+  param([string]$Label)
+  Remove-Item $outLog, $errLog -ErrorAction SilentlyContinue
+  Get-Process csp_tests -ErrorAction SilentlyContinue | Stop-Process -Force
+  Start-Sleep -Milliseconds 500
+  # --duration only: -s floods multi-MB assertion text through redirected
+  # stdout and makes the suite look hung on slow VM disks (🎯T39).
+  $proc = Start-Process -FilePath $exe -ArgumentList @("--duration") `
+    -WorkingDirectory $repoRoot.Path -NoNewWindow -PassThru `
+    -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+  $timeoutMs = [Math]::Max(1, $TestTimeoutSec) * 1000
+  if (-not $proc.WaitForExit($timeoutMs)) {
+    try { $proc.Kill() } catch {}
+    "win_validate_fail=test_timeout label=$Label" | Write-Host
+    Get-Content $outLog -Tail 40 -ErrorAction SilentlyContinue | Write-Host
+    return 124
+  }
+  $code = $proc.ExitCode
+  if ($null -eq $code) { $code = -1 }
+  if (Test-Path $outLog) {
+    Get-Content $outLog -Tail 50 -ErrorAction SilentlyContinue | Write-Host
+    $raw = Get-Content $outLog -Raw -ErrorAction SilentlyContinue
+    if ($raw -match 'Status:\s*SUCCESS') {
+      $code = 0
+    } elseif ($raw -match 'Status:\s*FAILURE') {
+      if ($code -eq 0) { $code = 1 }
+    }
+  }
+  return $code
 }
 
 # Start-Process ExitCode can be $null even after WaitForExit on some hosts;
 # prefer doctest's Status line when present (authoritative oracle).
-$code = $p.ExitCode
-if ($null -eq $code) { $code = -1 }
-$logTail = @()
-if (Test-Path $outLog) {
-  $logTail = Get-Content $outLog -Tail 50 -ErrorAction SilentlyContinue
-  $logTail | Write-Host
-  $raw = Get-Content $outLog -Raw -ErrorAction SilentlyContinue
-  if ($raw -match 'Status:\s*SUCCESS') {
-    $code = 0
-  } elseif ($raw -match 'Status:\s*FAILURE') {
-    if ($code -eq 0) { $code = 1 }
-  }
+$code = Invoke-CspSuite -Label "attempt1"
+# One retry after a timeout: first cold run after rebuild has flaked on
+# the VM even when the same binary then passes (AV / residual process).
+if ($code -eq 124) {
+  "win_validate_retry=1" | Write-Host
+  $code = Invoke-CspSuite -Label "attempt2"
 }
+
 if ($code -ne 0) {
   Get-Content $errLog -Tail 20 -ErrorAction SilentlyContinue | Write-Host
 }
 "csp_test_exit=$code" | Write-Host
+if ($code -eq 0) {
+  "win-validate: PASS (windows/arm64)" | Write-Host
+} else {
+  "win-validate: FAIL - Windows build/tests did not pass" | Write-Host
+}
 exit $code

@@ -236,12 +236,9 @@ if(CSP_BUILD_TESTS)
         list(FILTER TEST_SRCS EXCLUDE REGEX "http3\\.test\\.cc$")
         # WebSocket not built on Windows (wslay not wired through CMake yet)
         list(FILTER TEST_SRCS EXCLUDE REGEX "ws\\.test\\.cc$")
-        # HTTP suite still broad on Windows CMake.
+        # HTTP suite still broad on Windows CMake (serve path has more surface).
         list(FILTER TEST_SRCS EXCLUDE REGEX "http\\.test\\.cc$")
-        # net.test.cc: reactor/listen path still hangs schedule() on Win11
-        # ARM64 VM (listen alone times out); keep library code fixed
-        # (Winsock + AF_UNSPEC) but exclude the suite until reactor is solid.
-        list(FILTER TEST_SRCS EXCLUDE REGEX "net\\.test\\.cc$")
+        # net.test.cc is included: 🎯T39 fixed FD_ACCEPT on Windows reactor.
     endif()
 
     add_executable(csp_tests test/main.cc ${TEST_SRCS})
