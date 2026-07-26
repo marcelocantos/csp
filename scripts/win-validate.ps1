@@ -1,9 +1,10 @@
-# Local Windows build+test of CSP on the Parallels VM (windows/arm64, MSVC).
-# Driven by scripts/win-validate.sh; run on the VM via `powershell -File`.
-# Mirrors .github/workflows/ci.yml's Windows job: checkout the commit,
-# cmake -DCSP_TLS=OFF, build Release, run csp_tests.exe -s --duration.
-# Prereqs (provisioned once): VS 18 Community with ARM64 MSVC + CMake,
-# Git. Generator: "Visual Studio 18 2026" -A ARM64.
+# Local Windows **full** build+test of CSP on the Parallels VM
+# (windows/arm64, MSVC). Driven by scripts/win-validate.sh.
+# Cloud CI uses scripts/win-ci-smoke.ps1 (abbreviated); this script runs
+# the complete suite. Checkout the commit, cmake -DCSP_TLS=OFF, build
+# Release, run csp_tests.exe -s --duration with a wall-clock timeout.
+# Prereqs: VS 18 Community with ARM64 MSVC + CMake, Git.
+# Generator: "Visual Studio 18 2026" -A ARM64.
 param(
   [string]$Sha = "origin/master",
   [int]$TestTimeoutSec = 480,

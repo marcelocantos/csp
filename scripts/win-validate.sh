@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Local Windows CI gate (mnemo pattern): build + test CSP on the Parallels
-# VM instead of requiring the cloud `Windows x86_64` job. Cloud still runs
-# as a non-required amd64 cross-check (continue-on-error + short timeout).
+# Local Windows CI gate (mnemo pattern): build + **full** test suite on the
+# Parallels VM. Cloud `Windows x86_64` only runs MSVC + abbreviated smoke
+# (scripts/win-ci-smoke.ps1); this script is the merge Windows signal.
 #
 # Validates the *pushed* current commit: push the branch first, then run
 # this. scp's scripts/win-validate.ps1 to the VM and runs it (clone SHA,
-# CMake MSVC ARM64, csp_tests.exe). Exit 0 = Windows is green.
+# CMake MSVC ARM64, full csp_tests.exe). Exit 0 = Windows is green.
 #
 # Config: WINCI_VM (default hms-vm), WINCI_TEST_TIMEOUT_SEC (default 480).
 set -uo pipefail

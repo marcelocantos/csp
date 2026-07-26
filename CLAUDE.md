@@ -24,18 +24,21 @@ profile: csp
 
 The `csp` gate profile (`~/.claude/gates/csp.yaml`, merged over
 `base.yaml`) adds a **`windows-vm-validated`** pre-merge gate: the
-Windows build + test suite is validated on the local Parallels VM
-(`ssh hms-vm`, Win11 ARM64) by `scripts/win-validate.sh`, not by the
-cloud CI Windows job. Cloud `Windows x86_64` still runs on every PR but
-is **non-required** (master ruleset omits it; job has
-`continue-on-error: true` + `timeout-minutes: 15`) — it is an amd64
-cross-check and must not block merges or burn runners on hang (🎯T39).
+**full** Windows build + test suite is validated on the local Parallels
+VM (`ssh hms-vm`, Win11 ARM64) by `scripts/win-validate.sh`.
+
+Cloud `Windows x86_64` still runs on every PR: MSVC build + an
+**abbreviated smoke** (`scripts/win-ci-smoke.ps1` — core channel/runtime
+units only, seconds of test time). It is **not** a required master
+ruleset check (merge/release wait on macOS/Linux/TLA+). Full-suite hang
+risk (🎯T39) is confined to the local gate; cloud must not burn runners
+on the full suite.
 
 Flow is **push-first**: push the branch, then run
 `scripts/win-validate.sh` (it validates the *pushed* commit), which
-builds with VS/MSVC ARM64 on the VM and runs `csp_tests.exe`. One-time
-VM provisioning: Visual Studio 18 Community with ARM64 C++ tools + the
-bundled CMake, Git.
+builds with VS/MSVC ARM64 on the VM and runs full `csp_tests.exe`.
+One-time VM provisioning: Visual Studio 18 Community with ARM64 C++
+tools + the bundled CMake, Git.
 
 ## Build System
 
