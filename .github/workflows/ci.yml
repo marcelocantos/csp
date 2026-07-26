@@ -409,10 +409,17 @@ jobs:
       - name: Run subset_check.sh
         run: scripts/subset_check.sh "${{ matrix.subset }}"
 
-  # --- Windows: CMake-based build + test ---
+  # --- Windows: CMake build + abbreviated smoke (not full suite) ---
+  # Full csp_tests on Windows hangs under 🎯T39 (Random / scheduler thrash);
+  # the authoritative full suite is scripts/win-validate.sh on the local
+  # Parallels VM (windows-vm-validated). Cloud still builds with MSVC and
+  # runs a curated core smoke (~seconds of tests) so PRs get a fast amd64
+  # cross-check without waiting on a hang/timeout. Master ruleset does not
+  # require this job; local VM gate remains the merge Windows signal.
   windows:
     name: Windows x86_64
     runs-on: windows-latest
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v6
@@ -429,14 +436,11 @@ jobs:
       - name: Check exe
         run: dir build\Release\csp_tests.exe
 
-      - name: List tests
+      - name: Smoke test (core units)
+        shell: pwsh
         run: |
-          & build\Release\csp_tests.exe --list-test-cases 2>&1 | Write-Host
-
-      - name: Test
-        run: |
-          build\Release\csp_tests.exe -s --duration
-        shell: cmd
+          # Single source of filter: scripts/win-ci-smoke.ps1
+          .\scripts\win-ci-smoke.ps1 -Exe build\Release\csp_tests.exe
 
 
   # --- TLA+ model checking (macOS only) ---

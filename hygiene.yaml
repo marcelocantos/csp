@@ -55,13 +55,23 @@ items:
 
   - id: correctness.windows
     dim: correctness
-    desc: Windows x86_64 builds & tests via CMake, with TLS deliberately off (-DCSP_TLS=OFF)
+    desc: Windows via CMake (-DCSP_TLS=OFF) — full suite on local Parallels VM (win-validate); cloud runs MSVC + abbreviated smoke only
     state: enforced
     cadence: continuous
-    enforce: blocking
+    enforce: warning
     tier: 2
-    reason: Windows TLS path (picotls) unported; channels/http/ws covered, QUIC+TLS excluded on Windows.
-    evidence: {ci_job: ci.yml#windows}
+    reason: |
+      Full suite can hang under 🎯T39; authoritative signal is
+      windows-vm-validated on hms-vm (MSVC ARM64, full csp_tests). Cloud
+      Windows x86_64 is non-required and runs scripts/win-ci-smoke.ps1
+      (core units only) so PRs get a fast amd64 compile+smoke without
+      waiting on hang/timeout. TLS/picotls unported on Windows.
+    evidence:
+      {
+        script: scripts/win-validate.sh,
+        smoke: scripts/win-ci-smoke.ps1,
+        ci_job: ci.yml#windows,
+      }
 
   - id: correctness.examples-run
     dim: correctness

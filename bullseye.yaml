@@ -1269,7 +1269,7 @@ targets:
     - 'csp_tests.exe finishes with doctest Status: SUCCESS (0 failed) without hanging mid Random---UniformInt or elsewhere'
     - 'Reproduced hang on PR #98 / v0.25.0 branch (T37 steal-to-local / place_on_run_queue) no longer occurs, or is fixed with a regression test if feasible'
     - Windows job has an explicit timeout-minutes so a hang fails the job instead of consuming a runner for hours
-    context: 'v0.25.0 release (PR #98) admin-merged with all macOS/Linux/ASan/TSan/TLA+ green. Windows hung twice mid Random---UniformInt after ~580 channel reads under csp_tests.exe -s --duration; log froze at ~4.3MB with no progress for 50+ minutes (green baseline finishes all ~692 tests in ~32s). Suspected interaction with T37 scheduler thrash fix (steal-to-local, place_on_run_queue, has_global_work_ park path). Primary platforms are the release gate; this target tracks restoring Windows as a reliable secondary gate.'
+    context: 'v0.25.0 release (PR #98) admin-merged with all macOS/Linux/ASan/TSan/TLA+ green. Windows hung twice mid Random---UniformInt after ~580 channel reads under full csp_tests.exe -s --duration; log froze with no progress for 50+ minutes (green baseline finishes all ~692 tests in ~32s). Suspected interaction with T37 scheduler thrash fix (steal-to-local, place_on_run_queue, has_global_work_ park path). 2026-07-26: cloud Windows switched to abbreviated smoke (win-ci-smoke.ps1); hang still blocks local win-validate full suite and any intentional full-suite run. Fixing the hang is still required for the local gate to pass.'
     tags:
     - windows
     - ci
@@ -1319,6 +1319,25 @@ targets:
     origin: manual
     discovered: 2026-03-09
     achieved: 2026-04-29
+  T40:
+    name: GitHub Windows CI is non-mandatory; Windows is validated on the local Parallels VM (mnemo pattern)
+    status: converging
+    value: 4.0
+    cost: 2.0
+    acceptance:
+    - Cloud Windows x86_64 job runs scripts/win-ci-smoke.ps1 (or equivalent core-unit filter), not full csp_tests -s --duration
+    - Cloud Windows job timeout-minutes is short enough for build+smoke (e.g. ≤10) and does not run the hang-prone full suite
+    - master ruleset required status checks omit Windows x86_64; primary macOS/Linux test jobs remain required
+    - scripts/win-validate.sh + win-validate.ps1 run the full suite on the Parallels VM as the merge gate
+    - 'Claude.md ## Gates profile: csp + ~/.claude/gates/csp.yaml declares windows-vm-validated pre-merge gate'
+    - hygiene correctness.windows is advisory (warning) with evidence pointing at win-validate + win-ci-smoke
+    context: 'Same pattern as mnemo: cloud Windows is not the merge gate. Authoritative full suite is scripts/win-validate.sh on the Parallels Win11 ARM64 VM. Cloud Windows x86_64 runs MSVC build + abbreviated smoke (scripts/win-ci-smoke.ps1: core channel/runtime units only, ~seconds of tests) so PRs get a fast amd64 cross-check without the full-suite hang (🎯T39). Master ruleset omits Windows; job timeout-minutes: 10. 2026-07-26: refined from continue-on-error full suite → smoke-only cloud path.'
+    tags:
+    - windows
+    - ci
+    - gates
+    origin: manual
+    discovered: 2026-07-26
   T5:
     name: Unmodeled concurrent decision points have TLA+ specs
     status: achieved
