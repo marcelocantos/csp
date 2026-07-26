@@ -28,11 +28,10 @@ std::string read_file(const char* path) {
                        std::istreambuf_iterator<char>());
 }
 
-// IPv4 loopback for listen+dial pairs (🎯T39): dual-stack "::" + dial
-// 127.0.0.1 is fragile on Windows; net::listen now uses AF_UNSPEC so this
-// address resolves correctly.
-net::listener listen_loopback(uint16_t port = 0) {
-    return net::listen("127.0.0.1", port);
+// IPv4 any + dial 127.0.0.1 (🎯T39): dual-stack "::" is fragile on some
+// Windows stacks; concrete 127.0.0.1 bind hung on Windows ARM VM.
+net::listener listen_ipv4(uint16_t port = 0) {
+    return net::listen("0.0.0.0", port);
 }
 
 }  // namespace
@@ -85,7 +84,7 @@ TEST_CASE("shipped-surface-paths-still-run---net-echo") {
     csp::set_maxprocs(2);
     chan<uint16_t> port_ch;
     spawn([w = std::move(port_ch.w)] {
-        auto srv = listen_loopback(0);
+        auto srv = listen_ipv4(0);
         w << srv.port;
         net::connection conn;
         if (srv.connections >> conn) {

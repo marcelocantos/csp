@@ -13,9 +13,9 @@ TEST_CASE("listen-and-dial---basic-echo") {
     chan<uint16_t> port_ch;
 
     spawn([w = std::move(port_ch.w)] {
-        // IPv4 loopback: dual-stack "::" + dial 127.0.0.1 can fail or hang
-        // on Windows (and any host without working IPv6 dual-stack).
-        auto srv = net::listen("127.0.0.1", 0);
+        // IPv4 any: dual-stack "::" + dial 127.0.0.1 is fragile on some
+        // Windows dual-stack stacks (🎯T39). Bind IPv4 and dial loopback.
+        auto srv = net::listen("0.0.0.0", 0);
         w << srv.port;
 
         net::connection conn;
