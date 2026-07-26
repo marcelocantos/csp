@@ -1321,7 +1321,7 @@ targets:
     achieved: 2026-04-29
   T40:
     name: GitHub Windows CI is non-mandatory; Windows is validated on the local Parallels VM (mnemo pattern)
-    status: converging
+    status: achieved
     value: 4.0
     cost: 2.0
     acceptance:
@@ -1338,6 +1338,7 @@ targets:
     - gates
     origin: manual
     discovered: 2026-07-26
+    achieved: 2026-07-26
   T5:
     name: Unmodeled concurrent decision points have TLA+ specs
     status: achieved
