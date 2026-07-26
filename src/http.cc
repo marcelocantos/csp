@@ -427,10 +427,14 @@ struct listen_result {
 
 listen_result create_listener(const std::string& addr, uint16_t port,
                               const net::listen_options& opts) {
+    // AF_UNSPEC + AI_PASSIVE only for wildcards (same as net::listen; 🎯T39).
     struct addrinfo hints {};
-    hints.ai_family = AF_INET6;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    if (addr.empty() || addr == "::" || addr == "0.0.0.0"
+        || addr == "0:0:0:0:0:0:0:0") {
+        hints.ai_flags = AI_PASSIVE;
+    }
 
     auto result = io::resolve(addr, std::to_string(port), &hints);
     if (!result) {

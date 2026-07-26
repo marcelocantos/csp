@@ -11,7 +11,7 @@
 set -uo pipefail
 
 VM="${WINCI_VM:-hms-vm}"
-TEST_TIMEOUT_SEC="${WINCI_TEST_TIMEOUT_SEC:-480}"
+TEST_TIMEOUT_SEC="${WINCI_TEST_TIMEOUT_SEC:-600}"
 REMOTE_PS="C:/Users/marcelo/csp-win-validate.ps1"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

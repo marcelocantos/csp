@@ -3,6 +3,7 @@
 #include <csp/internal/signal.h>
 
 #include <cstring>
+#include <mutex>
 
 #ifndef _WIN32
 #include <arpa/inet.h>
@@ -16,6 +17,20 @@
 namespace csp::net {
 
 namespace {
+
+#ifdef _WIN32
+// socket()/bind() before any reactor activity still need Winsock.
+// Reactor::ensure_started also calls WSAStartup (ref-counted, safe).
+void ensure_winsock() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        WSADATA wsa{};
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+    });
+}
+#else
+void ensure_winsock() {}
+#endif
 
 std::string format_addr(const struct sockaddr* sa, socklen_t len) {
     char host[NI_MAXHOST];
@@ -78,10 +93,20 @@ listener listen(uint16_t port, listen_options opts) {
 
 listener listen(const std::string& addr, uint16_t port,
                 listen_options opts) {
+    ensure_winsock();
+    // AF_UNSPEC so IPv4 literals (127.0.0.1) and IPv6 (::) both resolve.
+    // Hard-coding AF_INET6 made listen("127.0.0.1") fail resolve and left
+    // dialers blocked forever on the port channel (Windows full-suite hang
+    // after T38; macOS terminate without RunStats). 🎯T39
+    // AI_PASSIVE only for wildcard bind addresses — with a concrete host
+    // (127.0.0.1) it can yield non-connectable results on Windows.
     struct addrinfo hints {};
-    hints.ai_family = AF_INET6;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    if (addr.empty() || addr == "::" || addr == "0.0.0.0"
+        || addr == "0:0:0:0:0:0:0:0") {
+        hints.ai_flags = AI_PASSIVE;
+    }
 
     auto result = io::resolve(addr, std::to_string(port), &hints);
     if (!result) {
@@ -205,6 +230,7 @@ connection dial(const std::string& host, uint16_t port) {
 }
 
 connection dial(const std::string& host, const std::string& service) {
+    ensure_winsock();
     struct addrinfo hints {};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;

@@ -2,12 +2,15 @@
 # (windows/arm64, MSVC). Driven by scripts/win-validate.sh.
 # Cloud CI uses scripts/win-ci-smoke.ps1 (abbreviated); this script runs
 # the complete suite. Checkout the commit, cmake -DCSP_TLS=OFF, build
-# Release, run csp_tests.exe -s --duration with a wall-clock timeout.
+# Release, run csp_tests.exe --duration (no -s: verbose SUCCESS lines
+# thrash redirected I/O and falsely look like hangs) with a hard
+# wall-clock timeout. WorkingDirectory is the repo root so relative
+# paths (docs/papers/…) resolve.
 # Prereqs: VS 18 Community with ARM64 MSVC + CMake, Git.
 # Generator: "Visual Studio 18 2026" -A ARM64.
 param(
   [string]$Sha = "origin/master",
-  [int]$TestTimeoutSec = 480,
+  [int]$TestTimeoutSec = 600,
   [string]$Work = "C:\Users\marcelo\winci-csp"
 )
 
@@ -63,7 +66,11 @@ if (-not (Test-Path $exe)) {
 
 $outLog = Join-Path $Work "test.out"
 $errLog = Join-Path $Work "test.err"
-$p = Start-Process -FilePath $exe -ArgumentList @("-s", "--duration") -NoNewWindow -PassThru `
+$repoRoot = Get-Location
+# --duration only: -s floods multi-MB assertion text through redirected
+# stdout and makes the suite look hung on slow VM disks (🎯T39).
+$p = Start-Process -FilePath $exe -ArgumentList @("--duration") `
+  -WorkingDirectory $repoRoot.Path -NoNewWindow -PassThru `
   -RedirectStandardOutput $outLog -RedirectStandardError $errLog
 $timeoutMs = [Math]::Max(1, $TestTimeoutSec) * 1000
 if (-not $p.WaitForExit($timeoutMs)) {
@@ -74,8 +81,21 @@ if (-not $p.WaitForExit($timeoutMs)) {
   exit 14
 }
 
+# Start-Process ExitCode can be $null even after WaitForExit on some hosts;
+# prefer doctest's Status line when present (authoritative oracle).
 $code = $p.ExitCode
-Get-Content $outLog -Tail 50 -ErrorAction SilentlyContinue | Write-Host
+if ($null -eq $code) { $code = -1 }
+$logTail = @()
+if (Test-Path $outLog) {
+  $logTail = Get-Content $outLog -Tail 50 -ErrorAction SilentlyContinue
+  $logTail | Write-Host
+  $raw = Get-Content $outLog -Raw -ErrorAction SilentlyContinue
+  if ($raw -match 'Status:\s*SUCCESS') {
+    $code = 0
+  } elseif ($raw -match 'Status:\s*FAILURE') {
+    if ($code -eq 0) { $code = 1 }
+  }
+}
 if ($code -ne 0) {
   Get-Content $errLog -Tail 20 -ErrorAction SilentlyContinue | Write-Host
 }

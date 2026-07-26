@@ -1261,7 +1261,7 @@ targets:
     achieved: 2026-07-20
   T39:
     name: Windows CI suite completes without hang (Random---UniformInt and full csp_tests)
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
     acceptance:
@@ -1277,6 +1277,7 @@ targets:
     - regression
     origin: manual
     discovered: 2026-07-26
+    achieved: 2026-07-27
   T4:
     name: API safety gaps are closed
     status: achieved
