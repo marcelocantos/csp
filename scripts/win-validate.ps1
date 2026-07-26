@@ -81,8 +81,21 @@ if (-not $p.WaitForExit($timeoutMs)) {
   exit 14
 }
 
+# Start-Process ExitCode can be $null even after WaitForExit on some hosts;
+# prefer doctest's Status line when present (authoritative oracle).
 $code = $p.ExitCode
-Get-Content $outLog -Tail 50 -ErrorAction SilentlyContinue | Write-Host
+if ($null -eq $code) { $code = -1 }
+$logTail = @()
+if (Test-Path $outLog) {
+  $logTail = Get-Content $outLog -Tail 50 -ErrorAction SilentlyContinue
+  $logTail | Write-Host
+  $raw = Get-Content $outLog -Raw -ErrorAction SilentlyContinue
+  if ($raw -match 'Status:\s*SUCCESS') {
+    $code = 0
+  } elseif ($raw -match 'Status:\s*FAILURE') {
+    if ($code -eq 0) { $code = 1 }
+  }
+}
 if ($code -ne 0) {
   Get-Content $errLog -Tail 20 -ErrorAction SilentlyContinue | Write-Host
 }
