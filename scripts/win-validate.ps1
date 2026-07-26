@@ -125,6 +125,6 @@ if ($code -ne 0) {
 if ($code -eq 0) {
   "win-validate: PASS (windows/arm64)" | Write-Host
 } else {
-  "win-validate: FAIL — Windows build/tests did not pass" | Write-Host
+  "win-validate: FAIL - Windows build/tests did not pass" | Write-Host
 }
 exit $code
