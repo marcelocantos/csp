@@ -98,10 +98,15 @@ listener listen(const std::string& addr, uint16_t port,
     // Hard-coding AF_INET6 made listen("127.0.0.1") fail resolve and left
     // dialers blocked forever on the port channel (Windows full-suite hang
     // after T38; macOS terminate without RunStats). 🎯T39
+    // AI_PASSIVE only for wildcard bind addresses — with a concrete host
+    // (127.0.0.1) it can yield non-connectable results on Windows.
     struct addrinfo hints {};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    if (addr.empty() || addr == "::" || addr == "0.0.0.0"
+        || addr == "0:0:0:0:0:0:0:0") {
+        hints.ai_flags = AI_PASSIVE;
+    }
 
     auto result = io::resolve(addr, std::to_string(port), &hints);
     if (!result) {
