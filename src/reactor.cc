@@ -149,7 +149,14 @@ std::pair<reader<>, uintptr_t> Reactor::create_fd_event(SOCKET sock, int kind) {
     HANDLE evt = WSACreateEvent();
     assert(evt != WSA_INVALID_EVENT);
 
-    long net_events = (kind == 0) ? (FD_READ | FD_CLOSE) : (FD_WRITE | FD_CLOSE);
+    // kind 0 = "readable" (read / accept); kind 1 = "writable" (write / connect).
+    // Listening sockets signal readiness with FD_ACCEPT, not FD_READ.
+    // Non-blocking connect completion signals FD_CONNECT (and often FD_WRITE).
+    // Missing FD_ACCEPT made net::listen's accept loop hang forever on
+    // WSAEWOULDBLOCK → wait_readable (🎯T39 Windows suite hang).
+    long net_events = (kind == 0)
+        ? (FD_READ | FD_ACCEPT | FD_CLOSE)
+        : (FD_WRITE | FD_CONNECT | FD_CLOSE);
     WSAEventSelect(sock, evt, net_events);
 
     HANDLE wait = nullptr;
