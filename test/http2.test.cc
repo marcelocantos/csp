@@ -367,6 +367,44 @@ TEST_CASE("serve---404-response") {
     csp::shutdown_runtime();
 }
 
+// Regression: create_listener resolved with AF_INET6 + AI_PASSIVE, so an
+// IPv4 literal bind address failed to resolve and serve() threw.
+TEST_CASE("serve---ipv4-literal-bind-address") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http2::serve("127.0.0.1", 0);
+        CHECK(srv.port != 0);
+        w << srv.port;
+
+        http2::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.streams >> req) {
+                CHECK(req.url == "/v4");
+                std::string body_str = "bound-on-127.0.0.1";
+                bytes body(body_str.begin(), body_str.end());
+                req.respond << http::response{200, {}, std::move(body)};
+            }
+        }
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto resp = h2_fetch(port, "/v4");
+        CHECK(resp.status == 200);
+        CHECK(resp.body == "bound-on-127.0.0.1");
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
 TEST_CASE("serve---empty-body-response") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);
@@ -398,5 +436,39 @@ TEST_CASE("serve---empty-body-response") {
     schedule();
     csp::shutdown_runtime();
 }
+
+#if defined(CSP_TLS) && !defined(_WIN32)
+
+// Regression: do_serve_tls's shutdown sentinel only self-connected under
+// #ifndef _WIN32, so on Windows the accept loop had no way to observe the
+// endpoints drop. The assertion here is structural: if the accept loop
+// never wakes, its imp stays live and schedule() below never returns.
+TEST_CASE("serve-tls---endpoints-drop-stops-accept-loop") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<bool> done_ch;
+
+    spawn([w = std::move(done_ch.w)] {
+        auto srv = http2::serve_tls(
+            0, "test/certs/server.crt", "test/certs/server.key");
+        CHECK(srv.port != 0);
+
+        // Drop the endpoints reader without ever accepting a connection.
+        srv.endpoints = {};
+        w << true;
+    });
+
+    spawn([r = std::move(done_ch.r)] {
+        bool ok = false;
+        CHECK((r >> ok));
+        CHECK(ok);
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
+#endif // CSP_TLS && !_WIN32
 
 } // TEST_SUITE

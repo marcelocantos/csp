@@ -1,5 +1,6 @@
 #pragma once
 
+#include <csp/part/map.h>
 #include <csp/part/part.h>
 
 #include <exception>

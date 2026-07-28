@@ -49,8 +49,6 @@ public:
     void log(int flags, char const * srcroot, char const * file, int line, char const * fmt, ...);
     void vlog(int flags, char const * srcroot, char const * file, int line, char const * fmt, va_list ap);
 
-    static void regapp(char const * vendor, char const * appname);
-
     static void dump_stack();
 
 private:
@@ -4251,7 +4249,6 @@ inline response post(
 // Each HTTP/2 stream appears as a reader<http::request> + the per-request
 // writer<http::response> embedded in http::request::respond.
 //
-// Server push is supported via http2::push_promise on the connection handle.
 // HPACK header compression is handled transparently by nghttp2.
 // Flow control maps naturally to channel backpressure: the imp that reads
 // from data providers blocks until nghttp2 grants flow-control credits.
@@ -4269,17 +4266,6 @@ namespace csp::http2 {
 // accepts exactly one http::response.  This is the same interface as the
 // HTTP/1.1 server.
 
-// --- Per-connection handle (for server push) ---
-
-struct connection_handle;
-
-// --- Server push ---
-//
-// Call push() on the connection handle to initiate a server push.
-// Returns false if the client has disabled server push.
-
-bool push(connection_handle& h, http::request promised_request);
-
 // --- Server options ---
 
 struct serve_options {
@@ -4292,7 +4278,7 @@ struct serve_options {
 // --- Per-connection endpoint ---
 //
 // Each accepted connection yields one endpoint.  endpoint::streams delivers
-// one request per HTTP/2 stream.  endpoint::handle may be used for server push.
+// one request per HTTP/2 stream.
 
 struct endpoint {
     reader<http::request> streams;  // one per HTTP/2 stream
@@ -7784,7 +7770,7 @@ reader<T> spawn_quantize(reader<T> source, T quantum, writer<T> residue = writer
 }
 
 template <typename T>
-writer<double> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = writer<T>::dead()) {
+writer<T> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = writer<T>::dead()) {
     return spawn_consumer<T>([quantum, sink = std::move(sink),
                               residue = std::move(residue)](auto source) mutable {
         quantize(std::move(source), quantum, std::move(sink), std::move(residue))();

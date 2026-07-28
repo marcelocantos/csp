@@ -127,7 +127,7 @@ reader<T> spawn_quantize(reader<T> source, T quantum, writer<T> residue = writer
 }
 
 template <typename T>
-writer<double> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = writer<T>::dead()) {
+writer<T> spawn_quantize(T quantum, writer<T> sink, writer<T> residue = writer<T>::dead()) {
     return spawn_consumer<T>([quantum, sink = std::move(sink),
                               residue = std::move(residue)](auto source) mutable {
         quantize(std::move(source), quantum, std::move(sink), std::move(residue))();

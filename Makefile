@@ -547,7 +547,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench test-dist check check-tla-tags check-md-links diagrams examples run-examples run-examples-ci dist iwyu clean \
+.PHONY: test build bench test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci dist iwyu clean \
        docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor libs downstream-test
 
 # Explicit default — keep `make` (no args) running the full test suite.
@@ -555,7 +555,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 # by virtue of appearing first.
 .DEFAULT_GOAL := test
 
-test: $(TARGET) check-md-links lint-frontdoor
+test: $(TARGET) check-md-links lint-frontdoor check-part-headers
 	$(TEST_RUN)
 
 # --- Front-door TU lint (🎯T23.4) ---
@@ -585,11 +585,22 @@ bullseye:
 	 (echo "✗ md-links"; python3 scripts/check_md_links.py; exit 1)
 	@python3 scripts/lint_frontdoor.py >/dev/null && echo "✓ lint-frontdoor" || \
 	 (echo "✗ lint-frontdoor"; python3 scripts/lint_frontdoor.py; exit 1)
+	@python3 scripts/check_part_headers.py >/dev/null && echo "✓ part-headers" || \
+	 (echo "✗ part-headers"; python3 scripts/check_part_headers.py; exit 1)
 	@test -z "$$(git status --porcelain)" && echo "✓ clean tree" || \
 	 (echo "✗ dirty tree"; git status --short; exit 1)
 
 check-md-links: diagrams
 	@python3 scripts/check_md_links.py
+
+# --- Standalone part-header check ---
+# Every include/csp/part/*.h must compile on its own AND instantiate on
+# its own: template bodies only resolve at instantiation, and ADL can't
+# find csp::part::foo from non-csp argument types, so a part that
+# delegates to another part passes a bare include check and still fails
+# for the caller. See the script's docstring.
+check-part-headers:
+	@python3 scripts/check_part_headers.py
 
 # --- Diagram generation ---
 # Scans docs/**/*.md for <!-- csp-flow ... --> blocks and emits SVGs.

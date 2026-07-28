@@ -38,8 +38,8 @@ reader<T> spawn_quantize(reader<T> source, T quantum,
                          writer<T> residue = writer<T>::dead());
 
 template <typename T>
-writer<double> spawn_quantize(T quantum, writer<T> sink,
-                              writer<T> residue = writer<T>::dead());
+writer<T> spawn_quantize(T quantum, writer<T> sink,
+                         writer<T> residue = writer<T>::dead());
 ```
 
 ## Topology

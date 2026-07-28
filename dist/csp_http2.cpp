@@ -478,14 +478,43 @@ struct listen_result {
     io::fd_t listen_fd;
     uint16_t port;
     std::string local_addr;
+    // Address to self-connect to when waking a blocked accept (see
+    // wake_listener). Derived from getsockname, so it tracks whatever
+    // family and address the listener actually bound.
+    sockaddr_storage wake_addr{};
+    socklen_t wake_len = 0;
 };
+
+// Unblock an accept() by opening a throwaway connection to the listener.
+// The address must match the listener's own family: a listener bound to
+// 127.0.0.1 is unreachable over ::1, and vice versa.
+void wake_listener(const sockaddr_storage& addr, socklen_t len) {
+    if (len == 0) return;
+    auto* sa = reinterpret_cast<const sockaddr*>(&addr);
+#ifndef _WIN32
+    int raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
+    if (raw < 0) return;
+    ::connect(raw, sa, len);
+    ::close(raw);
+#else
+    SOCKET raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
+    if (raw == INVALID_SOCKET) return;
+    ::connect(raw, sa, static_cast<int>(len));
+    closesocket(raw);
+#endif
+}
 
 listen_result create_listener(const std::string& addr, uint16_t port,
                               const serve_options& opts) {
+    // AF_UNSPEC so IPv4 literals (127.0.0.1) and IPv6 (::) both resolve;
+    // AI_PASSIVE only for wildcard bind addresses (🎯T39 — see net.cc).
     struct addrinfo hints{};
-    hints.ai_family = AF_INET6;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    if (addr.empty() || addr == "::" || addr == "0.0.0.0"
+        || addr == "0:0:0:0:0:0:0:0") {
+        hints.ai_flags = AI_PASSIVE;
+    }
 
     auto result = io::resolve(addr, std::to_string(port), &hints);
     if (!result) {
@@ -539,7 +568,22 @@ listen_result create_listener(const std::string& addr, uint16_t port,
             reinterpret_cast<struct sockaddr_in*>(&bound)->sin_port);
     }
 
-    return {listen_fd, actual_port, std::move(local)};
+    // A wildcard bind address is not connectable; substitute the loopback
+    // of the same family, keeping the port the kernel assigned.
+    sockaddr_storage wake = bound;
+    if (wake.ss_family == AF_INET6) {
+        auto* w6 = reinterpret_cast<struct sockaddr_in6*>(&wake);
+        if (IN6_IS_ADDR_UNSPECIFIED(&w6->sin6_addr)) {
+            w6->sin6_addr = in6addr_loopback;
+        }
+    } else {
+        auto* w4 = reinterpret_cast<struct sockaddr_in*>(&wake);
+        if (w4->sin_addr.s_addr == htonl(INADDR_ANY)) {
+            w4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        }
+    }
+
+    return {listen_fd, actual_port, std::move(local), wake, bound_len};
 }
 
 // --- Accept loop: cleartext h2c ---
@@ -549,38 +593,19 @@ server do_serve(const std::string& addr, uint16_t port,
     auto lr = create_listener(addr, port, opts);
 
     auto endpoints = spawn_producer<endpoint>(
-        [listen_fd = lr.listen_fd, port = lr.port, opts](writer<endpoint> out) {
+        [listen_fd = lr.listen_fd, wake_addr = lr.wake_addr,
+         wake_len = lr.wake_len, opts](writer<endpoint> out) {
             internal::descr("http2/serve");
 
             auto stop = std::make_shared<std::atomic<bool>>(false);
             auto out_copy = out.copy();
             auto stop_flag = stop;
             csp::spawn([out_copy = std::move(out_copy),
-                         stop_flag, port] {
+                         stop_flag, wake_addr, wake_len] {
                 internal::descr("http2/serve/sentinel");
                 prialt(~out_copy);
                 stop_flag->store(true, std::memory_order_release);
-#ifndef _WIN32
-                int raw = ::socket(AF_INET6, SOCK_STREAM, 0);
-                if (raw >= 0) {
-                    struct sockaddr_in6 a{};
-                    a.sin6_family = AF_INET6;
-                    a.sin6_port = htons(port);
-                    a.sin6_addr = in6addr_loopback;
-                    ::connect(raw, reinterpret_cast<sockaddr*>(&a), sizeof(a));
-                    ::close(raw);
-                }
-#else
-                SOCKET raw = ::socket(AF_INET6, SOCK_STREAM, 0);
-                if (raw != INVALID_SOCKET) {
-                    struct sockaddr_in6 a{};
-                    a.sin6_family = AF_INET6;
-                    a.sin6_port = htons(port);
-                    a.sin6_addr = in6addr_loopback;
-                    ::connect(raw, reinterpret_cast<sockaddr*>(&a), sizeof(a));
-                    closesocket(raw);
-                }
-#endif
+                wake_listener(wake_addr, wake_len);
             });
 
             for (;;) {
@@ -647,7 +672,8 @@ server do_serve_tls(const std::string& addr, uint16_t port,
     ctx->load_key(key_pem);
 
     auto endpoints = spawn_producer<endpoint>(
-        [listen_fd = lr.listen_fd, bound_port = lr.port, opts, ctx](
+        [listen_fd = lr.listen_fd, wake_addr = lr.wake_addr,
+         wake_len = lr.wake_len, opts, ctx](
             writer<endpoint> out) mutable {
             internal::descr("http2/tls/serve");
 
@@ -655,21 +681,11 @@ server do_serve_tls(const std::string& addr, uint16_t port,
             auto out_copy = out.copy();
             auto stop_flag = stop;
             csp::spawn([out_copy = std::move(out_copy),
-                         stop_flag, port = bound_port] {
+                         stop_flag, wake_addr, wake_len] {
                 internal::descr("http2/tls/serve/sentinel");
                 prialt(~out_copy);
                 stop_flag->store(true, std::memory_order_release);
-#ifndef _WIN32
-                int raw = ::socket(AF_INET6, SOCK_STREAM, 0);
-                if (raw >= 0) {
-                    struct sockaddr_in6 a{};
-                    a.sin6_family = AF_INET6;
-                    a.sin6_port = htons(port);
-                    a.sin6_addr = in6addr_loopback;
-                    ::connect(raw, reinterpret_cast<sockaddr*>(&a), sizeof(a));
-                    ::close(raw);
-                }
-#endif
+                wake_listener(wake_addr, wake_len);
             });
 
             for (;;) {

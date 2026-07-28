@@ -34,8 +34,6 @@ public:
     void log(int flags, char const * srcroot, char const * file, int line, char const * fmt, ...);
     void vlog(int flags, char const * srcroot, char const * file, int line, char const * fmt, va_list ap);
 
-    static void regapp(char const * vendor, char const * appname);
-
     static void dump_stack();
 
 private:

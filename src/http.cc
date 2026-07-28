@@ -423,7 +423,34 @@ struct listen_result {
     io::fd_t listen_fd;
     uint16_t port;
     std::string local_addr;
+    // Address to self-connect to when waking a blocked accept (see
+    // wake_listener). Derived from getsockname, so it tracks whatever
+    // family and address the listener actually bound.
+    sockaddr_storage wake_addr{};
+    socklen_t wake_len = 0;
 };
+
+// Unblock an accept() by opening a throwaway connection to the listener.
+// The address must match the listener's own family: a listener bound to
+// 127.0.0.1 is unreachable over ::1, and vice versa.
+//
+// Deliberately identical to the copy in src/http2.cc so 🎯T43 can lift
+// both into one shared core helper.
+void wake_listener(const sockaddr_storage& addr, socklen_t len) {
+    if (len == 0) return;
+    auto* sa = reinterpret_cast<const sockaddr*>(&addr);
+#ifndef _WIN32
+    int raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
+    if (raw < 0) return;
+    ::connect(raw, sa, len);
+    ::close(raw);
+#else
+    SOCKET raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
+    if (raw == INVALID_SOCKET) return;
+    ::connect(raw, sa, static_cast<int>(len));
+    closesocket(raw);
+#endif
+}
 
 listen_result create_listener(const std::string& addr, uint16_t port,
                               const net::listen_options& opts) {
@@ -488,7 +515,22 @@ listen_result create_listener(const std::string& addr, uint16_t port,
             reinterpret_cast<struct sockaddr_in*>(&bound)->sin_port);
     }
 
-    return {listen_fd, actual_port, std::move(local)};
+    // A wildcard bind address is not connectable; substitute the loopback
+    // of the same family, keeping the port the kernel assigned.
+    sockaddr_storage wake = bound;
+    if (wake.ss_family == AF_INET6) {
+        auto* w6 = reinterpret_cast<struct sockaddr_in6*>(&wake);
+        if (IN6_IS_ADDR_UNSPECIFIED(&w6->sin6_addr)) {
+            w6->sin6_addr = in6addr_loopback;
+        }
+    } else {
+        auto* w4 = reinterpret_cast<struct sockaddr_in*>(&wake);
+        if (w4->sin_addr.s_addr == htonl(INADDR_ANY)) {
+            w4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        }
+    }
+
+    return {listen_fd, actual_port, std::move(local), wake, bound_len};
 }
 
 // --- URL parsing ---
@@ -684,7 +726,8 @@ server serve(const std::string& addr, uint16_t port, serve_options opts) {
     // cancel-aware I/O interference.
 
     auto endpoints = spawn_producer<endpoint>(
-        [listen_fd = lr.listen_fd, port = lr.port,
+        [listen_fd = lr.listen_fd, wake_addr = lr.wake_addr,
+         wake_len = lr.wake_len,
          read_chunk_size = opts.read_chunk_size](writer<endpoint> out) {
             internal::descr("http/serve");
 
@@ -694,35 +737,11 @@ server serve(const std::string& addr, uint16_t port, serve_options opts) {
             auto out_copy = out.copy();
             auto stop_flag = stop;
             csp::spawn([out_copy = std::move(out_copy),
-                         stop_flag, port] {
+                         stop_flag, wake_addr, wake_len] {
                 internal::descr("http/serve/sentinel");
                 prialt(~out_copy);
                 stop_flag->store(true, std::memory_order_release);
-
-                // Self-connect to unblock the accept loop.
-#ifdef _WIN32
-                SOCKET raw = ::socket(AF_INET6, SOCK_STREAM, 0);
-                if (raw != INVALID_SOCKET) {
-                    struct sockaddr_in6 addr {};
-                    addr.sin6_family = AF_INET6;
-                    addr.sin6_port = htons(port);
-                    addr.sin6_addr = in6addr_loopback;
-                    ::connect(raw, reinterpret_cast<sockaddr*>(&addr),
-                              sizeof(addr));
-                    closesocket(raw);
-                }
-#else
-                int raw = ::socket(AF_INET6, SOCK_STREAM, 0);
-                if (raw >= 0) {
-                    struct sockaddr_in6 addr {};
-                    addr.sin6_family = AF_INET6;
-                    addr.sin6_port = htons(port);
-                    addr.sin6_addr = in6addr_loopback;
-                    ::connect(raw, reinterpret_cast<sockaddr*>(&addr),
-                              sizeof(addr));
-                    ::close(raw);
-                }
-#endif
+                wake_listener(wake_addr, wake_len);
             });
 
             for (;;) {
