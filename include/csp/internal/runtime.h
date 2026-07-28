@@ -26,7 +26,7 @@ struct Runtime {
     std::condition_variable park_cv;
     // Watcher-count gates for park_cv broadcasts (🎯T34 O3).  Only
     // completion/quiescence watchers (main_loop, run, await_idle,
-    // await_quiescent, quiescent_loop) wait on park_cv; scheduler-side
+    // await_quiescent) wait on park_cv; scheduler-side
     // notifiers skip the broadcast syscall when none is registered.
     // Two classes, two instances of the gate protocol verified in
     // formal/ParkGate.tla:
@@ -108,14 +108,14 @@ struct Runtime {
 
     void worker_loop();
     void main_loop();
-    void quiescent_loop();
     void watchdog_loop();
     void add_processor();
-    // Wake one parked/sleeping worker so it can steal from a stalled P.
-    // Returns false when no worker is parked (caller may add_processor).
-    // Watchdog-only: unlike unpark_one() it reports success and skips the
-    // park_cv notifies (the watchdog isn't publishing new work).
-    bool try_wake_parked_worker();
+    // Wake one parked/sleeping worker (two-pass scan: sleeping Note
+    // first, then parked flag). Returns false when every worker is
+    // active (the watchdog may add_processor on that answer). 🎯T49:
+    // unpark_one() is the fire-and-forget wrapper; the former
+    // try_wake_parked_worker() was an identical duplicate body.
+    bool wake_a_worker();
     Imp* local_next(Processor& p);
     bool take_from_global(Processor& p);
     bool steal_work(Processor& thief);

@@ -193,7 +193,9 @@ struct alignas(16) Imp {
     void place_on_run_queue();
     void make_runnable();
 
-    void run(Status status = Status::sleep);
+    // Worker dispatch: resume this (queued) imp from the current P's
+    // thread. Departure statuses (detach/exit) go through do_switch.
+    void run();
 
 #if CSP_ASAN
     void* asan_fake_stack_ = nullptr;  // ASan fake-stack state for this fiber

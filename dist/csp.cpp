@@ -824,40 +824,29 @@ namespace {
             int n_chans = 0;
 
             for (int i = 0; i < count; ++i) {
-                auto const & chop = chanops[i];
-                auto * slot = chop.slot ? static_cast<Slot *>(chop.slot) : nullptr;
-                if (slot) slot->lock();
-                Channel * new_ch;
-                if (slot) {
-                    new_ch = static_cast<Channel *>(
-                        slot->channel.load(std::memory_order_acquire));
-                    auto flags = (uintptr_t)chop.waiter.ptr & uintptr_t{15};
-                    const_cast<ChanOp &>(chop).waiter.ptr =
-                        (void *)((uintptr_t)new_ch | flags);
+                // resolve_one pins under the slot lock (the paper-11 UAF
+                // fix); only the dedup/overflow bookkeeping stays inline
+                // (🎯T49). A duplicate arm's extra pin is dropped below —
+                // safe outside the slot lock because the first
+                // occurrence's pin already holds the channel alive.
+                Channel * new_ch = resolve_one(chanops[i], /*pin=*/true);
+                if (!new_ch) continue;
+                bool found = false;
+                for (int j = 0; j < n_chans; ++j) {
+                    if (chans[j] == new_ch) { found = true; break; }
+                }
+                if (found) {
+                    unpin_channel(new_ch);
+                } else if (n_chans < 8) {
+                    fixed_chans[n_chans++] = new_ch;
                 } else {
-                    new_ch = get_chan(chop);
-                }
-                if (new_ch) {
-                    bool found = false;
-                    for (int j = 0; j < n_chans; ++j) {
-                        if (chans[j] == new_ch) { found = true; break; }
+                    if (n_chans == 8) {
+                        variable_chans.assign(fixed_chans, fixed_chans + 8);
                     }
-                    if (!found) {
-                        // Pin under slot lock to close the free race.
-                        new_ch->alive_.fetch_add(1, std::memory_order_relaxed);
-                        if (n_chans < 8) {
-                            fixed_chans[n_chans++] = new_ch;
-                        } else {
-                            if (n_chans == 8) {
-                                variable_chans.assign(fixed_chans, fixed_chans + 8);
-                            }
-                            variable_chans.push_back(new_ch);
-                            chans = variable_chans.data();
-                            n_chans++;
-                        }
-                    }
+                    variable_chans.push_back(new_ch);
+                    chans = variable_chans.data();
+                    n_chans++;
                 }
-                if (slot) slot->unlock();
             }
 
             // Sort unique channels by id for lock ordering. count==1
@@ -1216,85 +1205,80 @@ char const * get_chan_descr(void * ptr) {
     return ch ? describe(ch) : "▸Ø";
 }
 
-WriterRef writer_addref(WriterRef w) {
-    if (w) {
-        counterses()[wr].ref();
-        get_slot(w.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
+// 🎯T49: one body per semantic refcount op, parameterised over the
+// endpoint index. The exported writer_*/reader_* functions below stay as
+// one-line forwarders because the type-erased header firewall names them
+// (the exported symbol set must not change). The weak addref/release
+// pairs never touch the endpoint counter, so they share one untemplated
+// body each.
+namespace {
+
+template <int Endpt, typename Ref>
+Ref endpoint_addref(Ref x) {
+    if (x) {
+        counterses()[Endpt].ref();
+        get_slot(x.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
     }
-    return w;
+    return x;
 }
 
-void writer_release(WriterRef w) {
-    if (w) {
-        auto * slot = get_slot(w.ptr);
-        counterses()[wr].deref();
+template <int Endpt, typename Ref>
+void endpoint_release(Ref x) {
+    if (x) {
+        auto * slot = get_slot(x.ptr);
+        counterses()[Endpt].deref();
         if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            Channel::resolve_endpoint_death(slot, wr);
+            Channel::resolve_endpoint_death(slot, Endpt);
         }
     }
 }
 
-ReaderRef reader_addref(ReaderRef r) {
-    if (r) {
-        counterses()[rd].ref();
-        get_slot(r.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
-    }
-    return r;
+template <typename Ref>
+void endpoint_weak_addref(Ref x) {
+    if (x) get_slot(x.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
 }
 
-void reader_release(ReaderRef r) {
-    if (r) {
-        auto * slot = get_slot(r.ptr);
-        counterses()[rd].deref();
-        if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            Channel::resolve_endpoint_death(slot, rd);
-        }
-    }
+template <typename Ref>
+void endpoint_weak_release(Ref x) {
+    if (x) get_slot(x.ptr)->mem_release();
 }
 
-void writer_weak_addref(WriterRef w) {
-    if (w) get_slot(w.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
-}
-
-void writer_weak_release(WriterRef w) {
-    if (w) get_slot(w.ptr)->mem_release();
-}
-
-void reader_weak_addref(ReaderRef r) {
-    if (r) get_slot(r.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
-}
-
-void reader_weak_release(ReaderRef r) {
-    if (r) get_slot(r.ptr)->mem_release();
-}
-
-bool try_upgrade_weak_writer(WriterRef w) {
-    if (!w) return false;
-    auto* slot = get_slot(w.ptr);
+template <int Endpt, typename Ref>
+bool endpoint_try_upgrade_weak(Ref x) {
+    if (!x) return false;
+    auto* slot = get_slot(x.ptr);
     size_t old = slot->refcount.load(std::memory_order_acquire);
     while (old > 0) {
         if (slot->refcount.compare_exchange_weak(old, old + 1,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
-            counterses()[wr].ref();
+            counterses()[Endpt].ref();
             return true;
         }
     }
     return false;
 }
 
-bool try_upgrade_weak_reader(ReaderRef r) {
-    if (!r) return false;
-    auto* slot = get_slot(r.ptr);
-    size_t old = slot->refcount.load(std::memory_order_acquire);
-    while (old > 0) {
-        if (slot->refcount.compare_exchange_weak(old, old + 1,
-                std::memory_order_acq_rel, std::memory_order_acquire)) {
-            counterses()[rd].ref();
-            return true;
-        }
-    }
-    return false;
-}
+} // namespace
+
+WriterRef writer_addref(WriterRef w) { return endpoint_addref<wr>(w); }
+
+void writer_release(WriterRef w) { endpoint_release<wr>(w); }
+
+ReaderRef reader_addref(ReaderRef r) { return endpoint_addref<rd>(r); }
+
+void reader_release(ReaderRef r) { endpoint_release<rd>(r); }
+
+void writer_weak_addref(WriterRef w) { endpoint_weak_addref(w); }
+
+void writer_weak_release(WriterRef w) { endpoint_weak_release(w); }
+
+void reader_weak_addref(ReaderRef r) { endpoint_weak_addref(r); }
+
+void reader_weak_release(ReaderRef r) { endpoint_weak_release(r); }
+
+bool try_upgrade_weak_writer(WriterRef w) { return endpoint_try_upgrade_weak<wr>(w); }
+
+bool try_upgrade_weak_reader(ReaderRef r) { return endpoint_try_upgrade_weak<rd>(r); }
 
 void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {
     auto * sa = static_cast<Slot *>(slot_a_ptr);
@@ -1753,17 +1737,7 @@ namespace csp {
                     bool pull = false;
                     {
                         std::lock_guard plk(p.run_mu);
-                        bool has_waiting = false;
-                        if (auto* start = p.busy) {
-                            auto* it = start;
-                            do {
-                                if (it != &p.main && it != p.running) {
-                                    has_waiting = true;
-                                    break;
-                                }
-                                it = it->next_;
-                            } while (it != start);
-                        }
+                        bool has_waiting = p.ring_has_waiting();
                         if (!has_waiting
                             && ++p.local_wake_streak_ >= kLocalWakeBudget) {
                             p.local_wake_streak_ = 0;
@@ -1869,7 +1843,14 @@ namespace csp {
             }
         }
 
-        void Imp::run(Status status) {
+        // Worker dispatch: resume a queued imp from local_next(). The
+        // dispatching context is the P's synthetic main (or a resumed
+        // imp's continuation), which stays linked in the ring — only
+        // advance busy past it. Detach/exit departures all go through
+        // do_switch, which owns the sole copy of the CheckWP early-wake
+        // protocol (🎯T49; the arm here was a stale duplicate: the one
+        // caller, worker_loop, always passed Status::sleep).
+        void Imp::run() {
             auto& p = current_p();
             auto& busy = p.busy;
             auto self = current_imp();
@@ -1883,50 +1864,8 @@ namespace csp {
             {
                 std::lock_guard lk(p.run_mu);
 
-                switch (status) {
-                case Status::sleep:
-                    if (self == busy) {
-                        busy = busy->next_;
-                    }
-                    break;
-                case Status::detach: // TLA:StealWork.VDeschedule
-                case Status::exit:
-                    // Inline deschedule without re-acquiring run_mu.
-                    assert(self->next_);
-                    if (busy == self && (busy = self->next_) == self) {
-                        busy = nullptr;
-                    }
-                    if (self->next_) self->next_->prev_ = self->prev_;
-                    if (self->prev_) self->prev_->next_ = self->next_;
-                    self->next_ = nullptr;
-                    self->prev_ = nullptr;
-
-                    // TLA:DrainSuspended.CheckWP — early wake: a waker
-                    // CASed to SUSP_WAKE before our context save. Take
-                    // the wake here (CAS back to IDLE), re-add to the
-                    // local queue, and skip the switch entirely.
-                    if (uint32_t wake = Imp::SUSP_WAKE;
-                        status == Status::detach &&
-                        self->suspend_state_.compare_exchange_strong(
-                            wake, Imp::SUSP_IDLE,
-                            std::memory_order_acq_rel,
-                            std::memory_order_acquire)) {
-                        if (busy) {
-                            self->next_ = busy;
-                            self->prev_ = busy->prev_;
-                            self->next_->prev_ = self->prev_->next_ = self;
-                        } else {
-                            busy = self->next_ = self->prev_ = self;
-                        }
-                        return;
-                    }
-                    // Committed to switching out: release the placement
-                    // claim. Ordered after CheckWP so an early-woken imp
-                    // (which stays queued) never exposes placed_ == FALSE.
-                    // TLA:PlacementClaim
-                    self->placed_.store(false, std::memory_order_release);
-                    break;
-                default: CSP_UNREACHABLE();
+                if (self == busy) {
+                    busy = busy->next_;
                 }
 
                 // Inline schedule without re-acquiring run_mu.
@@ -1941,15 +1880,12 @@ namespace csp {
                 }
             }
 
-            auto killme = status == Status::exit ? self : nullptr;
-            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme), self));
+            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, 0, self));
             if (killyou) {
                 destroy_imp(killyou);
             }
 
-            if (!killme) {
-                set_current_imp(self);
-            }
+            set_current_imp(self);
         }
 
         // TLA:StealWork.VDoSwitch
@@ -4437,7 +4373,7 @@ namespace csp {
             // workers get the FLAGGED sentinel so they skip the next sleep
             // and check stopping immediately.
             //
-            // We also notify main_loop / quiescent_loop (which still use park_cv).
+            // We also notify main_loop (which still uses park_cv).
             //
             // Re-read num_procs_ each iteration to capture any surplus workers
             // that the watchdog added after stopping was set. Stop when the
@@ -4458,7 +4394,7 @@ namespace csp {
                     std::this_thread::yield();
                 }
             }
-            // Synchronize with main_loop / run() / quiescent_loop / await_idle(),
+            // Synchronize with main_loop / run() / await_quiescent() / await_idle(),
             // all of which wait on park_cv. Acquire-release park_mu before
             // notifying so any waiter that has evaluated the predicate as false
             // (but hasn't entered cv.wait yet) will have entered cv.wait before
@@ -4525,12 +4461,13 @@ namespace csp {
             park_cv.notify_all();
         }
 
-        void Runtime::unpark_one() {
+        bool Runtime::wake_a_worker() {
             // Wake exactly one parked worker. Scan for a sleeping Note and CAS
             // SLEEPING->AWAKE + futex_wake on the first match. If no worker is
             // sleeping yet (all awake or in transition), flag one so it skips
             // its next sleep attempt. This eliminates the thundering herd of
-            // notify_all on the worker path.
+            // notify_all on the worker path. Returns false when every worker
+            // is active (the watchdog may add_processor on that answer).
             // TLA:PerWorkerWake.SchedWakeSleeping TLA:PerWorkerWake.SchedFlagAwake
             int n = num_procs_.load(std::memory_order_acquire);
             // First pass: find a sleeping worker and wake exactly that one.
@@ -4539,7 +4476,7 @@ namespace csp {
                 if (!p || !p->alive.load(std::memory_order_acquire)) continue;
                 if (p->note.is_sleeping()) {
                     p->note.wake();
-                    return;
+                    return true;
                 }
             }
             // Second pass: no sleeper found — flag one awake worker so it
@@ -4549,7 +4486,7 @@ namespace csp {
                 if (!p || !p->alive.load(std::memory_order_acquire)) continue;
                 if (p->parked.load(std::memory_order_acquire)) {
                     p->note.wake();
-                    return;
+                    return true;
                 }
             }
             // All workers are active — no action needed.  park_cv
@@ -4557,6 +4494,11 @@ namespace csp {
             // predicate becomes true because work arrived — main_loop
             // acts on completion (imp exit) and quiescence (worker
             // parks), each of which has its own notifier.
+            return false;
+        }
+
+        void Runtime::unpark_one() {
+            wake_a_worker();
         }
 
         void Runtime::push_to_global(Imp* imp) {
@@ -4607,7 +4549,7 @@ namespace csp {
                 // false and p.parked being set, unpark_one() will see parked=true
                 // and wake us, OR we see has_work() here and skip the sleep.
                 p.parked.store(true, std::memory_order_release); // TLA:PerWorkerWake.WorkerSetParked
-                // Wake main_loop / quiescent_loop's quiescence check.
+                // Wake main_loop / await_quiescent()'s quiescence check.
                 // Skipped entirely when no quiescence watcher is
                 // registered (TLA:ParkGate) — this used to be a mutex +
                 // broadcast syscall on every park.
@@ -4705,24 +4647,13 @@ namespace csp {
             }
         }
 
-        void Runtime::quiescent_loop() {
-            // Wait until no runnable work remains (all workers parked and
-            // global queue empty).  Unlike main_loop(), suspended imps that
-            // are waiting for external events (e.g. fake_clock timers) do NOT
-            // prevent this from returning — they are not in any run queue.
-            park_wait([this] {
-                if (has_global_work_.load(std::memory_order_acquire)) {
-                    return false;
-                }
-                int n = num_procs_.load(std::memory_order_acquire);
-                for (int i = 0; i < n; ++i) {
-                    auto& p = *procs[i];
-                    if (!p.alive.load(std::memory_order_acquire)) continue;
-                    if (!p.parked.load(std::memory_order_acquire)) return false;
-                }
-                return true;
-            }, /*quiescence=*/true);
-        }
+        // Runtime::quiescent_loop() was deleted in 🎯T49: it had no
+        // callers (none since its introduction with the M:N scheduler),
+        // and its all-parked scan started at i = 0 — unlike main_loop()'s
+        // i = 1 — which made its predicate unsatisfiable: P0 runs
+        // main_loop, never worker_loop, so procs[0]->parked is never set.
+        // csp::internal::await_quiescent() (csp.cc) is the live version
+        // of the same wait, with the correct i = 1 scan.
 
         void Runtime::watchdog_loop() {
             using namespace std::chrono;
@@ -4778,16 +4709,7 @@ namespace csp {
                         bool rescuable = false;
                         {
                             std::lock_guard lk(p.run_mu);
-                            if (auto* start = p.busy) {
-                                auto* it = start;
-                                do {
-                                    if (it != &p.main && it != p.running) {
-                                        rescuable = true;
-                                        break;
-                                    }
-                                    it = it->next_;
-                                } while (it != start);
-                            }
+                            rescuable = p.ring_has_waiting();
                         }
                         if (!rescuable) {
                             rescuable = has_global_work_.load(std::memory_order_acquire);
@@ -4800,7 +4722,7 @@ namespace csp {
                             // ADDS another instead of waking it. Only
                             // create a new P when nobody is parked (the
                             // mn watchdog stress tests' regime).
-                            if (!try_wake_parked_worker()) {
+                            if (!wake_a_worker()) {
                                 add_processor();
                             }
                         }
@@ -4808,31 +4730,6 @@ namespace csp {
                     last[i] = hb;
                 }
             }
-        }
-
-        bool Runtime::try_wake_parked_worker() {
-            // Same two-pass shape as unpark_one(), but reports success and
-            // skips the park_cv notifies — the watchdog isn't publishing
-            // new work, just redirecting an idle P at work that already
-            // exists (which main_loop's predicates track independently).
-            int n = num_procs_.load(std::memory_order_acquire);
-            for (int i = 1; i < n; ++i) {
-                auto* p = procs[i].get();
-                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
-                if (p->note.is_sleeping()) {
-                    p->note.wake();
-                    return true;
-                }
-            }
-            for (int i = 1; i < n; ++i) {
-                auto* p = procs[i].get();
-                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
-                if (p->parked.load(std::memory_order_acquire)) {
-                    p->note.wake();
-                    return true;
-                }
-            }
-            return false;
         }
 
         void Runtime::add_processor() {
@@ -5876,6 +5773,58 @@ struct walk_work {
     int branch_depth;
 };
 
+// Resolve the callee of an indirect branch (BR Xn tail call) or indirect
+// call (BLR Xn) from Xn's tracked provenance (🎯T49: formerly duplicated
+// inline at both sites).
+//
+// `over_budget` forces the budget fallback even for resolvable targets:
+// CALL_DIRECT/CALL_INDIRECT expressions make the bytecode evaluator walk
+// the callee's body, which is exactly the work the budget cap exists to
+// bound. BL, BLR, and B.cond all gated on over_budget; BR historically
+// did not — an omission dating to the introduction of the budget in the
+// worklist walker (commit 286f4cb), not a design decision. Fixed here:
+// an over-budget BR now degrades to the budget constant like every other
+// call site (behaviour change: over-budget analyses through indirect
+// tail calls get make_budget instead of a resolved callee — more
+// conservative, and consistent with the walker's budget contract).
+//
+// Resolution shapes for PC_RELATIVE (🎯T3.4.2):
+//   1. Xn holds a code address (ADRP+ADD on a function symbol — the
+//      address itself is in __TEXT,__text).
+//   2. Xn holds the address of a function pointer slot (ADRP+ADD on a
+//      static-const table, optionally followed by LDR that propagated
+//      PC_RELATIVE with a byte offset). The slot is in __DATA_CONST,
+//      __const; one dereference yields a code address that should
+//      itself land in __TEXT,__text.
+// GOT/PLT stubs and foreign-library targets fall outside both ranges
+// and route to the budget fallback: dereferencing a GOT entry and
+// walking the resulting external symbol risks walking into unmapped
+// stubs or system libraries, causing SIGSEGV.
+expr_ptr resolve_indirect_callee(
+        const analysis_state& state, uint32_t rn,
+        const stack_analysis_options& opts, bool over_budget) {
+    if (!over_budget && rn < 31) {
+        const auto& r = state.regs[rn];
+        if (r.origin == reg_state::DATA_OFFSET) {
+            return expr::make_call_indirect(r.u.offset);
+        }
+        if (r.origin == reg_state::PC_RELATIVE) {
+            const void* a = r.u.address;
+            const auto& bb = binary_bounds();
+            if (bb.text.contains(a)) {
+                return expr::make_call_direct(a);
+            }
+            if (bb.readonly.contains(a)) {
+                auto* fn = deref_fnptr(a);
+                if (bb.text.contains(fn)) {
+                    return expr::make_call_direct(fn);
+                }
+            }
+        }
+    }
+    return expr::make_budget(opts.indirect_call_budget);
+}
+
 // Walk instructions iteratively, returning one expression per completed path.
 // At conditional branches, both paths are pushed to a worklist instead of
 // recursing.  BL instructions always emit CALL_DIRECT — callee resolution
@@ -5987,33 +5936,8 @@ std::vector<expr_ptr> walk(
             if (match(inst, 0xFFFFFC1F, 0xD61F0000)) {
                 uint32_t rn = (inst >> 5) & 0x1F;
 
-                expr_ptr callee;
-                if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                    callee = expr::make_call_indirect(state.regs[rn].u.offset);
-                } else if (rn < 31 &&
-                           state.regs[rn].origin == reg_state::PC_RELATIVE) {
-                    // 🎯T3.4.2: resolve PC_RELATIVE BR targets via segment
-                    // bounds. The same shape as BLR below — see the rationale
-                    // there.
-                    const void* a = state.regs[rn].u.address;
-                    const auto& bb = binary_bounds();
-                    if (bb.text.contains(a)) {
-                        callee = expr::make_call_direct(a);
-                    } else if (bb.readonly.contains(a)) {
-                        auto* fn = deref_fnptr(a);
-                        callee = bb.text.contains(fn)
-                            ? expr::make_call_direct(fn)
-                            : expr::make_budget(opts.indirect_call_budget);
-                    } else {
-                        callee = expr::make_budget(opts.indirect_call_budget);
-                    }
-                } else {
-                    // PC_RELATIVE BR targets (GOT/PLT stubs) are deliberately
-                    // not followed: dereferencing a GOT entry and walking the
-                    // resulting external symbol risks walking into unmapped stubs
-                    // or system libraries, causing SIGSEGV.  Fall back to budget.
-                    callee = expr::make_budget(opts.indirect_call_budget);
-                }
+                auto callee =
+                    resolve_indirect_callee(state, rn, opts, over_budget);
 
                 auto call_expr = expr::make_add(expr::make_const(cur_depth),
                                                 std::move(callee));
@@ -6120,49 +6044,8 @@ std::vector<expr_ptr> walk(
             if (match(inst, 0xFFFFFC1F, 0xD63F0000)) {
                 uint32_t rn = (inst >> 5) & 0x1F;
 
-                expr_ptr callee;
-                if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                    callee = over_budget
-                        ? expr::make_budget(opts.indirect_call_budget)
-                        : expr::make_call_indirect(state.regs[rn].u.offset);
-                } else if (rn < 31 &&
-                           state.regs[rn].origin == reg_state::PC_RELATIVE) {
-                    // 🎯T3.4.2: resolve PC_RELATIVE BLR targets via segment
-                    // bounds. Two shapes we accept:
-                    //   1. Xn holds a code address (ADRP+ADD on a function
-                    //      symbol — the address itself is in __TEXT,__text).
-                    //   2. Xn holds the address of a function pointer slot
-                    //      (ADRP+ADD on a static-const table, optionally
-                    //      followed by LDR that propagated PC_RELATIVE with
-                    //      a byte offset). The slot is in __DATA_CONST,
-                    //      __const; one dereference yields a code address
-                    //      that should itself land in __TEXT,__text.
-                    // GOT/PLT stubs and foreign-library targets fall outside
-                    // both ranges and naturally route to the budget fallback.
-                    const void* a = state.regs[rn].u.address;
-                    const auto& bb = binary_bounds();
-                    if (bb.text.contains(a)) {
-                        callee = over_budget
-                            ? expr::make_budget(opts.indirect_call_budget)
-                            : expr::make_call_direct(a);
-                    } else if (bb.readonly.contains(a)) {
-                        auto* fn = deref_fnptr(a);
-                        if (bb.text.contains(fn)) {
-                            callee = over_budget
-                                ? expr::make_budget(opts.indirect_call_budget)
-                                : expr::make_call_direct(fn);
-                        } else {
-                            callee = expr::make_budget(opts.indirect_call_budget);
-                        }
-                    } else {
-                        callee = expr::make_budget(opts.indirect_call_budget);
-                    }
-                } else {
-                    // PC_RELATIVE BLR (GOT/PLT dispatch) is not followed to avoid
-                    // walking into external stubs or system libraries which could
-                    // fault or produce meaningless depth estimates.
-                    callee = expr::make_budget(opts.indirect_call_budget);
-                }
+                auto callee =
+                    resolve_indirect_callee(state, rn, opts, over_budget);
 
                 auto call_expr = expr::make_add(expr::make_const(cur_depth),
                                                 std::move(callee));
@@ -6943,13 +6826,24 @@ StackPool::StackPool()
 // ============================================================
 #if CSP_USE_ARENA_STACKS
 
-StackRegion StackPool::arena_alloc() {
+// One arena implementation for both slot classes (🎯T49; formerly a
+// duplicated per-class pair). Geometry comes from kArenaGeometry[cls];
+// mutable state (slabs for drain, free list) from arenas_[cls]. The
+// Small class (🎯T3.4.1) is the same layout with a tighter slot —
+// spawn() opts into it when the stack analyser confirms the imp fits.
+StackRegion StackPool::arena_alloc(StackClass cls) {
+    auto const& g = kArenaGeometry[static_cast<size_t>(cls)];
+    auto& a = arenas_[static_cast<size_t>(cls)];
     std::lock_guard<std::mutex> lk(mu_);
 
-    // Serve from free list first.
-    if (!free_list_.empty()) {
-        auto region = free_list_.back();
-        free_list_.pop_back();
+    if (cls == StackClass::Small) {
+        small_allocations_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Serve from the class free list first.
+    if (!a.free_list.empty()) {
+        auto region = a.free_list.back();
+        a.free_list.pop_back();
         return region;
     }
 
@@ -6958,37 +6852,38 @@ StackRegion StackPool::arena_alloc() {
 #ifdef MAP_NORESERVE
     flags |= MAP_NORESERVE;
 #endif
-    void* base = mmap(nullptr, kArenaSlabSize, PROT_READ | PROT_WRITE, flags, -1, 0);
+    void* base = mmap(nullptr, g.slab_size, PROT_READ | PROT_WRITE, flags, -1, 0);
     if (base == MAP_FAILED) {
         throw std::bad_alloc();
     }
 
-    arena_slabs_.push_back({base, kArenaSlabSize});
+    a.slabs.push_back({base, g.slab_size});
 
     // Carve the slab into slot StackRegions.
     // Return slot 0 directly; push slots 1..N-1 onto the free list.
     auto* p = static_cast<char*>(base);
     StackRegion first{};
-    for (size_t i = 0; i < kArenaSlotsPerSlab; ++i) {
+    for (size_t i = 0; i < g.slots_per_slab; ++i) {
         StackRegion r;
         r.base = p;
-        r.total_size = kArenaSlotSize;
-        r.overflow_limit = p + kArenaSlotGuard;
-        r.cls = StackClass::Default;
-        p += kArenaSlotSize;
+        r.total_size = g.slot_size;
+        r.overflow_limit = p + g.slot_guard;
+        r.cls = cls;
+        p += g.slot_size;
         if (i == 0) {
             first = r;
         } else {
-            free_list_.push_back(r);
+            a.free_list.push_back(r);
         }
     }
     return first;
 }
 
 void StackPool::arena_free(StackRegion region) {
+    auto const& g = kArenaGeometry[static_cast<size_t>(region.cls)];
     // Hint to the kernel that the usable pages can be reclaimed.
-    char* usable = static_cast<char*>(region.base) + kArenaSlotGuard;
-    size_t usable_len = region.total_size - kArenaSlotGuard;
+    char* usable = static_cast<char*>(region.base) + g.slot_guard;
+    size_t usable_len = region.total_size - g.slot_guard;
 #ifdef MADV_FREE
     madvise(usable, usable_len, MADV_FREE);
 #else
@@ -6996,92 +6891,28 @@ void StackPool::arena_free(StackRegion region) {
 #endif
 
     std::lock_guard<std::mutex> lk(mu_);
-    free_list_.push_back(region);
-}
-
-// Small-class arena (🎯T3.4.1): same layout as the default arena, with a
-// tighter slot and separate free list / slab vector. spawn() opts into this
-// class when the stack analyser confirms the imp fits.
-StackRegion StackPool::arena_alloc_small() {
-    std::lock_guard<std::mutex> lk(mu_);
-
-    if (!small_free_list_.empty()) {
-        auto region = small_free_list_.back();
-        small_free_list_.pop_back();
-        small_allocations_.fetch_add(1, std::memory_order_relaxed);
-        return region;
-    }
-
-    int flags = MAP_ANON | MAP_PRIVATE;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-    void* base = mmap(nullptr, kArenaSmallSlabSize, PROT_READ | PROT_WRITE, flags, -1, 0);
-    if (base == MAP_FAILED) {
-        throw std::bad_alloc();
-    }
-
-    small_arena_slabs_.push_back({base, kArenaSmallSlabSize});
-
-    auto* p = static_cast<char*>(base);
-    StackRegion first{};
-    for (size_t i = 0; i < kArenaSmallSlotsPerSlab; ++i) {
-        StackRegion r;
-        r.base = p;
-        r.total_size = kArenaSmallSlotSize;
-        r.overflow_limit = p + kArenaSmallSlotGuard;
-        r.cls = StackClass::Small;
-        p += kArenaSmallSlotSize;
-        if (i == 0) {
-            first = r;
-        } else {
-            small_free_list_.push_back(r);
-        }
-    }
-    small_allocations_.fetch_add(1, std::memory_order_relaxed);
-    return first;
-}
-
-void StackPool::arena_free_small(StackRegion region) {
-    char* usable = static_cast<char*>(region.base) + kArenaSmallSlotGuard;
-    size_t usable_len = region.total_size - kArenaSmallSlotGuard;
-#ifdef MADV_FREE
-    madvise(usable, usable_len, MADV_FREE);
-#else
-    madvise(usable, usable_len, MADV_DONTNEED);
-#endif
-
-    std::lock_guard<std::mutex> lk(mu_);
-    small_free_list_.push_back(region);
+    arenas_[static_cast<size_t>(region.cls)].free_list.push_back(region);
 }
 
 StackRegion StackPool::allocate(StackClass cls) {
-    if (cls == StackClass::Small) return arena_alloc_small();
-    return arena_alloc();
+    return arena_alloc(cls);
 }
 
 void StackPool::release(StackRegion region) {
-    if (region.cls == StackClass::Small) {
-        arena_free_small(region);
-    } else {
-        arena_free(region);
-    }
+    arena_free(region);
 }
 
 // maybe_shrink: inline no-op in the header for arena builds.
 
 void StackPool::drain() {
     std::lock_guard<std::mutex> lk(mu_);
-    free_list_.clear();
-    small_free_list_.clear();
-    for (auto& slab : arena_slabs_) {
-        munmap(slab.base, slab.size);
+    for (auto& a : arenas_) {
+        a.free_list.clear();
+        for (auto& slab : a.slabs) {
+            munmap(slab.base, slab.size);
+        }
+        a.slabs.clear();
     }
-    arena_slabs_.clear();
-    for (auto& slab : small_arena_slabs_) {
-        munmap(slab.base, slab.size);
-    }
-    small_arena_slabs_.clear();
 }
 
 // ============================================================
@@ -7089,7 +6920,13 @@ void StackPool::drain() {
 // ============================================================
 #elif CSP_USE_VM_STACKS
 
-#ifdef _WIN32
+// This branch is Windows-only by construction: CSP_USE_ARENA_STACKS is
+// defined as CSP_USE_VM_STACKS && !_WIN32 (stack_pool.h), so VM &&
+// !ARENA implies _WIN32. The former #else Unix per-stack mmap
+// implementation here was unreachable and has been removed (🎯T49).
+#ifndef _WIN32
+#error "CSP_USE_VM_STACKS without CSP_USE_ARENA_STACKS implies _WIN32"
+#endif
 
 // --- Windows: VirtualAlloc-based stack regions ---
 //
@@ -7250,85 +7087,6 @@ void StackPool::drain() {
     }
     free_list_.clear();
 }
-
-#else // !_WIN32: Unix per-stack mmap (unreachable: CSP_USE_ARENA_STACKS always
-      // takes priority on non-Windows Unix non-sanitizer builds)
-
-static int madv_free_flag() {
-#ifdef MADV_FREE
-    return MADV_FREE;
-#else
-    return MADV_DONTNEED;
-#endif
-}
-
-StackRegion StackPool::mmap_new() {
-    int flags = MAP_ANON | MAP_PRIVATE;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-    void* base = mmap(nullptr, stack_size_, PROT_READ | PROT_WRITE, flags, -1, 0);
-    if (base == MAP_FAILED) {
-        throw std::bad_alloc();
-    }
-    if (mprotect(base, page_size_, PROT_NONE) != 0) {
-        munmap(base, stack_size_);
-        throw std::bad_alloc();
-    }
-    return {base, stack_size_, nullptr};
-}
-
-void StackPool::munmap_region(StackRegion region) {
-    munmap(region.base, region.total_size);
-}
-
-StackRegion StackPool::allocate(StackClass /*cls*/) {
-    // Per-stack mmap mode (unreachable in practice — arena takes priority on
-    // non-Windows Unix builds). Slot-class hint ignored.
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-        if (!free_list_.empty()) {
-            auto region = free_list_.back();
-            free_list_.pop_back();
-            return region;
-        }
-    }
-    return mmap_new();
-}
-
-void StackPool::release(StackRegion region) {
-    char* usable = static_cast<char*>(region.base) + page_size_;
-    size_t usable_len = region.total_size - page_size_;
-    madvise(usable, usable_len, madv_free_flag());
-
-    std::lock_guard<std::mutex> lk(mu_);
-    if (free_list_.size() < kMaxPooled) {
-        free_list_.push_back(region);
-    } else {
-        munmap_region(region);
-    }
-}
-
-void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
-    char* usable = static_cast<char*>(region.base) + page_size_;
-    auto sp_val = reinterpret_cast<uintptr_t>(current_sp);
-    char* sp_page = reinterpret_cast<char*>(sp_val & ~(page_size_ - 1));
-    char* shrink_to = sp_page - 2 * page_size_;
-    if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
-        size_t reclaimable = static_cast<size_t>(shrink_to - usable);
-        madvise(usable, reclaimable, madv_free_flag());
-    }
-}
-
-void StackPool::drain() {
-    std::lock_guard<std::mutex> lk(mu_);
-    for (auto& r : free_list_) {
-        munmap_region(r);
-    }
-    free_list_.clear();
-}
-
-#endif // _WIN32
 
 #else // !CSP_USE_ARENA_STACKS && !CSP_USE_VM_STACKS -- sanitizer heap fallback
 

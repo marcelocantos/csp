@@ -712,6 +712,58 @@ struct walk_work {
     int branch_depth;
 };
 
+// Resolve the callee of an indirect branch (BR Xn tail call) or indirect
+// call (BLR Xn) from Xn's tracked provenance (🎯T49: formerly duplicated
+// inline at both sites).
+//
+// `over_budget` forces the budget fallback even for resolvable targets:
+// CALL_DIRECT/CALL_INDIRECT expressions make the bytecode evaluator walk
+// the callee's body, which is exactly the work the budget cap exists to
+// bound. BL, BLR, and B.cond all gated on over_budget; BR historically
+// did not — an omission dating to the introduction of the budget in the
+// worklist walker (commit 286f4cb), not a design decision. Fixed here:
+// an over-budget BR now degrades to the budget constant like every other
+// call site (behaviour change: over-budget analyses through indirect
+// tail calls get make_budget instead of a resolved callee — more
+// conservative, and consistent with the walker's budget contract).
+//
+// Resolution shapes for PC_RELATIVE (🎯T3.4.2):
+//   1. Xn holds a code address (ADRP+ADD on a function symbol — the
+//      address itself is in __TEXT,__text).
+//   2. Xn holds the address of a function pointer slot (ADRP+ADD on a
+//      static-const table, optionally followed by LDR that propagated
+//      PC_RELATIVE with a byte offset). The slot is in __DATA_CONST,
+//      __const; one dereference yields a code address that should
+//      itself land in __TEXT,__text.
+// GOT/PLT stubs and foreign-library targets fall outside both ranges
+// and route to the budget fallback: dereferencing a GOT entry and
+// walking the resulting external symbol risks walking into unmapped
+// stubs or system libraries, causing SIGSEGV.
+expr_ptr resolve_indirect_callee(
+        const analysis_state& state, uint32_t rn,
+        const stack_analysis_options& opts, bool over_budget) {
+    if (!over_budget && rn < 31) {
+        const auto& r = state.regs[rn];
+        if (r.origin == reg_state::DATA_OFFSET) {
+            return expr::make_call_indirect(r.u.offset);
+        }
+        if (r.origin == reg_state::PC_RELATIVE) {
+            const void* a = r.u.address;
+            const auto& bb = binary_bounds();
+            if (bb.text.contains(a)) {
+                return expr::make_call_direct(a);
+            }
+            if (bb.readonly.contains(a)) {
+                auto* fn = deref_fnptr(a);
+                if (bb.text.contains(fn)) {
+                    return expr::make_call_direct(fn);
+                }
+            }
+        }
+    }
+    return expr::make_budget(opts.indirect_call_budget);
+}
+
 // Walk instructions iteratively, returning one expression per completed path.
 // At conditional branches, both paths are pushed to a worklist instead of
 // recursing.  BL instructions always emit CALL_DIRECT — callee resolution
@@ -823,33 +875,8 @@ std::vector<expr_ptr> walk(
             if (match(inst, 0xFFFFFC1F, 0xD61F0000)) {
                 uint32_t rn = (inst >> 5) & 0x1F;
 
-                expr_ptr callee;
-                if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                    callee = expr::make_call_indirect(state.regs[rn].u.offset);
-                } else if (rn < 31 &&
-                           state.regs[rn].origin == reg_state::PC_RELATIVE) {
-                    // 🎯T3.4.2: resolve PC_RELATIVE BR targets via segment
-                    // bounds. The same shape as BLR below — see the rationale
-                    // there.
-                    const void* a = state.regs[rn].u.address;
-                    const auto& bb = binary_bounds();
-                    if (bb.text.contains(a)) {
-                        callee = expr::make_call_direct(a);
-                    } else if (bb.readonly.contains(a)) {
-                        auto* fn = deref_fnptr(a);
-                        callee = bb.text.contains(fn)
-                            ? expr::make_call_direct(fn)
-                            : expr::make_budget(opts.indirect_call_budget);
-                    } else {
-                        callee = expr::make_budget(opts.indirect_call_budget);
-                    }
-                } else {
-                    // PC_RELATIVE BR targets (GOT/PLT stubs) are deliberately
-                    // not followed: dereferencing a GOT entry and walking the
-                    // resulting external symbol risks walking into unmapped stubs
-                    // or system libraries, causing SIGSEGV.  Fall back to budget.
-                    callee = expr::make_budget(opts.indirect_call_budget);
-                }
+                auto callee =
+                    resolve_indirect_callee(state, rn, opts, over_budget);
 
                 auto call_expr = expr::make_add(expr::make_const(cur_depth),
                                                 std::move(callee));
@@ -956,49 +983,8 @@ std::vector<expr_ptr> walk(
             if (match(inst, 0xFFFFFC1F, 0xD63F0000)) {
                 uint32_t rn = (inst >> 5) & 0x1F;
 
-                expr_ptr callee;
-                if (rn < 31 && state.regs[rn].origin == reg_state::DATA_OFFSET) {
-                    callee = over_budget
-                        ? expr::make_budget(opts.indirect_call_budget)
-                        : expr::make_call_indirect(state.regs[rn].u.offset);
-                } else if (rn < 31 &&
-                           state.regs[rn].origin == reg_state::PC_RELATIVE) {
-                    // 🎯T3.4.2: resolve PC_RELATIVE BLR targets via segment
-                    // bounds. Two shapes we accept:
-                    //   1. Xn holds a code address (ADRP+ADD on a function
-                    //      symbol — the address itself is in __TEXT,__text).
-                    //   2. Xn holds the address of a function pointer slot
-                    //      (ADRP+ADD on a static-const table, optionally
-                    //      followed by LDR that propagated PC_RELATIVE with
-                    //      a byte offset). The slot is in __DATA_CONST,
-                    //      __const; one dereference yields a code address
-                    //      that should itself land in __TEXT,__text.
-                    // GOT/PLT stubs and foreign-library targets fall outside
-                    // both ranges and naturally route to the budget fallback.
-                    const void* a = state.regs[rn].u.address;
-                    const auto& bb = binary_bounds();
-                    if (bb.text.contains(a)) {
-                        callee = over_budget
-                            ? expr::make_budget(opts.indirect_call_budget)
-                            : expr::make_call_direct(a);
-                    } else if (bb.readonly.contains(a)) {
-                        auto* fn = deref_fnptr(a);
-                        if (bb.text.contains(fn)) {
-                            callee = over_budget
-                                ? expr::make_budget(opts.indirect_call_budget)
-                                : expr::make_call_direct(fn);
-                        } else {
-                            callee = expr::make_budget(opts.indirect_call_budget);
-                        }
-                    } else {
-                        callee = expr::make_budget(opts.indirect_call_budget);
-                    }
-                } else {
-                    // PC_RELATIVE BLR (GOT/PLT dispatch) is not followed to avoid
-                    // walking into external stubs or system libraries which could
-                    // fault or produce meaningless depth estimates.
-                    callee = expr::make_budget(opts.indirect_call_budget);
-                }
+                auto callee =
+                    resolve_indirect_callee(state, rn, opts, over_budget);
 
                 auto call_expr = expr::make_add(expr::make_const(cur_depth),
                                                 std::move(callee));

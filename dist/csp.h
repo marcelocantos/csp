@@ -1748,35 +1748,16 @@ inline int typed_alt(Ops &&... ops) {
 // different channel types appear in a single alt, the count is
 // known at compile time and the variadic overload handles it with
 // per-index type dispatch.
-template <alt_begin_f * begin_f, typename T>
+// Nowait selects the non-blocking variant (the vector+none overloads
+// below — 🎯T49: formerly a near-identical typed_alt_vec_none copy).
+template <alt_begin_f * begin_f, int Nowait, typename T>
 inline
 int typed_alt_vec(std::vector<chan_op<T>> const & ops) {
     std::vector<internal::ChanOp> chanops;
     chanops.reserve(ops.size());
     for (auto & op : ops) chanops.push_back(op.chanop());
     internal::AltMatch m;
-    begin_f(&m, chanops.data(), (int)chanops.size(), 0);
-    if (m.src)
-        chan_op<T>::transfer(m.src, m.dst, m.eptr_dst);
-    internal::alt_end(&m);
-    for (auto & op : ops) op.disarm();
-    std::exception_ptr ex;
-    for (auto & op : ops) {
-        if (auto e = op.take_exception()) ex = std::move(e);
-    }
-    if (ex) std::rethrow_exception(ex);
-    return m.result;
-}
-
-// Typed vector alt with nowait (for none support).
-template <alt_begin_f * begin_f, typename T>
-inline
-int typed_alt_vec_none(std::vector<chan_op<T>> const & ops) {
-    std::vector<internal::ChanOp> chanops;
-    chanops.reserve(ops.size());
-    for (auto & op : ops) chanops.push_back(op.chanop());
-    internal::AltMatch m;
-    begin_f(&m, chanops.data(), (int)chanops.size(), 1);
+    begin_f(&m, chanops.data(), (int)chanops.size(), Nowait);
     if (m.src)
         chan_op<T>::transfer(m.src, m.dst, m.eptr_dst);
     internal::alt_end(&m);
@@ -1810,13 +1791,13 @@ inline int prialt(Ops &&... ops) {
 template <typename T>
 inline
 int alt(std::vector<chan_op<T>> const & ops) {
-    return detail::typed_alt_vec<&internal::alt_begin>(ops);
+    return detail::typed_alt_vec<&internal::alt_begin, 0>(ops);
 }
 
 template <typename T>
 inline
 int prialt(std::vector<chan_op<T>> const & ops) {
-    return detail::typed_alt_vec<&internal::prialt_begin>(ops);
+    return detail::typed_alt_vec<&internal::prialt_begin, 0>(ops);
 }
 
 // --- vector+none overloads ---
@@ -1824,13 +1805,13 @@ int prialt(std::vector<chan_op<T>> const & ops) {
 template <typename T>
 inline
 int alt(std::vector<chan_op<T>> const & ops, none_t) {
-    return detail::typed_alt_vec_none<&internal::alt_begin>(ops);
+    return detail::typed_alt_vec<&internal::alt_begin, 1>(ops);
 }
 
 template <typename T>
 inline
 int prialt(std::vector<chan_op<T>> const & ops, none_t) {
-    return detail::typed_alt_vec_none<&internal::prialt_begin>(ops);
+    return detail::typed_alt_vec<&internal::prialt_begin, 1>(ops);
 }
 
 // Dead channel to assist non-blocking waits.
@@ -2222,7 +2203,9 @@ public:
     size_t slab_count() const {
 #if CSP_USE_ARENA_STACKS
         std::lock_guard<std::mutex> lk(mu_);
-        return arena_slabs_.size() + small_arena_slabs_.size();
+        size_t n = 0;
+        for (auto const& a : arenas_) n += a.slabs.size();
+        return n;
 #else
         return 0;
 #endif
@@ -2259,10 +2242,8 @@ private:
     StackRegion mmap_new();
     void munmap_region(StackRegion region);
 #elif CSP_USE_ARENA_STACKS
-    StackRegion arena_alloc();
+    StackRegion arena_alloc(StackClass cls);
     void arena_free(StackRegion region);
-    StackRegion arena_alloc_small();
-    void arena_free_small(StackRegion region);
 #endif
 
     size_t page_size_;
@@ -2303,11 +2284,30 @@ private:
         size_t size = 0;
     };
 
-    std::vector<ArenaSlab> arena_slabs_;        // default-class slabs (for drain)
-    std::vector<ArenaSlab> small_arena_slabs_;  // small-class slabs (for drain)
-    std::vector<StackRegion> small_free_list_;  // small-class free list
+    // Per-class slot geometry, indexed by StackClass (🎯T49: the two
+    // formerly duplicated per-class arena implementations share one body
+    // driven by this table).
+    struct ArenaGeometry {
+        size_t slot_guard;
+        size_t slot_size;
+        size_t slots_per_slab;
+        size_t slab_size;
+    };
+    static constexpr ArenaGeometry kArenaGeometry[2] = {
+        {kArenaSlotGuard, kArenaSlotSize, kArenaSlotsPerSlab, kArenaSlabSize},
+        {kArenaSmallSlotGuard, kArenaSmallSlotSize,
+         kArenaSmallSlotsPerSlab, kArenaSmallSlabSize},
+    };
+
+    // Per-class mutable arena state, indexed by StackClass.
+    struct ArenaClass {
+        std::vector<ArenaSlab> slabs;           // for drain()
+        std::vector<StackRegion> free_list;
+    };
+    ArenaClass arenas_[2];
     std::atomic<size_t> small_allocations_{0};
-    // free_list_ holds default-class arena StackRegions (with overflow_limit set)
+    // free_list_ (above) is unused in arena mode; the per-class arena
+    // free lists live in arenas_[].free_list.
 #endif
 
 
@@ -2508,7 +2508,9 @@ struct alignas(16) Imp {
     void place_on_run_queue();
     void make_runnable();
 
-    void run(Status status = Status::sleep);
+    // Worker dispatch: resume this (queued) imp from the current P's
+    // thread. Departure statuses (detach/exit) go through do_switch.
+    void run();
 
 #if CSP_ASAN
     void* asan_fake_stack_ = nullptr;  // ASan fake-stack state for this fiber
@@ -3391,6 +3393,8 @@ void write_all(fd_t fd, const void* data, size_t len);
 /* csp/part/part.h */
 
 
+#include <array>
+#include <tuple>
 
 namespace csp::part {
 
@@ -3682,6 +3686,46 @@ auto operator|(chan<T> ch, consumer<T, F> c) {
             c(std::move(ch.r));
         });
 }
+
+namespace detail {
+
+// Shared machinery for heterogeneous fan-in parts (mux, combine_latest —
+// 🎯T49: formerly duplicated per part).
+
+// Set up ChanOp read slots for a tuple of typed inputs, each pointing at
+// its typed buffer.
+template <size_t... Is, typename Bufs, typename Inputs>
+void hetero_read_setup(internal::ChanOp* chanops, Bufs& bufs, Inputs& inputs,
+                       std::index_sequence<Is...>) {
+    ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
+                     &std::get<Is>(bufs),
+                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
+}
+
+// Typed-transfer dispatch table, built at compile time via index_sequence
+// expansion: transfers[i] moves a Ts...[i] value between type-erased
+// pointers. Parts derive from this and add their own per-index tables
+// (mux: variant wrappers; combine_latest: latest-tuple updaters).
+template <typename... Ts>
+struct hetero_transfer {
+    using xfer_fn = void(*)(void*, void*);
+
+    template <size_t I>
+    static void transfer(void* d, void* s) {
+        using T = std::tuple_element_t<I, std::tuple<Ts...>>;
+        *static_cast<T*>(d) = std::move(*static_cast<T*>(s));
+    }
+
+    template <size_t... Is>
+    static constexpr auto make_transfers(std::index_sequence<Is...>) {
+        return std::array<xfer_fn, sizeof...(Is)>{{&transfer<Is>...}};
+    }
+
+    static constexpr auto transfers =
+        make_transfers(std::index_sequence_for<Ts...>{});
+};
+
+} // namespace detail
 
 }
 
@@ -4999,7 +5043,6 @@ private:
 
 /* csp/internal/function.h */
 
-#include <tuple>
 
 namespace csp {
 
@@ -5338,6 +5381,23 @@ struct Processor {
         , id(id_)
     { }
 
+    // True when the ring holds waiting work besides the sentinel and the
+    // currently running imp. Caller must hold run_mu (🎯T49: shared by
+    // the wake-to-local fairness check in place_on_run_queue and the
+    // watchdog's rescuable scan).
+    bool ring_has_waiting() const {
+        if (auto* start = busy) {
+            auto* it = start;
+            do {
+                if (it != &main && it != running) {
+                    return true;
+                }
+                it = it->next_;
+            } while (it != start);
+        }
+        return false;
+    }
+
     // Reinitialize a dead surplus P for reuse.  Caller must have
     // joined the old worker thread first.
     void reset() {
@@ -5643,7 +5703,7 @@ struct Runtime {
     std::condition_variable park_cv;
     // Watcher-count gates for park_cv broadcasts (🎯T34 O3).  Only
     // completion/quiescence watchers (main_loop, run, await_idle,
-    // await_quiescent, quiescent_loop) wait on park_cv; scheduler-side
+    // await_quiescent) wait on park_cv; scheduler-side
     // notifiers skip the broadcast syscall when none is registered.
     // Two classes, two instances of the gate protocol verified in
     // formal/ParkGate.tla:
@@ -5725,14 +5785,14 @@ struct Runtime {
 
     void worker_loop();
     void main_loop();
-    void quiescent_loop();
     void watchdog_loop();
     void add_processor();
-    // Wake one parked/sleeping worker so it can steal from a stalled P.
-    // Returns false when no worker is parked (caller may add_processor).
-    // Watchdog-only: unlike unpark_one() it reports success and skips the
-    // park_cv notifies (the watchdog isn't publishing new work).
-    bool try_wake_parked_worker();
+    // Wake one parked/sleeping worker (two-pass scan: sleeping Note
+    // first, then parked flag). Returns false when every worker is
+    // active (the watchdog may add_processor on that answer). 🎯T49:
+    // unpark_one() is the fire-and-forget wrapper; the former
+    // try_wake_parked_worker() was an identical duplicate body.
+    bool wake_a_worker();
     Imp* local_next(Processor& p);
     bool take_from_global(Processor& p);
     bool steal_work(Processor& thief);
@@ -5898,32 +5958,16 @@ auto collect(Iter it) {
 /* csp/part/combine_latest.h */
 
 
-#include <array>
 
 namespace csp::part {
 
 namespace detail {
 
-// Set up ChanOp read slots for combine_latest inputs.
-template <size_t... Is, typename Bufs, typename Inputs>
-void combine_setup(internal::ChanOp* chanops, Bufs& bufs, Inputs& inputs,
-                   std::index_sequence<Is...>) {
-    ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
-                     &std::get<Is>(bufs),
-                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
-}
-
-// Dispatch tables for typed transfer and latest-update by runtime index.
+// Latest-update dispatch table on top of the shared hetero fan-in
+// transfer table (part.h — 🎯T49).
 template <typename... Ts>
-struct combine_dispatch {
-    using xfer_fn = void(*)(void*, void*);
+struct combine_dispatch : hetero_transfer<Ts...> {
     using update_fn = void(*)(std::tuple<Ts...>&, std::tuple<Ts...>&);
-
-    template <size_t I>
-    static void transfer(void* d, void* s) {
-        using T = std::tuple_element_t<I, std::tuple<Ts...>>;
-        *static_cast<T*>(d) = std::move(*static_cast<T*>(s));
-    }
 
     template <size_t I>
     static void update(std::tuple<Ts...>& latest, std::tuple<Ts...>& bufs) {
@@ -5931,17 +5975,10 @@ struct combine_dispatch {
     }
 
     template <size_t... Is>
-    static constexpr auto make_transfers(std::index_sequence<Is...>) {
-        return std::array<xfer_fn, sizeof...(Is)>{{&transfer<Is>...}};
-    }
-
-    template <size_t... Is>
     static constexpr auto make_updaters(std::index_sequence<Is...>) {
         return std::array<update_fn, sizeof...(Is)>{{&update<Is>...}};
     }
 
-    static constexpr auto transfers =
-        make_transfers(std::index_sequence_for<Ts...>{});
     static constexpr auto updaters =
         make_updaters(std::index_sequence_for<Ts...>{});
 };
@@ -5968,8 +6005,8 @@ auto combine_latest_impl(F&& f, reader<Ts>... inputs) {
             // Slot 0: death-watch on output.
             chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)};
             // Slots 1..N: reads from each input.
-            combine_setup(chanops + 1, bufs, inputs,
-                          std::index_sequence_for<Ts...>{});
+            hetero_read_setup(chanops + 1, bufs, inputs,
+                              std::index_sequence_for<Ts...>{});
 
             while (alive > 0) {
                 internal::AltMatch m;
@@ -7417,29 +7454,11 @@ namespace csp::part {
 
 namespace detail {
 
-// Set up ChanOp read slots and buffer pointer array for mux.
-template <size_t... Is, typename Bufs, typename Inputs>
-void mux_setup(internal::ChanOp* chanops, void** buf_ptrs,
-               Bufs& bufs, Inputs& inputs,
-               std::index_sequence<Is...>) {
-    ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
-                     &std::get<Is>(bufs),
-                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
-    ((buf_ptrs[Is] = &std::get<Is>(bufs)), ...);
-}
-
-// Transfer and wrapper dispatch tables, built at compile time via
-// index_sequence expansion.
+// Variant-wrapper dispatch table on top of the shared hetero fan-in
+// transfer table (part.h — 🎯T49).
 template <typename V, typename... Ts>
-struct mux_dispatch {
-    using xfer_fn = void(*)(void*, void*);
+struct mux_dispatch : hetero_transfer<Ts...> {
     using wrap_fn = V(*)(void*);
-
-    template <size_t I>
-    static void transfer(void* d, void* s) {
-        using T = std::tuple_element_t<I, std::tuple<Ts...>>;
-        *static_cast<T*>(d) = std::move(*static_cast<T*>(s));
-    }
 
     template <size_t I>
     static V wrap(void* p) {
@@ -7448,17 +7467,10 @@ struct mux_dispatch {
     }
 
     template <size_t... Is>
-    static constexpr auto make_transfers(std::index_sequence<Is...>) {
-        return std::array<xfer_fn, sizeof...(Is)>{{&transfer<Is>...}};
-    }
-
-    template <size_t... Is>
     static constexpr auto make_wrappers(std::index_sequence<Is...>) {
         return std::array<wrap_fn, sizeof...(Is)>{{&wrap<Is>...}};
     }
 
-    static constexpr auto transfers =
-        make_transfers(std::index_sequence_for<Ts...>{});
     static constexpr auto wrappers =
         make_wrappers(std::index_sequence_for<Ts...>{});
 };
@@ -7485,9 +7497,12 @@ auto mux(reader<Ts>... inputs) {
             // Slot 0: death-watch on output.
             chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)};
             // Slots 1..N: reads, each pointing at its typed buffer.
-            detail::mux_setup(
-                chanops + 1, buf_ptrs, bufs, inputs,
+            detail::hetero_read_setup(
+                chanops + 1, bufs, inputs,
                 std::index_sequence_for<Ts...>{});
+            [&]<size_t... Is>(std::index_sequence<Is...>) {
+                ((buf_ptrs[Is] = &std::get<Is>(bufs)), ...);
+            }(std::index_sequence_for<Ts...>{});
 
             size_t live = N;
             while (live > 0) {

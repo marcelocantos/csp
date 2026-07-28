@@ -1449,35 +1449,16 @@ inline int typed_alt(Ops &&... ops) {
 // different channel types appear in a single alt, the count is
 // known at compile time and the variadic overload handles it with
 // per-index type dispatch.
-template <alt_begin_f * begin_f, typename T>
+// Nowait selects the non-blocking variant (the vector+none overloads
+// below — 🎯T49: formerly a near-identical typed_alt_vec_none copy).
+template <alt_begin_f * begin_f, int Nowait, typename T>
 inline
 int typed_alt_vec(std::vector<chan_op<T>> const & ops) {
     std::vector<internal::ChanOp> chanops;
     chanops.reserve(ops.size());
     for (auto & op : ops) chanops.push_back(op.chanop());
     internal::AltMatch m;
-    begin_f(&m, chanops.data(), (int)chanops.size(), 0);
-    if (m.src)
-        chan_op<T>::transfer(m.src, m.dst, m.eptr_dst);
-    internal::alt_end(&m);
-    for (auto & op : ops) op.disarm();
-    std::exception_ptr ex;
-    for (auto & op : ops) {
-        if (auto e = op.take_exception()) ex = std::move(e);
-    }
-    if (ex) std::rethrow_exception(ex);
-    return m.result;
-}
-
-// Typed vector alt with nowait (for none support).
-template <alt_begin_f * begin_f, typename T>
-inline
-int typed_alt_vec_none(std::vector<chan_op<T>> const & ops) {
-    std::vector<internal::ChanOp> chanops;
-    chanops.reserve(ops.size());
-    for (auto & op : ops) chanops.push_back(op.chanop());
-    internal::AltMatch m;
-    begin_f(&m, chanops.data(), (int)chanops.size(), 1);
+    begin_f(&m, chanops.data(), (int)chanops.size(), Nowait);
     if (m.src)
         chan_op<T>::transfer(m.src, m.dst, m.eptr_dst);
     internal::alt_end(&m);
@@ -1511,13 +1492,13 @@ inline int prialt(Ops &&... ops) {
 template <typename T>
 inline
 int alt(std::vector<chan_op<T>> const & ops) {
-    return detail::typed_alt_vec<&internal::alt_begin>(ops);
+    return detail::typed_alt_vec<&internal::alt_begin, 0>(ops);
 }
 
 template <typename T>
 inline
 int prialt(std::vector<chan_op<T>> const & ops) {
-    return detail::typed_alt_vec<&internal::prialt_begin>(ops);
+    return detail::typed_alt_vec<&internal::prialt_begin, 0>(ops);
 }
 
 // --- vector+none overloads ---
@@ -1525,13 +1506,13 @@ int prialt(std::vector<chan_op<T>> const & ops) {
 template <typename T>
 inline
 int alt(std::vector<chan_op<T>> const & ops, none_t) {
-    return detail::typed_alt_vec_none<&internal::alt_begin>(ops);
+    return detail::typed_alt_vec<&internal::alt_begin, 1>(ops);
 }
 
 template <typename T>
 inline
 int prialt(std::vector<chan_op<T>> const & ops, none_t) {
-    return detail::typed_alt_vec_none<&internal::prialt_begin>(ops);
+    return detail::typed_alt_vec<&internal::prialt_begin, 1>(ops);
 }
 
 // Dead channel to assist non-blocking waits.
