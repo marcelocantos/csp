@@ -1,5 +1,8 @@
 # Context-Aware Stack Depth Analysis
 
+**Current implementation (as shipped):**  
+[docs/reference/stack-analysis.md](../reference/stack-analysis.md)
+
 ## Abstract
 
 Static stack depth analysis — walking a function's machine instructions to

@@ -1,50 +1,39 @@
 # Stack Depth Analyzer: Future Directions
 
-This document discusses potential innovations to make the ARM64 stack depth
-analyzer more sophisticated — covering more instruction patterns, resolving
-more indirect calls, and producing tighter bounds.
+Ideas that could push the ARM64 walker beyond what is already shipped.
 
-## Current capabilities
+**Current system (authoritative):**  
+[`docs/reference/stack-analysis.md`](reference/stack-analysis.md) — as of
+v0.27.0 / 🎯T3.10. Read that page for capabilities, wiring, soundness, and
+what is *already* implemented (interprocedural data / X0–X7 provenance,
+PC-relative + vtables, profile budgets, spawn Small slots, etc.).
 
-The analyzer walks ARM64 instructions from a function entry point, tracking SP
-displacement across all reachable paths. It handles:
+This file is **forward-looking only**. Several sections below pre-date
+T3.4.2–T3.10; treat overlapping “problems” as historical design notes unless
+the open-gap table in the reference page still lists them.
 
-- **Stack frame ops**: `SUB/ADD SP, SP, #imm`, `STP [SP, #imm]!` (pre-index),
-  `LDP [SP], #imm` (post-index).
-- **Direct calls**: `BL offset` → deferred to bytecode evaluator, which
-  compiles the callee on demand and follows it iteratively.
-- **Conditional branches**: `B.cond`, `CBZ/CBNZ`, `TBZ/TBNZ` → forks both
-  paths into a worklist.
-- **Indirect calls**: `BLR Xn` / `BR Xn` → resolved if the register's origin
-  is traced back to a known offset within the `data` parameter; otherwise falls
-  back to a flat budget.
-- **Register tracking**: `LDR Xt, [Xn, #imm]`, `ADD Xd, Xn, #imm`,
-  `MOV Xd, Xm` propagate `DATA_OFFSET` provenance from X0.
+### Remaining high-value gaps (summary)
 
-Key limitations:
-
-| Gap | Impact |
+| Gap | Notes |
 |-----|--------|
-| Data propagation is root-only | Callees lose `current_data`, so nested indirect calls are inexact |
-| No ADRP+ADD/LDR tracking | Can't resolve PC-relative globals (vtables, GOT entries) |
-| No FP/SIMD stack ops | `STP Q0, Q1, [SP, #-32]!` silently ignored |
-| No pre/post-indexed STR/LDR | Only STP/LDP pre/post forms are decoded |
-| Dynamic SP adjustment is opaque | `SUB SP, SP, Xn` immediately bails to budget |
-| ARM64 only | Non-ARM64 returns a 32 KB conservative default |
-| No switch/jump table support | Computed branches are not followed |
+| Type-erased `csp::spawn(lambda)` trampoline | Main reason real imps stay Default |
+| x86_64 walker | Still a 32 KiB inexact stub |
+| FP/SIMD stack ops, dynamic `SUB SP, Xn`, jump tables | Still limited |
+| Mutual indirect-recursion fixed point | Explicitly deferred |
 
 ---
 
 ## 1. Multi-level data propagation
 
-### Problem
+> **Status:** largely **landed** via 🎯T3.4.3 / 🎯T3.10 (`OP_CALL_DIRECT_WITH_DATA`
+> and per-register seeds). Kept for design history; see the reference page.
 
-When `eval_iterative` enters a direct callee via `CALL_DIRECT`, it sets
-`current_data = nullptr`. Any `CALL_INDIRECT` in the callee or its descendants
-falls back to `indirect_call_budget`, even though the original data pointer
-might still be live in a callee-saved register.
+### Problem (historical)
 
-### Design
+When `eval_iterative` entered a direct callee via `CALL_DIRECT`, it set
+`current_data = nullptr`. Nested `CALL_INDIRECT` then fell back to budget.
+
+### Design (as proposed; now largely implemented)
 
 Extend the bytecode VM's call frame to carry a **data context** through direct
 calls:
