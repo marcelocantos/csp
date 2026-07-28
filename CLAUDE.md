@@ -30,9 +30,9 @@ VM (`ssh hms-vm`, Win11 ARM64) by `scripts/win-validate.sh`.
 Cloud `Windows x86_64` still runs on every PR: MSVC build + an
 **abbreviated smoke** (`scripts/win-ci-smoke.ps1` — core channel/runtime
 units only, seconds of test time). It is **not** a required master
-ruleset check (merge/release wait on macOS/Linux/TLA+). Full-suite hang
-risk (🎯T39) is confined to the local gate; cloud must not burn runners
-on the full suite.
+ruleset check (merge/release wait on macOS/Linux/TLA+). The full suite
+is the local gate only so cloud runners stay fast; 🎯T39 (listen hang)
+was fixed in v0.27.0 (`FD_ACCEPT` on the Windows reactor).
 
 Flow is **push-first**: push the branch, then run
 `scripts/win-validate.sh` (it validates the *pushed* commit), which

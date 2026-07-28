@@ -61,11 +61,11 @@ items:
     enforce: warning
     tier: 2
     reason: |
-      Full suite can hang under 🎯T39; authoritative signal is
-      windows-vm-validated on hms-vm (MSVC ARM64, full csp_tests). Cloud
-      Windows x86_64 is non-required and runs scripts/win-ci-smoke.ps1
-      (core units only) so PRs get a fast amd64 compile+smoke without
-      waiting on hang/timeout. TLS/picotls unported on Windows.
+      Authoritative full suite is windows-vm-validated on hms-vm
+      (MSVC ARM64, scripts/win-validate.sh). Cloud Windows x86_64 is
+      non-required and runs scripts/win-ci-smoke.ps1 (core units only)
+      for a fast amd64 compile+smoke. 🎯T39 listen hang fixed in
+      v0.27.0 (FD_ACCEPT). TLS/picotls unported on Windows.
     evidence:
       {
         script: scripts/win-validate.sh,
