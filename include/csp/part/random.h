@@ -4,68 +4,73 @@
 
 #include <algorithm>
 #include <random>
+#include <utility>
 #include <vector>
 
 namespace csp::part::rand {
+
+namespace detail {
+
+// Shared skeleton for the distribution-backed producers: an infinite
+// stream of dist(eng) draws.  `dist` is any callable taking Engine&.
+template <typename T, typename Dist, typename Engine>
+auto from_distribution(char const* name, Dist dist, Engine eng) {
+    return make_producer<T>(
+        [name, dist = std::move(dist),
+         eng = std::move(eng)](writer<T> sink) mutable {
+            internal::descr(name);
+            while (sink << dist(eng)) { }
+        });
+}
+
+}
 
 // Infinite stream of uniform random integers in [lo, hi].
 template <typename T, typename Engine = std::mt19937_64>
 auto uniform_int(T lo, T hi,
                  Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<T>(
-        [lo, hi, eng = std::move(eng)](writer<T> sink) mutable {
-            internal::descr("uniform_int");
-            std::uniform_int_distribution<T> dist(lo, hi);
-            while (sink << dist(eng)) { }
-        });
+    return detail::from_distribution<T>(
+        "uniform_int", std::uniform_int_distribution<T>(lo, hi),
+        std::move(eng));
 }
 
 // Infinite stream of uniform random reals in [lo, hi).
 template <typename T, typename Engine = std::mt19937_64>
 auto uniform_real(T lo, T hi,
                   Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<T>(
-        [lo, hi, eng = std::move(eng)](writer<T> sink) mutable {
-            internal::descr("uniform_real");
-            std::uniform_real_distribution<T> dist(lo, hi);
-            while (sink << dist(eng)) { }
-        });
+    return detail::from_distribution<T>(
+        "uniform_real", std::uniform_real_distribution<T>(lo, hi),
+        std::move(eng));
 }
 
 // Infinite stream of random bools with P(true) = p.
 template <typename Engine = std::mt19937_64>
 auto bernoulli(double p = 0.5,
                Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<bool>(
-        [p, eng = std::move(eng)](writer<bool> sink) mutable {
-            internal::descr("bernoulli");
-            std::bernoulli_distribution dist(p);
-            while (sink << dist(eng)) { }
-        });
+    return detail::from_distribution<bool>(
+        "bernoulli", std::bernoulli_distribution(p), std::move(eng));
 }
 
 // Infinite stream of normally distributed values.
 template <typename T = double, typename Engine = std::mt19937_64>
 auto normal(T mean = 0, T stddev = 1,
             Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<T>(
-        [mean, stddev, eng = std::move(eng)](writer<T> sink) mutable {
-            internal::descr("normal");
-            std::normal_distribution<T> dist(mean, stddev);
-            while (sink << dist(eng)) { }
-        });
+    return detail::from_distribution<T>(
+        "normal", std::normal_distribution<T>(mean, stddev),
+        std::move(eng));
 }
 
-// Infinite stream of random picks from a container.
+// Infinite stream of random picks from a container: from_distribution
+// over an index distribution into the container.
 template <typename T, typename C, typename Engine = std::mt19937_64>
 auto choice(C&& c, Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<T>(
-        [c = std::forward<C>(c), eng = std::move(eng)](
-            writer<T> sink) mutable {
-            internal::descr("choice");
-            std::uniform_int_distribution<size_t> dist(0, c.size() - 1);
-            while (sink << c[dist(eng)]) { }
-        });
+    size_t const hi = c.size() - 1;
+    return detail::from_distribution<T>(
+        "choice",
+        [c = std::forward<C>(c),
+         dist = std::uniform_int_distribution<size_t>(0, hi)](
+            Engine& e) mutable { return c[dist(e)]; },
+        std::move(eng));
 }
 
 template <typename T, typename Engine = std::mt19937_64>
@@ -75,6 +80,8 @@ auto choice(std::initializer_list<T> c,
 }
 
 // Infinite stream of random byte chunks of the given size.
+// Not folded into from_distribution: it refills and re-sends one shared
+// buffer rather than drawing a fresh value per send.
 template <typename Engine = std::mt19937_64>
 auto random_bytes(size_t chunk_size,
                   Engine eng = Engine{std::random_device{}()}) {

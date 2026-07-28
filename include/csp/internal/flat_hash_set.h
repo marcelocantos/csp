@@ -1,7 +1,7 @@
 #pragma once
 
-#include <bit>
-#include <cassert>
+#include <csp/internal/bits.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -156,11 +156,6 @@ private:
         ctrl_ = new_ctrl;
         slots_ = new_slots;
         mask_ = new_mask;
-    }
-
-    static constexpr size_t round_up_pow2(size_t n) {
-        assert(n > 0);
-        return std::bit_ceil(n);
     }
 
     static uint8_t* alloc_ctrl(size_t n) {

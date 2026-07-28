@@ -20,6 +20,7 @@
 // separate headers.
 
 #include <csp/csp.h>
+#include <csp/internal/on_scope_exit.h>
 #include <csp/io.h>
 
 #include <cerrno>
@@ -71,20 +72,31 @@ private:
 // The source owns the fd and closes it when the imp exits (normal,
 // EOF, or error).
 
-[[nodiscard]] inline source fd_source(fd_t fd) {
+namespace detail {
+
+// Shared implementation for fd_source (owning) and fd_source_view
+// (non-owning).  The owning variant installs an OnScopeExit guard that
+// closes the fd on every imp exit path (EOF, error, zero-byte request,
+// or request-channel drop).
+[[nodiscard]] inline source make_fd_source(fd_t fd, bool owned,
+                                           char const* name) {
     chan<read_request> ch;
 
-    spawn([req_r = std::move(ch.r), fd]() mutable {
-        internal::descr("fd_source");
+    spawn([req_r = std::move(ch.r), fd, owned, name]() mutable {
+        internal::descr(name);
         assert(fd.is_nonblock() && "fd_source: fd must be non-blocking");
+
+        auto close_guard = onScopeExit([fd, owned] {
+            if (owned) csp::io::close(fd);
+        });
 
         read_request req;
         while (req_r >> req) {
             if (req.value == 0) {
+                // Almost always a caller bug; surface it immediately.
                 req.reply._throw(
-                    std::make_exception_ptr(
-                        std::invalid_argument("fd_source: zero-byte read request")));
-                csp::io::close(fd);
+                    std::make_exception_ptr(std::invalid_argument(
+                        std::string(name) + ": zero-byte read request")));
                 return;
             }
 
@@ -94,7 +106,6 @@ private:
             if (n == 0) {
                 // EOF: exit without writing.  The reply-writer drops, and
                 // the consumer's reader<bytes> sees peer death.
-                csp::io::close(fd);
                 return;
             }
 
@@ -103,7 +114,6 @@ private:
                 int err = errno;
                 req.reply._throw(
                     std::make_exception_ptr(errno_error("read", err)));
-                csp::io::close(fd);
                 return;
             }
 
@@ -112,10 +122,15 @@ private:
         }
 
         // Request channel closed by consumer — clean shutdown.
-        csp::io::close(fd);
     });
 
     return std::move(ch.w);
+}
+
+} // namespace detail
+
+[[nodiscard]] inline source fd_source(fd_t fd) {
+    return detail::make_fd_source(fd, /*owned=*/true, "fd_source");
 }
 
 // --- fd_source_view: non-owning variant ---
@@ -127,39 +142,7 @@ private:
 // the WebSocket-upgrade hijack handoff after dropping the source.
 
 [[nodiscard]] inline source fd_source_view(fd_t fd) {
-    chan<read_request> ch;
-
-    spawn([req_r = std::move(ch.r), fd]() mutable {
-        internal::descr("fd_source_view");
-        assert(fd.is_nonblock() && "fd_source_view: fd must be non-blocking");
-
-        read_request req;
-        while (req_r >> req) {
-            if (req.value == 0) {
-                req.reply._throw(
-                    std::make_exception_ptr(
-                        std::invalid_argument("fd_source_view: zero-byte read request")));
-                return;
-            }
-
-            bytes buf(req.value);
-            ssize_t n = csp::io::read(fd, buf.data(), buf.size());
-
-            if (n == 0) return;  // EOF: caller's reader sees peer death.
-
-            if (n < 0) {
-                int err = errno;
-                req.reply._throw(
-                    std::make_exception_ptr(errno_error("read", err)));
-                return;
-            }
-
-            buf.resize(static_cast<size_t>(n));
-            req.reply << std::move(buf);
-        }
-    });
-
-    return std::move(ch.w);
+    return detail::make_fd_source(fd, /*owned=*/false, "fd_source_view");
 }
 
 // --- Convenience helpers for source consumers ---

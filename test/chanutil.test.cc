@@ -886,6 +886,15 @@ TEST_CASE("ChanUtil---Last-short-input") {
     });
 }
 
+TEST_CASE("ChanUtil---Last-zero") {
+    csp::run([]{
+        auto r = last<int>(0).spawn(count(1, 11).spawn());
+
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+}
+
 TEST_CASE("ChanUtil---SkipFirst") {
     csp::run([]{
         auto r = skip_first<int>(3).spawn(count(1, 11).spawn());
@@ -923,6 +932,18 @@ TEST_CASE("ChanUtil---SkipLast-short-input") {
     csp::run([]{
         auto r = skip_last<int>(5).spawn(count(1, 3).spawn());
 
+        int _;
+        CHECK_FALSE(bool(r >> _));
+    });
+}
+
+TEST_CASE("ChanUtil---SkipLast-zero") {
+    csp::run([]{
+        auto r = skip_last<int>(0).spawn(count(1, 4).spawn());
+
+        for (int i = 1; i <= 3; ++i) {
+            CHECK(i == r.read());
+        }
         int _;
         CHECK_FALSE(bool(r >> _));
     });

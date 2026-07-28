@@ -8,6 +8,23 @@ with well-defined channel topology:
 - **filter** -- reads from one channel, writes to another
 - **consumer** -- reads from a channel; produces no channel output
 
+These three are *lazy*: they return a part object that composes via `|` and
+spawns nothing until `.spawn()` (or a concrete endpoint) triggers it. Three
+further kinds cover parts that do not fit the lazy wrapper model:
+
+- **function** -- *eager*: spawns its imp(s) immediately and returns live
+  endpoint(s); the return shape is given in each entry's description.
+  Functions do not compose via `|`.
+- **blocking** -- runs inline on the calling imp, returning a plain value
+  (or nothing) once its inputs resolve.
+- **callable** -- returns a bare callable for the caller to invoke inline or
+  hand to `spawn`.
+
+A few structural siblings of lazy parts (`race`, `timer`, `group_by`) are
+deliberately eager functions: they shipped returning live readers, and
+converting them to lazy `make_*` parts would be a breaking change. Each is
+marked "eager by design" in its header.
+
 Parts compose via `.spawn()` chaining and the `|` pipe operator:
 
 ```cpp
@@ -64,10 +81,10 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 |---|---|---|
 | [batch](parts/batch.md) | filter | Collect elements into fixed-size vectors |
 | [window](parts/window.md) | filter | Sliding window emitting full contents as a vector |
-| [slide](parts/slide.md) | filter | Two-channel sliding window (entering/leaving elements) |
+| [slide](parts/slide.md) | function | Two-channel sliding window; returns `window_pair<T>` (entering/leaving readers) |
 | [nwise](parts/nwise.md) | filter | Sliding N-element window emitting tuples |
 | [pairwise](parts/pairwise.md) | filter | Consecutive pairs from a stream |
-| [quantize](parts/quantize.md) | filter | Batch additive values into variable-size quanta |
+| [quantize](parts/quantize.md) | callable | Batch additive values into variable-size quanta; `spawn_quantize` variants return endpoints |
 | [chunk_by](parts/chunk_by.md) | filter | Group consecutive elements where predicate holds between adjacent pairs |
 | [frame](parts/frame.md) | filter | Fixed-size frames with timeout flush for partial frames |
 
@@ -93,9 +110,9 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [throttle](parts/throttle.md) | filter | Rate-limit: forward up to N values per interval, drop excess |
 | [sample](parts/sample.md) | filter | On each trigger, emit the most recent value |
 | [timeout](parts/timeout.md) | filter | Close output if no value arrives within a deadline |
-| [gate](parts/gate.md) | filter | Pause/resume a stream via a boolean control channel |
+| [gate](parts/gate.md) | function | Pause/resume a stream via a boolean control channel; returns `reader<T>` |
 | [pace](parts/pace.md) | filter | Rate-limited passthrough: one value per trigger, backpressure on excess |
-| [timer](parts/timer.md) | filter | Convert sleep-duration requests into fire-time outputs |
+| [timer](parts/timer.md) | function | Convert sleep-duration requests into fire-time outputs; returns `reader<time_point>` (eager by design) |
 
 ## Fan-out / Fan-in
 
@@ -107,24 +124,25 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [concat_all](parts/concat_all.md) | filter | Flatten sub-streams sequentially (each completes before the next) |
 | [switch_all](parts/switch_all.md) | filter | Flatten sub-streams with latest-wins cancellation |
 | [exhaust_all](parts/exhaust_all.md) | filter | Flatten sub-streams, ignoring new inputs while active |
+| [merge_all](parts/merge_all.md) | filter | Flatten sub-streams concurrently (non-deterministic merge) |
 | [merge](parts/merge.md) | producer | Non-deterministic merge of N inputs |
-| [race](parts/race.md) | producer | Priority-biased merge: earlier sources win on simultaneous ready |
+| [race](parts/race.md) | function | Priority-biased merge: earlier sources win on simultaneous ready; returns `reader<T>` (eager by design) |
 | [mux](parts/mux.md) | producer | Non-deterministic merge of N heterogeneous inputs into `variant` |
 | [demux](parts/demux.md) | function | Split a `variant` stream into N typed readers |
 | [combine_latest](parts/combine_latest.md) | producer | Emit tuple of latest values whenever any input updates |
 | [zip](parts/zip.md) | producer | Combine N inputs element-wise into tuples |
 | [transpose](parts/transpose.md) | producer | Dynamic-width zip: N homogeneous readers in lockstep as vectors |
 | [sort_merge](parts/sort_merge.md) | producer | Merge N pre-sorted streams into one sorted output |
-| [unzip](parts/unzip.md) | filter | Split a tuple stream into N independent readers |
+| [unzip](parts/unzip.md) | function | Split a tuple stream into N independent readers; returns a tuple of readers |
 
 ## Routing
 
 | Part | Type | Description |
 |---|---|---|
-| [round_robin](parts/round_robin.md) | filter | Distribute input across N outputs in round-robin order |
+| [round_robin](parts/round_robin.md) | function | Distribute input across N outputs in round-robin order; returns `vector<reader<T>>` |
 | [interleave](parts/interleave.md) | producer | Merge N inputs in strict round-robin order |
-| [partition](parts/partition.md) | filter | Route elements to one of N outputs by classifier |
-| [group_by](parts/group_by.md) | filter | Partition by key; each unique key spawns a sub-stream |
+| [partition](parts/partition.md) | function | Route elements to one of N outputs by classifier; returns `vector<reader<T>>` |
+| [group_by](parts/group_by.md) | function | Partition by key; returns `reader<pair<K, reader<T>>>` (eager by design) |
 
 ## Concurrency
 
@@ -136,20 +154,21 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 
 | Part | Type | Description |
 |---|---|---|
-| [share](parts/share.md) | producer | Broadcast a source to multiple independent subscribers |
-| [first_wins](parts/first_wins.md) | producer | Read from whichever source responds first, discard the rest |
+| [share](parts/share.md) | function | Broadcast a source to multiple independent subscribers; returns `reader<reader<T>>` |
+| [first_wins](parts/first_wins.md) | blocking | Read from whichever source responds first, discard the rest; blocks and returns `T` |
 | [fallback](parts/fallback.md) | producer | Sequential failover: try each reader, use first that produces |
-| [join](parts/join.md) | consumer | Block until all input channels close (barrier) |
+| [join](parts/join.md) | blocking | Block until all input channels close (barrier); returns nothing |
 | [latch](parts/latch.md) | filter | Hold and serve the most recent value |
 | [conflate](parts/conflate.md) | filter | Merge pending values when downstream is slow |
 | [killswitch](parts/killswitch.md) | filter | Forward values until a keepalive channel dies |
-| [metrics](parts/metrics.md) | filter | Transparent passthrough reporting throughput stats on a side channel |
+| [metrics](parts/metrics.md) | function | Transparent passthrough reporting throughput stats on a side channel; returns a pair of readers (data, stats) |
 | [reorder](parts/reorder.md) | filter | Resequence an out-of-order stream by key (unbounded lookahead, contiguous keys) |
 
 ## Lifecycle
 
 | Part | Type | Description |
 |---|---|---|
+| [collect](parts/collect.md) | consumer | Consume all values into an output iterator |
 | [sink](parts/sink.md) | consumer | Consume all values by applying a side-effect function |
 | [blackhole](parts/blackhole.md) | consumer | Consume and discard all values |
 | [deaf](parts/deaf.md) | consumer | Never reads; provides a permanently blocked writer |

@@ -93,10 +93,24 @@ private:
 
 /* csp/ringbuffer.h */
 
+
+/* csp/internal/bits.h */
+
 #include <bit>
 #include <cassert>
-#include <compare>
 #include <cstddef>
+
+namespace csp::detail {
+
+// Smallest power of two >= n.  n must be nonzero.
+constexpr size_t round_up_pow2(size_t n) {
+    assert(n > 0);
+    return std::bit_ceil(n);
+}
+
+}
+
+#include <compare>
 #include <new>
 #include <utility>
 
@@ -276,11 +290,6 @@ private:
 
     static void dealloc(T * p) {
         if (p) ::operator delete(p, std::align_val_t(alignof(T)));
-    }
-
-    static constexpr size_t round_up_pow2(size_t n) {
-        assert(n > 0);
-        return std::bit_ceil(n);
     }
 
     void grow() {
@@ -988,7 +997,7 @@ public:
     bool operator!=(const reader& r) const { return !(*this == r); }
     explicit operator bool() const  { return bool(r_); }
 
-    void descr(const char* d) { internal::set_chan_descr(r_.ptr, d); }
+    void descr(const char* d) const { internal::set_chan_descr(r_.ptr, d); }
 
     template <typename U>
         requires std::is_convertible_v<T, U>
@@ -1000,6 +1009,12 @@ public:
     }
 
     // Connect two channels directly.
+    //
+    // Unlike detail::pump (the plain buffered-pipeline loop), this
+    // deliberately keeps a prialt arm watching for `out` death: a
+    // stream_to callable is typically handed to spawn as a free-standing
+    // bridge, so it should exit as soon as the destination dies rather
+    // than sit blocked on a silent input.
     template <typename U>
     auto stream_to(writer<U> out) const {
         return [in = this->copy(), out = std::move(out)] {
@@ -1823,14 +1838,29 @@ extern reader<> const skip;
 
 // --- chan | composition ---
 
+namespace detail {
+
+// Forward every value from `in` to `out`; return when either endpoint
+// closes.  This is the plain buffered-pipeline pump, shared by the
+// chan | composition operators here and in part.h.  It deliberately has
+// no extra death-watch arm on `out`: an extra alt arm widens the prialt
+// on the buffered hot path, and a dead `out` is detected on the next
+// write anyway.  reader<T>::stream_to keeps its own prialt(~out, ...)
+// variant for the early death-watch it deliberately provides.
+template <typename T>
+void pump(reader<T> in, writer<T> out) {
+    for (T v; in >> v;) {
+        if (!(out << std::move(v))) return;
+    }
+}
+
+}
+
 // reader | chan → reader (forward reader into buffer)
 template <typename T>
 reader<T> operator|(reader<T> r, chan<T> ch) {
-    spawn([in = std::move(r), out = std::move(ch.w)] {
-        T v;
-        while (in >> v) {
-            if (!(out << std::move(v))) return;
-        }
+    spawn([in = std::move(r), out = std::move(ch.w)]() mutable {
+        detail::pump(std::move(in), std::move(out));
     });
     return std::move(ch.r);
 }
@@ -1838,11 +1868,8 @@ reader<T> operator|(reader<T> r, chan<T> ch) {
 // chan | writer → writer (forward buffer into writer)
 template <typename T>
 writer<T> operator|(chan<T> ch, writer<T> w) {
-    spawn([in = std::move(ch.r), out = std::move(w)] {
-        T v;
-        while (in >> v) {
-            if (!(out << std::move(v))) return;
-        }
+    spawn([in = std::move(ch.r), out = std::move(w)]() mutable {
+        detail::pump(std::move(in), std::move(out));
     });
     return std::move(ch.w);
 }
@@ -3367,6 +3394,16 @@ void write_all(fd_t fd, const void* data, size_t len);
 
 namespace csp::part {
 
+// --- Part-author conventions ---
+//
+// First-element state: prime, don't flag.  When a part needs "the first
+// element is special" state, prime with one leading alt read against
+// ~out before entering the steady loop (see diff, pairwise, distinct)
+// instead of carrying a bool flag through every iteration.  Keep a flag
+// only when *absence* must be tracked across a multi-arm alt — i.e. the
+// part can act before any value has arrived and must know whether one
+// has (sample, share, slide).
+
 // Wrapper for a reader-consuming combinator body.
 // spawn() creates a channel and imp; bind() returns a deferred
 // callable; operator() runs inline.
@@ -3600,9 +3637,7 @@ auto operator|(filter<T, T, F> f, chan<T> ch) {
                    w = std::move(ch.w)]() mutable {
                 f(std::move(in), std::move(w));
             });
-            for (T v; ch.r >> v;) {
-                if (!(out << std::move(v))) return;
-            }
+            csp::detail::pump(std::move(ch.r), std::move(out));
         });
 }
 
@@ -3614,9 +3649,7 @@ auto operator|(chan<T> ch, filter<T, T, F> f) {
         (reader<T> in, writer<T> out) mutable {
             spawn([in = std::move(in),
                    w = std::move(ch.w)]() mutable {
-                for (T v; in >> v;) {
-                    if (!(w << std::move(v))) return;
-                }
+                csp::detail::pump(std::move(in), std::move(w));
             });
             f(std::move(ch.r), std::move(out));
         });
@@ -3632,9 +3665,7 @@ auto operator|(producer<T, F> p, chan<T> ch) {
                    w = std::move(ch.w)]() mutable {
                 p(std::move(w));
             });
-            for (T v; ch.r >> v;) {
-                if (!(out << std::move(v))) return;
-            }
+            csp::detail::pump(std::move(ch.r), std::move(out));
         });
 }
 
@@ -3646,9 +3677,7 @@ auto operator|(chan<T> ch, consumer<T, F> c) {
         (reader<T> in) mutable {
             spawn([in = std::move(in),
                    w = std::move(ch.w)]() mutable {
-                for (T v; in >> v;) {
-                    if (!(w << std::move(v))) return;
-                }
+                csp::detail::pump(std::move(in), std::move(w));
             });
             c(std::move(ch.r));
         });
@@ -3792,6 +3821,65 @@ inline csp::reader<std::string> lines(csp::io::fd_t fd,
 // separate headers.
 
 
+/* csp/internal/on_scope_exit.h */
+
+#include <cstdlib>
+
+namespace csp {
+
+template <typename F>
+class OnScopeExit {
+public:
+    OnScopeExit(F f) : f_(std::move(f)) { }
+    ~OnScopeExit() { f_(); }
+
+private:
+    F f_;
+};
+
+// Assign the return value to a local variable.
+template <typename F>
+OnScopeExit<F> onScopeExit(F f) {
+    return {std::move(f)};
+};
+
+inline auto onScopeExitFree(void * p) {
+    return onScopeExit([p]{
+        std::free(p);
+    });
+}
+
+template <typename T, typename F>
+class ScopedResource {
+public:
+    ScopedResource(T t, F f) : t_(std::move(t)), f_(std::make_unique<F>(std::move(f))) { }
+    ScopedResource(ScopedResource &&) = default;
+    ~ScopedResource() {
+        if (f_) {
+            (*f_)(t_);
+        }
+    }
+
+    T const * operator->() const { return &t_; }
+    T const & operator*() const { return t_; }
+
+private:
+    T t_;
+    std::unique_ptr<F> f_;
+};
+
+template <typename T, typename F>
+auto scopedResource(T t, F f) {
+    return ScopedResource<T, F>(t, std::move(f));
+}
+
+template <typename T>
+auto mallocedResource(T * p) {
+    return scopedResource(p, [](void * p){ free(p); });
+}
+
+}
+
 #include <cerrno>
 #include <cstring>
 
@@ -3839,20 +3927,31 @@ private:
 // The source owns the fd and closes it when the imp exits (normal,
 // EOF, or error).
 
-[[nodiscard]] inline source fd_source(fd_t fd) {
+namespace detail {
+
+// Shared implementation for fd_source (owning) and fd_source_view
+// (non-owning).  The owning variant installs an OnScopeExit guard that
+// closes the fd on every imp exit path (EOF, error, zero-byte request,
+// or request-channel drop).
+[[nodiscard]] inline source make_fd_source(fd_t fd, bool owned,
+                                           char const* name) {
     chan<read_request> ch;
 
-    spawn([req_r = std::move(ch.r), fd]() mutable {
-        internal::descr("fd_source");
+    spawn([req_r = std::move(ch.r), fd, owned, name]() mutable {
+        internal::descr(name);
         assert(fd.is_nonblock() && "fd_source: fd must be non-blocking");
+
+        auto close_guard = onScopeExit([fd, owned] {
+            if (owned) csp::io::close(fd);
+        });
 
         read_request req;
         while (req_r >> req) {
             if (req.value == 0) {
+                // Almost always a caller bug; surface it immediately.
                 req.reply._throw(
-                    std::make_exception_ptr(
-                        std::invalid_argument("fd_source: zero-byte read request")));
-                csp::io::close(fd);
+                    std::make_exception_ptr(std::invalid_argument(
+                        std::string(name) + ": zero-byte read request")));
                 return;
             }
 
@@ -3862,7 +3961,6 @@ private:
             if (n == 0) {
                 // EOF: exit without writing.  The reply-writer drops, and
                 // the consumer's reader<bytes> sees peer death.
-                csp::io::close(fd);
                 return;
             }
 
@@ -3871,7 +3969,6 @@ private:
                 int err = errno;
                 req.reply._throw(
                     std::make_exception_ptr(errno_error("read", err)));
-                csp::io::close(fd);
                 return;
             }
 
@@ -3880,10 +3977,15 @@ private:
         }
 
         // Request channel closed by consumer — clean shutdown.
-        csp::io::close(fd);
     });
 
     return std::move(ch.w);
+}
+
+} // namespace detail
+
+[[nodiscard]] inline source fd_source(fd_t fd) {
+    return detail::make_fd_source(fd, /*owned=*/true, "fd_source");
 }
 
 // --- fd_source_view: non-owning variant ---
@@ -3895,39 +3997,7 @@ private:
 // the WebSocket-upgrade hijack handoff after dropping the source.
 
 [[nodiscard]] inline source fd_source_view(fd_t fd) {
-    chan<read_request> ch;
-
-    spawn([req_r = std::move(ch.r), fd]() mutable {
-        internal::descr("fd_source_view");
-        assert(fd.is_nonblock() && "fd_source_view: fd must be non-blocking");
-
-        read_request req;
-        while (req_r >> req) {
-            if (req.value == 0) {
-                req.reply._throw(
-                    std::make_exception_ptr(
-                        std::invalid_argument("fd_source_view: zero-byte read request")));
-                return;
-            }
-
-            bytes buf(req.value);
-            ssize_t n = csp::io::read(fd, buf.data(), buf.size());
-
-            if (n == 0) return;  // EOF: caller's reader sees peer death.
-
-            if (n < 0) {
-                int err = errno;
-                req.reply._throw(
-                    std::make_exception_ptr(errno_error("read", err)));
-                return;
-            }
-
-            buf.resize(static_cast<size_t>(n));
-            req.reply << std::move(buf);
-        }
-    });
-
-    return std::move(ch.w);
+    return detail::make_fd_source(fd, /*owned=*/false, "fd_source_view");
 }
 
 // --- Convenience helpers for source consumers ---
@@ -4756,6 +4826,7 @@ using FastMutex = std::mutex;
 /* csp/internal/flat_hash_set.h */
 
 
+
 namespace csp::detail {
 
 template <typename Key, typename Hash = std::hash<Key>,
@@ -4904,11 +4975,6 @@ private:
         ctrl_ = new_ctrl;
         slots_ = new_slots;
         mask_ = new_mask;
-    }
-
-    static constexpr size_t round_up_pow2(size_t n) {
-        assert(n > 0);
-        return std::bit_ceil(n);
     }
 
     static uint8_t* alloc_ctrl(size_t n) {
@@ -5227,65 +5293,6 @@ private:
 };
 
 }  // namespace csp::detail
-
-/* csp/internal/on_scope_exit.h */
-
-#include <cstdlib>
-
-namespace csp {
-
-template <typename F>
-class OnScopeExit {
-public:
-    OnScopeExit(F f) : f_(std::move(f)) { }
-    ~OnScopeExit() { f_(); }
-
-private:
-    F f_;
-};
-
-// Assign the return value to a local variable.
-template <typename F>
-OnScopeExit<F> onScopeExit(F f) {
-    return {std::move(f)};
-};
-
-inline auto onScopeExitFree(void * p) {
-    return onScopeExit([p]{
-        std::free(p);
-    });
-}
-
-template <typename T, typename F>
-class ScopedResource {
-public:
-    ScopedResource(T t, F f) : t_(std::move(t)), f_(std::make_unique<F>(std::move(f))) { }
-    ScopedResource(ScopedResource &&) = default;
-    ~ScopedResource() {
-        if (f_) {
-            (*f_)(t_);
-        }
-    }
-
-    T const * operator->() const { return &t_; }
-    T const & operator*() const { return t_; }
-
-private:
-    T t_;
-    std::unique_ptr<F> f_;
-};
-
-template <typename T, typename F>
-auto scopedResource(T t, F f) {
-    return ScopedResource<T, F>(t, std::move(f));
-}
-
-template <typename T>
-auto mallocedResource(T * p) {
-    return scopedResource(p, [](void * p){ free(p); });
-}
-
-}
 
 /* csp/internal/processor.h */
 
@@ -6201,13 +6208,20 @@ template <typename T>
 auto default_if_empty(T def) {
     return make_filter<T>([def = std::move(def)](reader<T> in, writer<T> out) {
         internal::descr("default_if_empty");
-        bool any = false;
-        for (T t; csp::alt(in >> t, ~out) == 0;) {
-            any = true;
-            if (!(out << std::move(t))) return;
-        }
-        if (!any) {
+        // Prime with the first element (see part.h: prime, don't flag).
+        T first;
+        switch (csp::alt(in >> first, ~out)) {
+        case 0:
+            break;
+        case ~0:  // Input closed empty — emit the default.
             out << def;
+            return;
+        default:  // Output died.
+            return;
+        }
+        if (!(out << std::move(first))) return;
+        for (T t; csp::alt(in >> t, ~out) == 0;) {
+            if (!(out << std::move(t))) return;
         }
     });
 }
@@ -6429,11 +6443,12 @@ template <typename T, typename Eq = std::equal_to<T>>
 auto distinct(Eq eq = {}) {
     return make_filter<T>([eq](reader<T> in, writer<T> out) {
         internal::descr("distinct");
+        // Prime with the first element (see part.h: prime, don't flag).
         T prev;
-        bool has_prev = false;
+        if (csp::alt(in >> prev, ~out) != 0) return;
+        if (!(out << prev)) return;
         for (T t; csp::alt(in >> t, ~out) == 0;) {
-            if (!has_prev || !eq(prev, t)) {
-                has_prev = true;
+            if (!eq(prev, t)) {
                 prev = t;
                 if (!(out << std::move(t))) return;
             }
@@ -6669,6 +6684,7 @@ inline auto const fanout = make_filter<writer<T>>([](reader<writer<T>> new_out, 
 /* csp/part/first_last.h */
 
 
+
 namespace csp::part {
 
 // Emit the first n elements, then close.
@@ -6690,7 +6706,11 @@ auto last(size_t n) {
     return make_filter<T>([n](reader<T> in, writer<T> out) {
         internal::descr("last");
         if (n == 0) {
-            for (T t; csp::alt(in >> t, ~out) == 0;) {}
+            // RingBuffer requires nonzero capacity; nothing can ever be
+            // emitted, so close the output and delegate the drain.
+            out = {};
+            auto drain = blackhole<T>;
+            drain(std::move(in));
             return;
         }
         csp::detail::RingBuffer<T> buf(n);
@@ -6725,9 +6745,9 @@ auto skip_last(size_t n) {
     return make_filter<T>([n](reader<T> in, writer<T> out) {
         internal::descr("skip_last");
         if (n == 0) {
-            for (T t; csp::alt(in >> t, ~out) == 0;) {
-                if (!(out << std::move(t))) return;
-            }
+            // RingBuffer requires nonzero capacity; skip_last(0) is an
+            // identity pass-through — delegate to the shared pump.
+            csp::detail::pump(std::move(in), std::move(out));
             return;
         }
         csp::detail::RingBuffer<T> buf(n);
@@ -7029,6 +7049,11 @@ namespace csp::part {
 // Emits (key, reader<T>) pairs on a meta-channel. Values for known keys
 // are forwarded to the existing sub-stream. If a sub-stream reader is
 // dropped, future values for that key are discarded.
+//
+// Eager by design: group_by returns live endpoints (a reader of
+// (key, reader<T>) pairs backed by an already-spawned imp), not a lazy
+// make_* part.  The lazy convention (see part.h) does not apply —
+// converting would be a user-visible breaking change.
 template <typename T, typename F,
           typename K = std::decay_t<std::invoke_result_t<F&, const T&>>>
 reader<std::pair<K, reader<T>>> group_by(reader<T> input, F f) {
@@ -7751,40 +7776,43 @@ auto partition(reader<T> in, Pred pred) {
 /* csp/part/quantify.h */
 
 
+
 namespace csp::part {
+
+namespace detail {
+
+// Shared body for the short-circuiting quantifiers: emit `match` on the
+// first element where bool(pred(t)) == match, or !match if the input
+// exhausts without one.
+template <typename T, typename Pred>
+auto quantify(Pred pred, bool match, char const* name) {
+    return make_filter<T, bool>(
+        [pred = std::move(pred), match, name](reader<T> in, writer<bool> out) {
+            internal::descr(name);
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
+                if (bool(pred(t)) == match) {
+                    out << match;
+                    return;
+                }
+            }
+            out << !match;
+        });
+}
+
+}
 
 // Short-circuiting existential quantifier.
 // Emits true on first match, or false if input exhausts without a match.
 template <typename T, typename Pred>
 auto any_of(Pred&& pred) {
-    return make_filter<T, bool>(
-        [pred = std::forward<Pred>(pred)](reader<T> in, writer<bool> out) {
-            internal::descr("any_of");
-            for (T t; csp::alt(in >> t, ~out) == 0;) {
-                if (pred(t)) {
-                    out << true;
-                    return;
-                }
-            }
-            out << false;
-        });
+    return detail::quantify<T>(std::forward<Pred>(pred), true, "any_of");
 }
 
 // Short-circuiting universal quantifier.
 // Emits false on first non-match, or true if all elements match.
 template <typename T, typename Pred>
 auto all_of(Pred&& pred) {
-    return make_filter<T, bool>(
-        [pred = std::forward<Pred>(pred)](reader<T> in, writer<bool> out) {
-            internal::descr("all_of");
-            for (T t; csp::alt(in >> t, ~out) == 0;) {
-                if (!pred(t)) {
-                    out << false;
-                    return;
-                }
-            }
-            out << true;
-        });
+    return detail::quantify<T>(std::forward<Pred>(pred), false, "all_of");
 }
 
 }
@@ -7938,6 +7966,11 @@ namespace csp::part {
 //
 // Unlike merge (which interleaves all sources fairly), race is
 // biased toward the fastest source — slow sources may starve.
+//
+// Eager by design: race returns live endpoints (a reader<T> backed by
+// an already-spawned imp), not a lazy make_* part.  The lazy convention
+// (see part.h) does not apply — converting would be a user-visible
+// breaking change.
 template <typename T>
 reader<T> race(std::vector<reader<T>> sources) {
     return spawn_producer<T>(
@@ -7982,64 +8015,68 @@ reader<T> race(std::vector<reader<T>> sources) {
 
 namespace csp::part::rand {
 
+namespace detail {
+
+// Shared skeleton for the distribution-backed producers: an infinite
+// stream of dist(eng) draws.  `dist` is any callable taking Engine&.
+template <typename T, typename Dist, typename Engine>
+auto from_distribution(char const* name, Dist dist, Engine eng) {
+    return make_producer<T>(
+        [name, dist = std::move(dist),
+         eng = std::move(eng)](writer<T> sink) mutable {
+            internal::descr(name);
+            while (sink << dist(eng)) { }
+        });
+}
+
+}
+
 // Infinite stream of uniform random integers in [lo, hi].
 template <typename T, typename Engine = std::mt19937_64>
 auto uniform_int(T lo, T hi,
                  Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<T>(
-        [lo, hi, eng = std::move(eng)](writer<T> sink) mutable {
-            internal::descr("uniform_int");
-            std::uniform_int_distribution<T> dist(lo, hi);
-            while (sink << dist(eng)) { }
-        });
+    return detail::from_distribution<T>(
+        "uniform_int", std::uniform_int_distribution<T>(lo, hi),
+        std::move(eng));
 }
 
 // Infinite stream of uniform random reals in [lo, hi).
 template <typename T, typename Engine = std::mt19937_64>
 auto uniform_real(T lo, T hi,
                   Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<T>(
-        [lo, hi, eng = std::move(eng)](writer<T> sink) mutable {
-            internal::descr("uniform_real");
-            std::uniform_real_distribution<T> dist(lo, hi);
-            while (sink << dist(eng)) { }
-        });
+    return detail::from_distribution<T>(
+        "uniform_real", std::uniform_real_distribution<T>(lo, hi),
+        std::move(eng));
 }
 
 // Infinite stream of random bools with P(true) = p.
 template <typename Engine = std::mt19937_64>
 auto bernoulli(double p = 0.5,
                Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<bool>(
-        [p, eng = std::move(eng)](writer<bool> sink) mutable {
-            internal::descr("bernoulli");
-            std::bernoulli_distribution dist(p);
-            while (sink << dist(eng)) { }
-        });
+    return detail::from_distribution<bool>(
+        "bernoulli", std::bernoulli_distribution(p), std::move(eng));
 }
 
 // Infinite stream of normally distributed values.
 template <typename T = double, typename Engine = std::mt19937_64>
 auto normal(T mean = 0, T stddev = 1,
             Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<T>(
-        [mean, stddev, eng = std::move(eng)](writer<T> sink) mutable {
-            internal::descr("normal");
-            std::normal_distribution<T> dist(mean, stddev);
-            while (sink << dist(eng)) { }
-        });
+    return detail::from_distribution<T>(
+        "normal", std::normal_distribution<T>(mean, stddev),
+        std::move(eng));
 }
 
-// Infinite stream of random picks from a container.
+// Infinite stream of random picks from a container: from_distribution
+// over an index distribution into the container.
 template <typename T, typename C, typename Engine = std::mt19937_64>
 auto choice(C&& c, Engine eng = Engine{std::random_device{}()}) {
-    return make_producer<T>(
-        [c = std::forward<C>(c), eng = std::move(eng)](
-            writer<T> sink) mutable {
-            internal::descr("choice");
-            std::uniform_int_distribution<size_t> dist(0, c.size() - 1);
-            while (sink << c[dist(eng)]) { }
-        });
+    size_t const hi = c.size() - 1;
+    return detail::from_distribution<T>(
+        "choice",
+        [c = std::forward<C>(c),
+         dist = std::uniform_int_distribution<size_t>(0, hi)](
+            Engine& e) mutable { return c[dist(e)]; },
+        std::move(eng));
 }
 
 template <typename T, typename Engine = std::mt19937_64>
@@ -8049,6 +8086,8 @@ auto choice(std::initializer_list<T> c,
 }
 
 // Infinite stream of random byte chunks of the given size.
+// Not folded into from_distribution: it refills and re-sends one shared
+// buffer rather than drawing a fresh value per send.
 template <typename Engine = std::mt19937_64>
 auto random_bytes(size_t chunk_size,
                   Engine eng = Engine{std::random_device{}()}) {
@@ -8514,12 +8553,14 @@ template <typename T, typename Pred>
 auto skip_while(Pred&& pred) {
     return make_filter<T>([pred = std::forward<Pred>(pred)](reader<T> in, writer<T> out) {
         internal::descr("skip_while");
-        bool skipping = true;
+        // Prime: drop the skipped prefix, then enter the plain
+        // forwarding loop (see part.h: prime, don't flag).
+        T first;
+        do {
+            if (csp::alt(in >> first, ~out) != 0) return;
+        } while (pred(first));
+        if (!(out << std::move(first))) return;
         for (T t; csp::alt(in >> t, ~out) == 0;) {
-            if (skipping) {
-                if (pred(t)) continue;
-                skipping = false;
-            }
             if (!(out << std::move(t))) return;
         }
     });
@@ -8733,38 +8774,50 @@ inline auto const switch_all = make_filter<reader<B>, B>([](reader<reader<B>> in
 /* csp/part/take_until.h */
 
 
+/* csp/part/take_while.h */
+
+
+
+namespace csp::part {
+
+namespace detail {
+
+// Shared body for take_while/take_until.  `stop(t)` is the termination
+// test; when it fires, `inclusive` decides whether the terminating
+// element is emitted before the output closes.
+template <typename T, typename Stop>
+auto take_prefix(Stop stop, bool inclusive, char const* name) {
+    return make_filter<T>(
+        [stop = std::move(stop), inclusive, name](reader<T> in, writer<T> out) {
+            internal::descr(name);
+            for (T t; csp::alt(in >> t, ~out) == 0;) {
+                bool const done = stop(t);
+                if (done && !inclusive) return;
+                if (!(out << std::move(t))) return;
+                if (done) return;
+            }
+        });
+}
+
+}
+
+// Forward elements while pred is true, then close output.
+template <typename T, typename Pred>
+auto take_while(Pred&& pred) {
+    return detail::take_prefix<T>(
+        [pred = std::forward<Pred>(pred)](T const& t) { return !pred(t); },
+        false, "take_while");
+}
+
+}
+
+
 namespace csp::part {
 
 // Forward elements until pred is true (inclusive — emits the terminating element).
 template <typename T, typename Pred>
 auto take_until(Pred&& pred) {
-    return make_filter<T>([pred = std::forward<Pred>(pred)](reader<T> in, writer<T> out) {
-        internal::descr("take_until");
-        for (T t; csp::alt(in >> t, ~out) == 0;) {
-            bool done = pred(t);
-            if (!(out << std::move(t))) return;
-            if (done) return;
-        }
-    });
-}
-
-}
-
-/* csp/part/take_while.h */
-
-
-namespace csp::part {
-
-// Forward elements while pred is true, then close output.
-template <typename T, typename Pred>
-auto take_while(Pred&& pred) {
-    return make_filter<T>([pred = std::forward<Pred>(pred)](reader<T> in, writer<T> out) {
-        internal::descr("take_while");
-        for (T t; csp::alt(in >> t, ~out) == 0;) {
-            if (!pred(t)) return;
-            if (!(out << std::move(t))) return;
-        }
-    });
+    return detail::take_prefix<T>(std::forward<Pred>(pred), true, "take_until");
 }
 
 }
@@ -8876,32 +8929,45 @@ auto timeout(csp::duration d) {
 /* csp/part/timer.h */
 
 
+
 namespace csp::part {
 
-// Each duration read from control becomes the next sleep interval.
-// Emits the actual fire time after each sleep.
-inline reader<time_point> timer(reader<duration> control) {
+namespace detail {
+
+// Shared body for the two timer overloads, parameterised on the sleep
+// call (relative csp::sleep vs absolute csp::sleep_until).
+template <typename C, typename SleepFn>
+reader<time_point> timer_loop(reader<C> control, SleepFn sleep_fn) {
     return spawn_producer<time_point>(
-        [control = std::move(control)](writer<time_point> out) mutable {
+        [control = std::move(control),
+         sleep_fn = std::move(sleep_fn)](writer<time_point> out) mutable {
             internal::descr("timer");
-            for (duration d; control >> d;) {
-                csp::sleep(d);
+            for (C c; control >> c;) {
+                sleep_fn(c);
                 if (!(out << csp::now())) return;
             }
         });
 }
 
+}
+
+// Eager by design: timer returns live endpoints (a reader<time_point>
+// backed by an already-spawned imp), not a lazy make_* part.  The lazy
+// convention (see part.h) does not apply — converting would be a
+// user-visible breaking change.
+
+// Each duration read from control becomes the next sleep interval.
+// Emits the actual fire time after each sleep.
+inline reader<time_point> timer(reader<duration> control) {
+    return detail::timer_loop(std::move(control),
+                              [](duration d) { csp::sleep(d); });
+}
+
 // Each time_point read from control becomes the next absolute deadline.
 // Emits the actual fire time after each sleep.
 inline reader<time_point> timer(reader<time_point> control) {
-    return spawn_producer<time_point>(
-        [control = std::move(control)](writer<time_point> out) mutable {
-            internal::descr("timer");
-            for (time_point tp; control >> tp;) {
-                csp::sleep_until(tp);
-                if (!(out << csp::now())) return;
-            }
-        });
+    return detail::timer_loop(std::move(control),
+                              [](time_point tp) { csp::sleep_until(tp); });
 }
 
 }

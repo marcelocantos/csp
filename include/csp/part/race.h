@@ -13,6 +13,11 @@ namespace csp::part {
 //
 // Unlike merge (which interleaves all sources fairly), race is
 // biased toward the fastest source — slow sources may starve.
+//
+// Eager by design: race returns live endpoints (a reader<T> backed by
+// an already-spawned imp), not a lazy make_* part.  The lazy convention
+// (see part.h) does not apply — converting would be a user-visible
+// breaking change.
 template <typename T>
 reader<T> race(std::vector<reader<T>> sources) {
     return spawn_producer<T>(
