@@ -345,7 +345,7 @@ TEST_CASE("MN-coin-flip---stress") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(TRIALS == completed.load());
 
@@ -394,7 +394,7 @@ TEST_CASE("MN-coin-flip---value-integrity") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(TRIALS == correct.load());
 
@@ -427,7 +427,7 @@ TEST_CASE("MN-coin-flip---many-participants") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(ROUNDS * 2 == completed.load());
 

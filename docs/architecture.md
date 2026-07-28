@@ -136,7 +136,6 @@ All DLL mutations are protected by `Processor::run_mu`. The key operations:
 
 - **`schedule_local()`**: Insert an imp into the DLL (no-op if
   already linked, detected by `next_ != nullptr`).
-- **`deschedule()`**: Remove an imp from the DLL, nulling its links.
 - **Inline deschedule/schedule in `run()`**: When context-switching from
   one imp to another, both the deschedule of the old and the
   schedule of the new happen in a single critical section inside `run()`,

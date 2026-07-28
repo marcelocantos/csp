@@ -15,7 +15,7 @@ TEST_CASE("AnyOf---match-found") {
     stats.spawn([r = std::move(out)] {
         CHECK(r.read() == true);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("AnyOf---no-match") {
@@ -28,7 +28,7 @@ TEST_CASE("AnyOf---no-match") {
     stats.spawn([r = std::move(out)] {
         CHECK(r.read() == false);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("AnyOf---empty-input") {
@@ -41,7 +41,7 @@ TEST_CASE("AnyOf---empty-input") {
     stats.spawn([r = std::move(out)] {
         CHECK(r.read() == false);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("AllOf---all-match") {
@@ -54,7 +54,7 @@ TEST_CASE("AllOf---all-match") {
     stats.spawn([r = std::move(out)] {
         CHECK(r.read() == true);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("AllOf---early-mismatch") {
@@ -67,7 +67,7 @@ TEST_CASE("AllOf---early-mismatch") {
     stats.spawn([r = std::move(out)] {
         CHECK(r.read() == false);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("AllOf---empty-input") {
@@ -80,5 +80,5 @@ TEST_CASE("AllOf---empty-input") {
     stats.spawn([r = std::move(out)] {
         CHECK(r.read() == true);
     });
-    csp::schedule();
+    csp::await_completion();
 }

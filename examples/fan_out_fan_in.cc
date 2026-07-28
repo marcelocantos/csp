@@ -69,5 +69,5 @@ int main() {
         }
     });
 
-    schedule();
+    await_completion();
 }

@@ -20,7 +20,7 @@ TEST_CASE("Unordered---all-values-processed") {
         for (int v; r >> v;) got.push_back(v);
     });
 
-    csp::schedule();
+    csp::await_completion();
     // All values present (order may vary).
     std::sort(got.begin(), got.end());
     CHECK(std::vector<int>({10, 20, 30, 40, 50}) == got);
@@ -38,7 +38,7 @@ TEST_CASE("Ordered---preserves-input-order") {
         for (int v; r >> v;) got.push_back(v);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(std::vector<int>({10, 20, 30, 40, 50}) == got);
 }
 
@@ -56,7 +56,7 @@ TEST_CASE("Ordered---type-changing-transform") {
         for (std::string v; r >> v;) got.push_back(std::move(v));
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(std::vector<std::string>({"1", "2", "3"}) == got);
 }
 
@@ -79,7 +79,7 @@ TEST_CASE("Ordered---variable-cost-work-stays-in-order") {
         for (int v; r >> v;) got.push_back(v);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(std::vector<int>({1, 2, 3, 4, 5}) == got);
 }
 
@@ -97,7 +97,7 @@ TEST_CASE("Output-death-stops-workers") {
         // Drop reader — output dies, workers should stop.
     });
 
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("Single-worker") {
@@ -112,7 +112,7 @@ TEST_CASE("Single-worker") {
         for (int v; r >> v;) got.push_back(v);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(std::vector<int>({2, 4, 6}) == got);
 }
 

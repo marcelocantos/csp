@@ -96,7 +96,6 @@ struct endpoint {
 
 struct serve_options {
     net::listen_options listen = {};
-    size_t max_header_size = 8192;
     size_t read_chunk_size = 4096;
 };
 

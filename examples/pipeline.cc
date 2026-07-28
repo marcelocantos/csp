@@ -54,5 +54,5 @@ int main() {
         printf("  %d values passed all stages, sum = %d\n", cnt, total);
     });
 
-    schedule();
+    await_completion();
 }

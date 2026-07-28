@@ -187,7 +187,7 @@ TEST_CASE("Sample---overwritten-values-go-to-dead-letter") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
+    csp::await_completion();
     // Dead letter should have 1 and 2 (overwritten by 2 and 3).
     CHECK(std::vector<int>({1, 2}) == dead);
 }
@@ -210,7 +210,7 @@ TEST_CASE("Sample---no-dead-letter,-no-crash") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
+    csp::await_completion();
 }
 
 }

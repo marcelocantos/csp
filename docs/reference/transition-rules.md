@@ -143,8 +143,8 @@ When the subject is a function call with no receiver object (a free function),
 the subject is the function itself:
 
 ```
-schedule() ─┤imps exist├─➤ block calling thread; run scheduler loop
-schedule() ─┤all MTs finished├───➤ return
+await_completion() ─┤imps exist├─➤ block calling thread; run scheduler loop
+await_completion() ─┤all MTs finished├───➤ return
 ```
 
 ## Reading a complete rule block

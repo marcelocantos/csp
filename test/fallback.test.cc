@@ -22,7 +22,7 @@ TEST_CASE("Fallback---first-reader-produces") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{1, 2});
 }
@@ -44,7 +44,7 @@ TEST_CASE("Fallback---first-empty,-second-produces") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{10, 20});
 }
@@ -66,7 +66,7 @@ TEST_CASE("Fallback---all-empty") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got.empty());
 }
@@ -85,7 +85,7 @@ TEST_CASE("Fallback---single-reader") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{42});
 }

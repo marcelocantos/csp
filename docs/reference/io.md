@@ -131,7 +131,7 @@ csp::spawn([] {
     char buf[1024];
     ssize_t n = ::read(fd.raw(), buf, sizeof(buf));
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -217,7 +217,7 @@ csp::spawn([](csp::io::fd_t fd) {
         // process buf[0..n-1]
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -263,7 +263,7 @@ csp::spawn([](csp::io::fd_t fd) {
     ssize_t n = csp::io::write(fd, msg, strlen(msg));
     // n == strlen(msg) on success, -1 on error
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -323,7 +323,7 @@ csp::spawn([] {
     }
     csp::io::close(listen_fd);
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -381,7 +381,7 @@ csp::spawn([] {
     }
     csp::io::close(fd);
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -451,7 +451,7 @@ csp::spawn([] {
     csp::io::connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen));
     // ...
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -481,7 +481,7 @@ csp::spawn([](csp::io::fd_t fd) {
     auto data = csp::io::read_all(fd);
     std::string s(data.begin(), data.end());
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -512,7 +512,7 @@ csp::spawn([](csp::io::fd_t fd) {
     std::string msg = "hello\n";
     csp::io::write_all(fd, msg.data(), msg.size());
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -549,7 +549,7 @@ csp::spawn([](csp::io::fd_t fd) {
         printf("%s\n", line.c_str());
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -602,7 +602,7 @@ csp::spawn([] {
     std::string s(result.begin(), result.end());
     assert(s == msg);
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---

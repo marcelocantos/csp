@@ -168,7 +168,6 @@ Dropping `endpoints` stops the accept loop and closes the listening socket.
 ```cpp
 struct serve_options {
     net::listen_options listen = {};  // backlog, reuse_addr, dual_stack
-    size_t max_header_size = 8192;
     size_t read_chunk_size = 4096;
 };
 
@@ -224,7 +223,7 @@ csp::spawn([] {
         });
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -293,7 +292,7 @@ csp::spawn([] {
          {"Authorization", "Bearer tok123"}});
     printf("created: %d\n", resp2.status);
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---

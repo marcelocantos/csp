@@ -70,7 +70,7 @@ TEST_CASE("timeout-flushes-partial-frame") {
         while (out >> f) frames.push_back(std::move(f));
     });
 
-    schedule();
+    await_completion();
 
     CHECK(frames.size() >= 2);
     CHECK(frames[0] == std::vector<int>{1, 2});

@@ -98,7 +98,7 @@ spawn([] {
         // v: 0, 1, 2, 3, 4
     }
 });
-schedule();
+await_completion();
 ```
 
 ---
@@ -211,7 +211,7 @@ spawn([] {
         // v: 1, 4, 9, 16, 25
     }
 });
-schedule();
+await_completion();
 ```
 
 ---
@@ -285,7 +285,7 @@ spawn([] {
 
     // total == 15
 });
-schedule();
+await_completion();
 ```
 
 ---
@@ -348,7 +348,7 @@ auto sink = make_consumer<int>([](reader<int> r) {
 
 // Compose and run.
 spawn(source | doubled | sink);
-schedule();
+await_completion();
 ```
 
 ---
@@ -460,7 +460,7 @@ spawn([] {
         // v: 2, 4, 6
     }
 });
-schedule();
+await_completion();
 ```
 
 ---
@@ -542,5 +542,5 @@ spawn([] {
     // Connect them.
     for (int v : r) w << v;
 });
-schedule();
+await_completion();
 ```

@@ -67,5 +67,5 @@ int main() {
         printf("  Config reload demo complete\n");
     });
 
-    schedule();
+    await_completion();
 }

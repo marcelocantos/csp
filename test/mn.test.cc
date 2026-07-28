@@ -33,7 +33,7 @@ TEST_CASE("MN---MultipleThreads") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == done.load());
     // With 4 processors, we should see more than 1 OS thread used.
@@ -67,7 +67,7 @@ TEST_CASE("MN---CrossThreadChannel") {
         CHECK(45 == sum);
     });
 
-    csp::schedule();
+    csp::await_completion();
     csp::shutdown_runtime();
 }
 
@@ -84,7 +84,7 @@ TEST_CASE("MN---RapidSpawnExit") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == count.load());
 
@@ -109,7 +109,7 @@ TEST_CASE("MN---TimerSleep") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == done.load());
     // All N sleeps ran concurrently across 4 workers, so wall time
@@ -144,7 +144,7 @@ TEST_CASE("MN---TimerAfterInAlt") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == timeouts.load());
 
@@ -168,7 +168,7 @@ TEST_CASE("MN---TimerTick") {
         ticker = {};
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(3 == ticks_received.load());
 
@@ -200,7 +200,7 @@ TEST_CASE("MN---ConcurrentTimersAndChannels") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(42 == result.load());
 
@@ -229,7 +229,7 @@ TEST_CASE("MN---StressChannels") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     int expected = NUM_PAIRS * (MSGS_PER_PAIR * (MSGS_PER_PAIR - 1) / 2);
     CHECK(expected == total.load());
@@ -254,7 +254,7 @@ TEST_CASE("MN-Volume---SpawnExit-1M") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(N == count.load());
 
     csp::shutdown_runtime();
@@ -276,7 +276,7 @@ TEST_CASE("MN-Volume---ChannelPairs-10K") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)N * (N - 1) / 2;
     CHECK(expected == total.load());
@@ -319,7 +319,7 @@ TEST_CASE("MN-Volume---ChannelPipeline") {
     });
     head.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     // Each of MSGS messages passes through STAGES stages, gaining +1 each.
     CHECK((int64_t)MSGS * STAGES == sum.load());
@@ -363,7 +363,7 @@ TEST_CASE("MN-Volume---FanOutFanIn") {
     });
     result_ch.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     // sum(i^2, i=0..N-1) = N*(N-1)*(2N-1)/6
     int64_t N = MSGS;
@@ -393,7 +393,7 @@ TEST_CASE("MN-Volume---ManyChannelMessages") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(N == total.load());
 
     csp::shutdown_runtime();
@@ -413,7 +413,7 @@ TEST_CASE("MN-Volume---SpawnWithYield") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(N == count.load());
 
     csp::shutdown_runtime();
@@ -452,7 +452,7 @@ TEST_CASE("MN-Volume---DaisyChain") {
     });
     head.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK((int64_t)CHAIN_LEN * MSGS == total.load());
 
@@ -491,7 +491,7 @@ TEST_CASE("MN-Volume---AltSelectStress") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     // Each iteration contributes i + i*10 = i*11.
     int64_t expected = 0;
@@ -529,7 +529,7 @@ TEST_CASE("MN-Volume---ProducerConsumer") {
     }
     ch.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(PRODUCERS * MSGS_PER_PRODUCER == total.load());
 
@@ -552,7 +552,7 @@ TEST_CASE("MN-Stress---Lifecycle") {
         std::atomic<int> count{0};
         for (int i = 0; i < SPAWNS; ++i)
             csp::spawn([&] { count.fetch_add(1, std::memory_order_relaxed); });
-        csp::schedule();
+        csp::await_completion();
         CHECK(SPAWNS == count.load());
         csp::shutdown_runtime();
     }
@@ -576,7 +576,7 @@ TEST_CASE("MN-Stress---ChannelPairs") {
                 if (r >> v) total.fetch_add(v, std::memory_order_relaxed);
             });
         }
-        csp::schedule();
+        csp::await_completion();
         int64_t expected = (int64_t)PAIRS * (PAIRS - 1) / 2;
         CHECK(expected == total.load());
         csp::shutdown_runtime();
@@ -609,7 +609,7 @@ TEST_CASE("MN-Stress---ProducerConsumer") {
             });
         }
         ch.release();
-        csp::schedule();
+        csp::await_completion();
         CHECK(PRODUCERS * MSGS_PER_PRODUCER == total.load());
         csp::shutdown_runtime();
     }
@@ -633,7 +633,7 @@ TEST_CASE("MN-Volume---SpawnDuringExecution") {
     };
     csp::spawn([&] { go(go, DEPTH); });
 
-    csp::schedule();
+    csp::await_completion();
 
     int expected = (1 << (DEPTH + 1)) - 1;  // 2^(DEPTH+1) - 1
     CHECK(expected == count.load());
@@ -683,7 +683,7 @@ TEST_CASE("MN---Watchdog-rescues-stalled-P") {
         r >> v;
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(stall1_done.load());
     CHECK(stall2_done.load());
     CHECK(writer_done.load());
@@ -722,7 +722,7 @@ TEST_CASE("MN---Watchdog-rescues-timers-from-stalled-P") {
         timer_fired.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(timer_fired.load());
     CHECK(stall_done.load());
 
@@ -754,7 +754,7 @@ TEST_CASE("MN---SingleWorker") {
         result.store(sum, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(45 == result.load());
 
@@ -780,7 +780,7 @@ TEST_CASE("MN---ExceptionPropagation") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(caught.load());
 
@@ -823,7 +823,7 @@ TEST_CASE("MN---DynamicScopingInheritance") {
         csp::join(handles);
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(42 == parent_val.load());
     CHECK(N * 42 == child_val.load());
@@ -852,7 +852,7 @@ TEST_CASE("MN---ConcurrentSpawnStress") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(SPAWNERS * (1 + CHILDREN_PER) == total.load());
 
@@ -890,7 +890,7 @@ TEST_CASE("MN---HighContentionChannel") {
     }
     ch.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(write_sum.load() == read_sum.load());
     // Verify the expected total: sum of i*MSGS_PER_WRITER+j for all writers/msgs.
@@ -920,7 +920,7 @@ TEST_CASE("MN---ConcurrentBlocking") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     // Each imp i contributes i*(i+1)/2. Total = sum_{i=0}^{N-1} i*(i+1)/2.
     int64_t expected = 0;
@@ -966,7 +966,7 @@ TEST_CASE("MN---HAMTStress") {
         csp::join(handles);
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N * 10 == sum1.load());
     CHECK(N * 20 == sum2.load());
@@ -1007,7 +1007,7 @@ TEST_CASE("MN---StackPoolExhaustion") {
     });
     r = {};  // Release our copy so channel closes after coordinator.
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == done.load());
 

@@ -86,7 +86,7 @@ TEST_CASE("Timer---TickCancellation") {
         ticker = {};
     });
 
-    // If the tick imp didn't exit, schedule() would hang.
+    // If the tick imp didn't exit, await_completion() would hang.
 }
 
 TEST_CASE("Timer---MultipleTimersOrdering") {

@@ -94,7 +94,7 @@ TEST_CASE("Source---FdSource-basic-read") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     std::string got(result.begin(), result.end());
     CHECK(std::string(msg) == got);
@@ -139,7 +139,7 @@ TEST_CASE("Source---FdSource-EOF-via-death") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK(got_data);
     CHECK(got_eof);
@@ -170,7 +170,7 @@ TEST_CASE("Source---FdSource-partial-read") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK(2 == got_bytes.load());
     csp::shutdown_runtime();
@@ -202,7 +202,7 @@ TEST_CASE("Source---FdSource-zero-request-throws") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK(caught_invalid_arg);
     csp::shutdown_runtime();
@@ -258,7 +258,7 @@ TEST_CASE("Source---FdSource-prialt-two-sources") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     // Both 'A' and 'B' should have arrived, in some order.
     CHECK(2 == collected.size());
@@ -296,7 +296,7 @@ TEST_CASE("Source---FdSource-multi-request-loop") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     // The kernel may combine writes; we just need all 10 bytes.
     CHECK(10 == accumulated.size());
@@ -322,7 +322,7 @@ TEST_CASE("Source---FdSource-operator()-sugar") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     std::string got(result.begin(), result.end());
     // Might be fewer than 3 if partial; just check non-empty.

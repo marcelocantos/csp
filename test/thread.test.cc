@@ -128,7 +128,7 @@ TEST_CASE("Thread---CustomScheduler") {
     });
 
     csp::spawn([]{});
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(custom_ran);
 

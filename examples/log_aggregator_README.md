@@ -77,7 +77,7 @@ printing a summary table on each tick.
 | `csp::alt` | Select over multiple channels simultaneously |
 | Severity fan-out | Router imp dispatches to typed severity channels |
 | Channel death propagation | Alert monitor exits when `error_ch` writer dies |
-| `csp::schedule()` | Top-level scheduler entry point |
+| `csp::await_completion()` | Top-level scheduler entry point |
 
 ## Trade-offs
 

@@ -130,7 +130,7 @@ TEST_CASE("Pace---trigger-death-stops") {
         CHECK_FALSE(bool(r >> _));
     });
 
-    csp::schedule();
+    csp::await_completion();
 }
 
 }

@@ -37,7 +37,7 @@ TEST_CASE("Interleave---DrainSeesWakePending") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(ITERS == completed.load());
 
     csp::shutdown_runtime();
@@ -70,7 +70,7 @@ TEST_CASE("Interleave---StealSkipsRunning") {
         short_done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(long_done.load());
     CHECK(short_done.load());
@@ -111,7 +111,7 @@ TEST_CASE("Interleave---SurplusPWindDown") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(2 == stalls_done.load());
     CHECK(WORK == work_done.load());
@@ -165,7 +165,7 @@ TEST_CASE("Interleave---MultiWakerAltClaim") {
         // the remaining writers see dead read endpoints and unblock.
         for (auto& ch : chans) ch.release();
 
-        csp::schedule();
+        csp::await_completion();
 
         // Exactly one channel must have won.
         int which = alt_result.load();
@@ -244,7 +244,7 @@ TEST_CASE("Interleave---DrainStress") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)N * (N - 1) / 2;
     CHECK(expected == total.load());

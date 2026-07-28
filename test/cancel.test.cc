@@ -620,7 +620,7 @@ TEST_CASE("concurrent-cancel-detection") {
         csp::yield();
         csp::yield();
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(count == 10);
     csp::shutdown_runtime();
 }
@@ -665,7 +665,7 @@ TEST_CASE("cancel-during-I/O") {
         ::close(wfd.raw());
         csp::yield();
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(threw);
     ::close(rfd.raw());
     csp::shutdown_runtime();

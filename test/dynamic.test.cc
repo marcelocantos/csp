@@ -18,7 +18,7 @@ TEST_CASE("dynamic:-basic-read/write") {
         }
         CHECK(*count == 42);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-explicit-default") {
@@ -29,7 +29,7 @@ TEST_CASE("dynamic:-explicit-default") {
         csp::local l{count = 1};
         CHECK(*count == 1);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-spawn-inherits-parent-context") {
@@ -47,7 +47,7 @@ TEST_CASE("dynamic:-spawn-inherits-parent-context") {
         result.r >> v;
         CHECK(v == 42);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-child-write-isolation") {
@@ -72,7 +72,7 @@ TEST_CASE("dynamic:-child-write-isolation") {
         parent_result.r >> v;
         CHECK(v == 10);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-local-scoped-revert") {
@@ -86,7 +86,7 @@ TEST_CASE("dynamic:-local-scoped-revert") {
         }
         CHECK(*val == 1);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-nested-locals") {
@@ -104,7 +104,7 @@ TEST_CASE("dynamic:-nested-locals") {
         }
         CHECK(*val == 1);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-multiple-keys") {
@@ -122,7 +122,7 @@ TEST_CASE("dynamic:-multiple-keys") {
         }
         CHECK(*a == 10);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-context-transfer-over-channel") {
@@ -143,7 +143,7 @@ TEST_CASE("dynamic:-context-transfer-over-channel") {
         }
         CHECK(*val == 0);  // restored
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-string-type") {
@@ -154,7 +154,7 @@ TEST_CASE("dynamic:-string-type") {
         csp::local l{name = std::string("hello")};
         CHECK(*name == "hello");
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-deep-spawn-chain") {
@@ -179,7 +179,7 @@ TEST_CASE("dynamic:-deep-spawn-chain") {
         results.r >> v;
         CHECK(v == 3);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-multi-bind-local") {
@@ -193,7 +193,7 @@ TEST_CASE("dynamic:-multi-bind-local") {
         CHECK(*y == 2);
         CHECK(*z == "hello");
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("dynamic:-local-binding-reverts-during-exception") {
@@ -210,7 +210,7 @@ TEST_CASE("dynamic:-local-binding-reverts-during-exception") {
             after_catch = *val;
         }
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(after_catch == 10);
 }
 
@@ -229,7 +229,7 @@ TEST_CASE("dynamic:-multiple-locals-in-same-scope-both-revert") {
         a_after = *a;
         b_after = *b;
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(a_after == 0);
     CHECK(b_after == "default");
 }
@@ -246,7 +246,7 @@ TEST_CASE("imp_local:-basic-read/write") {
         counter = *counter + 1;
         CHECK(*counter == 43);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("imp_local:-explicit-default") {
@@ -257,7 +257,7 @@ TEST_CASE("imp_local:-explicit-default") {
         counter = 1;
         CHECK(*counter == 1);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("imp_local:-not-inherited-by-child") {
@@ -277,7 +277,7 @@ TEST_CASE("imp_local:-not-inherited-by-child") {
         result.r >> v;
         CHECK(v == 0);  // default, not 42
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("imp_local:-independent-per-imp") {
@@ -300,7 +300,7 @@ TEST_CASE("imp_local:-independent-per-imp") {
         CHECK(v1 == 10);
         CHECK(v2 == 20);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("imp_local:-string-type") {
@@ -311,6 +311,6 @@ TEST_CASE("imp_local:-string-type") {
         name = std::string("hello");
         CHECK(*name == "hello");
     });
-    csp::schedule();
+    csp::await_completion();
 }
 

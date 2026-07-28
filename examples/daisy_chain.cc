@@ -56,5 +56,5 @@ int main() {
         printf("  Run time:   %lld us (%.1f us/hop)\n", run_us, (double)run_us / N);
     });
 
-    schedule();
+    await_completion();
 }

@@ -98,21 +98,6 @@ namespace {
         ready_or_dead = ready_flag | dead_flag,
     };
 
-    char const * descr_flags(uintptr_t waiter) {
-        static char const * descrs[] = {
-            "‹⋅⋅W›", "‹⋅⋅R›",
-            "‹⋅⋅W›", "‹⋅⋅R›",
-            "‹⋅*W›", "‹⋅*R›",
-            "‹⋅*W›", "‹⋅*R›",
-            "‹+⋅W›", "‹+⋅R›",
-            "‹+⋅W›", "‹+⋅R›",
-            "‹+*W›", "‹+*R›",
-            "‹+*W›", "‹+*R›",
-        };
-        // Only describe non-null waiters.
-        return waiter & ~uintptr_t(15) ? descrs[waiter & 15] : "";
-    }
-
     // Extract Channel* from a Waiter/ChanOp pointer (Channel* with flags in low bits).
     Channel * get_chan(void * ptr) {
         auto p = (uintptr_t)ptr & ~uintptr_t{15};
@@ -942,10 +927,6 @@ void set_chan_descr(void * ptr, char const * descr) {
 char const * get_chan_descr(void * ptr) {
     auto * ch = get_chan_from_ref(ptr);
     return ch ? describe(ch) : "▸Ø";
-}
-
-char const * get_chan_flags(void * ch) {
-    return descr_flags((uintptr_t)ch);
 }
 
 WriterRef writer_addref(WriterRef w) {

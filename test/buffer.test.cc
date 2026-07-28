@@ -96,7 +96,7 @@ TEST_CASE("ChanUtil---BufferEmpty") {
     });
 
     ch.release();
-    csp::schedule();
+    csp::await_completion();
     CHECK(0 == received);
 }
 
@@ -118,7 +118,7 @@ TEST_CASE("ChanUtil---BufferSingle") {
     });
 
     ch.release();
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("ChanUtil---BufferZeroThrows") {
@@ -174,7 +174,7 @@ TEST_CASE("Chan---filter-|-chan-|-filter-pipeline") {
     spawn([in = std::move(ch.r), &results] {
         for (int v : in) results.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(results == std::vector<int>{20, 40, 50});
 }
 
@@ -186,7 +186,7 @@ TEST_CASE("Chan---reader-|-chan") {
     spawn([in = std::move(buffered), &results] {
         for (int v : in) results.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(results == std::vector<int>{1, 2, 3, 4, 5});
 }
 
@@ -201,7 +201,7 @@ TEST_CASE("Chan---chan-|-writer") {
     spawn([in = std::move(r), &results] {
         for (int v : in) results.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(results == std::vector<int>{1, 2, 3});
 }
 
@@ -213,7 +213,7 @@ TEST_CASE("Chan---producer-|-chan") {
     spawn([in = std::move(buffered), &results] {
         for (int v : in) results.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(results == std::vector<int>{1, 2, 3});
 }
 
@@ -225,7 +225,7 @@ TEST_CASE("Chan---chan-|-consumer") {
     spawn([out = std::move(input)] {
         for (int i = 10; i <= 30; i += 10) out << i;
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(results == std::vector<int>{10, 20, 30});
 }
 
@@ -245,7 +245,7 @@ TEST_CASE("Chan---multiple-buffer-stages") {
     spawn([r = std::move(ch.r), &results] {
         for (int v : r) results.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
     // 1→2→4→104, 2→3→6→106, 3→4→8→108
     CHECK(results == std::vector<int>{104, 106, 108});
 }
@@ -297,7 +297,7 @@ TEST_CASE("ChanUtil---BufferNoMoveBeforeCommit") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(int(received.size()) == N);
     for (auto const & s : received) {
         CHECK(!s.empty());
@@ -332,6 +332,6 @@ TEST_CASE("ChanUtil---BufferAltBothArmsReady") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(int(received.size()) == N);
 }

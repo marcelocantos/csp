@@ -58,7 +58,8 @@ template <typename F> reader<std::exception_ptr> spawn(F&& f);
 void join(reader<std::exception_ptr> const& r);
 
 // Run the scheduler (blocks until all imps complete).
-void schedule();
+// schedule() is a deprecated alias.
+void await_completion();
 
 // M:N runtime (auto-initializes on first use with hardware concurrency).
 // Override: set_maxprocs(n), or CSP_MAXPROCS env var. 1 = single-threaded.

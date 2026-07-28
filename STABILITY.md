@@ -73,8 +73,8 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 | `fuse(writer<T>&, reader<T>&)` | Needs review |
 | `tap(writer<T>&, reader<T>&)` | Needs review |
 | `splice(writer<T>&, reader<T>&, F&&)` | Needs review |
-| `channel_swap(writer<T>&, writer<T>&)` | Needs review |
-| `channel_swap(reader<T>&, reader<T>&)` | Needs review |
+| `channel_swap(writer<T>&, writer<T>&)` | Deprecated (`[[deprecated]]`; scheduled for removal) |
+| `channel_swap(reader<T>&, reader<T>&)` | Deprecated (`[[deprecated]]`; scheduled for removal) |
 | `call(writer<request<Req, Resp>>&, Req) → reader<Resp>` | Fluid |
 | `writer<request<Req, Resp>>::operator()(Req) → Resp` | Fluid |
 | `operator\|(writer<T>&, reader<T>&)` — syntactic sugar for `fuse` | Needs review |
@@ -252,7 +252,7 @@ project's http-server notes for the rationale.
 | `http::request::drain() → const bytes&` | accumulate body_stream into body (idempotent, 🎯T3.2) | Fluid |
 | `http::request::hijack_result` | struct (`fd_t fd`, `bytes leftover`) — protocol-upgrade payload | Fluid |
 | `http::endpoint` | struct (`requests`, `remote_addr`) | Fluid |
-| `http::serve_options` | struct (`listen`, `max_header_size`, `read_chunk_size`) | Fluid |
+| `http::serve_options` | struct (`listen`, `read_chunk_size`) | Fluid |
 | `http::server` | struct (`endpoints`, `port`, `local_addr`) | Fluid |
 | `http::serve(port, opts)` | server factory | Fluid |
 | `http::serve(addr, port, opts)` | server factory | Fluid |

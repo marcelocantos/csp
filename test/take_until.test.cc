@@ -17,7 +17,7 @@ TEST_CASE("TakeUntil---includes-terminating-element") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{1, 2, 3});
 }
@@ -34,7 +34,7 @@ TEST_CASE("TakeUntil---predicate-never-true") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{1, 2, 3});
 }
@@ -51,7 +51,7 @@ TEST_CASE("TakeUntil---first-element-matches") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{5});
 }
@@ -68,7 +68,7 @@ TEST_CASE("TakeUntil---empty-input") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got.empty());
 }

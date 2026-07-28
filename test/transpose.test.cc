@@ -25,7 +25,7 @@ TEST_CASE("Transpose---3x3-matrix") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<std::vector<int>>{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
 }
@@ -47,7 +47,7 @@ TEST_CASE("Transpose---unequal-lengths-stops-at-shortest") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<std::vector<int>>{{1, 2}, {3, 4}});
 }
@@ -66,7 +66,7 @@ TEST_CASE("Transpose---single-input") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<std::vector<int>>{{10}, {20}});
 }
@@ -88,7 +88,7 @@ TEST_CASE("Transpose---empty-inputs") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got.empty());
 }

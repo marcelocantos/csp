@@ -67,7 +67,7 @@ using namespace csp;
 
 namespace csp::detail {
 
-enum class Status : intptr_t { run, sleep, detach, exit, spawn };
+enum class Status : intptr_t { sleep, detach, exit };
 
 struct Imp;
 
@@ -131,6 +131,8 @@ struct alignas(16) Imp {
     // next_/in_global_ checks on the wake path.
     std::atomic<bool> placed_{false};
     bool in_global_ = false;  // true while in the global run queue
+                              // (assertion-only state: written by the
+                              // global-queue push/pop, read only by asserts)
 
     int signal_;
     int n_chanops_;
@@ -182,15 +184,14 @@ struct alignas(16) Imp {
         return status_;
     }
 
-    void schedule(bool make_current = false);
-    void schedule_local(bool make_current = false);
+    void schedule();
+    void schedule_local();
     // Place this imp on a run queue after the caller has already claimed
     // placement (placed_ == true, next_ == null).  Shared by schedule()
     // and drain_suspended() so deferred wakes take the same wake-to-local
     // fast path (🎯T37).
     void place_on_run_queue();
     void make_runnable();
-    void deschedule();
 
     void run(Status status = Status::sleep);
 

@@ -189,7 +189,6 @@ void suspend();
 // Debug/test.
 char const * get_descr(void * thr);
 char const * get_chan_descr(void * ch);
-char const * get_chan_flags(void * ch);
 int channel_count(int endpt);
 
 }
@@ -218,6 +217,7 @@ extern Logger g_descrlog;
 void set_scheduler(std::function<void()> f);
 void reset_scheduler();
 void await_completion();
+[[deprecated("use await_completion()")]]
 inline void schedule() { await_completion(); }  // deprecated alias
 
 // Yield control so other imps can run. Does nothing outside an imp.
@@ -672,8 +672,6 @@ private:
     friend struct chan<T>;
     friend class weak_writer<T>;
 };
-
-namespace { Logger g_reader_log("reader"); }
 
 template <typename T = poke_t>
 class reader {
@@ -1175,8 +1173,10 @@ void splice(writer<T>& w, reader<T>& r, F&& f) {
 
 // Backward compatibility.
 template <typename T>
+[[deprecated("unused; scheduled for removal")]]
 void channel_swap(writer<T>& a, writer<T>& b) { swap(a, b); }
 template <typename T>
+[[deprecated("unused; scheduled for removal")]]
 void channel_swap(reader<T>& a, reader<T>& b) { swap(a, b); }
 
 // Make a channel for a writer&, returning the matching reader.

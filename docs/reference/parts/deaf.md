@@ -52,7 +52,7 @@ spawn([w = std::move(w), give_up = std::move(give_up_r)] {
 });
 
 give_up_w = {};  // close the give-up channel
-schedule();
+await_completion();
 ```
 
 ## When to Use

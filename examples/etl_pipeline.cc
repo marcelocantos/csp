@@ -267,5 +267,5 @@ int main() {
         printf("\n%d batches written.\n", n);
     });
 
-    schedule();
+    await_completion();
 }

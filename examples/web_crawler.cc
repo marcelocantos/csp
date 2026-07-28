@@ -32,7 +32,7 @@
 //     → workers' input loop exits → workers drop their results.w copies
 //       → results channel closes → coordinator's result loop exits
 //         → coordinator drops stop_ch.w → ~stop_r fires in server imp
-//           → server-accept imp returns → schedule() returns
+//           → server-accept imp returns → await_completion() returns
 
 #include "csp.h"
 #include "csp/net.h"
@@ -336,7 +336,7 @@ int main() {
         // stop_w drops here → ~stop_r fires in server imp → it exits.
     });
 
-    schedule();
+    await_completion();
 
     // Explicitly shut down subsystems before static-singleton destructors run.
     // net::dial uses io::resolve (blocking pool) for DNS; those threads are

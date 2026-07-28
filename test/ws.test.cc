@@ -84,7 +84,7 @@ TEST_CASE("ws---text-echo") {
         }
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -134,7 +134,7 @@ TEST_CASE("ws---binary-message") {
         }
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -188,7 +188,7 @@ TEST_CASE("ws---multiple-messages") {
         }
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -242,7 +242,7 @@ TEST_CASE("ws---close-on-writer-death") {
         CHECK(done);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -300,7 +300,7 @@ TEST_CASE("ws---bad-upgrade-no-key") {
         CHECK(response.find("400") != std::string::npos);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -354,7 +354,7 @@ TEST_CASE("ws---large-message") {
         }
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 

@@ -177,7 +177,7 @@ csp::spawn([] {
         // process reply
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---

@@ -5,7 +5,7 @@
 // main thread must sleep in park_cv.wait rather than busy-spinning.
 //
 // Strategy: spawn an imp that blocks forever on a never-written channel
-// (deadlock), then run schedule() for ~1 second under a wall-clock timeout.
+// (deadlock), then run await_completion() for ~1 second under a wall-clock timeout.
 // The test asserts that the CPU time consumed by the process is well below
 // the wall time, confirming the runtime slept rather than spun.
 
@@ -52,7 +52,7 @@ TEST_CASE("QuiescentSleep---NoHookNoBusySpin") {
 
     // Spawn a daemon timer thread that calls set_maxprocs to zero out the
     // runtime after wall_duration. Using a separate OS thread so the CSP
-    // runtime itself is not involved — we just want to unblock schedule().
+    // runtime itself is not involved — we just want to unblock await_completion().
     std::thread killer([&] {
         std::this_thread::sleep_for(wall_duration);
         // Poke the runtime out of park_cv.wait by decreasing imps:
@@ -61,14 +61,14 @@ TEST_CASE("QuiescentSleep---NoHookNoBusySpin") {
         never_written = {};
     });
 
-    // schedule() drives the runtime. The only imp is blocked waiting for
-    // never_written; once we close the writer it unblocks and schedule()
+    // await_completion() drives the runtime. The only imp is blocked waiting for
+    // never_written; once we close the writer it unblocks and await_completion()
     // returns.
     spawn([r = std::move(blocked_r)] () mutable {
         int v;
         r >> v;  // returns false when writer closes
     });
-    schedule();
+    await_completion();
 
     killer.join();
 

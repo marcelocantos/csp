@@ -65,24 +65,6 @@ extern "C" {
 namespace csp::http3 {
 
 // ---------------------------------------------------------------------------
-// nghttp3 version sanity check
-// ---------------------------------------------------------------------------
-
-namespace {
-
-// This function is called at static initialisation time to verify that the
-// nghttp3 headers we compiled against match the linked library version.
-// Because nghttp3 is always compiled from source in this repo the versions
-// will always match, but the check makes the dependency relationship explicit.
-[[maybe_unused]] void check_nghttp3_version() {
-    const nghttp3_info* info = nghttp3_version(0);
-    // age==0 means the struct layout is the initial one we compiled against.
-    (void)info;
-}
-
-} // namespace
-
-// ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
 

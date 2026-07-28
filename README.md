@@ -83,7 +83,7 @@ int main() {
             std::cout << n << "\n";
     });
 
-    schedule();
+    await_completion();
 }
 ```
 
@@ -91,7 +91,7 @@ int main() {
 `reader<int>`. Endpoints are move-only — forgetting `std::move` is a compile
 error, not a silent deadlock. `w << i` blocks until the consumer is ready;
 the range-for blocks until the producer sends. When the producer returns, the
-writer is destroyed and the consumer's loop exits. `schedule()` drives
+writer is destroyed and the consumer's loop exits. `await_completion()` drives
 imps to completion.
 
 ## Documentation

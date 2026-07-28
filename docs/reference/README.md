@@ -15,7 +15,7 @@ state.operation(args) ─┤guard├──➤ effects; result
 | Document | Header | Contents |
 |---|---|---|
 | [Channels](channels.md) | `csp.h` | `chan<T>`, `writer<T>`, `reader<T>`, `chan_op<T>`, `poke_t`, rendezvous protocol |
-| [Scheduling](scheduling.md) | `csp.h` | `spawn`, `schedule`, `yield`, `set_maxprocs`, `spawn_producer`, `spawn_consumer`, `spawn_filter` |
+| [Scheduling](scheduling.md) | `csp.h` | `spawn`, `await_completion`, `yield`, `set_maxprocs`, `spawn_producer`, `spawn_consumer`, `spawn_filter` |
 | [Multiplexing](multiplexing.md) | `csp.h` | `alt`, `prialt`, death-watch (`~reader`, `~writer`), `skip`, two-phase protocol |
 
 ## Time, I/O, and OS Integration

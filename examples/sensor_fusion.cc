@@ -181,5 +181,5 @@ int main() {
         printf("\nDone (%d dashboard updates).\n", n);
     });
 
-    schedule();
+    await_completion();
 }

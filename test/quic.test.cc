@@ -80,7 +80,7 @@ TEST_CASE("QUIC---echo-single-stream") {
         client_done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(server_done.load());
     CHECK(client_done.load());
     CHECK("ping" == client_received);
@@ -144,7 +144,7 @@ TEST_CASE("QUIC---multiple-streams") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(N == streams_echoed.load());
     CHECK(N == client_ok.load());
     csp::shutdown_runtime();
@@ -182,7 +182,7 @@ TEST_CASE("QUIC---listener-drop-stops-accept") {
         pr >> port; // discard — just unblock the server imp
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(exited.load());
     csp::shutdown_runtime();
 }

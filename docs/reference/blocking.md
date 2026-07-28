@@ -83,5 +83,5 @@ csp::spawn([] {
     });
     // Back on the imp scheduler with the result.
 });
-csp::schedule();
+csp::await_completion();
 ```

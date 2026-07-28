@@ -116,7 +116,7 @@ TEST_CASE("enable---net-serve-with-http-enable") {
         CHECK(response.find("factory-OK") != std::string::npos);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -169,7 +169,7 @@ TEST_CASE("serve---basic-get") {
         CHECK(response.find("Hello, CSP!") != std::string::npos);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -304,7 +304,7 @@ TEST_CASE("serve---post-with-body") {
         CHECK(response.find("request body data") != std::string::npos);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -360,7 +360,7 @@ TEST_CASE("serve---keep-alive") {
         }
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -405,7 +405,7 @@ TEST_CASE("serve---request-header-lookup") {
         (void)read_to_eof(conn.source);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -473,7 +473,7 @@ TEST_CASE("serve---streaming-body") {
         CHECK(response.find("streamed body data") != std::string::npos);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -541,7 +541,7 @@ TEST_CASE("serve---streaming-body-large") {
         CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -621,7 +621,7 @@ TEST_CASE("serve---early-response-without-draining") {
         CHECK(resp2.find("fine") != std::string::npos);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -668,7 +668,7 @@ TEST_CASE("fetch---basic-get") {
         CHECK(body == R"({"ok":true})");
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -716,7 +716,7 @@ TEST_CASE("fetch---post-with-body") {
         CHECK(resp_body == "hello from client");
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -775,7 +775,7 @@ TEST_CASE("fetch---streaming-body-source") {
         CHECK(resp_body == "streamedpayloaddata!");
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -812,7 +812,7 @@ TEST_CASE("fetch---custom-headers") {
         CHECK(resp.status == 200);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -849,7 +849,7 @@ TEST_CASE("fetch---404-response") {
         CHECK(body == "not found");
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
