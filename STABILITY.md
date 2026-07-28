@@ -16,9 +16,9 @@ namespaces (`csp::internal`, `csp::detail`) are not part of the public API.
 
 | Symbol | Value | Stability |
 |--------|-------|-----------|
-| `CSP_VERSION` | `"0.26.0"` | Stable |
+| `CSP_VERSION` | `"0.27.0"` | Stable |
 | `CSP_VERSION_MAJOR` | `0` | Stable |
-| `CSP_VERSION_MINOR` | `26` | Stable |
+| `CSP_VERSION_MINOR` | `27` | Stable |
 | `CSP_VERSION_PATCH` | `0` | Stable |
 
 ### Core types
