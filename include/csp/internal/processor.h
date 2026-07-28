@@ -46,6 +46,23 @@ struct Processor {
         , id(id_)
     { }
 
+    // True when the ring holds waiting work besides the sentinel and the
+    // currently running imp. Caller must hold run_mu (🎯T49: shared by
+    // the wake-to-local fairness check in place_on_run_queue and the
+    // watchdog's rescuable scan).
+    bool ring_has_waiting() const {
+        if (auto* start = busy) {
+            auto* it = start;
+            do {
+                if (it != &main && it != running) {
+                    return true;
+                }
+                it = it->next_;
+            } while (it != start);
+        }
+        return false;
+    }
+
     // Reinitialize a dead surplus P for reuse.  Caller must have
     // joined the old worker thread first.
     void reset() {

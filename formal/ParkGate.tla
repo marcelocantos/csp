@@ -6,7 +6,7 @@
  * unconditionally on every scheduler event — a pthread syscall per
  * channel rendezvous even when nothing waits on park_cv (only
  * completion/quiescence watchers do: main_loop, run(), await_idle,
- * await_quiescent, quiescent_loop).  The gate skips the broadcast when
+ * await_quiescent).  The gate skips the broadcast when
  * no watcher is registered.
  *
  * Protocol (src/runtime.cpp Runtime::park_wait / notify_watchers):

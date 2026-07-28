@@ -2,6 +2,9 @@
 
 #include <csp/csp.h>
 
+#include <array>
+#include <cstddef>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -295,5 +298,45 @@ auto operator|(chan<T> ch, consumer<T, F> c) {
             c(std::move(ch.r));
         });
 }
+
+namespace detail {
+
+// Shared machinery for heterogeneous fan-in parts (mux, combine_latest —
+// 🎯T49: formerly duplicated per part).
+
+// Set up ChanOp read slots for a tuple of typed inputs, each pointing at
+// its typed buffer.
+template <size_t... Is, typename Bufs, typename Inputs>
+void hetero_read_setup(internal::ChanOp* chanops, Bufs& bufs, Inputs& inputs,
+                       std::index_sequence<Is...>) {
+    ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
+                     &std::get<Is>(bufs),
+                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
+}
+
+// Typed-transfer dispatch table, built at compile time via index_sequence
+// expansion: transfers[i] moves a Ts...[i] value between type-erased
+// pointers. Parts derive from this and add their own per-index tables
+// (mux: variant wrappers; combine_latest: latest-tuple updaters).
+template <typename... Ts>
+struct hetero_transfer {
+    using xfer_fn = void(*)(void*, void*);
+
+    template <size_t I>
+    static void transfer(void* d, void* s) {
+        using T = std::tuple_element_t<I, std::tuple<Ts...>>;
+        *static_cast<T*>(d) = std::move(*static_cast<T*>(s));
+    }
+
+    template <size_t... Is>
+    static constexpr auto make_transfers(std::index_sequence<Is...>) {
+        return std::array<xfer_fn, sizeof...(Is)>{{&transfer<Is>...}};
+    }
+
+    static constexpr auto transfers =
+        make_transfers(std::index_sequence_for<Ts...>{});
+};
+
+} // namespace detail
 
 }

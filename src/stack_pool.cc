@@ -50,13 +50,24 @@ StackPool::StackPool()
 // ============================================================
 #if CSP_USE_ARENA_STACKS
 
-StackRegion StackPool::arena_alloc() {
+// One arena implementation for both slot classes (🎯T49; formerly a
+// duplicated per-class pair). Geometry comes from kArenaGeometry[cls];
+// mutable state (slabs for drain, free list) from arenas_[cls]. The
+// Small class (🎯T3.4.1) is the same layout with a tighter slot —
+// spawn() opts into it when the stack analyser confirms the imp fits.
+StackRegion StackPool::arena_alloc(StackClass cls) {
+    auto const& g = kArenaGeometry[static_cast<size_t>(cls)];
+    auto& a = arenas_[static_cast<size_t>(cls)];
     std::lock_guard<std::mutex> lk(mu_);
 
-    // Serve from free list first.
-    if (!free_list_.empty()) {
-        auto region = free_list_.back();
-        free_list_.pop_back();
+    if (cls == StackClass::Small) {
+        small_allocations_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Serve from the class free list first.
+    if (!a.free_list.empty()) {
+        auto region = a.free_list.back();
+        a.free_list.pop_back();
         return region;
     }
 
@@ -65,37 +76,38 @@ StackRegion StackPool::arena_alloc() {
 #ifdef MAP_NORESERVE
     flags |= MAP_NORESERVE;
 #endif
-    void* base = mmap(nullptr, kArenaSlabSize, PROT_READ | PROT_WRITE, flags, -1, 0);
+    void* base = mmap(nullptr, g.slab_size, PROT_READ | PROT_WRITE, flags, -1, 0);
     if (base == MAP_FAILED) {
         throw std::bad_alloc();
     }
 
-    arena_slabs_.push_back({base, kArenaSlabSize});
+    a.slabs.push_back({base, g.slab_size});
 
     // Carve the slab into slot StackRegions.
     // Return slot 0 directly; push slots 1..N-1 onto the free list.
     auto* p = static_cast<char*>(base);
     StackRegion first{};
-    for (size_t i = 0; i < kArenaSlotsPerSlab; ++i) {
+    for (size_t i = 0; i < g.slots_per_slab; ++i) {
         StackRegion r;
         r.base = p;
-        r.total_size = kArenaSlotSize;
-        r.overflow_limit = p + kArenaSlotGuard;
-        r.cls = StackClass::Default;
-        p += kArenaSlotSize;
+        r.total_size = g.slot_size;
+        r.overflow_limit = p + g.slot_guard;
+        r.cls = cls;
+        p += g.slot_size;
         if (i == 0) {
             first = r;
         } else {
-            free_list_.push_back(r);
+            a.free_list.push_back(r);
         }
     }
     return first;
 }
 
 void StackPool::arena_free(StackRegion region) {
+    auto const& g = kArenaGeometry[static_cast<size_t>(region.cls)];
     // Hint to the kernel that the usable pages can be reclaimed.
-    char* usable = static_cast<char*>(region.base) + kArenaSlotGuard;
-    size_t usable_len = region.total_size - kArenaSlotGuard;
+    char* usable = static_cast<char*>(region.base) + g.slot_guard;
+    size_t usable_len = region.total_size - g.slot_guard;
 #ifdef MADV_FREE
     madvise(usable, usable_len, MADV_FREE);
 #else
@@ -103,92 +115,28 @@ void StackPool::arena_free(StackRegion region) {
 #endif
 
     std::lock_guard<std::mutex> lk(mu_);
-    free_list_.push_back(region);
-}
-
-// Small-class arena (🎯T3.4.1): same layout as the default arena, with a
-// tighter slot and separate free list / slab vector. spawn() opts into this
-// class when the stack analyser confirms the imp fits.
-StackRegion StackPool::arena_alloc_small() {
-    std::lock_guard<std::mutex> lk(mu_);
-
-    if (!small_free_list_.empty()) {
-        auto region = small_free_list_.back();
-        small_free_list_.pop_back();
-        small_allocations_.fetch_add(1, std::memory_order_relaxed);
-        return region;
-    }
-
-    int flags = MAP_ANON | MAP_PRIVATE;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-    void* base = mmap(nullptr, kArenaSmallSlabSize, PROT_READ | PROT_WRITE, flags, -1, 0);
-    if (base == MAP_FAILED) {
-        throw std::bad_alloc();
-    }
-
-    small_arena_slabs_.push_back({base, kArenaSmallSlabSize});
-
-    auto* p = static_cast<char*>(base);
-    StackRegion first{};
-    for (size_t i = 0; i < kArenaSmallSlotsPerSlab; ++i) {
-        StackRegion r;
-        r.base = p;
-        r.total_size = kArenaSmallSlotSize;
-        r.overflow_limit = p + kArenaSmallSlotGuard;
-        r.cls = StackClass::Small;
-        p += kArenaSmallSlotSize;
-        if (i == 0) {
-            first = r;
-        } else {
-            small_free_list_.push_back(r);
-        }
-    }
-    small_allocations_.fetch_add(1, std::memory_order_relaxed);
-    return first;
-}
-
-void StackPool::arena_free_small(StackRegion region) {
-    char* usable = static_cast<char*>(region.base) + kArenaSmallSlotGuard;
-    size_t usable_len = region.total_size - kArenaSmallSlotGuard;
-#ifdef MADV_FREE
-    madvise(usable, usable_len, MADV_FREE);
-#else
-    madvise(usable, usable_len, MADV_DONTNEED);
-#endif
-
-    std::lock_guard<std::mutex> lk(mu_);
-    small_free_list_.push_back(region);
+    arenas_[static_cast<size_t>(region.cls)].free_list.push_back(region);
 }
 
 StackRegion StackPool::allocate(StackClass cls) {
-    if (cls == StackClass::Small) return arena_alloc_small();
-    return arena_alloc();
+    return arena_alloc(cls);
 }
 
 void StackPool::release(StackRegion region) {
-    if (region.cls == StackClass::Small) {
-        arena_free_small(region);
-    } else {
-        arena_free(region);
-    }
+    arena_free(region);
 }
 
 // maybe_shrink: inline no-op in the header for arena builds.
 
 void StackPool::drain() {
     std::lock_guard<std::mutex> lk(mu_);
-    free_list_.clear();
-    small_free_list_.clear();
-    for (auto& slab : arena_slabs_) {
-        munmap(slab.base, slab.size);
+    for (auto& a : arenas_) {
+        a.free_list.clear();
+        for (auto& slab : a.slabs) {
+            munmap(slab.base, slab.size);
+        }
+        a.slabs.clear();
     }
-    arena_slabs_.clear();
-    for (auto& slab : small_arena_slabs_) {
-        munmap(slab.base, slab.size);
-    }
-    small_arena_slabs_.clear();
 }
 
 // ============================================================
@@ -196,7 +144,13 @@ void StackPool::drain() {
 // ============================================================
 #elif CSP_USE_VM_STACKS
 
-#ifdef _WIN32
+// This branch is Windows-only by construction: CSP_USE_ARENA_STACKS is
+// defined as CSP_USE_VM_STACKS && !_WIN32 (stack_pool.h), so VM &&
+// !ARENA implies _WIN32. The former #else Unix per-stack mmap
+// implementation here was unreachable and has been removed (🎯T49).
+#ifndef _WIN32
+#error "CSP_USE_VM_STACKS without CSP_USE_ARENA_STACKS implies _WIN32"
+#endif
 
 // --- Windows: VirtualAlloc-based stack regions ---
 //
@@ -357,85 +311,6 @@ void StackPool::drain() {
     }
     free_list_.clear();
 }
-
-#else // !_WIN32: Unix per-stack mmap (unreachable: CSP_USE_ARENA_STACKS always
-      // takes priority on non-Windows Unix non-sanitizer builds)
-
-static int madv_free_flag() {
-#ifdef MADV_FREE
-    return MADV_FREE;
-#else
-    return MADV_DONTNEED;
-#endif
-}
-
-StackRegion StackPool::mmap_new() {
-    int flags = MAP_ANON | MAP_PRIVATE;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-    void* base = mmap(nullptr, stack_size_, PROT_READ | PROT_WRITE, flags, -1, 0);
-    if (base == MAP_FAILED) {
-        throw std::bad_alloc();
-    }
-    if (mprotect(base, page_size_, PROT_NONE) != 0) {
-        munmap(base, stack_size_);
-        throw std::bad_alloc();
-    }
-    return {base, stack_size_, nullptr};
-}
-
-void StackPool::munmap_region(StackRegion region) {
-    munmap(region.base, region.total_size);
-}
-
-StackRegion StackPool::allocate(StackClass /*cls*/) {
-    // Per-stack mmap mode (unreachable in practice — arena takes priority on
-    // non-Windows Unix builds). Slot-class hint ignored.
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-        if (!free_list_.empty()) {
-            auto region = free_list_.back();
-            free_list_.pop_back();
-            return region;
-        }
-    }
-    return mmap_new();
-}
-
-void StackPool::release(StackRegion region) {
-    char* usable = static_cast<char*>(region.base) + page_size_;
-    size_t usable_len = region.total_size - page_size_;
-    madvise(usable, usable_len, madv_free_flag());
-
-    std::lock_guard<std::mutex> lk(mu_);
-    if (free_list_.size() < kMaxPooled) {
-        free_list_.push_back(region);
-    } else {
-        munmap_region(region);
-    }
-}
-
-void StackPool::maybe_shrink(StackRegion const& region, void* current_sp) {
-    char* usable = static_cast<char*>(region.base) + page_size_;
-    auto sp_val = reinterpret_cast<uintptr_t>(current_sp);
-    char* sp_page = reinterpret_cast<char*>(sp_val & ~(page_size_ - 1));
-    char* shrink_to = sp_page - 2 * page_size_;
-    if (shrink_to > usable + static_cast<ptrdiff_t>(page_size_)) {
-        size_t reclaimable = static_cast<size_t>(shrink_to - usable);
-        madvise(usable, reclaimable, madv_free_flag());
-    }
-}
-
-void StackPool::drain() {
-    std::lock_guard<std::mutex> lk(mu_);
-    for (auto& r : free_list_) {
-        munmap_region(r);
-    }
-    free_list_.clear();
-}
-
-#endif // _WIN32
 
 #else // !CSP_USE_ARENA_STACKS && !CSP_USE_VM_STACKS -- sanitizer heap fallback
 

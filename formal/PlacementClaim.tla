@@ -14,7 +14,7 @@
  * the actor that observed FALSE inserts.  The imp itself clears
  * placed_ when it delinks on the suspend path — after the CheckWP
  * early-wake decision, so a woken-early imp never exposes a
- * FALSE window (see csp.cc run()).
+ * FALSE window (see csp.cc do_switch()).
  *
  * Wakers can only reach the claim when suspend_state_ is SUSP_IDLE
  * (DrainSuspended.tla); this spec starts from that point: the imp is

@@ -145,7 +145,7 @@ namespace csp {
             // workers get the FLAGGED sentinel so they skip the next sleep
             // and check stopping immediately.
             //
-            // We also notify main_loop / quiescent_loop (which still use park_cv).
+            // We also notify main_loop (which still uses park_cv).
             //
             // Re-read num_procs_ each iteration to capture any surplus workers
             // that the watchdog added after stopping was set. Stop when the
@@ -166,7 +166,7 @@ namespace csp {
                     std::this_thread::yield();
                 }
             }
-            // Synchronize with main_loop / run() / quiescent_loop / await_idle(),
+            // Synchronize with main_loop / run() / await_quiescent() / await_idle(),
             // all of which wait on park_cv. Acquire-release park_mu before
             // notifying so any waiter that has evaluated the predicate as false
             // (but hasn't entered cv.wait yet) will have entered cv.wait before
@@ -233,12 +233,13 @@ namespace csp {
             park_cv.notify_all();
         }
 
-        void Runtime::unpark_one() {
+        bool Runtime::wake_a_worker() {
             // Wake exactly one parked worker. Scan for a sleeping Note and CAS
             // SLEEPING->AWAKE + futex_wake on the first match. If no worker is
             // sleeping yet (all awake or in transition), flag one so it skips
             // its next sleep attempt. This eliminates the thundering herd of
-            // notify_all on the worker path.
+            // notify_all on the worker path. Returns false when every worker
+            // is active (the watchdog may add_processor on that answer).
             // TLA:PerWorkerWake.SchedWakeSleeping TLA:PerWorkerWake.SchedFlagAwake
             int n = num_procs_.load(std::memory_order_acquire);
             // First pass: find a sleeping worker and wake exactly that one.
@@ -247,7 +248,7 @@ namespace csp {
                 if (!p || !p->alive.load(std::memory_order_acquire)) continue;
                 if (p->note.is_sleeping()) {
                     p->note.wake();
-                    return;
+                    return true;
                 }
             }
             // Second pass: no sleeper found — flag one awake worker so it
@@ -257,7 +258,7 @@ namespace csp {
                 if (!p || !p->alive.load(std::memory_order_acquire)) continue;
                 if (p->parked.load(std::memory_order_acquire)) {
                     p->note.wake();
-                    return;
+                    return true;
                 }
             }
             // All workers are active — no action needed.  park_cv
@@ -265,6 +266,11 @@ namespace csp {
             // predicate becomes true because work arrived — main_loop
             // acts on completion (imp exit) and quiescence (worker
             // parks), each of which has its own notifier.
+            return false;
+        }
+
+        void Runtime::unpark_one() {
+            wake_a_worker();
         }
 
         void Runtime::push_to_global(Imp* imp) {
@@ -315,7 +321,7 @@ namespace csp {
                 // false and p.parked being set, unpark_one() will see parked=true
                 // and wake us, OR we see has_work() here and skip the sleep.
                 p.parked.store(true, std::memory_order_release); // TLA:PerWorkerWake.WorkerSetParked
-                // Wake main_loop / quiescent_loop's quiescence check.
+                // Wake main_loop / await_quiescent()'s quiescence check.
                 // Skipped entirely when no quiescence watcher is
                 // registered (TLA:ParkGate) — this used to be a mutex +
                 // broadcast syscall on every park.
@@ -413,24 +419,13 @@ namespace csp {
             }
         }
 
-        void Runtime::quiescent_loop() {
-            // Wait until no runnable work remains (all workers parked and
-            // global queue empty).  Unlike main_loop(), suspended imps that
-            // are waiting for external events (e.g. fake_clock timers) do NOT
-            // prevent this from returning — they are not in any run queue.
-            park_wait([this] {
-                if (has_global_work_.load(std::memory_order_acquire)) {
-                    return false;
-                }
-                int n = num_procs_.load(std::memory_order_acquire);
-                for (int i = 0; i < n; ++i) {
-                    auto& p = *procs[i];
-                    if (!p.alive.load(std::memory_order_acquire)) continue;
-                    if (!p.parked.load(std::memory_order_acquire)) return false;
-                }
-                return true;
-            }, /*quiescence=*/true);
-        }
+        // Runtime::quiescent_loop() was deleted in 🎯T49: it had no
+        // callers (none since its introduction with the M:N scheduler),
+        // and its all-parked scan started at i = 0 — unlike main_loop()'s
+        // i = 1 — which made its predicate unsatisfiable: P0 runs
+        // main_loop, never worker_loop, so procs[0]->parked is never set.
+        // csp::internal::await_quiescent() (csp.cc) is the live version
+        // of the same wait, with the correct i = 1 scan.
 
         void Runtime::watchdog_loop() {
             using namespace std::chrono;
@@ -486,16 +481,7 @@ namespace csp {
                         bool rescuable = false;
                         {
                             std::lock_guard lk(p.run_mu);
-                            if (auto* start = p.busy) {
-                                auto* it = start;
-                                do {
-                                    if (it != &p.main && it != p.running) {
-                                        rescuable = true;
-                                        break;
-                                    }
-                                    it = it->next_;
-                                } while (it != start);
-                            }
+                            rescuable = p.ring_has_waiting();
                         }
                         if (!rescuable) {
                             rescuable = has_global_work_.load(std::memory_order_acquire);
@@ -508,7 +494,7 @@ namespace csp {
                             // ADDS another instead of waking it. Only
                             // create a new P when nobody is parked (the
                             // mn watchdog stress tests' regime).
-                            if (!try_wake_parked_worker()) {
+                            if (!wake_a_worker()) {
                                 add_processor();
                             }
                         }
@@ -516,31 +502,6 @@ namespace csp {
                     last[i] = hb;
                 }
             }
-        }
-
-        bool Runtime::try_wake_parked_worker() {
-            // Same two-pass shape as unpark_one(), but reports success and
-            // skips the park_cv notifies — the watchdog isn't publishing
-            // new work, just redirecting an idle P at work that already
-            // exists (which main_loop's predicates track independently).
-            int n = num_procs_.load(std::memory_order_acquire);
-            for (int i = 1; i < n; ++i) {
-                auto* p = procs[i].get();
-                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
-                if (p->note.is_sleeping()) {
-                    p->note.wake();
-                    return true;
-                }
-            }
-            for (int i = 1; i < n; ++i) {
-                auto* p = procs[i].get();
-                if (!p || !p->alive.load(std::memory_order_acquire)) continue;
-                if (p->parked.load(std::memory_order_acquire)) {
-                    p->note.wake();
-                    return true;
-                }
-            }
-            return false;
         }
 
         void Runtime::add_processor() {

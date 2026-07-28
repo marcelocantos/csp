@@ -90,7 +90,9 @@ public:
     size_t slab_count() const {
 #if CSP_USE_ARENA_STACKS
         std::lock_guard<std::mutex> lk(mu_);
-        return arena_slabs_.size() + small_arena_slabs_.size();
+        size_t n = 0;
+        for (auto const& a : arenas_) n += a.slabs.size();
+        return n;
 #else
         return 0;
 #endif
@@ -127,10 +129,8 @@ private:
     StackRegion mmap_new();
     void munmap_region(StackRegion region);
 #elif CSP_USE_ARENA_STACKS
-    StackRegion arena_alloc();
+    StackRegion arena_alloc(StackClass cls);
     void arena_free(StackRegion region);
-    StackRegion arena_alloc_small();
-    void arena_free_small(StackRegion region);
 #endif
 
     size_t page_size_;
@@ -171,11 +171,30 @@ private:
         size_t size = 0;
     };
 
-    std::vector<ArenaSlab> arena_slabs_;        // default-class slabs (for drain)
-    std::vector<ArenaSlab> small_arena_slabs_;  // small-class slabs (for drain)
-    std::vector<StackRegion> small_free_list_;  // small-class free list
+    // Per-class slot geometry, indexed by StackClass (🎯T49: the two
+    // formerly duplicated per-class arena implementations share one body
+    // driven by this table).
+    struct ArenaGeometry {
+        size_t slot_guard;
+        size_t slot_size;
+        size_t slots_per_slab;
+        size_t slab_size;
+    };
+    static constexpr ArenaGeometry kArenaGeometry[2] = {
+        {kArenaSlotGuard, kArenaSlotSize, kArenaSlotsPerSlab, kArenaSlabSize},
+        {kArenaSmallSlotGuard, kArenaSmallSlotSize,
+         kArenaSmallSlotsPerSlab, kArenaSmallSlabSize},
+    };
+
+    // Per-class mutable arena state, indexed by StackClass.
+    struct ArenaClass {
+        std::vector<ArenaSlab> slabs;           // for drain()
+        std::vector<StackRegion> free_list;
+    };
+    ArenaClass arenas_[2];
     std::atomic<size_t> small_allocations_{0};
-    // free_list_ holds default-class arena StackRegions (with overflow_limit set)
+    // free_list_ (above) is unused in arena mode; the per-class arena
+    // free lists live in arenas_[].free_list.
 #endif
 
 

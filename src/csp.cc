@@ -225,17 +225,7 @@ namespace csp {
                     bool pull = false;
                     {
                         std::lock_guard plk(p.run_mu);
-                        bool has_waiting = false;
-                        if (auto* start = p.busy) {
-                            auto* it = start;
-                            do {
-                                if (it != &p.main && it != p.running) {
-                                    has_waiting = true;
-                                    break;
-                                }
-                                it = it->next_;
-                            } while (it != start);
-                        }
+                        bool has_waiting = p.ring_has_waiting();
                         if (!has_waiting
                             && ++p.local_wake_streak_ >= kLocalWakeBudget) {
                             p.local_wake_streak_ = 0;
@@ -341,7 +331,14 @@ namespace csp {
             }
         }
 
-        void Imp::run(Status status) {
+        // Worker dispatch: resume a queued imp from local_next(). The
+        // dispatching context is the P's synthetic main (or a resumed
+        // imp's continuation), which stays linked in the ring — only
+        // advance busy past it. Detach/exit departures all go through
+        // do_switch, which owns the sole copy of the CheckWP early-wake
+        // protocol (🎯T49; the arm here was a stale duplicate: the one
+        // caller, worker_loop, always passed Status::sleep).
+        void Imp::run() {
             auto& p = current_p();
             auto& busy = p.busy;
             auto self = current_imp();
@@ -355,50 +352,8 @@ namespace csp {
             {
                 std::lock_guard lk(p.run_mu);
 
-                switch (status) {
-                case Status::sleep:
-                    if (self == busy) {
-                        busy = busy->next_;
-                    }
-                    break;
-                case Status::detach: // TLA:StealWork.VDeschedule
-                case Status::exit:
-                    // Inline deschedule without re-acquiring run_mu.
-                    assert(self->next_);
-                    if (busy == self && (busy = self->next_) == self) {
-                        busy = nullptr;
-                    }
-                    if (self->next_) self->next_->prev_ = self->prev_;
-                    if (self->prev_) self->prev_->next_ = self->next_;
-                    self->next_ = nullptr;
-                    self->prev_ = nullptr;
-
-                    // TLA:DrainSuspended.CheckWP — early wake: a waker
-                    // CASed to SUSP_WAKE before our context save. Take
-                    // the wake here (CAS back to IDLE), re-add to the
-                    // local queue, and skip the switch entirely.
-                    if (uint32_t wake = Imp::SUSP_WAKE;
-                        status == Status::detach &&
-                        self->suspend_state_.compare_exchange_strong(
-                            wake, Imp::SUSP_IDLE,
-                            std::memory_order_acq_rel,
-                            std::memory_order_acquire)) {
-                        if (busy) {
-                            self->next_ = busy;
-                            self->prev_ = busy->prev_;
-                            self->next_->prev_ = self->prev_->next_ = self;
-                        } else {
-                            busy = self->next_ = self->prev_ = self;
-                        }
-                        return;
-                    }
-                    // Committed to switching out: release the placement
-                    // claim. Ordered after CheckWP so an early-woken imp
-                    // (which stays queued) never exposes placed_ == FALSE.
-                    // TLA:PlacementClaim
-                    self->placed_.store(false, std::memory_order_release);
-                    break;
-                default: CSP_UNREACHABLE();
+                if (self == busy) {
+                    busy = busy->next_;
                 }
 
                 // Inline schedule without re-acquiring run_mu.
@@ -413,15 +368,12 @@ namespace csp {
                 }
             }
 
-            auto killme = status == Status::exit ? self : nullptr;
-            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, reinterpret_cast<intptr_t>(killme), self));
+            auto killyou = reinterpret_cast<Imp *>(switch_to(*this, 0, self));
             if (killyou) {
                 destroy_imp(killyou);
             }
 
-            if (!killme) {
-                set_current_imp(self);
-            }
+            set_current_imp(self);
         }
 
         // TLA:StealWork.VDoSwitch

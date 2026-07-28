@@ -11,26 +11,11 @@ namespace csp::part {
 
 namespace detail {
 
-// Set up ChanOp read slots for combine_latest inputs.
-template <size_t... Is, typename Bufs, typename Inputs>
-void combine_setup(internal::ChanOp* chanops, Bufs& bufs, Inputs& inputs,
-                   std::index_sequence<Is...>) {
-    ((chanops[Is] = {internal::wait(std::get<Is>(inputs).internal_reader()),
-                     &std::get<Is>(bufs),
-                     internal::get_slot(std::get<Is>(inputs).internal_reader().ptr)}), ...);
-}
-
-// Dispatch tables for typed transfer and latest-update by runtime index.
+// Latest-update dispatch table on top of the shared hetero fan-in
+// transfer table (part.h — 🎯T49).
 template <typename... Ts>
-struct combine_dispatch {
-    using xfer_fn = void(*)(void*, void*);
+struct combine_dispatch : hetero_transfer<Ts...> {
     using update_fn = void(*)(std::tuple<Ts...>&, std::tuple<Ts...>&);
-
-    template <size_t I>
-    static void transfer(void* d, void* s) {
-        using T = std::tuple_element_t<I, std::tuple<Ts...>>;
-        *static_cast<T*>(d) = std::move(*static_cast<T*>(s));
-    }
 
     template <size_t I>
     static void update(std::tuple<Ts...>& latest, std::tuple<Ts...>& bufs) {
@@ -38,17 +23,10 @@ struct combine_dispatch {
     }
 
     template <size_t... Is>
-    static constexpr auto make_transfers(std::index_sequence<Is...>) {
-        return std::array<xfer_fn, sizeof...(Is)>{{&transfer<Is>...}};
-    }
-
-    template <size_t... Is>
     static constexpr auto make_updaters(std::index_sequence<Is...>) {
         return std::array<update_fn, sizeof...(Is)>{{&update<Is>...}};
     }
 
-    static constexpr auto transfers =
-        make_transfers(std::index_sequence_for<Ts...>{});
     static constexpr auto updaters =
         make_updaters(std::index_sequence_for<Ts...>{});
 };
@@ -75,8 +53,8 @@ auto combine_latest_impl(F&& f, reader<Ts>... inputs) {
             // Slot 0: death-watch on output.
             chanops[0] = {internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)};
             // Slots 1..N: reads from each input.
-            combine_setup(chanops + 1, bufs, inputs,
-                          std::index_sequence_for<Ts...>{});
+            hetero_read_setup(chanops + 1, bufs, inputs,
+                              std::index_sequence_for<Ts...>{});
 
             while (alive > 0) {
                 internal::AltMatch m;

@@ -394,10 +394,11 @@ local_next → take_from_global (if has_global_work_) → steal_work → park:
 `has_work` checks the local ring under `run_mu` and the empty signal
 `has_global_work_` (no `global_mu` on the empty path — 🎯T37).
 
-`unpark_one()` scans for a sleeping / parked worker Note and wakes
-exactly one. It does **not** broadcast `park_cv`. `park_cv` is only for
-completion / quiescence watchers (`main_loop`, `run`, `quiescent_loop`),
-gated by watcher counts (T34 O3).
+`unpark_one()` (a wrapper over `wake_a_worker()`, which the watchdog
+also calls for its success/failure answer) scans for a sleeping / parked
+worker Note and wakes exactly one. It does **not** broadcast `park_cv`.
+`park_cv` is only for completion / quiescence watchers (`main_loop`,
+`run`, `await_quiescent`), gated by watcher counts (T34 O3).
 
 ### Shutdown
 

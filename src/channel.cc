@@ -537,40 +537,29 @@ namespace {
             int n_chans = 0;
 
             for (int i = 0; i < count; ++i) {
-                auto const & chop = chanops[i];
-                auto * slot = chop.slot ? static_cast<Slot *>(chop.slot) : nullptr;
-                if (slot) slot->lock();
-                Channel * new_ch;
-                if (slot) {
-                    new_ch = static_cast<Channel *>(
-                        slot->channel.load(std::memory_order_acquire));
-                    auto flags = (uintptr_t)chop.waiter.ptr & uintptr_t{15};
-                    const_cast<ChanOp &>(chop).waiter.ptr =
-                        (void *)((uintptr_t)new_ch | flags);
+                // resolve_one pins under the slot lock (the paper-11 UAF
+                // fix); only the dedup/overflow bookkeeping stays inline
+                // (🎯T49). A duplicate arm's extra pin is dropped below —
+                // safe outside the slot lock because the first
+                // occurrence's pin already holds the channel alive.
+                Channel * new_ch = resolve_one(chanops[i], /*pin=*/true);
+                if (!new_ch) continue;
+                bool found = false;
+                for (int j = 0; j < n_chans; ++j) {
+                    if (chans[j] == new_ch) { found = true; break; }
+                }
+                if (found) {
+                    unpin_channel(new_ch);
+                } else if (n_chans < 8) {
+                    fixed_chans[n_chans++] = new_ch;
                 } else {
-                    new_ch = get_chan(chop);
-                }
-                if (new_ch) {
-                    bool found = false;
-                    for (int j = 0; j < n_chans; ++j) {
-                        if (chans[j] == new_ch) { found = true; break; }
+                    if (n_chans == 8) {
+                        variable_chans.assign(fixed_chans, fixed_chans + 8);
                     }
-                    if (!found) {
-                        // Pin under slot lock to close the free race.
-                        new_ch->alive_.fetch_add(1, std::memory_order_relaxed);
-                        if (n_chans < 8) {
-                            fixed_chans[n_chans++] = new_ch;
-                        } else {
-                            if (n_chans == 8) {
-                                variable_chans.assign(fixed_chans, fixed_chans + 8);
-                            }
-                            variable_chans.push_back(new_ch);
-                            chans = variable_chans.data();
-                            n_chans++;
-                        }
-                    }
+                    variable_chans.push_back(new_ch);
+                    chans = variable_chans.data();
+                    n_chans++;
                 }
-                if (slot) slot->unlock();
             }
 
             // Sort unique channels by id for lock ordering. count==1
@@ -929,85 +918,80 @@ char const * get_chan_descr(void * ptr) {
     return ch ? describe(ch) : "▸Ø";
 }
 
-WriterRef writer_addref(WriterRef w) {
-    if (w) {
-        counterses()[wr].ref();
-        get_slot(w.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
+// 🎯T49: one body per semantic refcount op, parameterised over the
+// endpoint index. The exported writer_*/reader_* functions below stay as
+// one-line forwarders because the type-erased header firewall names them
+// (the exported symbol set must not change). The weak addref/release
+// pairs never touch the endpoint counter, so they share one untemplated
+// body each.
+namespace {
+
+template <int Endpt, typename Ref>
+Ref endpoint_addref(Ref x) {
+    if (x) {
+        counterses()[Endpt].ref();
+        get_slot(x.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
     }
-    return w;
+    return x;
 }
 
-void writer_release(WriterRef w) {
-    if (w) {
-        auto * slot = get_slot(w.ptr);
-        counterses()[wr].deref();
+template <int Endpt, typename Ref>
+void endpoint_release(Ref x) {
+    if (x) {
+        auto * slot = get_slot(x.ptr);
+        counterses()[Endpt].deref();
         if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            Channel::resolve_endpoint_death(slot, wr);
+            Channel::resolve_endpoint_death(slot, Endpt);
         }
     }
 }
 
-ReaderRef reader_addref(ReaderRef r) {
-    if (r) {
-        counterses()[rd].ref();
-        get_slot(r.ptr)->refcount.fetch_add(1, std::memory_order_relaxed);
-    }
-    return r;
+template <typename Ref>
+void endpoint_weak_addref(Ref x) {
+    if (x) get_slot(x.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
 }
 
-void reader_release(ReaderRef r) {
-    if (r) {
-        auto * slot = get_slot(r.ptr);
-        counterses()[rd].deref();
-        if (slot->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            Channel::resolve_endpoint_death(slot, rd);
-        }
-    }
+template <typename Ref>
+void endpoint_weak_release(Ref x) {
+    if (x) get_slot(x.ptr)->mem_release();
 }
 
-void writer_weak_addref(WriterRef w) {
-    if (w) get_slot(w.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
-}
-
-void writer_weak_release(WriterRef w) {
-    if (w) get_slot(w.ptr)->mem_release();
-}
-
-void reader_weak_addref(ReaderRef r) {
-    if (r) get_slot(r.ptr)->mem_refcount.fetch_add(1, std::memory_order_relaxed);
-}
-
-void reader_weak_release(ReaderRef r) {
-    if (r) get_slot(r.ptr)->mem_release();
-}
-
-bool try_upgrade_weak_writer(WriterRef w) {
-    if (!w) return false;
-    auto* slot = get_slot(w.ptr);
+template <int Endpt, typename Ref>
+bool endpoint_try_upgrade_weak(Ref x) {
+    if (!x) return false;
+    auto* slot = get_slot(x.ptr);
     size_t old = slot->refcount.load(std::memory_order_acquire);
     while (old > 0) {
         if (slot->refcount.compare_exchange_weak(old, old + 1,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
-            counterses()[wr].ref();
+            counterses()[Endpt].ref();
             return true;
         }
     }
     return false;
 }
 
-bool try_upgrade_weak_reader(ReaderRef r) {
-    if (!r) return false;
-    auto* slot = get_slot(r.ptr);
-    size_t old = slot->refcount.load(std::memory_order_acquire);
-    while (old > 0) {
-        if (slot->refcount.compare_exchange_weak(old, old + 1,
-                std::memory_order_acq_rel, std::memory_order_acquire)) {
-            counterses()[rd].ref();
-            return true;
-        }
-    }
-    return false;
-}
+} // namespace
+
+WriterRef writer_addref(WriterRef w) { return endpoint_addref<wr>(w); }
+
+void writer_release(WriterRef w) { endpoint_release<wr>(w); }
+
+ReaderRef reader_addref(ReaderRef r) { return endpoint_addref<rd>(r); }
+
+void reader_release(ReaderRef r) { endpoint_release<rd>(r); }
+
+void writer_weak_addref(WriterRef w) { endpoint_weak_addref(w); }
+
+void writer_weak_release(WriterRef w) { endpoint_weak_release(w); }
+
+void reader_weak_addref(ReaderRef r) { endpoint_weak_addref(r); }
+
+void reader_weak_release(ReaderRef r) { endpoint_weak_release(r); }
+
+bool try_upgrade_weak_writer(WriterRef w) { return endpoint_try_upgrade_weak<wr>(w); }
+
+bool try_upgrade_weak_reader(ReaderRef r) { return endpoint_try_upgrade_weak<rd>(r); }
 
 void swap_slots(void * slot_a_ptr, void * slot_b_ptr) {
     auto * sa = static_cast<Slot *>(slot_a_ptr);

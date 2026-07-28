@@ -17,8 +17,8 @@
  *
  *   suspend_state_ ∈ { IDLE, SUSP, WAKE }
  *
- *   MT begin:   suspend_state_.store(SUSP, release); unlock; run(detach)
- *   MT CheckWP: (in run(), before the context save, under run_mu)
+ *   MT begin:   suspend_state_.store(SUSP, release); unlock; do_switch(detach)
+ *   MT CheckWP: (in do_switch(), before the context save, under run_mu)
  *               CAS(WAKE → IDLE): success ⇒ early wake — re-add self to
  *               the local queue and return without switching.
  *   Drain:      (after the context save, on the resuming thread)
@@ -39,7 +39,7 @@
  *
  * Code references (src/csp.cc, src/channel.cc, src/blocking_pool.cc):
  *   BeginSuspend — suspend_state_.store(SUSP); unlock; do_switch(detach)
- *   CheckWP      — run() detach path CAS(WAKE→IDLE)
+ *   CheckWP      — do_switch() detach path CAS(WAKE→IDLE)
  *   Drain        — drain_suspended(): exchange(IDLE)
  *   WakerCAS     — schedule(): CAS(SUSP→WAKE) / observe WAKE
  *   WakerPush    — schedule(): IDLE ⇒ push under global_mu
@@ -78,7 +78,7 @@ BeginSuspend ==
     /\ pc_mt' = "check_wp"
     /\ UNCHANGED <<waker_pushed, pc_waker>>
 
-(* In run()'s detach path, before the context save: CAS(WAKE → IDLE).
+(* In do_switch()'s detach path, before the context save: CAS(WAKE → IDLE).
  * Success ⇒ the wake arrived early; re-add to the local queue and keep
  * running (no context switch, so no drain will follow).
  * Failure (state is SUSP) ⇒ proceed to the context switch.
