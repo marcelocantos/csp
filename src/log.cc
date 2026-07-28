@@ -25,40 +25,16 @@ using namespace csp;
 
 
 
-namespace {
-
-    char g_vendor[256];
-    char g_appname[256];
-    bool g_registered = true;
-
-}
-
-
 namespace csp {
 
     struct Logger::Rep {
         Rep(bool & enabled, const char * component);
-        ~Rep() { free((void *)component_); }
 
-        bool& enabled_;
-        char const * component_;
-        Rep* next_;
-
-        static Rep * prereg_;
-
-        bool reg(std::string const & component);
+        static bool reg(std::string const & component);
     };
 
-    Logger::Rep * Logger::Rep::prereg_;
-
-    Logger::Rep::Rep(bool & enabled, char const * component) : enabled_(enabled) {
-        if (g_registered) {
-            enabled_ = reg(component);
-        } else {
-            component_ = strdup(component);
-            next_ = prereg_;
-            prereg_ = this;
-        }
+    Logger::Rep::Rep(bool & enabled, char const * component) {
+        enabled = reg(component);
     }
 
     bool Logger::Rep::reg(std::string const & component) {
@@ -153,18 +129,6 @@ namespace csp {
         }
 
         if (flags & 4) exit(1);
-    }
-
-    void Logger::regapp(char const * vendor, char const * appname) {
-        strcpy(g_vendor, vendor);
-        strcpy(g_appname, appname);
-        g_registered = true;
-
-        for (Rep* r = Rep::prereg_; r; r = r->next_) {
-            r->reg(r->component_);
-            free((void*)r->component_);
-            r->component_ = strdup("");
-        }
     }
 
     void Logger::dump_stack() {

@@ -173,6 +173,86 @@ TEST_CASE("serve---basic-get") {
     csp::shutdown_runtime();
 }
 
+// Regression: create_listener resolves with AF_UNSPEC, so an IPv4 literal
+// binds an IPv4 socket — but the shutdown sentinel used to self-connect to
+// a hardcoded [::1]:port, which such a listener can never accept. Serving
+// the request proves the bind; reaching the end of schedule() proves the
+// accept loop woke, since a stuck loop leaves its imp live forever.
+TEST_CASE("serve---ipv4-literal-bind-address") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<uint16_t> port_ch;
+
+    spawn([w = std::move(port_ch.w)] {
+        auto srv = http::serve("127.0.0.1", 0);
+        CHECK(srv.port != 0);
+        w << srv.port;
+
+        http::endpoint ep;
+        if (srv.endpoints >> ep) {
+            http::request req;
+            if (ep.requests >> req) {
+                CHECK(req.url == "/v4");
+
+                std::string body_str = "bound-on-127.0.0.1";
+                bytes body(body_str.begin(), body_str.end());
+                req.respond << http::response{200, {}, std::move(body)};
+            }
+        }
+        // srv.endpoints drops here — the accept loop must observe it.
+    });
+
+    spawn([r = std::move(port_ch.r)] {
+        uint16_t port;
+        r >> port;
+
+        auto conn = net::dial("127.0.0.1", port);
+
+        std::string req =
+            "GET /v4 HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        bytes req_bytes(req.begin(), req.end());
+        conn.output << req_bytes;
+
+        std::string response = read_to_eof(conn.source);
+
+        CHECK(response.find("HTTP/1.1 200 OK") != std::string::npos);
+        CHECK(response.find("bound-on-127.0.0.1") != std::string::npos);
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
+// The same wake path with no connection ever accepted: dropping the
+// endpoints reader alone must retire the accept loop.
+TEST_CASE("serve---endpoints-drop-stops-accept-loop") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(2);
+
+    chan<bool> done_ch;
+
+    spawn([w = std::move(done_ch.w)] {
+        auto srv = http::serve("127.0.0.1", 0);
+        CHECK(srv.port != 0);
+
+        srv.endpoints = {};
+        w << true;
+    });
+
+    spawn([r = std::move(done_ch.r)] {
+        bool ok = false;
+        CHECK((r >> ok));
+        CHECK(ok);
+    });
+
+    schedule();
+    csp::shutdown_runtime();
+}
+
 TEST_CASE("serve---post-with-body") {
     csp::shutdown_runtime();
     csp::set_maxprocs(2);

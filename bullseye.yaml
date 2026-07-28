@@ -1340,6 +1340,70 @@ targets:
     origin: manual
     discovered: 2026-07-26
     achieved: 2026-07-26
+  T46:
+    name: No audit-verified latent bugs remain (2026-07-28 code-smell audit, tier 1)
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - src/http2.cc create_listener uses AF_UNSPEC with conditional AI_PASSIVE matching net.cc/http.cc, and a test exercises http2::serve("127.0.0.1", 0) successfully
+    - Shutdown sentinels wake accept via a family-correct getsockname-derived address (wake_listener) in both http.cc and http2.cc; endpoints-drop tests reproduce the hang pre-fix and pass post-fix; scripts/win-validate.sh full suite green
+    - log.cc Rep::component_ cannot be freed uninitialised (unreachable prereg machinery deleted)
+    - try_map.h includes map.h, and make test gains a per-header standalone include+instantiation check that fails on the pre-fix header
+    - spawn_quantize(T quantum, writer<T>, writer<T>) returns writer<T>; a test instantiates all three spawn_quantize overloads at T=int; docs corrected
+    - http2::connection_handle and http2::push declarations removed with their stale comments
+    - 'Full oracle set green: native + TSan + ASan test suites'
+    context: 'Refiled — originally 🎯T41; the first filing was lost with the working tree before it was committed and the ID is now history-reserved. 2026-07-28 three-agent code-smell audit found five verified bugs, all in copy-maintained mirrors: (1) src/http2.cc serve_tls sentinel lacked the Windows #else self-connect branch; (2) src/http2.cc create_listener had pre-T39 hints (AF_INET6 + unconditional AI_PASSIVE) so http2::serve("127.0.0.1", 0) failed resolve, dual_stack check dead; (3) src/log.cc Rep::component_ freed uninitialised (g_registered=true made the initialising branch unreachable); (4) include/csp/part/try_map.h not standalone-includable (called map<A,B> without including map.h — template bodies only resolve at instantiation, ADL cannot find csp::part::map); (5) include/csp/part/quantize.h spawn_quantize(T, writer<T>, writer<T>) declared writer<double>, uninstantiable except T=double. Adjacent: http2.h declared connection_handle/push with no definition anywhere. During fix verification a sixth bug surfaced: both http and http2 shutdown sentinels self-connected to [::1] regardless of bound family, so IPv4-bound listeners never woke accept on endpoints-drop.'
+    origin: 2026-07-28 code-smell audit (three-agent fan-out); refiled after working-tree loss
+    discovered: 2026-07-28
+    achieved: 2026-07-28
+  T47:
+    name: No dead or vestigial code identified in the 2026-07-28 audit remains in src/ or include/
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Each listed item is deleted (or, for public symbols channel_swap/schedule(), carries [[deprecated]] with a recorded removal decision); grep confirms zero remaining references
+    - in_global_ is either removed or explicitly marked assertion-only (comment or NDEBUG gating)
+    - make dist regenerated; dist/ carries none of the removed symbols
+    - 'Full oracle set green: native + TSan + ASan suites, plus test-dist'
+    context: 'Refiled — originally 🎯T42 (lost with working tree; ID history-reserved). Grep-verified dead code from the audit. Core (~90 lines): Imp::deschedule (zero callers), Status::run/Status::spawn enumerators, both make_current parameters (always default), get_chan_flags/descr_flags (no callers), in_global_ assertion-only but reads as live scheduler state. (Logger prereg path already deleted under the tier-1 target.) Net: http::serve_options::max_header_size (never read), http2::stream_state::scheme/authority (write-only), ws_io_write::close_sent (unreferenced), resp_on_status (inert no-op registration), check_nghttp3_version ([[maybe_unused]], never called, misleading comment), handle_open_requests returns constant true making three caller error branches unreachable, dead catch(csp::error&) clause at tls.cc:504-510 subsumed by identical catch(...). Header: csp.h:676 anonymous-namespace g_reader_log (one dead Logger per including TU), csp.h:1176-1180 channel_swap compat shims (zero references tree-wide; public — [[deprecated]] first), csp.h:221 schedule() labelled deprecated in a comment but carrying no attribute.'
+    origin: 2026-07-28 code-smell audit; refiled after working-tree loss
+    discovered: 2026-07-28
+  T48:
+    name: Protocol-neutral helpers are single-sourced in core TUs; intra-TU copy-paste in the network stack is collapsed
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - format_addr, iequals/to_lower, and a parse_authority helper exist once in core (io/net or an internal header) and all protocol TUs consume them; scripts/lint_frontdoor.py stays green
+    - net::bind_listener (with wake-address derivation) exists and net::listen, http::create_listener, http2::create_listener are thin callers; http2::serve_options embeds net::listen_options; wake_listener exists once
+    - A net::accept_loop template (stored-F callback) backs http::serve, http2::do_serve, and http2::do_serve_tls; the sentinel/self-connect/stop logic exists exactly once
+    - io.cc has one wait_signal body; http.cc fetch overloads share serialize_request(content_length)+read_response; ws.cc has one b64_encode; reactor.cc fire_signal lives in the shared csp::detail block; tls.cc buffer disposal is RAII and the dead catch clause is gone
+    - 'make dist regenerated; full oracle set green: native + TSan + ASan, test-dist, and scripts/win-validate.sh (accept_loop touches the T39-sensitive path)'
+    context: 'Refiled — originally 🎯T43 (lost with working tree; ID history-reserved). Audit tiers 2-3. DCE rules permit protocol→core references (amalgamate.py puts net.cc/io.cc/reactor.cc in the front-door csp.cpp; lint_frontdoor.py enforces the reverse), so shared helpers are legal. Cross-TU: format_addr copied into net.cc/http.cc/http2.cc/quic.cc; iequals+to_lower in http.cc/http2.cc/ws.cc; listener bind triplicated (net.cc, http.cc, http2.cc — the divergence that caused the tier-1 hints bug) with listen_result declared twice, now also wake_listener + wake-addr derivation duplicated http.cc/http2.cc (deliberately identical, ready to lift); accept loop triplicated (~65 lines ×3 — hid the tier-1 Windows bug); URL-authority parsing duplicated between ws::connect and http::parse_url; http2::serve_options re-declares listen fields loose instead of embedding net::listen_options (prerequisite for bind_listener). Intra-TU: io.cc cancel-aware wait body ×4 (io::socket_t already unifies the platform split); http::fetch overloads duplicate ~90 lines (request serialisation + response read loop); ws.cc base64 twice + magic string twice; quic.cc listener drain-and-flush block ×4 and wake-pipe drain ×5 (lambda-locals); reactor.cc fire_signal character-identical across __APPLE__/__linux__ blocks (pure hoist), read_writers_/write_writers_ selected by six ternaries on the existing fd_event enum, three identical signal-RAII classes; tls.cc six manual ptls_buffer_dispose unwind sites wanting RAII plus dead catch(csp::error&) clause; quic.cc dial''s four hand-rolled cleanup ladders (highest risk — ownership transfers into the io imp on success; prefer unique_ptr deleters). net::listen''s cancel-scope shutdown design stays out of the accept_loop unification (documented-awkward, separate mechanism).'
+    depends_on:
+    - T46
+    origin: 2026-07-28 code-smell audit; refiled after working-tree loss
+    discovered: 2026-07-28
+  T49:
+    name: Hot-path duplicated protocols are single-sourced with benchmarks flat (runtime + combinator fan-in)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Imp::run's dead detach/exit arm is gone; exactly one copy of the CheckWP protocol exists; DrainSuspended/PlacementClaim TLA specs still correspond to the code
+    - channel.cc endpoint refcount ops have one template body per semantic op; exported symbol set unchanged
+    - StackPool has one arena implementation indexed by StackClass; the unreachable mmap branch is deleted or its reachability documented; test/stack_slot_sizing.test.cc green
+    - prialt_begin_impl's classical path calls resolve_one instead of an inline copy; paper-11 UAF tests green
+    - The main_loop/quiescent_loop P0-scan difference is either unified or explained by a comment citing the reason
+    - mux/combine_latest share one transfer-table detail; typed_alt_vec_none is deleted; a shared fan_in backs at least merge/join/first_wins/merge_all
+    - stack_analysis BR/BLR over_budget asymmetry resolved (shared resolve_indirect_callee or an explanatory comment)
+    - 'Benches flat within-epoch vs pre-refactor baseline on the same binary pair: send/recv, alt/8ch, prialt/8ch at CSP_MAXPROCS 2/8/16 (ratios only — fan shapes are bimodal cross-epoch)'
+    - 'Full oracle set green ×3: native + TSan + ASan; TLC green on the spec pairs touching modified protocols'
+    context: 'Refiled — originally 🎯T44 (lost with working tree; ID history-reserved). Audit tier 4 — refactors touching T34/T35-tuned code; bench suite is the oracle. Core: Imp::run (csp.cc:362-445) is a stale near-duplicate of do_switch (452-576); sole caller passes Status::sleep so its detach/exit arm — a second live copy of the TLA-modelled CheckWP wake protocol — is dead; reduce it and drop Status::run/spawn. Endpoint refcounts: ten exported functions in channel.cc:951-1029 are five ops mirrored over the wr/rd index → template<int Endpt> bodies with one-line forwarders (ABI unchanged). StackPool: arena_alloc/_free duplicated per slot class over the existing StackClass enum (~55 lines) plus the ~78-line self-documented-unreachable Unix mmap branch. prialt_begin_impl''s classical path re-implements the resolve_one pin-under-lock lambda inline (paper-11 UAF-critical — reuse the lambda ONLY; skip RAII on the unpin ladder). Runtime scan loops: unpark_one/try_wake_parked_worker; ring-scan in place_on_run_queue vs watchdog; the main_loop i=1 vs quiescent_loop i=0 P0-scan difference MUST be resolved deliberately before collapsing. Ring insert/delink hand-inlined ×9 → inline ring_link/ring_unlink helpers (sentinel null-branch removal needs the busy-never-null invariant proven first). Combinators: eight parts hand-roll the same dynamic-alt fan-in loop (merge, merge_all, flat_map, join, first_wins, mux, combine_latest; fanout stays hand-written); shared detail::fan_in must preserve build-once-mutate-in-place; mux_dispatch ≡ combine_dispatch (zero-risk merge); typed_alt_vec_none deleted by threading nowait as a template parameter; flat_map = map|merge_all is exact but changes imp topology — needs its own perf+teardown decision. Also investigate: stack_analysis_arm64.cc BR (no over_budget check) vs BLR (gated) asymmetry — factor resolve_indirect_callee to force the asymmetry to be deliberate or fixed.'
+    origin: 2026-07-28 code-smell audit; refiled after working-tree loss
+    discovered: 2026-07-28
   T5:
     name: Unmodeled concurrent decision points have TLA+ specs
     status: achieved
@@ -1352,6 +1416,22 @@ targets:
     origin: manual
     discovered: 2026-03-09
     achieved: 2026-05-21
+  T50:
+    name: 'Combinator library is internally consistent: docs match signatures, clone pairs share bodies, idioms are uniform'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - parts.md kind column is accurate for every row (extend the kind vocabulary as needed); merge_all and collect have all three required doc artefacts; make (check_md_links) green
+    - The race/timer/group_by lazy-vs-eager question has a recorded user decision; if converted, docs and tests updated as a flagged breaking change
+    - quantify, take_while/take_until, timer, fd_source, and random.h producers share single parameterised bodies; public signatures unchanged (except where the breaking-change decision says otherwise)
+    - One detail::pump backs the six identical pump sites; stream_to's death-watch difference is either unified or documented as deliberate
+    - distinct, skip_while, default_if_empty use the primed-read idiom; the flag-vs-prime rule is written down where part authors will see it
+    - RingBuffer's capacity contract is resolved (capacity-0 support or delegation to blackhole/identity); round_up_pow2 exists once
+    - reader::descr is const; full test suite green
+    context: 'Refiled — originally 🎯T45 (lost with working tree; ID history-reserved). Audit findings in include/csp/part/ plus docs drift. Docs: parts.md "kind" column wrong for ~13 verified entries (race, first_wins, join, quantize, gate, timer, metrics, share, slide, partition, round_robin, group_by, unzip); merge_all — one of the four flatten strategies, tested — missing from all three required doc locations (detail page, parts.md row, AGENTS-CSP.md row); collect missing from two. Convention drift: race.h/part timer.h/group_by.h are eager (spawn_*) where the stated convention (part.h:228-230) and their structural siblings are lazy (make_*) — converting race is a user-visible breaking change requiring an explicit user decision; record the decision either way. One-axis clone pairs to share a body: any_of/all_of (quantify.h), take_while/take_until, the two timer overloads, the two slide overloads, fd_source/fd_source_view (OnScopeExit — cleanest ~45-line win), the two quantize overloads; four random.h producers are one skeleton over a distribution (detail::from_distribution). The endpoint-pump loop is written ×6 byte-identical (part.h ×4, csp.h ×2) with stream_to a seventh variant whose extra ~out death-watch looks accidental — share a detail::pump and document stream_to as the deliberate exception (or unify). First-iteration flags vs primed reads: convert distinct/skip_while/default_if_empty to the prime idiom used by diff/pairwise/conflate/pace; sample/share/slide legitimately need flags — note the rule in part.h. RingBuffer capacity-0: three callers invent three guards (last(0) hand-writes blackhole, skip_last(0) an identity filter, unique wraps in optional) — either support capacity 0 or delegate the zero cases; round_up_pow2 defined identically twice (ringbuffer.h:188, flat_hash_set.h:161). Minor: reader::descr lacks the const its writer twin has (csp.h:635 vs :703).'
+    origin: 2026-07-28 code-smell audit; refiled after working-tree loss
+    discovered: 2026-07-28
   T6:
     name: Local Docker testing covers Linux scenarios
     status: achieved

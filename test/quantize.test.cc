@@ -72,6 +72,52 @@ TEST_CASE("Quantize---Complex") {
     CHECK(sent == undelivered + delivered);
 }
 
+// Regression: spawn_quantize(T quantum, writer<T> sink, ...) declared a
+// writer<double> return type, so it only compiled at T == double. All three
+// overloads must instantiate at T == int.
+TEST_CASE("Quantize---SpawnOverloadsInstantiate") {
+    RunStats stats;
+
+    constexpr int quantum = 5;
+
+    csp::run([&]{
+        // (1) spawn_quantize(reader<T> quanta, writer<T> sink, ...)
+        auto [quanta_w, quanta_r] = chan<int>{};
+        reader<int> sink1;
+        writer<int> consume1 =
+            spawn_quantize<int>(std::move(quanta_r), ++sink1);
+        static_assert(std::is_same_v<decltype(consume1), writer<int>>);
+
+        quanta_w << quantum;
+        consume1 << 7;
+        CHECK(quantum == sink1.read());
+        quanta_w = {};
+        consume1 = {};
+        sink1 = {};
+
+        // (2) spawn_quantize(reader<T> source, T quantum, ...)
+        auto [src_w, src_r] = chan<int>{};
+        reader<int> produce = spawn_quantize<int>(std::move(src_r), quantum);
+        static_assert(std::is_same_v<decltype(produce), reader<int>>);
+
+        src_w << 7;
+        CHECK(quantum == produce.read());
+        src_w = {};
+        produce = {};
+
+        // (3) spawn_quantize(T quantum, writer<T> sink, ...) — this one
+        // declared writer<double>, so it only ever compiled at T == double.
+        reader<int> sink3;
+        writer<int> consume3 = spawn_quantize<int>(quantum, ++sink3);
+        static_assert(std::is_same_v<decltype(consume3), writer<int>>);
+
+        consume3 << 7;
+        CHECK(quantum == sink3.read());
+        consume3 = {};
+        sink3 = {};
+    });
+}
+
 TEST_CASE("Quantize---Uniform") {
     RunStats stats;
 
