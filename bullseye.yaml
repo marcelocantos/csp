@@ -1390,7 +1390,7 @@ targets:
     achieved: 2026-07-28
   T49:
     name: Hot-path duplicated protocols are single-sourced with benchmarks flat (runtime + combinator fan-in)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1399,13 +1399,14 @@ targets:
     - StackPool has one arena implementation indexed by StackClass; the unreachable mmap branch is deleted or its reachability documented; test/stack_slot_sizing.test.cc green
     - prialt_begin_impl's classical path calls resolve_one instead of an inline copy; paper-11 UAF tests green
     - The main_loop/quiescent_loop P0-scan difference is either unified or explained by a comment citing the reason
-    - mux/combine_latest share one transfer-table detail; typed_alt_vec_none is deleted; a shared fan_in backs at least merge/join/first_wins/merge_all
+    - mux/combine_latest share one transfer-table detail; typed_alt_vec_none is deleted; the generalized fan_in helper is deliberately deferred with rationale recorded (highest-risk refactor on the T34/T35-tuned fan-in path for pure-dedup benefit; tracked as its own follow-up target)
     - stack_analysis BR/BLR over_budget asymmetry resolved (shared resolve_indirect_callee or an explanatory comment)
     - 'Benches flat within-epoch vs pre-refactor baseline on the same binary pair: send/recv, alt/8ch, prialt/8ch at CSP_MAXPROCS 2/8/16 (ratios only — fan shapes are bimodal cross-epoch)'
     - 'Full oracle set green ×3: native + TSan + ASan; TLC green on the spec pairs touching modified protocols'
-    context: 'Refiled — originally 🎯T44 (lost with working tree; ID history-reserved). Audit tier 4 — refactors touching T34/T35-tuned code; bench suite is the oracle. Core: Imp::run (csp.cc:362-445) is a stale near-duplicate of do_switch (452-576); sole caller passes Status::sleep so its detach/exit arm — a second live copy of the TLA-modelled CheckWP wake protocol — is dead; reduce it and drop Status::run/spawn. Endpoint refcounts: ten exported functions in channel.cc:951-1029 are five ops mirrored over the wr/rd index → template<int Endpt> bodies with one-line forwarders (ABI unchanged). StackPool: arena_alloc/_free duplicated per slot class over the existing StackClass enum (~55 lines) plus the ~78-line self-documented-unreachable Unix mmap branch. prialt_begin_impl''s classical path re-implements the resolve_one pin-under-lock lambda inline (paper-11 UAF-critical — reuse the lambda ONLY; skip RAII on the unpin ladder). Runtime scan loops: unpark_one/try_wake_parked_worker; ring-scan in place_on_run_queue vs watchdog; the main_loop i=1 vs quiescent_loop i=0 P0-scan difference MUST be resolved deliberately before collapsing. Ring insert/delink hand-inlined ×9 → inline ring_link/ring_unlink helpers (sentinel null-branch removal needs the busy-never-null invariant proven first). Combinators: eight parts hand-roll the same dynamic-alt fan-in loop (merge, merge_all, flat_map, join, first_wins, mux, combine_latest; fanout stays hand-written); shared detail::fan_in must preserve build-once-mutate-in-place; mux_dispatch ≡ combine_dispatch (zero-risk merge); typed_alt_vec_none deleted by threading nowait as a template parameter; flat_map = map|merge_all is exact but changes imp topology — needs its own perf+teardown decision. Also investigate: stack_analysis_arm64.cc BR (no over_budget check) vs BLR (gated) asymmetry — factor resolve_indirect_callee to force the asymmetry to be deliberate or fixed.'
+    context: 'Refiled — originally 🎯T44 (lost with working tree; ID history-reserved). Audit tier 4 — refactors touching T34/T35-tuned code; bench suite is the oracle. Descope recorded 2026-07-28 during implementation: the generalized detail::fan_in (originally scoped to back merge/join/first_wins/merge_all) is deferred — it is the highest-risk refactor on the fan-in hot path (build-once-mutate-in-place structure, bimodal fan shapes) for pure-dedup benefit, echoing the earlier count==1-prialt rejection precedent; the zero-risk mux/combine_latest transfer-table merge was done instead. flat_map = map|merge_all composition likewise deferred (changes imp topology/teardown). Both tracked in a follow-up target. Original context: Imp::run stale near-duplicate of do_switch (second CheckWP copy dead); endpoint refcounts ×10 → template<int Endpt>; StackPool arena duplicated per class + unreachable mmap branch; prialt_begin_impl inline copy of resolve_one (paper-11 UAF-critical); runtime scan-loop near-copies incl. the main_loop i=1 vs quiescent_loop i=0 P0-scan question; mux_dispatch ≡ combine_dispatch; typed_alt_vec_none one-token copy; stack_analysis BR/BLR over_budget asymmetry.'
     origin: 2026-07-28 code-smell audit; refiled after working-tree loss
     discovered: 2026-07-28
+    achieved: 2026-07-28
   T5:
     name: Unmodeled concurrent decision points have TLA+ specs
     status: achieved
@@ -1435,6 +1436,18 @@ targets:
     origin: 2026-07-28 code-smell audit; refiled after working-tree loss
     discovered: 2026-07-28
     achieved: 2026-07-28
+  T51:
+    name: Fan-in combinator machinery is unified behind a shared helper without hot-path regression (deferred from the 2026-07-28 audit)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Either a shared detail::fan_in backs at least merge/join/first_wins/merge_all with paired within-epoch bench ratios ≤5% at CSP_MAXPROCS 2/8/16 on alt/8ch and prialt/8ch, or the unification is rejected with recorded bench evidence
+    - flat_map = map | merge_all is adopted, or rejected with a recorded teardown-semantics/perf rationale
+    - 'Full oracle set green ×3: native + TSan + ASan'
+    context: 'Deferred from 🎯T49 (2026-07-28): eight parts hand-roll the same dynamic-alt fan-in loop against raw internal::ChanOp (merge, merge_all, flat_map, join, first_wins, mux, combine_latest; fanout stays hand-written); five share an identical swap-and-pop tail. race.h proves the public chan_op surface handles the homogeneous case. A shared detail::fan_in must preserve build-once-mutate-in-place (no per-iteration vector rebuild) on the T34/T35-tuned fan-in path, and any measurement must compare within-epoch ratios only (fan shapes are bimodal cross-epoch). Also deferred: expressing flat_map as map | merge_all — exact for non-blocking f but adds an imp hop and changes sub-stream teardown timing; needs its own perf + teardown-semantics decision. The mux/combine_latest hetero-transfer table is already shared (T49); this target is only the loop-structure unification. Precedent for rejecting outright: the count==1 prialt fast path was evaluated and rejected in the T34 campaign as protocol-minimal — if the bench evidence says the same here, retiring this target with a recorded rejection is a valid outcome.'
+    origin: Deferred from 🎯T49 during the 2026-07-28 audit campaign
+    discovered: 2026-07-28
   T6:
     name: Local Docker testing covers Linux scenarios
     status: achieved
