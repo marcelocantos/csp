@@ -12,7 +12,7 @@ debugging of the CSP imp-based concurrency library.
 5. **[A Million Threads on a Megabyte](05-stack-engineering.md)**
 6. **[Dynamic Scoping for Imps](06-dynamic-scoping.md)**
 7. **[Topology Surgery on Live Channels](07-channel-fuse-split.md)**
-8. **[Context-Aware Stack Depth Analysis](08-context-aware-stack-analysis.md)**
+8. **[Context-Aware Stack Depth Analysis](08-context-aware-stack-analysis.md)** — design space; **as shipped:** [reference/stack-analysis.md](../reference/stack-analysis.md)
 9. **[The Spawn HAMT Race and Catch-Block Migration Bug](09-spawn-hamt-race.md)**
 10. **[The Teddy Bear Paper: diagnosing a C++ exception ABI race through structured articulation](10-teddy-bear-paper.md)**
 11. **[The Channel Re-Resolution Use-After-Free](11-channel-reresolution-uaf.md)**
@@ -28,7 +28,7 @@ debugging of the CSP imp-based concurrency library.
 21. **[Paper 20: Arena-Based Stack Scaling for 100K+ Imps](20-arena-stack-scaling.md)**
 22. **[Paper 20: HTTP/3 over QUIC — Design and Integration Contract](20-http3-design.md)**
 23. **[22. Main-loop busy-spin when quiescent without hook](22-main-loop-busy-spin.md)**
-24. **[23. Stack Analysis Gap Audit (🎯T3.4 scoping)](23-stack-analysis-gaps.md)**
+24. **[23. Stack Analysis Gap Audit (🎯T3.4 scoping)](23-stack-analysis-gaps.md)** — historical; current: [reference/stack-analysis.md](../reference/stack-analysis.md)
 25. **[24 — Signal Handling Audit: Async-Signal-Safety](24-signal-handling-audit.md)**
 26. **[Paper 24: Stack Pool Reclamation Race](25-stack-pool-reclamation.md)**
 27. **[Paper 25: M:N Worker Join — Stability Loop and Watchdog Race](26-mn-worker-join.md)**

@@ -16,6 +16,7 @@ state.operation(args) ─┤guard├──➤ effects; result
 |---|---|---|
 | [Channels](channels.md) | `csp.h` | `chan<T>`, `writer<T>`, `reader<T>`, `chan_op<T>`, `poke_t`, rendezvous protocol |
 | [Scheduling](scheduling.md) | `csp.h` | `spawn`, `await_completion`, `yield`, `set_maxprocs`, `spawn_producer`, `spawn_consumer`, `spawn_filter` |
+| [Stack analysis](stack-analysis.md) | `csp/stack_analysis.h` | ARM64 spawn-time stack depth walker, `is_exact`, Small vs Default slots (`CSP_ANALYSE_STACKS`) |
 | [Multiplexing](multiplexing.md) | `csp.h` | `alt`, `prialt`, death-watch (`~reader`, `~writer`), `skip`, two-phase protocol |
 
 ## Time, I/O, and OS Integration

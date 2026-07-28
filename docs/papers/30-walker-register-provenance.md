@@ -4,6 +4,7 @@
 **Status**: implemented — see §11. The design below stands as written; §11
 records what landed, where reality diverged from the design, and the
 robustness gap the work uncovered.
+**Current system:** [docs/reference/stack-analysis.md](../reference/stack-analysis.md)
 **Related targets**: 🎯T3.10 (this), 🎯T3.4.3 (parent — implemented the
 LDRB/LDRH discriminator tracking and X0–X7 BL scan that this extends),
 🎯T3.4 (production-ready right-sizing), 🎯T3.4.5 (the audit gate this moves)

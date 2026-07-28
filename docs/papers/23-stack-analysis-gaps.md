@@ -1,12 +1,14 @@
 # 23. Stack Analysis Gap Audit (🎯T3.4 scoping)
 
 **Date**: 2026-05-17
-**Status**: paper, not yet acted on
-**Related targets**: 🎯T3.4 (this), 🎯T3 (production-ready I/O), 🎯T3.3
-(arena scaling)
+**Status**: historical scoping paper — 🎯T3.4 / T3.4.1–T3.4.5 and 🎯T3.10
+are **achieved**. §3’s “analyser unwired” snapshot is obsolete.
+**Current system:** [docs/reference/stack-analysis.md](../reference/stack-analysis.md)
+**Related targets**: 🎯T3.4 (retired), 🎯T3, 🎯T3.3
 **Related papers**: [05](05-stack-engineering.md) (overview),
 [08](08-context-aware-stack-analysis.md) (design space),
-[20-arena-stack-scaling.md](20-arena-stack-scaling.md) (consumer)
+[20-arena-stack-scaling.md](20-arena-stack-scaling.md) (consumer),
+[30](30-walker-register-provenance.md) (T3.10 stretch that closed more gaps)
 
 ## 1. Why a paper before code
 

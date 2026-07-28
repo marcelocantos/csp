@@ -335,11 +335,15 @@ TLS).
 
 ### Stack analysis (`include/csp/stack_analysis.h`)
 
+Spawn-time ARM64 walker; opt-in via `CSP_ANALYSE_STACKS`. Canonical system
+note: [`docs/reference/stack-analysis.md`](docs/reference/stack-analysis.md).
+
 | Symbol | Kind | Stability |
 |--------|------|-----------|
 | `stack_analysis` | result struct | Needs review |
 | `stack_analysis_options` | config struct | Needs review |
 | `analyze_stack_depth(...)` | function | Needs review |
+| `analyze_stack_depth_cached(...)` | function | Needs review |
 | `analyze_stack_depth_cached(...)` | function | Needs review |
 
 ### Stream combinators (`csp::part`)

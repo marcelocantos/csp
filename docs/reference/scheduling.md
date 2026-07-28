@@ -58,7 +58,9 @@ also fails, `std::terminate` is called.
 main thread before `await_completion()`. Each call allocates a stack from the stack
 pool, constructs the imp at the top of the region, and performs a
 handshake context switch to initialize the new imp's execution
-context.
+context. When built with `CSP_ANALYSE_STACKS`, spawn may select a
+smaller arena stack if the ARM64 stack analyser returns an exact depth
+that fits; see [Stack analysis](stack-analysis.md).
 
 In single-threaded mode, the new imp runs immediately until it
 yields or blocks. In M:N mode, the new imp is placed on the global
