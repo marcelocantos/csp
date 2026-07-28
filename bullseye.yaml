@@ -1373,7 +1373,7 @@ targets:
     achieved: 2026-07-28
   T48:
     name: Protocol-neutral helpers are single-sourced in core TUs; intra-TU copy-paste in the network stack is collapsed
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1387,6 +1387,7 @@ targets:
     - T46
     origin: 2026-07-28 code-smell audit; refiled after working-tree loss
     discovered: 2026-07-28
+    achieved: 2026-07-28
   T49:
     name: Hot-path duplicated protocols are single-sourced with benchmarks flat (runtime + combinator fan-in)
     status: identified

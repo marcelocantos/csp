@@ -32,7 +32,31 @@
 
 namespace csp::ws {
 
+using internal::iequals;
+
 namespace {
+
+// RFC 6455 §1.3 handshake key GUID (one definition; 🎯T48).
+constexpr const char* kWsMagicGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+// Base64-encode len bytes (🎯T48: one encoder for the SHA-1 accept digest
+// and the client nonce key).
+std::string b64_encode(const uint8_t* data, size_t len) {
+    static const char* table =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((len + 2) / 3 * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t v = uint32_t(data[i]) << 16;
+        if (i + 1 < len) v |= uint32_t(data[i + 1]) << 8;
+        if (i + 2 < len) v |= uint32_t(data[i + 2]);
+        out += table[(v >> 18) & 0x3F];
+        out += table[(v >> 12) & 0x3F];
+        out += (i + 1 < len) ? table[(v >> 6) & 0x3F] : '=';
+        out += (i + 2 < len) ? table[ v       & 0x3F] : '=';
+    }
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // Minimal SHA-1 (RFC 3174) — used for WebSocket handshake key derivation.
@@ -138,34 +162,7 @@ static std::string sha1_base64(const std::string& input) {
     uint8_t digest[20];
     sha1_final(ctx, digest);
 
-    // Base64 encode
-    static const char* table =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    out.reserve(28);
-    for (int i = 0; i < 20; i += 3) {
-        int n   = (i + 1 < 20 ? digest[i + 1] : 0);
-        int n2  = (i + 2 < 20 ? digest[i + 2] : 0);
-        uint32_t v = (uint32_t(digest[i]) << 16) | (uint32_t(n) << 8) | n2;
-        out += table[(v >> 18) & 0x3F];
-        out += table[(v >> 12) & 0x3F];
-        out += (i + 1 < 20) ? table[(v >> 6) & 0x3F] : '=';
-        out += (i + 2 < 20) ? table[ v       & 0x3F] : '=';
-    }
-    return out;
-}
-
-// ---------------------------------------------------------------------------
-// Case-insensitive string equality
-// ---------------------------------------------------------------------------
-
-static bool iequals(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(uint8_t(a[i])) != std::tolower(uint8_t(b[i])))
-            return false;
-    }
-    return true;
+    return b64_encode(digest, sizeof(digest));
 }
 
 static std::string trim(const std::string& s) {
@@ -570,8 +567,7 @@ conn upgrade(http::request& req) {
     if (ws_key.empty()) bad("missing Sec-WebSocket-Key");
     if (ws_ver != "13") bad("unsupported Sec-WebSocket-Version (need 13)");
 
-    static const char* magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    std::string accept = sha1_base64(ws_key + magic);
+    std::string accept = sha1_base64(ws_key + kWsMagicGuid);
 
     req.respond << http::response{
         101,
@@ -625,63 +621,19 @@ static io::fd_t raw_dial(const std::string& host, uint16_t port) {
 // ---------------------------------------------------------------------------
 
 conn connect(const std::string& url) {
-    const std::string prefix = "ws://";
-    if (url.size() < prefix.size() ||
-        !iequals(url.substr(0, prefix.size()), prefix)) {
-        throw csp::error("ws::connect: only ws:// scheme is supported");
-    }
-
-    auto rest  = url.substr(prefix.size());
-    std::string host;
-    uint16_t    port = 80;
-    std::string path = "/";
-
-    auto slash = rest.find('/');
-    std::string authority;
-    if (slash == std::string::npos) {
-        authority = rest;
-    } else {
-        authority = rest.substr(0, slash);
-        path      = rest.substr(slash);
-    }
-
-    if (!authority.empty() && authority[0] == '[') {
-        auto bracket = authority.find(']');
-        if (bracket == std::string::npos)
-            throw csp::error("ws::connect: malformed IPv6 address");
-        host = authority.substr(1, bracket - 1);
-        if (bracket + 1 < authority.size() && authority[bracket + 1] == ':')
-            port = static_cast<uint16_t>(std::stoul(authority.substr(bracket + 2)));
-    } else {
-        auto colon = authority.rfind(':');
-        if (colon == std::string::npos) {
-            host = authority;
-        } else {
-            host = authority.substr(0, colon);
-            port = static_cast<uint16_t>(std::stoul(authority.substr(colon + 1)));
-        }
-    }
-    if (host.empty()) throw csp::error("ws::connect: empty host");
+    // Expected: ws://host[:port][/path] — the authority grammar is shared
+    // with http::parse_url (🎯T48).
+    auto parsed = net::parse_authority(url, "ws://", 80);
+    auto& host = parsed.host;
+    auto  port = parsed.port;
+    auto& path = parsed.path;
 
     // Generate a random 16-byte nonce for Sec-WebSocket-Key.
     uint8_t nonce[16];
     ws_genmask_cb(nonce, 16, nullptr);
-    static const char* b64 =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string ws_key;
-    ws_key.reserve(24);
-    for (int i = 0; i < 16; i += 3) {
-        uint32_t v = (uint32_t(nonce[i]) << 16) |
-                     (i + 1 < 16 ? uint32_t(nonce[i + 1]) << 8 : 0) |
-                     (i + 2 < 16 ? uint32_t(nonce[i + 2])      : 0);
-        ws_key += b64[(v >> 18) & 0x3F];
-        ws_key += b64[(v >> 12) & 0x3F];
-        ws_key += (i + 1 < 16) ? b64[(v >> 6) & 0x3F] : '=';
-        ws_key += (i + 2 < 16) ? b64[ v       & 0x3F] : '=';
-    }
+    std::string ws_key = b64_encode(nonce, sizeof(nonce));
 
-    static const char* magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    std::string expected_accept = sha1_base64(ws_key + magic);
+    std::string expected_accept = sha1_base64(ws_key + kWsMagicGuid);
 
     io::fd_t fd = raw_dial(host, port);
 

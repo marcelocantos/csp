@@ -4,6 +4,7 @@
 #include <csp/http2.h>
 #include <csp/io.h>
 #include <csp/cancel.h>
+#include <csp/internal/strutil.h>
 
 #ifdef CSP_TLS
 #include <csp/tls.h>
@@ -14,8 +15,6 @@ extern "C" {
 }
 
 #include <algorithm>
-#include <atomic>
-#include <cctype>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -34,25 +33,12 @@ extern "C" {
 
 namespace csp::http2 {
 
+using internal::iequals;
+using internal::to_lower;
+
 namespace {
 
 // --- Utilities ---
-
-static bool iequals(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i])))
-            return false;
-    }
-    return true;
-}
-
-static std::string to_lower(std::string s) {
-    for (auto& c : s) c = static_cast<char>(
-        std::tolower(static_cast<unsigned char>(c)));
-    return s;
-}
 
 static http::method method_from_str(const std::string& s) {
     if (s == "GET")     return http::method::GET;
@@ -65,17 +51,6 @@ static http::method method_from_str(const std::string& s) {
     if (s == "CONNECT") return http::method::CONNECT;
     if (s == "TRACE")   return http::method::TRACE;
     return http::method::GET;
-}
-
-static std::string format_addr(const struct sockaddr* sa, socklen_t len) {
-    char host[NI_MAXHOST];
-    char serv[NI_MAXSERV];
-    int rc = getnameinfo(sa, len, host, sizeof(host), serv, sizeof(serv),
-                         NI_NUMERICHOST | NI_NUMERICSERV);
-    if (rc != 0) return "unknown";
-    if (sa->sa_family == AF_INET6)
-        return std::string("[") + host + "]:" + serv;
-    return std::string(host) + ":" + serv;
 }
 
 // --- I/O abstraction ---
@@ -471,171 +446,29 @@ void handle_h2_connection(std::unique_ptr<io_handle> ioh,
     ioh->close();
 }
 
-// --- TCP listener setup ---
-
-struct listen_result {
-    io::fd_t listen_fd;
-    uint16_t port;
-    std::string local_addr;
-    // Address to self-connect to when waking a blocked accept (see
-    // wake_listener). Derived from getsockname, so it tracks whatever
-    // family and address the listener actually bound.
-    sockaddr_storage wake_addr{};
-    socklen_t wake_len = 0;
-};
-
-// Unblock an accept() by opening a throwaway connection to the listener.
-// The address must match the listener's own family: a listener bound to
-// 127.0.0.1 is unreachable over ::1, and vice versa.
-void wake_listener(const sockaddr_storage& addr, socklen_t len) {
-    if (len == 0) return;
-    auto* sa = reinterpret_cast<const sockaddr*>(&addr);
-#ifndef _WIN32
-    int raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
-    if (raw < 0) return;
-    ::connect(raw, sa, len);
-    ::close(raw);
-#else
-    SOCKET raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
-    if (raw == INVALID_SOCKET) return;
-    ::connect(raw, sa, static_cast<int>(len));
-    closesocket(raw);
-#endif
-}
-
-listen_result create_listener(const std::string& addr, uint16_t port,
-                              const serve_options& opts) {
-    // AF_UNSPEC so IPv4 literals (127.0.0.1) and IPv6 (::) both resolve;
-    // AI_PASSIVE only for wildcard bind addresses (🎯T39 — see net.cc).
-    struct addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    if (addr.empty() || addr == "::" || addr == "0.0.0.0"
-        || addr == "0:0:0:0:0:0:0:0") {
-        hints.ai_flags = AI_PASSIVE;
-    }
-
-    auto result = io::resolve(addr, std::to_string(port), &hints);
-    if (!result) {
-        throw csp::error(std::string("http2 listen resolve failed: ") +
-                         result.message());
-    }
-
-    auto* ai = result.info.get();
-    io::fd_t listen_fd(::socket(ai->ai_family, ai->ai_socktype,
-                                 ai->ai_protocol));
-    if (!listen_fd) throw csp::error("socket failed");
-
-    if (opts.reuse_addr) {
-        int opt = 1;
-        setsockopt(listen_fd.raw(), SOL_SOCKET, SO_REUSEADDR,
-                   reinterpret_cast<const char*>(&opt), sizeof(opt));
-    }
-
-    if (opts.dual_stack && ai->ai_family == AF_INET6) {
-        int off = 0;
-        setsockopt(listen_fd.raw(), IPPROTO_IPV6, IPV6_V6ONLY,
-                   reinterpret_cast<const char*>(&off), sizeof(off));
-    }
-
-    if (::bind(listen_fd.raw(), ai->ai_addr,
-               static_cast<int>(ai->ai_addrlen)) < 0) {
-        io::close(listen_fd);
-        throw csp::error("bind failed");
-    }
-
-    if (::listen(listen_fd.raw(), opts.backlog) < 0) {
-        io::close(listen_fd);
-        throw csp::error("listen failed");
-    }
-
-    io::set_nonblock(listen_fd);
-
-    struct sockaddr_storage bound{};
-    socklen_t bound_len = sizeof(bound);
-    getsockname(listen_fd.raw(),
-                reinterpret_cast<struct sockaddr*>(&bound), &bound_len);
-    auto local = format_addr(
-        reinterpret_cast<struct sockaddr*>(&bound), bound_len);
-
-    uint16_t actual_port = 0;
-    if (bound.ss_family == AF_INET6) {
-        actual_port = ntohs(
-            reinterpret_cast<struct sockaddr_in6*>(&bound)->sin6_port);
-    } else {
-        actual_port = ntohs(
-            reinterpret_cast<struct sockaddr_in*>(&bound)->sin_port);
-    }
-
-    // A wildcard bind address is not connectable; substitute the loopback
-    // of the same family, keeping the port the kernel assigned.
-    sockaddr_storage wake = bound;
-    if (wake.ss_family == AF_INET6) {
-        auto* w6 = reinterpret_cast<struct sockaddr_in6*>(&wake);
-        if (IN6_IS_ADDR_UNSPECIFIED(&w6->sin6_addr)) {
-            w6->sin6_addr = in6addr_loopback;
-        }
-    } else {
-        auto* w4 = reinterpret_cast<struct sockaddr_in*>(&wake);
-        if (w4->sin_addr.s_addr == htonl(INADDR_ANY)) {
-            w4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        }
-    }
-
-    return {listen_fd, actual_port, std::move(local), wake, bound_len};
-}
-
 // --- Accept loop: cleartext h2c ---
+//
+// Listener setup and the sentinel/stop/wake accept loop are shared with
+// http::serve via net::bind_listener + net::accept_loop (🎯T48); only
+// the per-connection handler differs.
 
 server do_serve(const std::string& addr, uint16_t port,
                 const serve_options& opts) {
-    auto lr = create_listener(addr, port, opts);
+    auto lr = net::bind_listener(addr, port, opts.listen,
+                                 "http2 listen resolve failed: ");
 
-    auto endpoints = spawn_producer<endpoint>(
-        [listen_fd = lr.listen_fd, wake_addr = lr.wake_addr,
-         wake_len = lr.wake_len, opts](writer<endpoint> out) {
-            internal::descr("http2/serve");
-
-            auto stop = std::make_shared<std::atomic<bool>>(false);
-            auto out_copy = out.copy();
-            auto stop_flag = stop;
-            csp::spawn([out_copy = std::move(out_copy),
-                         stop_flag, wake_addr, wake_len] {
-                internal::descr("http2/serve/sentinel");
-                prialt(~out_copy);
-                stop_flag->store(true, std::memory_order_release);
-                wake_listener(wake_addr, wake_len);
+    auto endpoints = net::accept_loop<endpoint>(
+        lr, "http2/serve",
+        [chunk = opts.read_chunk_size](
+            io::fd_t client_fd, std::string remote, writer<endpoint> o) {
+            csp::spawn([fd = client_fd,
+                        r = std::move(remote),
+                        o = std::move(o),
+                        chunk]() mutable {
+                handle_h2_connection(
+                    std::make_unique<raw_io>(fd),
+                    std::move(r), std::move(o), chunk);
             });
-
-            for (;;) {
-                struct sockaddr_storage client_addr{};
-                socklen_t client_len = sizeof(client_addr);
-                io::fd_t client_fd = io::accept(
-                    listen_fd,
-                    reinterpret_cast<struct sockaddr*>(&client_addr),
-                    &client_len);
-
-                if (!client_fd ||
-                    stop->load(std::memory_order_acquire)) {
-                    if (client_fd) io::close(client_fd);
-                    break;
-                }
-
-                auto remote = format_addr(
-                    reinterpret_cast<struct sockaddr*>(&client_addr),
-                    client_len);
-
-                auto out_copy2 = out.copy();
-                csp::spawn([fd = client_fd,
-                            r = std::move(remote),
-                            o = std::move(out_copy2),
-                            chunk = opts.read_chunk_size]() mutable {
-                    handle_h2_connection(
-                        std::make_unique<raw_io>(fd),
-                        std::move(r), std::move(o), chunk);
-                });
-            }
-            io::close(listen_fd);
         });
 
     return {std::move(endpoints), lr.port, std::move(lr.local_addr)};
@@ -662,7 +495,8 @@ namespace {
 server do_serve_tls(const std::string& addr, uint16_t port,
                     const char* cert_pem, const char* key_pem,
                     const serve_options& opts) {
-    auto lr = create_listener(addr, port, opts);
+    auto lr = net::bind_listener(addr, port, opts.listen,
+                                 "http2 listen resolve failed: ");
 
     // TLS context is shared across all accepted connections.
     // It is immutable after setup.
@@ -670,65 +504,31 @@ server do_serve_tls(const std::string& addr, uint16_t port,
     ctx->load_cert(cert_pem);
     ctx->load_key(key_pem);
 
-    auto endpoints = spawn_producer<endpoint>(
-        [listen_fd = lr.listen_fd, wake_addr = lr.wake_addr,
-         wake_len = lr.wake_len, opts, ctx](
-            writer<endpoint> out) mutable {
-            internal::descr("http2/tls/serve");
-
-            auto stop = std::make_shared<std::atomic<bool>>(false);
-            auto out_copy = out.copy();
-            auto stop_flag = stop;
-            csp::spawn([out_copy = std::move(out_copy),
-                         stop_flag, wake_addr, wake_len] {
-                internal::descr("http2/tls/serve/sentinel");
-                prialt(~out_copy);
-                stop_flag->store(true, std::memory_order_release);
-                wake_listener(wake_addr, wake_len);
-            });
-
-            for (;;) {
-                struct sockaddr_storage client_addr{};
-                socklen_t client_len = sizeof(client_addr);
-                io::fd_t client_fd = io::accept(
-                    listen_fd,
-                    reinterpret_cast<struct sockaddr*>(&client_addr),
-                    &client_len);
-
-                if (!client_fd ||
-                    stop->load(std::memory_order_acquire)) {
-                    if (client_fd) io::close(client_fd);
-                    break;
+    auto endpoints = net::accept_loop<endpoint>(
+        lr, "http2/tls/serve",
+        [ctx, chunk = opts.read_chunk_size](
+            io::fd_t client_fd, std::string remote, writer<endpoint> o) {
+            csp::spawn([fd = client_fd,
+                        r = std::move(remote),
+                        o = std::move(o),
+                        ctx, chunk]() mutable {
+                internal::descr("http2/tls/handshake");
+                // Perform TLS handshake.
+                // tls::conn takes ownership of the fd lifecycle for TLS.
+                tls::conn c(*ctx, fd);
+                try {
+                    c.handshake();
+                } catch (...) {
+                    // Handshake failed — close and discard.
+                    io::close(fd);
+                    return;
                 }
-
-                auto remote = format_addr(
-                    reinterpret_cast<struct sockaddr*>(&client_addr),
-                    client_len);
-
-                auto out_copy2 = out.copy();
-                csp::spawn([fd = client_fd,
-                            r = std::move(remote),
-                            o = std::move(out_copy2),
-                            ctx, chunk = opts.read_chunk_size]() mutable {
-                    internal::descr("http2/tls/handshake");
-                    // Perform TLS handshake.
-                    // tls::conn takes ownership of the fd lifecycle for TLS.
-                    tls::conn c(*ctx, fd);
-                    try {
-                        c.handshake();
-                    } catch (...) {
-                        // Handshake failed — close and discard.
-                        io::close(fd);
-                        return;
-                    }
-                    // Hand off to HTTP/2 session loop via TLS I/O handle.
-                    // tls_io takes ownership of conn.
-                    handle_h2_connection(
-                        std::make_unique<tls_io>(std::move(c)),
-                        std::move(r), std::move(o), chunk);
-                });
-            }
-            io::close(listen_fd);
+                // Hand off to HTTP/2 session loop via TLS I/O handle.
+                // tls_io takes ownership of conn.
+                handle_h2_connection(
+                    std::make_unique<tls_io>(std::move(c)),
+                    std::move(r), std::move(o), chunk);
+            });
         });
 
     return {std::move(endpoints), lr.port, std::move(lr.local_addr)};

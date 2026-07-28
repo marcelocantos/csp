@@ -386,24 +386,6 @@ void Reactor::cancel_fd(int fd, fd_event event) {
         pending_signals_.fetch_sub(1, std::memory_order_release);
 }
 
-void Reactor::fire_signal(uintptr_t ident, fd_event event) {
-    size_t erased = 0;
-    {
-        std::lock_guard<std::mutex> lk(signal_mu_);
-        if (ident & kTimerIdentBit) {
-            erased = timer_writers_.erase(ident);
-        } else {
-            int fd = static_cast<int>(ident);
-            if (event == fd_event::read)
-                erased = read_writers_.erase(fd);
-            else
-                erased = write_writers_.erase(fd);
-        }
-    }
-    if (erased)
-        pending_signals_.fetch_sub(1, std::memory_order_release);
-}
-
 void Reactor::loop() {
     struct kevent events[64];
     while (!stopping_.load(std::memory_order_acquire)) {
@@ -576,24 +558,6 @@ void Reactor::cancel_fd(int fd, fd_event event) {
         pending_signals_.fetch_sub(1, std::memory_order_release);
 }
 
-void Reactor::fire_signal(uintptr_t ident, fd_event event) {
-    size_t erased = 0;
-    {
-        std::lock_guard<std::mutex> lk(signal_mu_);
-        if (ident & kTimerIdentBit) {
-            erased = timer_writers_.erase(ident);
-        } else {
-            int fd = static_cast<int>(ident);
-            if (event == fd_event::read)
-                erased = read_writers_.erase(fd);
-            else
-                erased = write_writers_.erase(fd);
-        }
-    }
-    if (erased)
-        pending_signals_.fetch_sub(1, std::memory_order_release);
-}
-
 void Reactor::loop() {
     struct epoll_event events[64];
     while (!stopping_.load(std::memory_order_acquire)) {
@@ -641,6 +605,30 @@ void Reactor::loop() {
 }
 
 #endif // __APPLE__ / __linux__
+
+// ============================================================
+// Shared (kqueue + epoll): signal dispatch
+// ============================================================
+
+// 🎯T48: hoisted from the character-identical copies that lived in both
+// the __APPLE__ and __linux__ blocks above — pure code motion.
+void Reactor::fire_signal(uintptr_t ident, fd_event event) {
+    size_t erased = 0;
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        if (ident & kTimerIdentBit) {
+            erased = timer_writers_.erase(ident);
+        } else {
+            int fd = static_cast<int>(ident);
+            if (event == fd_event::read)
+                erased = read_writers_.erase(fd);
+            else
+                erased = write_writers_.erase(fd);
+        }
+    }
+    if (erased)
+        pending_signals_.fetch_sub(1, std::memory_order_release);
+}
 
 } // namespace csp::detail
 

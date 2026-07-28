@@ -438,6 +438,21 @@ constexpr size_t kSteadyChunk    = 8192;
 
 using ptls_handle = std::unique_ptr<ptls_t, decltype(&ptls_free)>;
 
+// RAII ptls_buffer_t backed by an embedded N-byte stack buffer (🎯T48:
+// replaces the six manual ptls_buffer_dispose unwind sites this file
+// previously carried).  picotls heap-reallocates when the payload
+// outgrows the stack buffer; dispose in the destructor frees that.
+template <size_t N>
+struct ptls_buffer_guard {
+    uint8_t       small[N];
+    ptls_buffer_t buf;
+
+    ptls_buffer_guard() { ptls_buffer_init(&buf, small, N); }
+    ~ptls_buffer_guard() { ptls_buffer_dispose(&buf); }
+    ptls_buffer_guard(const ptls_buffer_guard&) = delete;
+    ptls_buffer_guard& operator=(const ptls_buffer_guard&) = delete;
+};
+
 // Drain a ptls_buffer_t into a fresh bytes vector and reset the buffer.
 bytes take_buffer(ptls_buffer_t& buf) {
     bytes out(buf.base, buf.base + buf.off);
@@ -451,9 +466,7 @@ bytes take_buffer(ptls_buffer_t& buf) {
 bytes drive_handshake(ptls_t* tls,
                       io::source&     ciphertext_in,
                       writer<bytes>&  ciphertext_out) {
-    ptls_buffer_t sendbuf;
-    uint8_t       sendbuf_small[512];
-    ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
+    ptls_buffer_guard<512> sendbuf;
 
     bytes  chunk;
     size_t chunk_pos = 0;
@@ -466,18 +479,16 @@ bytes drive_handshake(ptls_t* tls,
             inlen = chunk.size() - chunk_pos;
         }
 
-        int ret = ptls_handshake(tls, &sendbuf, input, &inlen, nullptr);
+        int ret = ptls_handshake(tls, &sendbuf.buf, input, &inlen, nullptr);
         chunk_pos += inlen;
 
-        if (sendbuf.off > 0) {
-            if (!(ciphertext_out << take_buffer(sendbuf))) {
-                ptls_buffer_dispose(&sendbuf);
+        if (sendbuf.buf.off > 0) {
+            if (!(ciphertext_out << take_buffer(sendbuf.buf))) {
                 throw csp::error("tls: ciphertext sink closed during handshake");
             }
         }
 
         if (ret == 0) {
-            ptls_buffer_dispose(&sendbuf);
             bytes leftover;
             if (chunk_pos < chunk.size()) {
                 leftover.assign(chunk.begin() + static_cast<ptrdiff_t>(chunk_pos),
@@ -486,7 +497,6 @@ bytes drive_handshake(ptls_t* tls,
             return leftover;
         }
         if (ret != PTLS_ERROR_IN_PROGRESS) {
-            ptls_buffer_dispose(&sendbuf);
             throw error(ret);
         }
 
@@ -496,14 +506,8 @@ bytes drive_handshake(ptls_t* tls,
             chunk_pos = 0;
             bytes next;
             auto reply_r = io::call_source(ciphertext_in, kHandshakeChunk);
-            try {
-                if (!(reply_r >> next)) {
-                    ptls_buffer_dispose(&sendbuf);
-                    throw csp::error("tls: ciphertext source EOF during handshake");
-                }
-            } catch (...) {
-                ptls_buffer_dispose(&sendbuf);
-                throw;
+            if (!(reply_r >> next)) {
+                throw csp::error("tls: ciphertext source EOF during handshake");
             }
             chunk = std::move(next);
         }
@@ -555,31 +559,26 @@ stream make_stream(
             if (peer_closed) return false;
             while (plainbuf.empty()) {
                 if (!recvbuf.empty()) {
-                    ptls_buffer_t decbuf;
-                    uint8_t       decbuf_small[2048];
-                    ptls_buffer_init(&decbuf, decbuf_small, sizeof(decbuf_small));
+                    ptls_buffer_guard<2048> decbuf;
                     size_t consumed = recvbuf.size();
-                    int    ret      = ptls_receive(tls.get(), &decbuf,
+                    int    ret      = ptls_receive(tls.get(), &decbuf.buf,
                                                    recvbuf.data(), &consumed);
                     recvbuf.erase(recvbuf.begin(),
                                   recvbuf.begin() + static_cast<ptrdiff_t>(consumed));
 
                     if (ret == PTLS_ALERT_TO_PEER_ERROR(PTLS_ALERT_CLOSE_NOTIFY)) {
-                        ptls_buffer_dispose(&decbuf);
                         peer_closed = true;
                         return false;
                     }
                     if (ret != 0 && ret != PTLS_ERROR_IN_PROGRESS) {
-                        int e = ret;
-                        ptls_buffer_dispose(&decbuf);
-                        throw error(e);
+                        throw error(ret);
                     }
-                    if (decbuf.off > 0) {
-                        plainbuf = take_buffer(decbuf);
-                        ptls_buffer_dispose(&decbuf);
+                    if (decbuf.buf.off > 0) {
+                        // take_buffer copies the payload out before the
+                        // guard's dispose runs at scope exit.
+                        plainbuf = take_buffer(decbuf.buf);
                         return true;
                     }
-                    ptls_buffer_dispose(&decbuf);
                     // No plaintext yet — need more ciphertext.
                 }
 
@@ -601,18 +600,13 @@ stream make_stream(
         // Encrypt plain and push to upstream.  Returns false on
         // upstream sink death.
         auto send_plain = [&](const bytes& plain) -> bool {
-            ptls_buffer_t sendbuf;
-            uint8_t       sendbuf_small[2048];
-            ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
-            int ret = ptls_send(tls.get(), &sendbuf,
+            ptls_buffer_guard<2048> sendbuf;
+            int ret = ptls_send(tls.get(), &sendbuf.buf,
                                 plain.data(), plain.size());
             if (ret != 0) {
-                int e = ret;
-                ptls_buffer_dispose(&sendbuf);
-                throw error(e);
+                throw error(ret);
             }
-            bytes out = take_buffer(sendbuf);
-            ptls_buffer_dispose(&sendbuf);
+            bytes out = take_buffer(sendbuf.buf);
             if (out.empty()) return true;
             return static_cast<bool>(up_out << std::move(out));
         };
@@ -629,17 +623,14 @@ stream make_stream(
         // sees the ciphertext endpoints drop when this imp exits.  See
         // docs/papers/31-buffered-chan-close-notify-hang.md.
         auto send_close_notify = [&]() {
-            ptls_buffer_t sendbuf;
-            uint8_t       sendbuf_small[64];
-            ptls_buffer_init(&sendbuf, sendbuf_small, sizeof(sendbuf_small));
-            int ret = ptls_send_alert(tls.get(), &sendbuf,
+            ptls_buffer_guard<64> sendbuf;
+            int ret = ptls_send_alert(tls.get(), &sendbuf.buf,
                                       PTLS_ALERT_LEVEL_WARNING,
                                       PTLS_ALERT_CLOSE_NOTIFY);
-            if (ret == 0 && sendbuf.off > 0) {
-                bytes alert = take_buffer(sendbuf);
+            if (ret == 0 && sendbuf.buf.off > 0) {
+                bytes alert = take_buffer(sendbuf.buf);
                 (void)prialt(up_out << std::move(alert), csp::none);
             }
-            ptls_buffer_dispose(&sendbuf);
         };
 
         io::read_request req;

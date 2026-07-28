@@ -14,11 +14,11 @@
 
 namespace csp::internal {
 
-#ifdef _WIN32
+namespace {
 
-void io_wait_readable(SOCKET sock) {
-    auto signal = detail::create_fd_readable(sock);
-
+// Cancel-aware wait on an fd readiness signal (🎯T48: one body for both
+// directions on both platforms — io::socket_t abstracts SOCKET vs int).
+void wait_signal(detail::fd_signal signal) {
     if (!csp::is_cancel_active()) {
         csp::prialt(~signal);
         return;
@@ -34,63 +34,15 @@ void io_wait_readable(SOCKET sock) {
     }
 }
 
-void io_wait_writable(SOCKET sock) {
-    auto signal = detail::create_fd_writable(sock);
+} // anonymous namespace
 
-    if (!csp::is_cancel_active()) {
-        csp::prialt(~signal);
-        return;
-    }
-
-    switch (csp::prialt(csp::done(), ~signal)) {
-    case ~0: {
-        auto reason = csp::cancel_reason();
-        if (reason) std::rethrow_exception(reason);
-        throw csp::canceled{};
-    }
-    case ~1: return;
-    }
+void io_wait_readable(io::socket_t sock) {
+    wait_signal(detail::create_fd_readable(sock));
 }
 
-#else // !_WIN32
-
-void io_wait_readable(int fd) {
-    auto signal = detail::create_fd_readable(fd);
-
-    if (!csp::is_cancel_active()) {
-        csp::prialt(~signal);
-        return;
-    }
-
-    switch (csp::prialt(csp::done(), ~signal)) {
-    case ~0: {
-        auto reason = csp::cancel_reason();
-        if (reason) std::rethrow_exception(reason);
-        throw csp::canceled{};
-    }
-    case ~1: return;
-    }
+void io_wait_writable(io::socket_t sock) {
+    wait_signal(detail::create_fd_writable(sock));
 }
-
-void io_wait_writable(int fd) {
-    auto signal = detail::create_fd_writable(fd);
-
-    if (!csp::is_cancel_active()) {
-        csp::prialt(~signal);
-        return;
-    }
-
-    switch (csp::prialt(csp::done(), ~signal)) {
-    case ~0: {
-        auto reason = csp::cancel_reason();
-        if (reason) std::rethrow_exception(reason);
-        throw csp::canceled{};
-    }
-    case ~1: return;
-    }
-}
-
-#endif // _WIN32
 
 } // namespace csp::internal
 
@@ -181,6 +133,17 @@ resolve_result resolve(const std::string& host,
     });
     if (err != 0) return resolve_result{.error = err};
     return resolve_result{.info = addrinfo_ptr(raw)};
+}
+
+std::string format_addr(const struct sockaddr* sa, socklen_t len) {
+    char host[NI_MAXHOST];
+    char serv[NI_MAXSERV];
+    int rc = getnameinfo(sa, len, host, sizeof(host), serv, sizeof(serv),
+                         NI_NUMERICHOST | NI_NUMERICSERV);
+    if (rc != 0) return "unknown";
+    if (sa->sa_family == AF_INET6)
+        return std::string("[") + host + "]:" + serv;
+    return std::string(host) + ":" + serv;
 }
 
 std::vector<uint8_t> read_all(fd_t fd, size_t chunk_size) {

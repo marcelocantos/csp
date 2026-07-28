@@ -25,21 +25,6 @@ using ssize_t = ptrdiff_t;
 #include <unistd.h>
 #endif
 
-namespace csp::internal {
-
-#ifdef _WIN32
-void io_wait_readable(SOCKET sock);
-void io_wait_writable(SOCKET sock);
-#else
-// Layer 1 primitives — defined in src/io.cc.
-// Cancel-aware: if a cancel guard is active, these compose the
-// fd readiness signal with the cancel signal in a prialt.
-void io_wait_readable(int fd);
-void io_wait_writable(int fd);
-#endif
-
-}
-
 namespace csp::io {
 
 // --- Platform socket type (internal raw type) ---
@@ -51,6 +36,20 @@ constexpr socket_t invalid_socket = INVALID_SOCKET;
 using socket_t = int;
 constexpr socket_t invalid_socket = -1;
 #endif
+
+}
+
+namespace csp::internal {
+
+// Layer 1 primitives — defined in src/io.cc.
+// Cancel-aware: if a cancel guard is active, these compose the
+// fd readiness signal with the cancel signal in a prialt.
+void io_wait_readable(io::socket_t sock);
+void io_wait_writable(io::socket_t sock);
+
+}
+
+namespace csp::io {
 
 // --- Opaque file descriptor wrapper ---
 //
@@ -260,6 +259,11 @@ struct resolve_result {
 [[nodiscard]] resolve_result resolve(const std::string& host,
                               const std::string& service = {},
                               const struct addrinfo* hints = nullptr);
+
+// Format a socket address as "host:port" ("[host]:port" for IPv6), or
+// "unknown" if the address cannot be rendered.  🎯T48: single-sourced
+// (formerly copy-pasted into net.cc, http.cc, http2.cc, and quic.cc).
+[[nodiscard]] std::string format_addr(const struct sockaddr* sa, socklen_t len);
 
 // --- Convenience functions ---
 

@@ -2748,11 +2748,11 @@ exit_guard on_exit(restart_policy policy) {
 
 namespace csp::internal {
 
-#ifdef _WIN32
+namespace {
 
-void io_wait_readable(SOCKET sock) {
-    auto signal = detail::create_fd_readable(sock);
-
+// Cancel-aware wait on an fd readiness signal (🎯T48: one body for both
+// directions on both platforms — io::socket_t abstracts SOCKET vs int).
+void wait_signal(detail::fd_signal signal) {
     if (!csp::is_cancel_active()) {
         csp::prialt(~signal);
         return;
@@ -2768,63 +2768,15 @@ void io_wait_readable(SOCKET sock) {
     }
 }
 
-void io_wait_writable(SOCKET sock) {
-    auto signal = detail::create_fd_writable(sock);
+} // anonymous namespace
 
-    if (!csp::is_cancel_active()) {
-        csp::prialt(~signal);
-        return;
-    }
-
-    switch (csp::prialt(csp::done(), ~signal)) {
-    case ~0: {
-        auto reason = csp::cancel_reason();
-        if (reason) std::rethrow_exception(reason);
-        throw csp::canceled{};
-    }
-    case ~1: return;
-    }
+void io_wait_readable(io::socket_t sock) {
+    wait_signal(detail::create_fd_readable(sock));
 }
 
-#else // !_WIN32
-
-void io_wait_readable(int fd) {
-    auto signal = detail::create_fd_readable(fd);
-
-    if (!csp::is_cancel_active()) {
-        csp::prialt(~signal);
-        return;
-    }
-
-    switch (csp::prialt(csp::done(), ~signal)) {
-    case ~0: {
-        auto reason = csp::cancel_reason();
-        if (reason) std::rethrow_exception(reason);
-        throw csp::canceled{};
-    }
-    case ~1: return;
-    }
+void io_wait_writable(io::socket_t sock) {
+    wait_signal(detail::create_fd_writable(sock));
 }
-
-void io_wait_writable(int fd) {
-    auto signal = detail::create_fd_writable(fd);
-
-    if (!csp::is_cancel_active()) {
-        csp::prialt(~signal);
-        return;
-    }
-
-    switch (csp::prialt(csp::done(), ~signal)) {
-    case ~0: {
-        auto reason = csp::cancel_reason();
-        if (reason) std::rethrow_exception(reason);
-        throw csp::canceled{};
-    }
-    case ~1: return;
-    }
-}
-
-#endif // _WIN32
 
 } // namespace csp::internal
 
@@ -2915,6 +2867,17 @@ resolve_result resolve(const std::string& host,
     });
     if (err != 0) return resolve_result{.error = err};
     return resolve_result{.info = addrinfo_ptr(raw)};
+}
+
+std::string format_addr(const struct sockaddr* sa, socklen_t len) {
+    char host[NI_MAXHOST];
+    char serv[NI_MAXSERV];
+    int rc = getnameinfo(sa, len, host, sizeof(host), serv, sizeof(serv),
+                         NI_NUMERICHOST | NI_NUMERICSERV);
+    if (rc != 0) return "unknown";
+    if (sa->sa_family == AF_INET6)
+        return std::string("[") + host + "]:" + serv;
+    return std::string(host) + ":" + serv;
 }
 
 std::vector<uint8_t> read_all(fd_t fd, size_t chunk_size) {
@@ -3204,6 +3167,7 @@ namespace csp {
 
 /* net.cc */
 
+#include <cctype>
 
 #ifndef _WIN32
 #include <arpa/inet.h>
@@ -3230,17 +3194,6 @@ void ensure_winsock() {
 #else
 void ensure_winsock() {}
 #endif
-
-std::string format_addr(const struct sockaddr* sa, socklen_t len) {
-    char host[NI_MAXHOST];
-    char serv[NI_MAXSERV];
-    int rc = getnameinfo(sa, len, host, sizeof(host), serv, sizeof(serv),
-                         NI_NUMERICHOST | NI_NUMERICSERV);
-    if (rc != 0) return "unknown";
-    if (sa->sa_family == AF_INET6)
-        return std::string("[") + host + "]:" + serv;
-    return std::string(host) + ":" + serv;
-}
 
 connection make_connection(io::fd_t fd, std::string remote) {
     // fd is already non-blocking (set by io::accept or net::dial).
@@ -3286,12 +3239,11 @@ connection make_connection(io::fd_t fd, std::string remote) {
 
 } // anonymous namespace
 
-listener listen(uint16_t port, listen_options opts) {
-    return listen("::", port, opts);
-}
+// --- Shared listener setup (🎯T48) -------------------------------------
 
-listener listen(const std::string& addr, uint16_t port,
-                listen_options opts) {
+listen_result bind_listener(const std::string& addr, uint16_t port,
+                            const listen_options& opts,
+                            const std::string& resolve_err_prefix) {
     ensure_winsock();
     // AF_UNSPEC so IPv4 literals (127.0.0.1) and IPv6 (::) both resolve.
     // Hard-coding AF_INET6 made listen("127.0.0.1") fail resolve and left
@@ -3309,8 +3261,7 @@ listener listen(const std::string& addr, uint16_t port,
 
     auto result = io::resolve(addr, std::to_string(port), &hints);
     if (!result) {
-        throw csp::error(std::string("listen resolve failed: ") +
-                         result.message());
+        throw csp::error(resolve_err_prefix + result.message());
     }
 
     auto* ai = result.info.get();
@@ -3332,7 +3283,8 @@ listener listen(const std::string& addr, uint16_t port,
                    reinterpret_cast<const char*>(&off), sizeof(off));
     }
 
-    if (::bind(listen_fd.raw(), ai->ai_addr, static_cast<int>(ai->ai_addrlen)) < 0) {
+    if (::bind(listen_fd.raw(), ai->ai_addr,
+               static_cast<int>(ai->ai_addrlen)) < 0) {
         io::close(listen_fd);
         throw csp::error("bind failed");
     }
@@ -3344,20 +3296,129 @@ listener listen(const std::string& addr, uint16_t port,
 
     io::set_nonblock(listen_fd);
 
-    struct sockaddr_storage bound_addr {};
-    socklen_t bound_len = sizeof(bound_addr);
-    getsockname(listen_fd.raw(), reinterpret_cast<struct sockaddr*>(&bound_addr),
-                &bound_len);
-    auto local = format_addr(reinterpret_cast<struct sockaddr*>(&bound_addr),
-                             bound_len);
+    struct sockaddr_storage bound {};
+    socklen_t bound_len = sizeof(bound);
+    getsockname(listen_fd.raw(),
+                reinterpret_cast<struct sockaddr*>(&bound), &bound_len);
+    auto local = io::format_addr(
+        reinterpret_cast<struct sockaddr*>(&bound), bound_len);
+
     uint16_t actual_port = 0;
-    if (bound_addr.ss_family == AF_INET6) {
+    if (bound.ss_family == AF_INET6) {
         actual_port = ntohs(
-            reinterpret_cast<struct sockaddr_in6*>(&bound_addr)->sin6_port);
+            reinterpret_cast<struct sockaddr_in6*>(&bound)->sin6_port);
     } else {
         actual_port = ntohs(
-            reinterpret_cast<struct sockaddr_in*>(&bound_addr)->sin_port);
+            reinterpret_cast<struct sockaddr_in*>(&bound)->sin_port);
     }
+
+    // A wildcard bind address is not connectable; substitute the loopback
+    // of the same family, keeping the port the kernel assigned.
+    sockaddr_storage wake = bound;
+    if (wake.ss_family == AF_INET6) {
+        auto* w6 = reinterpret_cast<struct sockaddr_in6*>(&wake);
+        if (IN6_IS_ADDR_UNSPECIFIED(&w6->sin6_addr)) {
+            w6->sin6_addr = in6addr_loopback;
+        }
+    } else {
+        auto* w4 = reinterpret_cast<struct sockaddr_in*>(&wake);
+        if (w4->sin_addr.s_addr == htonl(INADDR_ANY)) {
+            w4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        }
+    }
+
+    return {listen_fd, actual_port, std::move(local), wake, bound_len};
+}
+
+void wake_listener(const sockaddr_storage& addr, socklen_t len) {
+    if (len == 0) return;
+    auto* sa = reinterpret_cast<const sockaddr*>(&addr);
+#ifndef _WIN32
+    int raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
+    if (raw < 0) return;
+    ::connect(raw, sa, len);
+    ::close(raw);
+#else
+    SOCKET raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
+    if (raw == INVALID_SOCKET) return;
+    ::connect(raw, sa, static_cast<int>(len));
+    closesocket(raw);
+#endif
+}
+
+// --- URL authority parsing (🎯T48) -------------------------------------
+
+authority parse_authority(std::string_view url,
+                          std::string_view scheme_prefix,
+                          uint16_t default_port) {
+    auto ieq = [](char a, char b) {
+        return std::tolower(static_cast<unsigned char>(a)) ==
+               std::tolower(static_cast<unsigned char>(b));
+    };
+    bool scheme_ok = url.size() >= scheme_prefix.size();
+    if (scheme_ok) {
+        for (size_t i = 0; i < scheme_prefix.size(); ++i) {
+            if (!ieq(url[i], scheme_prefix[i])) {
+                scheme_ok = false;
+                break;
+            }
+        }
+    }
+    if (!scheme_ok) {
+        throw csp::error("unsupported URL scheme (only " +
+                         std::string(scheme_prefix) + " is supported)");
+    }
+
+    auto rest = url.substr(scheme_prefix.size());
+    authority result;
+    result.port = default_port;
+
+    // Split host[:port] from path.
+    auto slash = rest.find('/');
+    std::string_view auth;
+    if (slash == std::string_view::npos) {
+        auth = rest;
+    } else {
+        auth = rest.substr(0, slash);
+        result.path = std::string(rest.substr(slash));
+    }
+
+    // Handle [IPv6]:port
+    if (!auth.empty() && auth[0] == '[') {
+        auto bracket = auth.find(']');
+        if (bracket == std::string_view::npos) {
+            throw csp::error("malformed IPv6 address in URL");
+        }
+        result.host = std::string(auth.substr(1, bracket - 1));
+        if (bracket + 1 < auth.size() && auth[bracket + 1] == ':') {
+            result.port = static_cast<uint16_t>(
+                std::stoul(std::string(auth.substr(bracket + 2))));
+        }
+    } else {
+        auto colon = auth.rfind(':');
+        if (colon == std::string_view::npos) {
+            result.host = std::string(auth);
+        } else {
+            result.host = std::string(auth.substr(0, colon));
+            result.port = static_cast<uint16_t>(
+                std::stoul(std::string(auth.substr(colon + 1))));
+        }
+    }
+
+    if (result.host.empty()) {
+        throw csp::error("empty host in URL");
+    }
+    return result;
+}
+
+listener listen(uint16_t port, listen_options opts) {
+    return listen("::", port, opts);
+}
+
+listener listen(const std::string& addr, uint16_t port,
+                listen_options opts) {
+    auto lr = bind_listener(addr, port, opts, "listen resolve failed: ");
+    auto listen_fd = lr.listen_fd;
 
     // The accept loop uses cancellation for clean shutdown.
     // The sentinel watches for reader death and cancels the scope.
@@ -3408,7 +3469,7 @@ listener listen(const std::string& addr, uint16_t port,
                         &client_len);
                     if (!client_fd) continue;
 
-                    auto remote = format_addr(
+                    auto remote = io::format_addr(
                         reinterpret_cast<struct sockaddr*>(&client_addr),
                         client_len);
 
@@ -3421,7 +3482,7 @@ listener listen(const std::string& addr, uint16_t port,
             io::close(listen_fd);
         });
 
-    return {std::move(conns), actual_port, std::move(local)};
+    return {std::move(conns), lr.port, std::move(lr.local_addr)};
 }
 
 connection dial(const std::string& host, uint16_t port) {
@@ -3448,7 +3509,7 @@ connection dial(const std::string& host, const std::string& service) {
         io::set_nonblock(fd);
 
         if (io::connect(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen)) == 0) {
-            auto remote = format_addr(ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen));
+            auto remote = io::format_addr(ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen));
             return make_connection(fd, std::move(remote));
         }
 
@@ -3868,24 +3929,6 @@ void Reactor::cancel_fd(int fd, fd_event event) {
         pending_signals_.fetch_sub(1, std::memory_order_release);
 }
 
-void Reactor::fire_signal(uintptr_t ident, fd_event event) {
-    size_t erased = 0;
-    {
-        std::lock_guard<std::mutex> lk(signal_mu_);
-        if (ident & kTimerIdentBit) {
-            erased = timer_writers_.erase(ident);
-        } else {
-            int fd = static_cast<int>(ident);
-            if (event == fd_event::read)
-                erased = read_writers_.erase(fd);
-            else
-                erased = write_writers_.erase(fd);
-        }
-    }
-    if (erased)
-        pending_signals_.fetch_sub(1, std::memory_order_release);
-}
-
 void Reactor::loop() {
     struct kevent events[64];
     while (!stopping_.load(std::memory_order_acquire)) {
@@ -4058,24 +4101,6 @@ void Reactor::cancel_fd(int fd, fd_event event) {
         pending_signals_.fetch_sub(1, std::memory_order_release);
 }
 
-void Reactor::fire_signal(uintptr_t ident, fd_event event) {
-    size_t erased = 0;
-    {
-        std::lock_guard<std::mutex> lk(signal_mu_);
-        if (ident & kTimerIdentBit) {
-            erased = timer_writers_.erase(ident);
-        } else {
-            int fd = static_cast<int>(ident);
-            if (event == fd_event::read)
-                erased = read_writers_.erase(fd);
-            else
-                erased = write_writers_.erase(fd);
-        }
-    }
-    if (erased)
-        pending_signals_.fetch_sub(1, std::memory_order_release);
-}
-
 void Reactor::loop() {
     struct epoll_event events[64];
     while (!stopping_.load(std::memory_order_acquire)) {
@@ -4123,6 +4148,30 @@ void Reactor::loop() {
 }
 
 #endif // __APPLE__ / __linux__
+
+// ============================================================
+// Shared (kqueue + epoll): signal dispatch
+// ============================================================
+
+// 🎯T48: hoisted from the character-identical copies that lived in both
+// the __APPLE__ and __linux__ blocks above — pure code motion.
+void Reactor::fire_signal(uintptr_t ident, fd_event event) {
+    size_t erased = 0;
+    {
+        std::lock_guard<std::mutex> lk(signal_mu_);
+        if (ident & kTimerIdentBit) {
+            erased = timer_writers_.erase(ident);
+        } else {
+            int fd = static_cast<int>(ident);
+            if (event == fd_event::read)
+                erased = read_writers_.erase(fd);
+            else
+                erased = write_writers_.erase(fd);
+        }
+    }
+    if (erased)
+        pending_signals_.fetch_sub(1, std::memory_order_release);
+}
 
 } // namespace csp::detail
 
