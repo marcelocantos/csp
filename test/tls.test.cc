@@ -114,7 +114,7 @@ TEST_CASE("TLS---Handshake-and-data-roundtrip") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK("pong" == client_received);
     csp::shutdown_runtime();
@@ -155,7 +155,7 @@ TEST_CASE("TLS---Cancel-during-handshake") {
         csp::io::close(listen_fd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(got_cancel.load());
     csp::shutdown_runtime();
 }
@@ -210,7 +210,7 @@ TEST_CASE("TLS---Cancel-during-read") {
         csp::io::close(fd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(got_timeout.load());
     csp::shutdown_runtime();
 }
@@ -258,7 +258,7 @@ TEST_CASE("TLS---No-verify-callback-rejects-by-default") {
         csp::io::close(fd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(got_error.load());
     csp::shutdown_runtime();
 }
@@ -339,7 +339,7 @@ TEST_CASE("TLS---Concurrent-connections"
         csp::io::close(listen_fd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(N == server_done.load());
     CHECK(N == client_done.load());
     csp::shutdown_runtime();
@@ -404,7 +404,7 @@ TEST_CASE("TLS---Large-transfer") {
         csp::io::close(fd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK(PAYLOAD_SIZE == received.size());
     CHECK(payload == received);
@@ -475,7 +475,7 @@ TEST_CASE("TLS---conn-move-semantics") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK("pong" == client_received);
     csp::shutdown_runtime();

@@ -30,7 +30,7 @@ TEST_CASE("Two-inputs---basic") {
         for (T t; r >> t;) got.push_back(std::move(t));
     });
 
-    csp::schedule();
+    csp::await_completion();
     REQUIRE(3u == got.size());
     CHECK(T(1, "x") == got[0]);
     CHECK(T(2, "x") == got[1]);
@@ -58,7 +58,7 @@ TEST_CASE("No-emission-until-all-inputs-produce") {
         for (T t; r >> t;) got.push_back(t);
     });
 
-    csp::schedule();
+    csp::await_completion();
     REQUIRE(1u == got.size());
     CHECK(std::make_tuple(3, 10) == got[0]);
 }
@@ -87,7 +87,7 @@ TEST_CASE("Input-dies-after-producing---retains-last-value") {
         for (T t; r >> t;) got.push_back(t);
     });
 
-    csp::schedule();
+    csp::await_completion();
     REQUIRE(3u == got.size());
     CHECK(std::make_tuple(1, 10) == got[0]);
     CHECK(std::make_tuple(1, 20) == got[1]);
@@ -115,7 +115,7 @@ TEST_CASE("Input-dies-before-producing---output-closes") {
         CHECK_FALSE(bool(r >> t));
     });
 
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("Output-death-stops") {
@@ -141,7 +141,7 @@ TEST_CASE("Output-death-stops") {
         // Drop reader — output dies.
     });
 
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("Three-inputs") {
@@ -166,7 +166,7 @@ TEST_CASE("Three-inputs") {
         for (T t; r >> t;) got.push_back(std::move(t));
     });
 
-    csp::schedule();
+    csp::await_completion();
     REQUIRE(2u == got.size());
     CHECK(T(1, 2.5, "hi") == got[0]);
     CHECK(T(3, 2.5, "hi") == got[1]);
@@ -194,7 +194,7 @@ TEST_CASE("Combining-function") {
         for (int v; r >> v;) got.push_back(v);
     });
 
-    csp::schedule();
+    csp::await_completion();
     REQUIRE(3u == got.size());
     CHECK(11 == got[0]);
     CHECK(21 == got[1]);

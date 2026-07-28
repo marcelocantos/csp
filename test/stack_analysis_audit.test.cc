@@ -299,7 +299,7 @@ AuditResult run_case(const AuditCase& c) {
     r.is_exact = sa.is_exact;
 
     csp::internal::spawn(c.entry, const_cast<void*>(c.data));
-    csp::schedule();
+    csp::await_completion();
 
     r.high_water = csp::detail::get_stack_high_water(c.entry);
 

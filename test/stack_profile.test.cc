@@ -80,7 +80,7 @@ TEST_CASE("spawn-records-high-water-via-suspend") {
 
     g_ran.store(0, std::memory_order_relaxed);
     csp::internal::spawn(fn, nullptr);
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(g_ran.load(std::memory_order_relaxed) == 1);
 

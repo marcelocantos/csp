@@ -112,7 +112,7 @@ placed on the scheduler's sleep queue and becomes runnable again once the
 deadline passes. Other imps continue to execute during the sleep.
 
 `sleep` must be called from within an imp. Calling it from the main
-thread (outside `schedule`) is undefined.
+thread (outside `await_completion`) is undefined.
 
 The actual wakeup time may be slightly later than `now() + d` due to
 scheduling latency -- the imp becomes runnable after the deadline but
@@ -134,7 +134,7 @@ csp::spawn([] {
     csp::sleep(std::chrono::milliseconds(100));
     // resumes ~100ms later
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -179,7 +179,7 @@ csp::spawn([] {
     // Sleep for the remainder of the 1-second window.
     csp::sleep_until(deadline);
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -261,7 +261,7 @@ csp::spawn([] {
         // Timed out after 1 second.
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -331,7 +331,7 @@ csp::spawn([] {
     }
     // ticker goes out of scope; producer exits.
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -404,7 +404,7 @@ csp::local l{csp::clock = &fc};
 
 bool woke = false;
 csp::spawn([&] { csp::sleep(100ms); woke = true; });
-csp::schedule();
+csp::await_completion();
 
 fc.advance(50ms);
 fc.run_until_idle();

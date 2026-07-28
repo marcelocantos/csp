@@ -18,7 +18,7 @@ TEST_CASE("ChunkBy---consecutive-equal-groups") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<std::vector<int>>{{1, 1}, {2, 2, 2}, {3}});
 }
@@ -36,7 +36,7 @@ TEST_CASE("ChunkBy---monotone-runs") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<std::vector<int>>{{1, 3, 5}, {2, 4}, {1}});
 }
@@ -54,7 +54,7 @@ TEST_CASE("ChunkBy---single-element") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<std::vector<int>>{{42}});
 }
@@ -72,7 +72,7 @@ TEST_CASE("ChunkBy---empty-input") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got.empty());
 }
@@ -90,7 +90,7 @@ TEST_CASE("ChunkBy---all-same-group") {
     stats.spawn([r = std::move(out), &got] {
         for (std::vector<int> v; r >> v;) got.push_back(std::move(v));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<std::vector<int>>{{1, 2, 3}});
 }

@@ -329,5 +329,5 @@ int main() {
         fprintf(stderr, "Server stopped.\n");
     });
 
-    schedule();
+    await_completion();
 }

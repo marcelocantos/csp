@@ -51,7 +51,7 @@ for (int i = 1; i <= 10; ++i) {
     w << i;
 }
 w = {};
-schedule();
+await_completion();
 // total == 55
 
 // Track the latest value via sinkhole.

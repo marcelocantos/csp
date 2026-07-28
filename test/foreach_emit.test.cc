@@ -22,7 +22,7 @@ TEST_CASE("ForeachEmit---running-sum-extracted-as-string") {
     stats.spawn([r = std::move(out), &got] {
         for (std::string s; r >> s;) got.push_back(std::move(s));
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<std::string>{"1", "3", "6"});
 }
@@ -45,7 +45,7 @@ TEST_CASE("ForeachEmit---extract-subset-of-state") {
     stats.spawn([r = std::move(out), &got] {
         for (double d; r >> d;) got.push_back(d);
     });
-    csp::schedule();
+    csp::await_completion();
 
     REQUIRE(got.size() == 3);
     CHECK(got[0] == doctest::Approx(10.0));
@@ -69,7 +69,7 @@ TEST_CASE("ForeachEmit---empty-input") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got.empty());
 }

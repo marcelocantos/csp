@@ -177,7 +177,7 @@ csp::spawn([] {
         fwrite(chunk.data(), 1, chunk.size(), stdout);
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ### Errors

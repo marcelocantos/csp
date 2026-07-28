@@ -139,8 +139,6 @@ struct stream_state {
     int32_t id = 0;
     std::string method;
     std::string path;
-    std::string scheme;
-    std::string authority;
     std::vector<std::pair<std::string, std::string>> headers;
     csp::bytes body;
 };
@@ -229,8 +227,10 @@ static int on_header(nghttp2_session* /*session*/,
 
     if (k == ":method")    { s.method    = v; }
     else if (k == ":path") { s.path      = v; }
-    else if (k == ":scheme") { s.scheme  = v; }
-    else if (k == ":authority") { s.authority = v; }
+    else if (k == ":scheme" || k == ":authority") {
+        // Consume these pseudo-headers without storing them — they must
+        // not fall through into the generic headers list.
+    }
     else { s.headers.emplace_back(std::move(k), std::move(v)); }
     return 0;
 }

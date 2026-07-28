@@ -662,8 +662,7 @@ bool drain_stream_writes(ngtcp2_conn* nconn, std::shared_ptr<ConnShared> shared,
 }
 
 // Handle pending open-stream requests from app imps.
-// Returns false on fatal ngtcp2 error.
-bool handle_open_requests(ngtcp2_conn* nconn,
+void handle_open_requests(ngtcp2_conn* nconn,
                           std::shared_ptr<ConnShared> shared,
                           int fd, const struct sockaddr* peer,
                           socklen_t peer_len, int wake_wfd) {
@@ -691,7 +690,6 @@ bool handle_open_requests(ngtcp2_conn* nconn,
     }
 
     flush_ngtcp2_out(nconn, fd, peer, peer_len);
-    return true;
 }
 
 // Run the connection io imp.
@@ -774,10 +772,7 @@ void run_io_imp(ngtcp2_conn* nconn, ConnRef* cref,
                     return;
                 }
                 flush_ngtcp2_out(nconn, fd, peer, peer_len);
-                if (!handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd)) {
-                    cleanup();
-                    return;
-                }
+                handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd);
                 if (!drain_stream_writes(nconn, shared, fd, peer, peer_len)) {
                     cleanup();
                     return;
@@ -790,8 +785,7 @@ void run_io_imp(ngtcp2_conn* nconn, ConnRef* cref,
             // Timer expired — handle immediately.
             ngtcp2_conn_handle_expiry(nconn, now_ns());
             flush_ngtcp2_out(nconn, fd, peer, peer_len);
-            if (!handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd))
-                break;
+            handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd);
             if (!drain_stream_writes(nconn, shared, fd, peer, peer_len))
                 break;
             // Yield to prevent starving other imps on the M:N scheduler when
@@ -872,8 +866,7 @@ void run_io_imp(ngtcp2_conn* nconn, ConnRef* cref,
 
         // After every event: handle pending open-stream requests, drain pending
         // stream writes, and flush.
-        if (!handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd))
-            break;
+        handle_open_requests(nconn, shared, fd, peer, peer_len, wake_wfd);
         if (!drain_stream_writes(nconn, shared, fd, peer, peer_len))
             break;
         flush_ngtcp2_out(nconn, fd, peer, peer_len);

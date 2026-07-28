@@ -372,7 +372,7 @@ int main() {
         printf("sum = %d\n", total);
     });
 
-    schedule();
+    await_completion();
 }
 ```
 

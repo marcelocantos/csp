@@ -24,7 +24,7 @@ TEST_CASE("TryMap---all-succeed") {
         std::exception_ptr ep;
         CHECK(!(r >> ep));  // no errors, channel closes
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("TryMap---exceptions-to-error-channel") {
@@ -51,7 +51,7 @@ TEST_CASE("TryMap---exceptions-to-error-channel") {
             catch (std::exception const& e) { errors.push_back(e.what()); }
         }
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(results == std::vector<int>{2, 4});
     CHECK(errors == std::vector<std::string>{"negative", "negative"});
@@ -66,7 +66,7 @@ TEST_CASE("TryMap---no-error-channel-(exceptions-propagate)") {
     stats.spawn([r = std::move(out)] {
         CHECK(r.read() == 11);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("TryMap---type-changing-transform") {
@@ -90,7 +90,7 @@ TEST_CASE("TryMap---type-changing-transform") {
     stats.spawn([r = std::move(err.r), &error_count] {
         for (std::exception_ptr ep; r >> ep;) ++error_count;
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(results == std::vector<std::string>{"42", "7"});
     CHECK(error_count == 1);
@@ -119,7 +119,7 @@ TEST_CASE("TryMap---error-channel-closed-stops-processing") {
     stats.spawn([r = std::move(out), &results] {
         for (int v; r >> v;) results.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(results == std::vector<int>{1});
 }

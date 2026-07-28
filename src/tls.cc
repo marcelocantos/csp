@@ -501,9 +501,6 @@ bytes drive_handshake(ptls_t* tls,
                     ptls_buffer_dispose(&sendbuf);
                     throw csp::error("tls: ciphertext source EOF during handshake");
                 }
-            } catch (csp::error&) {
-                ptls_buffer_dispose(&sendbuf);
-                throw;
             } catch (...) {
                 ptls_buffer_dispose(&sendbuf);
                 throw;

@@ -153,7 +153,7 @@ csp::spawn([] {
 
     assert(*depth == 1);        // restored
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -283,7 +283,7 @@ csp::spawn([] {
     // Parent is unaffected by child's local.
     assert(*val == 10);
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -359,7 +359,7 @@ csp::spawn([] {
     }
     assert(*val == 0);               // restored
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -438,7 +438,7 @@ csp::spawn([] {
         assert(*request_id == "req-42");
     });
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -528,7 +528,7 @@ csp::spawn([] {
     // Parent's value is independent.
     assert(*call_count == 1);
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---

@@ -116,7 +116,7 @@ TEST_CASE("IO---WaitReadable") {
         test_close(wfd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(got_data.load());
     csp::shutdown_runtime();
 }
@@ -148,7 +148,7 @@ TEST_CASE("IO---WaitWritable") {
         test_close(rfd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(write_completed.load());
     csp::shutdown_runtime();
 }
@@ -186,7 +186,7 @@ TEST_CASE("IO---ReadWrite-roundtrip") {
         test_close(rfd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK(std::string(msg) == std::string(result.data(), result.size()));
     csp::shutdown_runtime();
@@ -219,7 +219,7 @@ TEST_CASE("IO---ByteReader") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     std::string result(all.begin(), all.end());
     CHECK("Hello, CSP!" == result);
@@ -259,7 +259,7 @@ TEST_CASE("IO---ByteWriter") {
         test_close(rfd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK("CSP writes!" == std::string(result.data(), result.size()));
     csp::shutdown_runtime();
@@ -581,7 +581,7 @@ TEST_CASE("IO---ReadAll") {
         test_close(rfd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK("All the bytes!" == std::string(result.begin(), result.end()));
     csp::shutdown_runtime();
@@ -611,7 +611,7 @@ TEST_CASE("IO---WriteAll") {
         test_close(rfd);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK("Write all bytes!" == std::string(result.begin(), result.end()));
     csp::shutdown_runtime();
@@ -642,7 +642,7 @@ TEST_CASE("IO---Lines-convenience") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     REQUIRE(3 == result.size());
     CHECK("alpha" == result[0]);
@@ -676,7 +676,7 @@ TEST_CASE("IO---Lines-csp-io-namespace") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     REQUIRE(3 == result.size());
     CHECK("one" == result[0]);
@@ -704,7 +704,7 @@ TEST_CASE("IO---File-roundtrip") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     CHECK(data == result);
     std::filesystem::remove(path);
@@ -737,7 +737,7 @@ TEST_CASE("IO---Composed-lines-from-pipe") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     REQUIRE(3 == result.size());
     CHECK("alpha" == result[0]);
@@ -783,7 +783,7 @@ TEST_CASE("IO---Multiple-concurrent-waiters") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(N == count.load());
     csp::shutdown_runtime();
 }
@@ -809,7 +809,7 @@ TEST_CASE("IO---Blocking-offload") {
         CHECK(main_tid != pool_tid.load());
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(ran.load());
     csp::shutdown_runtime();
 }
@@ -831,7 +831,7 @@ TEST_CASE("IO---Resolve-unresolvable-hostname") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     csp::shutdown_runtime();
 }
@@ -852,7 +852,7 @@ TEST_CASE("IO---Resolve-localhost") {
         resolved.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(resolved.load());
     csp::shutdown_runtime();
 }
@@ -871,7 +871,7 @@ TEST_CASE("IO---Blocking-void-return") {
         });
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(ran.load());
     csp::shutdown_runtime();
 }
@@ -890,7 +890,7 @@ TEST_CASE("IO---Blocking-with-non-trivial-return-type") {
         done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     csp::shutdown_runtime();
 }
@@ -913,7 +913,7 @@ TEST_CASE("IO---Multiple-concurrent-blocking-calls") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(N == completed.load());
     csp::shutdown_runtime();
 }
@@ -943,7 +943,7 @@ TEST_CASE("IO---Console-signal-delivery") {
         csp::win::signal::raise(CTRL_C_EVENT);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(got_signal.load());
     csp::shutdown_runtime();
 }
@@ -973,7 +973,7 @@ TEST_CASE("IO---Console-signal-multiple-events") {
         csp::win::signal::raise(CTRL_BREAK_EVENT);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     REQUIRE_EQ(2, received.size());
     CHECK_EQ(CTRL_C_EVENT, received[0]);
@@ -991,7 +991,7 @@ TEST_CASE("IO---Console-signal-reader-drop-cleanup") {
     }
 
     // Wait for producer + sentinel imps to finish.
-    csp::schedule();
+    csp::await_completion();
 
     // Event after cleanup — handler skips (mask cleared).
     csp::win::signal::raise(CTRL_C_EVENT);
@@ -1024,7 +1024,7 @@ TEST_CASE("IO---Signal-delivery") {
         ::raise(SIGUSR1);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(got_signal.load());
     csp::shutdown_runtime();
 }
@@ -1054,7 +1054,7 @@ TEST_CASE("IO---Signal-multiple-signals") {
         ::raise(SIGUSR2);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     REQUIRE(2 == received.size());
     CHECK(SIGUSR1 == received[0]);
@@ -1072,7 +1072,7 @@ TEST_CASE("IO---Signal-reader-drop-cleanup") {
     }
 
     // Wait for producer + sentinel MTs to finish.
-    csp::schedule();
+    csp::await_completion();
 
     // Signal after cleanup — handler skips (mask cleared).
     ::raise(SIGUSR1);

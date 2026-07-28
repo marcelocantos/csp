@@ -479,7 +479,6 @@ void suspend();
 // Debug/test.
 char const * get_descr(void * thr);
 char const * get_chan_descr(void * ch);
-char const * get_chan_flags(void * ch);
 int channel_count(int endpt);
 
 }
@@ -508,6 +507,7 @@ extern Logger g_descrlog;
 void set_scheduler(std::function<void()> f);
 void reset_scheduler();
 void await_completion();
+[[deprecated("use await_completion()")]]
 inline void schedule() { await_completion(); }  // deprecated alias
 
 // Yield control so other imps can run. Does nothing outside an imp.
@@ -962,8 +962,6 @@ private:
     friend struct chan<T>;
     friend class weak_writer<T>;
 };
-
-namespace { Logger g_reader_log("reader"); }
 
 template <typename T = poke_t>
 class reader {
@@ -1465,8 +1463,10 @@ void splice(writer<T>& w, reader<T>& r, F&& f) {
 
 // Backward compatibility.
 template <typename T>
+[[deprecated("unused; scheduled for removal")]]
 void channel_swap(writer<T>& a, writer<T>& b) { swap(a, b); }
 template <typename T>
+[[deprecated("unused; scheduled for removal")]]
 void channel_swap(reader<T>& a, reader<T>& b) { swap(a, b); }
 
 // Make a channel for a writer&, returning the matching reader.
@@ -2355,7 +2355,7 @@ using namespace csp;
 
 namespace csp::detail {
 
-enum class Status : intptr_t { run, sleep, detach, exit, spawn };
+enum class Status : intptr_t { sleep, detach, exit };
 
 struct Imp;
 
@@ -2419,6 +2419,8 @@ struct alignas(16) Imp {
     // next_/in_global_ checks on the wake path.
     std::atomic<bool> placed_{false};
     bool in_global_ = false;  // true while in the global run queue
+                              // (assertion-only state: written by the
+                              // global-queue push/pop, read only by asserts)
 
     int signal_;
     int n_chanops_;
@@ -2470,15 +2472,14 @@ struct alignas(16) Imp {
         return status_;
     }
 
-    void schedule(bool make_current = false);
-    void schedule_local(bool make_current = false);
+    void schedule();
+    void schedule_local();
     // Place this imp on a run queue after the caller has already claimed
     // placement (placed_ == true, next_ == null).  Shared by schedule()
     // and drain_suspended() so deferred wakes take the same wake-to-local
     // fast path (🎯T37).
     void place_on_run_queue();
     void make_runnable();
-    void deschedule();
 
     void run(Status status = Status::sleep);
 
@@ -4142,7 +4143,6 @@ struct endpoint {
 
 struct serve_options {
     net::listen_options listen = {};
-    size_t max_header_size = 8192;
     size_t read_chunk_size = 4096;
 };
 

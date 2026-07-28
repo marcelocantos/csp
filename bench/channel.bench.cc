@@ -9,7 +9,7 @@
 using namespace csp;
 
 // Number of operations per batch. Each benchmark lambda runs a full
-// schedule() cycle performing BATCH send/recv (or alt) operations,
+// await_completion() cycle performing BATCH send/recv (or alt) operations,
 // and nanobench divides elapsed time by BATCH to get per-op cost.
 static constexpr int BATCH = 50'000;
 
@@ -29,7 +29,7 @@ int main() {
             for (int i = 0; i < BATCH; i++) { r >> n; sum += n; }
         });
         ch.release();
-        csp::schedule();
+        csp::await_completion();
         ankerl::nanobench::doNotOptimizeAway(sum);
     });
 
@@ -48,7 +48,7 @@ int main() {
         });
         c0.release();
         c1.release();
-        csp::schedule();
+        csp::await_completion();
         ankerl::nanobench::doNotOptimizeAway(sum);
     });
 
@@ -67,7 +67,7 @@ int main() {
         });
         c0.release();
         c1.release();
-        csp::schedule();
+        csp::await_completion();
         ankerl::nanobench::doNotOptimizeAway(sum);
     });
 
@@ -91,7 +91,7 @@ int main() {
             }
         });
         for (auto & ch : chs) ch.release();
-        csp::schedule();
+        csp::await_completion();
         ankerl::nanobench::doNotOptimizeAway(sum);
     });
 
@@ -114,7 +114,7 @@ int main() {
             }
         });
         for (auto & ch : chs) ch.release();
-        csp::schedule();
+        csp::await_completion();
         ankerl::nanobench::doNotOptimizeAway(sum);
     });
 
@@ -130,7 +130,7 @@ int main() {
             for (int i = 0; i < BATCH; i++) { r >> n; sum += n; }
         });
         ch.release();
-        csp::schedule();
+        csp::await_completion();
         ankerl::nanobench::doNotOptimizeAway(sum);
     });
 

@@ -320,7 +320,7 @@ int main() {
             std::cout << n << "\n";
     });
 
-    csp::schedule();
+    csp::await_completion();
 }
 ```
 

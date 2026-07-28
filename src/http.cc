@@ -647,10 +647,6 @@ struct resp_parse_state {
     }
 };
 
-int resp_on_status(llhttp_t*, const char*, size_t) {
-    return 0;
-}
-
 int resp_on_header_field(llhttp_t* p, const char* at, size_t len) {
     auto* st = static_cast<resp_parse_state*>(p->data);
     st->flush_header();
@@ -801,7 +797,6 @@ response fetch(
     resp_parse_state state;
     llhttp_settings_t settings;
     llhttp_settings_init(&settings);
-    settings.on_status = resp_on_status;
     settings.on_header_field = resp_on_header_field;
     settings.on_header_value = resp_on_header_value;
     settings.on_headers_complete = resp_on_headers_complete;
@@ -908,7 +903,6 @@ response fetch(
     resp_parse_state state;
     llhttp_settings_t settings;
     llhttp_settings_init(&settings);
-    settings.on_status            = resp_on_status;
     settings.on_header_field      = resp_on_header_field;
     settings.on_header_value      = resp_on_header_value;
     settings.on_headers_complete  = resp_on_headers_complete;

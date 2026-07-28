@@ -19,7 +19,7 @@ running -> [*] : f() returns / throws
 ## Table of Contents
 
 1. [csp::spawn](#cspspawn) -- create a new imp
-2. [csp::schedule](#cspschedule) -- run the scheduler to completion
+2. [csp::await_completion](#cspawait_completion) -- run the scheduler to completion
 3. [csp::yield](#cspyield) -- cooperative context switch
 4. [csp::set_maxprocs](#cspset_maxprocs) -- configure M:N processor count
 5. [csp::spawn_producer](#cspspawn_producer) -- spawn an imp with an output channel
@@ -55,7 +55,7 @@ reader, the exception is forwarded to the global exception handler. If that
 also fails, `std::terminate` is called.
 
 `spawn` can be called from within an imp (nested spawn) or from the
-main thread before `schedule()`. Each call allocates a stack from the stack
+main thread before `await_completion()`. Each call allocates a stack from the stack
 pool, constructs the imp at the top of the region, and performs a
 handshake context switch to initialize the new imp's execution
 context.
@@ -85,34 +85,36 @@ csp::spawn([] {
     // This runs in a new imp.
     csp::yield();  // cooperatively yield
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
 
-## csp::schedule
+## csp::await_completion
 
 Drive the imp scheduler to completion.
 
 ### Signature
 
 ```cpp
-void schedule();
+void await_completion();
 ```
 
 **Header:** `#include "csp.h"`
 
 ### Description
 
-`schedule` blocks the calling OS thread and runs the scheduler loop until all
-imps have exited. In single-threaded mode (the default), `schedule`
-drives execution directly by repeatedly picking the next runnable imp
-and context-switching to it, sleeping when only timers remain. In M:N mode,
-`schedule` parks the main thread and waits for the worker threads to drain all
-imps.
+`await_completion` blocks the calling OS thread and runs the scheduler loop
+until all imps have exited. In single-threaded mode (the default),
+`await_completion` drives execution directly by repeatedly picking the next
+runnable imp and context-switching to it, sleeping when only timers remain.
+In M:N mode, `await_completion` parks the main thread and waits for the
+worker threads to drain all imps.
 
-`schedule` must be called from the main OS thread, not from within a
+`await_completion` must be called from the main OS thread, not from within a
 imp. It is typically called once after all initial `spawn` calls.
+
+`csp::schedule()` is a deprecated alias for `await_completion()`.
 
 The default scheduler loop can be replaced with `set_scheduler` for custom
 scheduling strategies.
@@ -120,8 +122,8 @@ scheduling strategies.
 ### Transition rules ([syntax](transition-rules.md))
 
 ```
-schedule() ─┤imps exist├─➤ block calling thread; run scheduler loop
-schedule() ─┤all MTs finished├───➤ return
+await_completion() ─┤imps exist├─➤ block calling thread; run scheduler loop
+await_completion() ─┤all MTs finished├───➤ return
 ```
 
 ### Example
@@ -135,7 +137,7 @@ csp::spawn([] {
 csp::spawn([] {
     // more imp work
 });
-csp::schedule();  // runs both imps to completion
+csp::await_completion();  // runs both imps to completion
 ```
 
 ---
@@ -181,7 +183,7 @@ csp::spawn([] {
         if (i % 1000 == 0) csp::yield();
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -205,14 +207,14 @@ create, each backed by a worker OS thread. If `num_procs` is 0, the runtime
 uses `std::thread::hardware_concurrency()`. If `num_procs` is 1, the runtime
 runs in single-threaded cooperative mode.
 
-The runtime auto-initializes on first use (first `spawn()` or `schedule()`
+The runtime auto-initializes on first use (first `spawn()` or `await_completion()`
 call). If `set_maxprocs` is never called, the runtime reads the `CSP_MAXPROCS`
 environment variable (like Go's `GOMAXPROCS`). If that is also unset, it
 defaults to hardware concurrency. Programs that don't need to configure
 processor count need not call `set_maxprocs` at all.
 
 `set_maxprocs` must be called before the runtime initializes (i.e., before the
-first `spawn()` or `schedule()` call).
+first `spawn()` or `await_completion()` call).
 
 When the processor count is > 1, the runtime enters M:N mode:
 
@@ -244,7 +246,7 @@ csp::set_maxprocs(4);
 
 csp::spawn([] { /* work */ });
 csp::spawn([] { /* work */ });
-csp::schedule();
+csp::await_completion();
 csp::shutdown_runtime();
 ```
 
@@ -300,7 +302,7 @@ csp::spawn([r = std::move(r)] {
         // process v: 0, 1, 2, ..., 9
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -351,7 +353,7 @@ csp::spawn([w = std::move(w)] {
         w << i;
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -410,5 +412,5 @@ csp::spawn([r = std::move(ch.r)] {
         // v: 2, 4, 6, 8, 10
     }
 });
-csp::schedule();
+csp::await_completion();
 ```

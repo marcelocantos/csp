@@ -49,7 +49,7 @@ static void run_density(int N) {
     }
     w = {};  // close last writer reference so reader exits after N values
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(done.load() == N);
 

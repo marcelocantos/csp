@@ -65,5 +65,5 @@ int main() {
         done_r >> nullptr;
     });
 
-    schedule();
+    await_completion();
 }

@@ -70,7 +70,7 @@ TEST_CASE("shipped-surface-paths-still-run---spawn") {
     csp::set_maxprocs(2);
     constexpr int N = 100;
     for (int i = 0; i < N; ++i) spawn([] {});
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -107,7 +107,7 @@ TEST_CASE("shipped-surface-paths-still-run---net-echo") {
         conn.output = {};
         conn.source = {};
     });
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 

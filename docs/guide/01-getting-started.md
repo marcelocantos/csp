@@ -46,7 +46,7 @@ int main() {
             std::cout << n << "\n";
     });
 
-    schedule();   // drive imps to completion
+    await_completion();   // drive imps to completion
 }
 ```
 
@@ -62,7 +62,7 @@ int main() {
    producer sends.
 4. When the producer lambda returns, the writer is destroyed. The consumer's
    range-for loop sees the closed channel and exits.
-5. `schedule()` runs the cooperative scheduler until all imps have
+5. `await_completion()` runs the cooperative scheduler until all imps have
    completed.
 
 ### Structured bindings

@@ -240,7 +240,7 @@ TEST_CASE("serve---basic-get") {
         CHECK(resp.body == "Hello, HTTP/2!");
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -282,7 +282,7 @@ TEST_CASE("serve---post-with-body") {
         CHECK(resp.body == "hello h2");
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -328,7 +328,7 @@ TEST_CASE("serve---multiple-connections") {
         CHECK(r2.body == "response-2");
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -363,7 +363,7 @@ TEST_CASE("serve---404-response") {
         CHECK(resp.body == "not found");
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -433,7 +433,7 @@ TEST_CASE("serve---empty-body-response") {
         CHECK(resp.body.empty());
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 

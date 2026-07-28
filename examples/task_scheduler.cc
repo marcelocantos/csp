@@ -380,10 +380,10 @@ int main() {
         }
 
         // Drop stop_ch writer → watcher exits →
-        // signal infrastructure cleans up → schedule() returns.
+        // signal infrastructure cleans up → await_completion() returns.
     });
 
-    schedule();
+    await_completion();
 
     printf("\n  Scheduler done.\n");
 }

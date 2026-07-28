@@ -169,7 +169,7 @@ namespace csp {
             delete local_ctx_;
         }
 
-        void Imp::schedule_local(bool make_current) {
+        void Imp::schedule_local() {
             auto& p = current_p();
             std::lock_guard lk(p.run_mu);
             if (next_) {
@@ -180,9 +180,6 @@ namespace csp {
                 next_ = busy;
                 prev_ = busy->prev_;
                 next_->prev_ = prev_->next_ = this;
-                if (make_current) {
-                    busy = this;
-                }
             } else {
                 busy = next_ = prev_ = this;
             }
@@ -280,7 +277,7 @@ namespace csp {
             rt.unpark_one();
         }
 
-        void Imp::schedule([[maybe_unused]] bool make_current) {
+        void Imp::schedule() {
             // Suspend-window handshake first, lock-free: if the imp is
             // in the unlock_all→do_switch window, it's still running
             // and can't be safely pushed to a queue. One CAS defers
@@ -326,21 +323,6 @@ namespace csp {
             schedule();
         }
 
-        void Imp::deschedule() {
-            auto& p = current_p();
-            std::lock_guard lk(p.run_mu);
-            assert(next_);
-            auto& busy = p.busy;
-            if (busy == this && (busy = next_) == this) {
-                busy = nullptr;
-            }
-            if (next_) next_->prev_ = prev_;
-            if (prev_) prev_->next_ = next_;
-            next_ = nullptr;
-            prev_ = nullptr;
-            placed_.store(false, std::memory_order_release);
-        }
-
         static void destroy_imp(Imp* imp) {
 #if CSP_TSAN
             if (imp->tsan_fiber_) __tsan_destroy_fiber(imp->tsan_fiber_);
@@ -374,8 +356,6 @@ namespace csp {
                 std::lock_guard lk(p.run_mu);
 
                 switch (status) {
-                case Status::run:
-                    break;
                 case Status::sleep:
                     if (self == busy) {
                         busy = busy->next_;

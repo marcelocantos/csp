@@ -325,7 +325,7 @@ TEST_CASE("restart-under-MN") {
         }));
         prialt(~done.r);  // wait for supervised imp to finish
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(count == 2);
     csp::shutdown_runtime();
 }

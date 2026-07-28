@@ -51,7 +51,7 @@ TEST_CASE("listen-and-dial---basic-echo") {
         conn.source = {};
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 
@@ -63,7 +63,7 @@ TEST_CASE("dial---connection-refused") {
         CHECK_THROWS_AS(net::dial("127.0.0.1", 19999), csp::error);
     });
 
-    schedule();
+    await_completion();
     csp::shutdown_runtime();
 }
 

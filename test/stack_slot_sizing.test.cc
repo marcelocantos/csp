@@ -128,7 +128,7 @@ TEST_CASE("profiled-inexact-entry-never-gets-small-slot") {
 
     g_probe_ran.store(0, std::memory_order_relaxed);
     csp::internal::spawn(fn, nullptr);
-    csp::schedule();
+    csp::await_completion();
     REQUIRE(g_probe_ran.load(std::memory_order_relaxed) == 1);
 
     size_t small_delta = pool.small_allocations() - small_before;
@@ -166,7 +166,7 @@ TEST_CASE("profile-table-still-records-samples") {
 
     g_probe_ran.store(0, std::memory_order_relaxed);
     csp::internal::spawn(fn, nullptr);
-    csp::schedule();
+    csp::await_completion();
     REQUIRE(g_probe_ran.load(std::memory_order_relaxed) == 1);
 
     // do_switch sampled the imp's real depth at its yield checkpoint and

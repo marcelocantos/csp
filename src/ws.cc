@@ -241,7 +241,6 @@ static int ws_genmask_cb(uint8_t* buf, size_t len, void* /*user_data*/) {
 
 struct ws_io_write {
     io::fd_t fd;
-    bool close_sent = false;
 };
 
 static ssize_t ws_write_recv_cb(uint8_t* /*buf*/, size_t /*len*/,

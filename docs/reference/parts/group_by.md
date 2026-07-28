@@ -68,7 +68,7 @@ spawn([&, groups = std::move(groups)]() mutable {
         });
     }
 });
-schedule();
+await_completion();
 // evens: 2, 4, 6
 // odds:  1, 3, 5
 ```

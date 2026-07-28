@@ -25,7 +25,7 @@ static void bench_spawn_empty(int n) {
     for (int i = 0; i < n; ++i) {
         spawn([] {});
     }
-    schedule();
+    await_completion();
     auto t1 = clock_type::now();
     std::printf("spawn/empty            %8.1f ns/op  (n=%d)\n",
                 ns_per(t1 - t0, n), n);
@@ -37,7 +37,7 @@ static void bench_spawn_yield(int n) {
     for (int i = 0; i < n; ++i) {
         spawn([] { yield(); });
     }
-    schedule();
+    await_completion();
     auto t1 = clock_type::now();
     std::printf("spawn/yield            %8.1f ns/op  (n=%d)\n",
                 ns_per(t1 - t0, n), n);
@@ -72,7 +72,7 @@ static void bench_net_echo(int n) {
             conn.output = {};
             conn.source = {};
         });
-        schedule();
+        await_completion();
     }
     auto t1 = clock_type::now();
     std::printf("net/echo-rtt           %8.1f ns/op  (n=%d, full setup)\n",
@@ -117,7 +117,7 @@ static void bench_net_echo_steady(int n) {
         int d;
         dr >> d;
     });
-    schedule();
+    await_completion();
 }
 
 // --- HTTP/1.1 GET over in-process serve + raw dial ---
@@ -161,7 +161,7 @@ static void bench_http_get(int n) {
             conn.output = {};
             conn.source = {};
         });
-        schedule();
+        await_completion();
     }
     auto t1 = clock_type::now();
     std::printf("http/get-setup         %8.1f ns/op  (n=%d, serve+GET)\n",
@@ -197,7 +197,7 @@ int main() {
             for (int i = 0; i < BATCH; ++i) r >> n;
         });
         ch.release();
-        schedule();
+        await_completion();
         auto t1 = clock_type::now();
         std::printf("channel/send-recv      %8.1f ns/op  (n=%d, reference)\n",
                     ns_per(t1 - t0, BATCH), BATCH);

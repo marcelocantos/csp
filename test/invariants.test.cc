@@ -26,7 +26,7 @@ TEST_CASE("Invariant---ChannelCleanup") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == completed.load());
     // All channels must be cleaned up: refcounts dropped, no leaks.
@@ -61,7 +61,7 @@ TEST_CASE("Invariant---ExactMessageCount") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     // sum(1..MSGS) = MSGS*(MSGS+1)/2, repeated PAIRS times.
     int64_t expected = (int64_t)PAIRS * MSGS * (MSGS + 1) / 2;
@@ -90,7 +90,7 @@ TEST_CASE("Invariant---ExactMessageCountSingleP") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)PAIRS * MSGS * (MSGS + 1) / 2;
     CHECK(expected == total.load());
@@ -122,7 +122,7 @@ TEST_CASE("Invariant---SuspendingWindowStress") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == completed.load());
 
@@ -177,7 +177,7 @@ TEST_CASE("Invariant---AltReadyVsDeadStress") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     // Every iteration must produce exactly one result.
     CHECK(N == data_results.load() + dead_results.load());

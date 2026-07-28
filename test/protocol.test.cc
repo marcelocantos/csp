@@ -33,7 +33,7 @@ TEST_CASE("Protocol---A1-steal_work-contention") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == count.load());
 
@@ -79,7 +79,7 @@ TEST_CASE("Protocol---A2-concurrent-channel-close-+-alt-sleep") {
     // Release our copies so only the spawned MTs hold endpoints.
     r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     // All N readers should have been woken by the dead channel.
     CHECK(N == dead_count.load());
@@ -124,7 +124,7 @@ TEST_CASE("Protocol---A3-concurrent-endpoint-release") {
         ch.release();
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     // Channel count should return to baseline (no leaks).
     CHECK(baseline_w == csp::internal::channel_count(0));
@@ -165,7 +165,7 @@ TEST_CASE("Protocol---A4-early-wake-path") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(ROUNDS == success.load());
 
@@ -197,7 +197,7 @@ TEST_CASE("Protocol---A5-timer-heap-boundary") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == count.load());
 
@@ -223,7 +223,7 @@ TEST_CASE("Protocol---A6-re-init-across-shutdown") {
                 count1.fetch_add(1, std::memory_order_relaxed);
             });
         }
-        csp::schedule();
+        csp::await_completion();
         CHECK(N1 == count1.load());
     }
 
@@ -240,7 +240,7 @@ TEST_CASE("Protocol---A6-re-init-across-shutdown") {
                 count2.fetch_add(1, std::memory_order_relaxed);
             });
         }
-        csp::schedule();
+        csp::await_completion();
         CHECK(N2 == count2.load());
     }
 

@@ -157,7 +157,7 @@ int main() {
         root.run();
     });
 
-    schedule();
+    await_completion();
 }
 ```
 

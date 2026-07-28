@@ -19,7 +19,7 @@ TEST_CASE("all-workers-exit-normally") {
         };
         wg.run();
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(a == 1);
     CHECK(b == 2);
     CHECK(c == 3);
@@ -36,7 +36,7 @@ TEST_CASE("worker-exception-triggers-restart") {
         };
         wg.run();
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(count == 2);
 }
 
@@ -59,7 +59,7 @@ TEST_CASE("max-restarts-exceeded") {
             CHECK(e.cause != nullptr);
         }
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(caught);
     CHECK(count == 3); // initial + 2 restarts
 }
@@ -127,7 +127,7 @@ TEST_CASE("mixed-workers") {
         };
         wg.run();
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(stable_count == 1);
     CHECK(flaky_count == 2);
 }
@@ -153,7 +153,7 @@ TEST_CASE("nested-groups") {
             CHECK(e.worker_name == "inner_group");
         }
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(caught);
 }
 
@@ -163,7 +163,7 @@ TEST_CASE("empty-group") {
         worker_group wg;
         wg.run(); // should return immediately
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("channel-leak-check") {
@@ -179,7 +179,7 @@ TEST_CASE("channel-leak-check") {
         };
         wg.run();
     });
-    csp::schedule();
+    csp::await_completion();
     CHECK(count == 3);
 }
 
@@ -201,7 +201,7 @@ TEST_CASE("concurrent-workers") {
         wg.run();
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(sum == 45);
     csp::shutdown_runtime();
 }
@@ -227,7 +227,7 @@ TEST_CASE("restart-under-contention") {
         wg.run();
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(total == 102); // 100 from steady + 2 from flaky (fail + success)
     csp::shutdown_runtime();
 }

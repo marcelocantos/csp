@@ -124,7 +124,7 @@ referenced from `dist/AGENTS-CSP.md`.
 
 ### Development source layout
 
-- **include/csp/csp.h** — Core API: `spawn`, `schedule`, `yield`, `chan`,
+- **include/csp/csp.h** — Core API: `spawn`, `await_completion`, `yield`, `chan`,
   `writer`, `reader`, `alt`/`prialt`, `chan_op`, `csp::internal` type-erased API.
 - **include/csp/timer.h** — Timer primitives (`sleep`, `after`, `tick`).
 - **include/csp/io.h** — Non-blocking I/O (kqueue reactor, DNS resolution).

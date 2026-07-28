@@ -111,7 +111,7 @@ TEST_CASE("TlsStream---Handshake-and-roundtrip-loopback") {
         client_done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(client_done.load());
     CHECK(server_done.load());
     REQUIRE(server_received.size() == 4);
@@ -169,7 +169,7 @@ TEST_CASE("TlsStream---Multiple-writes-aggregate") {
         client.plaintext_out << bytes{'C', 'C'};
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(done.load());
     REQUIRE(accumulated.size() == 6);
     CHECK(std::string(accumulated.begin(), accumulated.end()) == "AABBCC");
@@ -227,7 +227,7 @@ TEST_CASE("TlsStream---Consumer-drop-sends-close-notify") {
         client_done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(client_done.load());
     CHECK(server_saw_eof.load());
     csp::shutdown_runtime();
@@ -291,9 +291,9 @@ TEST_CASE("TlsStream---Mutual-close-notify-no-deadlock") {
         // reader (the server's bytes_to_source) has stopped pulling.
     });
 
-    // If close_notify blocks, schedule() never returns and the suite
+    // If close_notify blocks, await_completion() never returns and the suite
     // hangs; reaching the asserts below is itself the regression check.
-    csp::schedule();
+    csp::await_completion();
     CHECK(client_done.load());
     CHECK(server_done.load());
     csp::shutdown_runtime();
@@ -349,7 +349,7 @@ TEST_CASE("TlsStream---Close-notify-over-buffered-transport") {
         client_done.store(true, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(client_done.load());
     CHECK(server_saw_eof.load());
     csp::shutdown_runtime();

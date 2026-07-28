@@ -214,7 +214,7 @@ int main() {
         });
     });
 
-    schedule();
+    await_completion();
 
     printf("  Aggregator done.\n");
 }

@@ -25,7 +25,7 @@ TEST_CASE("SortMerge---three-sorted-streams") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9});
 }
@@ -47,7 +47,7 @@ TEST_CASE("SortMerge---interleaved-values") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{1, 2, 3, 4, 5, 6});
 }
@@ -69,7 +69,7 @@ TEST_CASE("SortMerge---one-empty-stream") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{1, 2, 3});
 }
@@ -91,7 +91,7 @@ TEST_CASE("SortMerge---custom-comparator-(descending)") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{9, 8, 6, 5, 3, 2});
 }
@@ -110,7 +110,7 @@ TEST_CASE("SortMerge---single-stream") {
     stats.spawn([r = std::move(out), &got] {
         for (int v; r >> v;) got.push_back(v);
     });
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(got == std::vector<int>{10, 20, 30});
 }

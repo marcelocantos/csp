@@ -1359,7 +1359,7 @@ targets:
     achieved: 2026-07-28
   T47:
     name: No dead or vestigial code identified in the 2026-07-28 audit remains in src/ or include/
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1370,6 +1370,7 @@ targets:
     context: 'Refiled — originally 🎯T42 (lost with working tree; ID history-reserved). Grep-verified dead code from the audit. Core (~90 lines): Imp::deschedule (zero callers), Status::run/Status::spawn enumerators, both make_current parameters (always default), get_chan_flags/descr_flags (no callers), in_global_ assertion-only but reads as live scheduler state. (Logger prereg path already deleted under the tier-1 target.) Net: http::serve_options::max_header_size (never read), http2::stream_state::scheme/authority (write-only), ws_io_write::close_sent (unreferenced), resp_on_status (inert no-op registration), check_nghttp3_version ([[maybe_unused]], never called, misleading comment), handle_open_requests returns constant true making three caller error branches unreachable, dead catch(csp::error&) clause at tls.cc:504-510 subsumed by identical catch(...). Header: csp.h:676 anonymous-namespace g_reader_log (one dead Logger per including TU), csp.h:1176-1180 channel_swap compat shims (zero references tree-wide; public — [[deprecated]] first), csp.h:221 schedule() labelled deprecated in a comment but carrying no attribute.'
     origin: 2026-07-28 code-smell audit; refiled after working-tree loss
     discovered: 2026-07-28
+    achieved: 2026-07-28
   T48:
     name: Protocol-neutral helpers are single-sourced in core TUs; intra-TU copy-paste in the network stack is collapsed
     status: identified

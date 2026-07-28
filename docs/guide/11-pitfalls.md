@@ -43,12 +43,12 @@ never closes and downstream readers hang forever.
 
 ## 2. Imps that never exit
 
-If an imp loops forever, `schedule()` never returns because the runtime
+If an imp loops forever, `await_completion()` never returns because the runtime
 waits for all live imps to complete. This is the most common cause of
 programs that hang on shutdown.
 
 ```cpp
-// BUG: loops forever -- schedule() never returns
+// BUG: loops forever -- await_completion() never returns
 csp::spawn([r = std::move(r)] {
     for (;;) {
         int n;
@@ -174,7 +174,7 @@ csp::spawn([fd] {
     char buf[1024];
     csp::io::read(fd, buf, sizeof(buf));   // hangs
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 Ensure M:N mode is active (the default) when using I/O:
@@ -186,7 +186,7 @@ csp::spawn([fd] {
     csp::io::read(fd, buf, sizeof(buf));   // works
 });
 
-csp::schedule();
+csp::await_completion();
 csp::shutdown_runtime();
 ```
 

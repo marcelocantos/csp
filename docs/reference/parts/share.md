@@ -74,7 +74,7 @@ csp::spawn([]{
     // a.read() -> 2, b.read() -> 2
     // a.read() -> 3, b.read() -> 3
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ## See Also

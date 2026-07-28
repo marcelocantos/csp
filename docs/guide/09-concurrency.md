@@ -7,11 +7,11 @@ work-stealing scheduler, with no changes to your channel code.
 ## Default mode: M:N threading
 
 Without any configuration, the runtime creates **N processors** (one per
-hardware thread) on first `spawn()` or `schedule()` call:
+hardware thread) on first `spawn()` or `await_completion()` call:
 
 ```cpp
 csp::spawn([] { /* ... */ });
-csp::schedule();   // runs imps across all cores
+csp::await_completion();   // runs imps across all cores
 ```
 
 Override the processor count with `set_maxprocs(n)` or the `CSP_MAXPROCS`
@@ -24,7 +24,7 @@ For simple programs or deterministic testing, restrict to one processor:
 ```cpp
 csp::set_maxprocs(1);   // or CSP_MAXPROCS=1
 csp::spawn([] { /* ... */ });
-csp::schedule();   // cooperative single-threaded scheduling
+csp::await_completion();   // cooperative single-threaded scheduling
 ```
 
 Context switches happen at channel operations, `yield()`, `sleep()`, and other
@@ -184,7 +184,7 @@ for (int c = 0; c < 10; ++c) {
 }
 ch.release();
 
-csp::schedule();
+csp::await_completion();
 csp::shutdown_runtime();
 ```
 
@@ -202,12 +202,12 @@ csp::set_maxprocs(4);        // optional: override processor count
 
 csp::spawn([&] { /* ... */ });  // runtime auto-initializes here
 
-csp::schedule();             // blocks until all imps finish
+csp::await_completion();             // blocks until all imps finish
 
 csp::shutdown_runtime();     // stops workers, joins threads
 ```
 
-`shutdown_runtime()` must be called after `schedule()` returns. It stops the
+`shutdown_runtime()` must be called after `await_completion()` returns. It stops the
 blocking pool, the I/O reactor, and all worker threads, then restores the
 default single-threaded scheduler.
 
@@ -245,7 +245,7 @@ csp::spawn([&total, r = std::move(results.r)] {
 });
 results.release();
 
-csp::schedule();
+csp::await_completion();
 csp::shutdown_runtime();
 // total == sum of squares 0..9999
 ```

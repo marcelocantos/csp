@@ -125,7 +125,7 @@ int main() {
         // Reader `r` dropped here; worker's next write fails, worker exits.
         // Reader `sig` dropped here; sentinel cleans up signal pipe.
     });
-    csp::schedule();
+    csp::await_completion();
     csp::shutdown_runtime();
 }
 ```
@@ -145,7 +145,7 @@ int main() {
         int signo = sig.read();
         std::printf("caught signal %d, shutting down\n", signo);
     });
-    csp::schedule();
+    csp::await_completion();
     csp::shutdown_runtime();
 }
 ```
@@ -203,7 +203,7 @@ int main() {
         // ev == CTRL_C_EVENT or CTRL_CLOSE_EVENT
         // ... clean up and exit ...
     });
-    csp::schedule();
+    csp::await_completion();
     csp::shutdown_runtime();
 }
 ```

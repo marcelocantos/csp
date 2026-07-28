@@ -79,7 +79,7 @@ csp::spawn([] {
     r >> val;
     assert(val == 42);
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -198,7 +198,7 @@ csp::spawn([] {
         // "hello", then "world"
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -357,7 +357,7 @@ csp::spawn([] {
         sum += n;
     assert(sum == 10);  // 0+1+2+3+4
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -460,7 +460,7 @@ csp::spawn([] {
         assert(a == 1 && b == 2);
     }
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -512,7 +512,7 @@ csp::spawn([] {
 
     done.r >> csp::poke;  // wait for signal
 });
-csp::schedule();
+csp::await_completion();
 ```
 
 ---
@@ -870,5 +870,5 @@ csp::spawn([] {
 
     w = {};  // close request channel when clients finish
 });
-csp::schedule();
+csp::await_completion();
 ```

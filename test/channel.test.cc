@@ -69,7 +69,7 @@ TEST_CASE("Channel---OneShot") {
         i >> result;
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(42 == result);
 }
@@ -86,7 +86,7 @@ TEST_CASE("Channel---OneShotAgain") {
         i >> result;
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(42 == result);
 }
@@ -104,7 +104,7 @@ TEST_CASE("Channel---OneShotStats") {
         i >> result;
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(42 == result);
 }
@@ -132,7 +132,7 @@ TEST_CASE("Channel---Basic") {
     b.release();
     c.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(321 == result);
 }
@@ -158,7 +158,7 @@ TEST_CASE("Channel---WriterGone") {
 
     ch.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(55 == total);
 }
@@ -181,7 +181,7 @@ TEST_CASE("Channel---ReaderGone") {
 
     ch.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(1023 == total);
 }
@@ -208,7 +208,7 @@ TEST_CASE("Channel---NWriters") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     std::sort(total.begin(), total.end());
     CHECK(std::vector<int>({1, 2}) == total);
@@ -236,7 +236,7 @@ TEST_CASE("Channel---NReaders") {
         for (int n = 1; out << n; n *= 2) { }
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(1023 == total.load(std::memory_order_relaxed));
 }
@@ -279,7 +279,7 @@ TEST_CASE("Channel---AltIn") {
         ++received;
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(2 == sent);
     CHECK(2 == received);
@@ -331,7 +331,7 @@ TEST_CASE("Channel---AltDead") {
         CHECK_FALSE((out << 5));
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(10 == reqs);
     CHECK(10 == reps);
@@ -372,7 +372,7 @@ TEST_CASE("Channel---AltNull") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("Channel---Range") {
@@ -670,7 +670,7 @@ TEST_CASE("Channel---MoveOnly") {
 
     ch.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     REQUIRE(nullptr != result);
     CHECK(42 == *result);
@@ -737,7 +737,7 @@ TEST_CASE("Channel---CopySemantics") {
     });
     w2 = {};
 
-    csp::schedule();
+    csp::await_completion();
 }
 
 TEST_CASE("Channel---NWritersNReaders") {
@@ -760,7 +760,7 @@ TEST_CASE("Channel---NWritersNReaders") {
 
     ch.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(N == sent.load());
     CHECK(N == received.load());
@@ -790,7 +790,7 @@ TEST_CASE("Channel---AltFairness") {
     a.release();
     b.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     // alt uses random_shuffle; in cooperative scheduling the bias
     // can be extreme, so just verify both channels were serviced.
@@ -986,7 +986,7 @@ TEST_CASE("Channel---AltManyChannels") {
         CHECK(n >= 0);
         CHECK(n < N);
     });
-    csp::schedule();
+    csp::await_completion();
 }
 
 // ---------------------------------------------------------------------------
@@ -1207,9 +1207,9 @@ TEST_CASE("Channel---weak_reader-direct-tests") {
     w = {};
 }
 
-TEST_CASE("Channel---schedule()-with-no-imps") {
+TEST_CASE("Channel---await_completion()-with-no-imps") {
     // Calling schedule with nothing spawned should return immediately.
-    csp::schedule();
+    csp::await_completion();
     // If we get here, it didn't hang or crash.
     CHECK(true);
 }
@@ -1231,7 +1231,7 @@ TEST_CASE("Channel---chan-destroyed-while-imp-blocked") {
     // Destroy the last writer; the blocked imp should see death.
     w = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(saw_writer_death);
 }
@@ -1256,7 +1256,7 @@ TEST_CASE("Channel---buffer(1)-single-element") {
 
     buf.release();
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(42 == r1);
     CHECK(99 == r2);

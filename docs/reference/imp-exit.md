@@ -333,4 +333,4 @@ Only `spawn(supervised(f))` participates in exit interception. Regular
 
 - [Supervision](supervisor.md) -- `worker_group` (deprecated higher-level API)
 - [Dynamic Scoping](dynamic.md) -- how dynamic bindings propagate to child imps
-- [Scheduling](scheduling.md) -- `spawn`, `schedule`, lifecycle
+- [Scheduling](scheduling.md) -- `spawn`, `await_completion`, lifecycle

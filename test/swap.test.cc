@@ -280,7 +280,7 @@ TEST_CASE("MN-Swap---concurrent-data-flow") {
     a.r = {};
     b.r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     // All values 1..2*MSGS should appear exactly once across both readers.
     int64_t expected = (int64_t)(2 * MSGS) * (2 * MSGS + 1) / 2;
@@ -326,7 +326,7 @@ TEST_CASE("MN-Swap---swap-during-blocked-alt") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)N * (N + 1) / 2;
     CHECK(expected == (int64_t)received.load());
@@ -375,7 +375,7 @@ TEST_CASE("MN-Swap---swap-racing-with-endpoint-death") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(CYCLES == completed.load());
 
     csp::shutdown_runtime();
@@ -419,7 +419,7 @@ TEST_CASE("MN-Swap---rapid-repeated-swaps") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
     CHECK((int64_t)PAIRS * 3 == total.load());
 
     csp::shutdown_runtime();
@@ -480,7 +480,7 @@ TEST_CASE("MN-Swap---multi-channel-swap-storm") {
         }
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     // Each channel gets exactly one write (slot permutation is a bijection).
     CHECK(N_CHANS == total.load());
@@ -526,7 +526,7 @@ TEST_CASE("MN-Swap---swap-with-shared-copies-across-threads") {
         for (int v; r >> v;) total_a.fetch_add(v, std::memory_order_relaxed);
     });
 
-    csp::schedule();
+    csp::await_completion();
 
     CHECK(WRITERS * MSGS_PER_WRITER == total.load());
     CHECK(0 == total_a.load());
@@ -583,7 +583,7 @@ TEST_CASE("MN-Stress---swap-during-pipeline") {
     alt_middle.w = {};
     sink.w = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK(expected == total.load());
@@ -618,7 +618,7 @@ TEST_CASE("MN-Stress---swap-lifecycle") {
             });
         }
 
-        csp::schedule();
+        csp::await_completion();
 
         int64_t expected = 0;
         for (int p = 0; p < PAIRS; ++p) expected += (int64_t)p * 11;
@@ -859,7 +859,7 @@ TEST_CASE("MN-Fuse---basic-pipeline") {
     b.w = {};
     b.r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK(expected == total.load());
@@ -894,7 +894,7 @@ TEST_CASE("MN-Fuse---repeated-fuse") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(CYCLES == completed.load());
 
     csp::shutdown_runtime();
@@ -938,7 +938,7 @@ TEST_CASE("MN-Fuse---racing-with-endpoint-death") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
     CHECK(CYCLES == completed.load());
 
     csp::shutdown_runtime();
@@ -977,7 +977,7 @@ TEST_CASE("MN-Fuse---fuse-while-reader-is-blocked") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)N * (N + 1) / 2;
     CHECK(expected == (int64_t)received.load());
@@ -1019,7 +1019,7 @@ TEST_CASE("MN-Split---split-while-reader-is-blocked") {
         });
     }
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)N * (N + 1) / 2;
     CHECK(expected == (int64_t)received.load());
@@ -1180,7 +1180,7 @@ TEST_CASE("MN-Tap---observe-pipeline") {
     ch.r = {};
     tr = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK(expected == tap_total.load());
@@ -1214,7 +1214,7 @@ TEST_CASE("MN-Tap---auto-fuse-restores-direct-path") {
     ch.w = {};
     ch.r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK(expected == total.load());
@@ -1267,7 +1267,7 @@ TEST_CASE("MN-Tap---splice-mid-flight") {
     ch.w = {};
     ch.r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     // The forwarder delivers in-flight values through the fused path,
@@ -1317,7 +1317,7 @@ TEST_CASE("MN-Tap---remove-mid-flight") {
     ch.w = {};
     ch.r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK(expected == consumer_total.load());
@@ -1521,7 +1521,7 @@ TEST_CASE("MN-Splice---data-integrity") {
     ch.w = {};
     ch.r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK(expected == total.load());
@@ -1560,7 +1560,7 @@ TEST_CASE("MN-Splice---filter-exits-mid-stream") {
     ch.w = {};
     ch.r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK(expected == total.load());
@@ -1603,7 +1603,7 @@ TEST_CASE("MN-Splice---splice-mid-flight") {
     ch.w = {};
     ch.r = {};
 
-    csp::schedule();
+    csp::await_completion();
 
     int64_t expected = (int64_t)MSGS * (MSGS + 1) / 2;
     CHECK(total.load() >= expected - MSGS);

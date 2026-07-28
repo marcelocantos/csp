@@ -79,5 +79,5 @@ int main() {
         printf("\n");
     });
 
-    schedule();
+    await_completion();
 }

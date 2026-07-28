@@ -69,5 +69,5 @@ int main() {
         new_sub = {};
     });
 
-    schedule();
+    await_completion();
 }
