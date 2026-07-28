@@ -698,7 +698,7 @@ public:
     bool operator!=(const reader& r) const { return !(*this == r); }
     explicit operator bool() const  { return bool(r_); }
 
-    void descr(const char* d) { internal::set_chan_descr(r_.ptr, d); }
+    void descr(const char* d) const { internal::set_chan_descr(r_.ptr, d); }
 
     template <typename U>
         requires std::is_convertible_v<T, U>
@@ -710,6 +710,12 @@ public:
     }
 
     // Connect two channels directly.
+    //
+    // Unlike detail::pump (the plain buffered-pipeline loop), this
+    // deliberately keeps a prialt arm watching for `out` death: a
+    // stream_to callable is typically handed to spawn as a free-standing
+    // bridge, so it should exit as soon as the destination dies rather
+    // than sit blocked on a silent input.
     template <typename U>
     auto stream_to(writer<U> out) const {
         return [in = this->copy(), out = std::move(out)] {
@@ -1533,14 +1539,29 @@ extern reader<> const skip;
 
 // --- chan | composition ---
 
+namespace detail {
+
+// Forward every value from `in` to `out`; return when either endpoint
+// closes.  This is the plain buffered-pipeline pump, shared by the
+// chan | composition operators here and in part.h.  It deliberately has
+// no extra death-watch arm on `out`: an extra alt arm widens the prialt
+// on the buffered hot path, and a dead `out` is detected on the next
+// write anyway.  reader<T>::stream_to keeps its own prialt(~out, ...)
+// variant for the early death-watch it deliberately provides.
+template <typename T>
+void pump(reader<T> in, writer<T> out) {
+    for (T v; in >> v;) {
+        if (!(out << std::move(v))) return;
+    }
+}
+
+}
+
 // reader | chan → reader (forward reader into buffer)
 template <typename T>
 reader<T> operator|(reader<T> r, chan<T> ch) {
-    spawn([in = std::move(r), out = std::move(ch.w)] {
-        T v;
-        while (in >> v) {
-            if (!(out << std::move(v))) return;
-        }
+    spawn([in = std::move(r), out = std::move(ch.w)]() mutable {
+        detail::pump(std::move(in), std::move(out));
     });
     return std::move(ch.r);
 }
@@ -1548,11 +1569,8 @@ reader<T> operator|(reader<T> r, chan<T> ch) {
 // chan | writer → writer (forward buffer into writer)
 template <typename T>
 writer<T> operator|(chan<T> ch, writer<T> w) {
-    spawn([in = std::move(ch.r), out = std::move(w)] {
-        T v;
-        while (in >> v) {
-            if (!(out << std::move(v))) return;
-        }
+    spawn([in = std::move(ch.r), out = std::move(w)]() mutable {
+        detail::pump(std::move(in), std::move(out));
     });
     return std::move(ch.w);
 }

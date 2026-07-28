@@ -12,6 +12,11 @@ namespace csp::part {
 // Emits (key, reader<T>) pairs on a meta-channel. Values for known keys
 // are forwarded to the existing sub-stream. If a sub-stream reader is
 // dropped, future values for that key are discarded.
+//
+// Eager by design: group_by returns live endpoints (a reader of
+// (key, reader<T>) pairs backed by an already-spawned imp), not a lazy
+// make_* part.  The lazy convention (see part.h) does not apply —
+// converting would be a user-visible breaking change.
 template <typename T, typename F,
           typename K = std::decay_t<std::invoke_result_t<F&, const T&>>>
 reader<std::pair<K, reader<T>>> group_by(reader<T> input, F f) {

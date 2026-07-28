@@ -913,20 +913,21 @@ All in `namespace csp::part` (included via `csp.h`).
 | `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
 | `first<T>(n)` | filter | Take first n elements |
 | `frame<T>(n,timeout)` | filter | Collect into frames of up to n elements; flush partial on timeout or input close |
-| `first_wins<T>(readers...)` | producer | Read from whichever source responds first, discard the rest |
+| `first_wins<T>(readers...)` | blocking | Read from whichever source responds first, discard the rest; blocks and returns `T` |
 | `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
 | `foreach_emit<T,S,U>(init,update,extract)` | filter | Generalized scan: separate state update and extraction |
 | `flatten<T>` | filter | Flatten `vector<T>` → T |
 | `gate<T>()` | function | Pause/resume via control channel |
-| `group_by<T,K>(f)` | producer | Partition by key, emit (key, reader) pairs |
+| `group_by<T,K>(f)` | function | Partition by key, emit (key, reader) pairs; returns `reader<pair<K, reader<T>>>` |
 | `interleave<T>(readers...)` | producer | Strict round-robin interleave |
-| `join<T>(readers...)` | function | Block until all channels close |
+| `join<T>(readers...)` | blocking | Block until all channels close |
 | `killswitch<T>()` | filter | Forward until keepalive dies |
 | `last<T>(n)` | filter | Buffer; emit last n on close |
 | `latch<T>()` | filter | Serve most recent value on demand |
 | `io::lines(fd)` | producer | fd → `reader<string>` via `byte_reader \| split_lines` |
 | `map<In,Out>(f)` | filter | Transform each element |
 | `merge<T>(readers...)` | producer | Non-deterministic merge |
+| `merge_all<T>` | filter | Flatten sub-streams concurrently (non-deterministic merge) |
 | `mux(reader<Ts>...)` | producer | Heterogeneous merge into `variant<Ts...>` |
 | `demux(reader<variant<Ts...>>)` | function | Split variant stream into N typed readers |
 | `metrics<T>()` | function | Passthrough with stats reporting |
@@ -937,8 +938,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `pairwise<T>` | filter | Consecutive pairs (a,b), (b,c)... |
 | `parallel_map<A,B>(n,f,cfg)` | filter | Concurrent N-worker transform; `cfg.ordered` preserves input order |
 | `partition<T>(n,f)` | function | Route to N outputs by classifier |
-| `quantize<T>(f)` | function | Variable-size batching |
-| `race<T>(readers)` | producer | Priority-biased merge: earlier sources win on simultaneous ready |
+| `quantize<T>(f)` | callable | Variable-size batching; returns a bare callable (`spawn_quantize` variants return endpoints) |
+| `race<T>(readers)` | function | Priority-biased merge: earlier sources win on simultaneous ready; returns `reader<T>` |
 | `reduce<T,A>(init,f)` | filter | Fold to single value |
 | `reorder<T,Key>(key_fn,initial)` | filter | Resequence out-of-order stream by key (contiguous ascending keys) |
 | `round_robin<T>(n)` | function | Distribute across N outputs |
@@ -946,7 +947,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `rpc_server` | function | Request/reply server: channel-pair variant or embedded-reply variant (uses `request<Req,Resp>` pattern) |
 | `sample<T,S>(trigger)` | producer | Emit latest value on trigger |
 | `scan<In,Out>(init,f)` | filter | Running accumulator |
-| `share<T>(n)` | producer | Multicast with latch semantics |
+| `share<T>(n)` | function | Multicast with latch semantics; returns `reader<reader<T>>` |
 | `shuffle<T>(n)` | filter | Reservoir shuffle through a bounded buffer |
 | `sink<T>(f)` | consumer | Consume with side-effect function |
 | `skip_first<T>(n)` | filter | Drop first n elements |
@@ -961,7 +962,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `tee<T>(side_writer)` | filter | Duplicate: main first, then side |
 | `throttle<T>(trigger,cfg)` | filter | Rate-limit: `cfg.n` per trigger, use with `tick(d)` |
 | `timeout<T>(dur)` | filter | Close if no value within duration |
-| `timer(control)` | producer | Sleep per control, emit fire times |
+| `timer(control)` | function | Sleep per control, emit fire times; returns `reader<time_point>` |
 | `transpose<T>(readers)` | producer | Dynamic-width zip: N readers in lockstep as `vector<T>` |
 | `try_map<A,B>(f,err)` | filter | Map with exception catching; errors to side channel |
 | `uniform_int<T>(lo,hi)` | producer | Uniform random integers in [lo, hi] |

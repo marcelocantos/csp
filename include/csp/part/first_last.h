@@ -1,7 +1,10 @@
 #pragma once
 
+#include <csp/part/blackhole.h>
 #include <csp/part/part.h>
 #include <csp/ringbuffer.h>
+
+#include <utility>
 
 namespace csp::part {
 
@@ -24,7 +27,11 @@ auto last(size_t n) {
     return make_filter<T>([n](reader<T> in, writer<T> out) {
         internal::descr("last");
         if (n == 0) {
-            for (T t; csp::alt(in >> t, ~out) == 0;) {}
+            // RingBuffer requires nonzero capacity; nothing can ever be
+            // emitted, so close the output and delegate the drain.
+            out = {};
+            auto drain = blackhole<T>;
+            drain(std::move(in));
             return;
         }
         csp::detail::RingBuffer<T> buf(n);
@@ -59,9 +66,9 @@ auto skip_last(size_t n) {
     return make_filter<T>([n](reader<T> in, writer<T> out) {
         internal::descr("skip_last");
         if (n == 0) {
-            for (T t; csp::alt(in >> t, ~out) == 0;) {
-                if (!(out << std::move(t))) return;
-            }
+            // RingBuffer requires nonzero capacity; skip_last(0) is an
+            // identity pass-through — delegate to the shared pump.
+            csp::detail::pump(std::move(in), std::move(out));
             return;
         }
         csp::detail::RingBuffer<T> buf(n);

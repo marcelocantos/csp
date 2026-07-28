@@ -12,6 +12,7 @@
 #include "csp/http2.h"
 #include "csp/http3.h"
 #include "csp/imp_exit.h"
+#include "csp/internal/bits.h"
 #include "csp/internal/blocking_pool.h"
 #include "csp/internal/csp_internal.h"
 #include "csp/internal/fast_mutex.h"

@@ -7,6 +7,16 @@
 
 namespace csp::part {
 
+// --- Part-author conventions ---
+//
+// First-element state: prime, don't flag.  When a part needs "the first
+// element is special" state, prime with one leading alt read against
+// ~out before entering the steady loop (see diff, pairwise, distinct)
+// instead of carrying a bool flag through every iteration.  Keep a flag
+// only when *absence* must be tracked across a multi-arm alt — i.e. the
+// part can act before any value has arrived and must know whether one
+// has (sample, share, slide).
+
 // Wrapper for a reader-consuming combinator body.
 // spawn() creates a channel and imp; bind() returns a deferred
 // callable; operator() runs inline.
@@ -240,9 +250,7 @@ auto operator|(filter<T, T, F> f, chan<T> ch) {
                    w = std::move(ch.w)]() mutable {
                 f(std::move(in), std::move(w));
             });
-            for (T v; ch.r >> v;) {
-                if (!(out << std::move(v))) return;
-            }
+            csp::detail::pump(std::move(ch.r), std::move(out));
         });
 }
 
@@ -254,9 +262,7 @@ auto operator|(chan<T> ch, filter<T, T, F> f) {
         (reader<T> in, writer<T> out) mutable {
             spawn([in = std::move(in),
                    w = std::move(ch.w)]() mutable {
-                for (T v; in >> v;) {
-                    if (!(w << std::move(v))) return;
-                }
+                csp::detail::pump(std::move(in), std::move(w));
             });
             f(std::move(ch.r), std::move(out));
         });
@@ -272,9 +278,7 @@ auto operator|(producer<T, F> p, chan<T> ch) {
                    w = std::move(ch.w)]() mutable {
                 p(std::move(w));
             });
-            for (T v; ch.r >> v;) {
-                if (!(out << std::move(v))) return;
-            }
+            csp::detail::pump(std::move(ch.r), std::move(out));
         });
 }
 
@@ -286,9 +290,7 @@ auto operator|(chan<T> ch, consumer<T, F> c) {
         (reader<T> in) mutable {
             spawn([in = std::move(in),
                    w = std::move(ch.w)]() mutable {
-                for (T v; in >> v;) {
-                    if (!(w << std::move(v))) return;
-                }
+                csp::detail::pump(std::move(in), std::move(w));
             });
             c(std::move(ch.r));
         });
