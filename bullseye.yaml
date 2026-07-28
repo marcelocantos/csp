@@ -1420,7 +1420,7 @@ targets:
     achieved: 2026-05-21
   T50:
     name: 'Combinator library is internally consistent: docs match signatures, clone pairs share bodies, idioms are uniform'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1434,6 +1434,7 @@ targets:
     context: 'Refiled — originally 🎯T45 (lost with working tree; ID history-reserved). Audit findings in include/csp/part/ plus docs drift. Docs: parts.md "kind" column wrong for ~13 verified entries (race, first_wins, join, quantize, gate, timer, metrics, share, slide, partition, round_robin, group_by, unzip); merge_all — one of the four flatten strategies, tested — missing from all three required doc locations (detail page, parts.md row, AGENTS-CSP.md row); collect missing from two. Convention drift: race.h/part timer.h/group_by.h are eager (spawn_*) where the stated convention (part.h:228-230) and their structural siblings are lazy (make_*) — converting race is a user-visible breaking change requiring an explicit user decision; record the decision either way. One-axis clone pairs to share a body: any_of/all_of (quantify.h), take_while/take_until, the two timer overloads, the two slide overloads, fd_source/fd_source_view (OnScopeExit — cleanest ~45-line win), the two quantize overloads; four random.h producers are one skeleton over a distribution (detail::from_distribution). The endpoint-pump loop is written ×6 byte-identical (part.h ×4, csp.h ×2) with stream_to a seventh variant whose extra ~out death-watch looks accidental — share a detail::pump and document stream_to as the deliberate exception (or unify). First-iteration flags vs primed reads: convert distinct/skip_while/default_if_empty to the prime idiom used by diff/pairwise/conflate/pace; sample/share/slide legitimately need flags — note the rule in part.h. RingBuffer capacity-0: three callers invent three guards (last(0) hand-writes blackhole, skip_last(0) an identity filter, unique wraps in optional) — either support capacity 0 or delegate the zero cases; round_up_pow2 defined identically twice (ringbuffer.h:188, flat_hash_set.h:161). Minor: reader::descr lacks the const its writer twin has (csp.h:635 vs :703).'
     origin: 2026-07-28 code-smell audit; refiled after working-tree loss
     discovered: 2026-07-28
+    achieved: 2026-07-28
   T6:
     name: Local Docker testing covers Linux scenarios
     status: achieved
