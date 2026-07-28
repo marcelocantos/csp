@@ -12,6 +12,7 @@ Header: `#include "csp.h"` (via `csp/net.h`)
 1. [csp::net::connection](#cspnetconnection) — connected socket with split I/O channels
 2. [csp::net::listen](#cspnetlisten) — TCP listener that produces connections
 3. [csp::net::dial](#cspnetdial) — connect to a remote host
+4. [Shared listener plumbing](#shared-listener-plumbing) — `bind_listener`, `accept_loop`, `parse_authority`
 
 ---
 
@@ -187,3 +188,61 @@ csp::await_completion();
 | DNS resolution failure | throws `csp::error` |
 | All addresses refused / unreachable | throws `csp::error` |
 | Cancel scope fires | throws `csp::canceled` |
+
+---
+
+## Shared listener plumbing
+
+Protocol-neutral helpers (🎯T48) that single-source the TCP listener setup
+and accept-loop machinery used by `net::listen`, `http::serve`,
+`http2::serve`, and `http2::serve_tls`.
+
+### Signature
+
+```cpp
+struct listen_result {
+    io::fd_t listen_fd;
+    uint16_t port = 0;          // actual bound port
+    std::string local_addr;     // bound address string
+    sockaddr_storage wake_addr{};  // self-connect target for wake_listener
+    socklen_t wake_len = 0;
+};
+
+listen_result bind_listener(const std::string& addr, uint16_t port,
+                            const listen_options& opts,
+                            const std::string& resolve_err_prefix);
+
+void wake_listener(const sockaddr_storage& addr, socklen_t len);
+
+template <typename Endpoint, typename F>
+reader<Endpoint> accept_loop(const listen_result& lr, const char* descr,
+                             F on_connection);
+
+struct authority {
+    std::string host;
+    uint16_t port = 0;
+    std::string path = "/";
+};
+
+authority parse_authority(std::string_view url,
+                          std::string_view scheme_prefix,
+                          uint16_t default_port);
+```
+
+### Description
+
+`bind_listener` resolves, binds, listens, and sets non-blocking, returning
+the bound port/address plus a connectable wake address (wildcard binds are
+substituted with the same-family loopback). `resolve_err_prefix` lets each
+caller keep its own resolve-failure message.
+
+`accept_loop` spawns a producer imp that accepts connections and calls
+`on_connection(client_fd, remote_addr, out_copy)` per socket. A sentinel
+imp watches for endpoint-reader death, sets a stop flag, and self-connects
+via `wake_listener` to unblock a parked accept. `net::listen` keeps its
+separate cancel-scope shutdown design and uses only `bind_listener`.
+
+`parse_authority` parses `<scheme>host[:port][/path]` (including
+`[IPv6]:port`) — the URL shape shared by `http::fetch` and `ws::connect`.
+Throws `csp::error` on scheme mismatch, malformed IPv6 brackets, or an
+empty host.

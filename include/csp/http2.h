@@ -5,6 +5,7 @@
 
 #include <csp/csp.h>
 #include <csp/http.h>
+#include <csp/net.h>
 
 #include <cstdint>
 #include <string>
@@ -35,9 +36,7 @@ namespace csp::http2 {
 // --- Server options ---
 
 struct serve_options {
-    int backlog = 128;
-    bool reuse_addr = true;
-    bool dual_stack = true;
+    net::listen_options listen = {};
     size_t read_chunk_size = 16384;
 };
 

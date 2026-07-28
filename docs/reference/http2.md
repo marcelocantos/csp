@@ -45,9 +45,7 @@ struct server {
 ```cpp
 namespace csp::http2 {
 struct serve_options {
-    int backlog = 128;
-    bool reuse_addr = true;
-    bool dual_stack = true;       // IPv4+IPv6 on the same socket
+    net::listen_options listen = {};  // backlog, reuse_addr, dual_stack
     size_t read_chunk_size = 16384;
 };
 }

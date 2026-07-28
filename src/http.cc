@@ -4,13 +4,12 @@
 #include <csp/http.h>
 #include <csp/cancel.h>
 #include <csp/internal/signal.h>
+#include <csp/internal/strutil.h>
 #include <csp/source.h>
 
 #include <llhttp.h>
 
 #include <algorithm>
-#include <atomic>
-#include <cctype>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -24,6 +23,8 @@
 #endif
 
 namespace csp::http {
+
+using internal::iequals;
 
 // --- method_name ---
 
@@ -46,15 +47,8 @@ const char* method_name(method m) {
 
 namespace {
 
-bool iequals(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i])))
-            return false;
-    }
-    return true;
-}
+// URL shape shared with ws::connect (🎯T48) — host / port / path.
+using parsed_url = net::authority;
 
 method from_llhttp(llhttp_method_t m) {
     switch (m) {
@@ -114,17 +108,6 @@ bytes serialize_response(const response& resp) {
     out.insert(out.end(), head.begin(), head.end());
     out.insert(out.end(), resp.body.begin(), resp.body.end());
     return out;
-}
-
-std::string format_addr(const struct sockaddr* sa, socklen_t len) {
-    char host[NI_MAXHOST];
-    char serv[NI_MAXSERV];
-    int rc = getnameinfo(sa, len, host, sizeof(host), serv, sizeof(serv),
-                         NI_NUMERICHOST | NI_NUMERICSERV);
-    if (rc != 0) return "unknown";
-    if (sa->sa_family == AF_INET6)
-        return std::string("[") + host + "]:" + serv;
-    return std::string(host) + ":" + serv;
 }
 
 // --- Per-connection parser state ---
@@ -414,188 +397,28 @@ done:
     io::close(fd);
 }
 
-// --- Accept loop ---
-//
-// Creates its own TCP listener rather than using net::listen, to avoid
-// inheriting net::listen's cancel scope for connection handler imps.
-
-struct listen_result {
-    io::fd_t listen_fd;
-    uint16_t port;
-    std::string local_addr;
-    // Address to self-connect to when waking a blocked accept (see
-    // wake_listener). Derived from getsockname, so it tracks whatever
-    // family and address the listener actually bound.
-    sockaddr_storage wake_addr{};
-    socklen_t wake_len = 0;
-};
-
-// Unblock an accept() by opening a throwaway connection to the listener.
-// The address must match the listener's own family: a listener bound to
-// 127.0.0.1 is unreachable over ::1, and vice versa.
-//
-// Deliberately identical to the copy in src/http2.cc so 🎯T43 can lift
-// both into one shared core helper.
-void wake_listener(const sockaddr_storage& addr, socklen_t len) {
-    if (len == 0) return;
-    auto* sa = reinterpret_cast<const sockaddr*>(&addr);
-#ifndef _WIN32
-    int raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
-    if (raw < 0) return;
-    ::connect(raw, sa, len);
-    ::close(raw);
-#else
-    SOCKET raw = ::socket(addr.ss_family, SOCK_STREAM, 0);
-    if (raw == INVALID_SOCKET) return;
-    ::connect(raw, sa, static_cast<int>(len));
-    closesocket(raw);
-#endif
-}
-
-listen_result create_listener(const std::string& addr, uint16_t port,
-                              const net::listen_options& opts) {
-    // AF_UNSPEC + AI_PASSIVE only for wildcards (same as net::listen; 🎯T39).
-    struct addrinfo hints {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    if (addr.empty() || addr == "::" || addr == "0.0.0.0"
-        || addr == "0:0:0:0:0:0:0:0") {
-        hints.ai_flags = AI_PASSIVE;
-    }
-
-    auto result = io::resolve(addr, std::to_string(port), &hints);
-    if (!result) {
-        throw csp::error(std::string("http listen resolve failed: ") +
-                         result.message());
-    }
-
-    auto* ai = result.info.get();
-    io::fd_t listen_fd(::socket(ai->ai_family, ai->ai_socktype,
-                                 ai->ai_protocol));
-    if (!listen_fd) throw csp::error("socket failed");
-
-    if (opts.reuse_addr) {
-        int opt = 1;
-        setsockopt(listen_fd.raw(), SOL_SOCKET, SO_REUSEADDR,
-                   reinterpret_cast<const char*>(&opt), sizeof(opt));
-    }
-
-    if (opts.dual_stack && ai->ai_family == AF_INET6) {
-        int off = 0;
-        setsockopt(listen_fd.raw(), IPPROTO_IPV6, IPV6_V6ONLY,
-                   reinterpret_cast<const char*>(&off), sizeof(off));
-    }
-
-    if (::bind(listen_fd.raw(), ai->ai_addr,
-               static_cast<int>(ai->ai_addrlen)) < 0) {
-        io::close(listen_fd);
-        throw csp::error("bind failed");
-    }
-
-    if (::listen(listen_fd.raw(), opts.backlog) < 0) {
-        io::close(listen_fd);
-        throw csp::error("listen failed");
-    }
-
-    io::set_nonblock(listen_fd);
-
-    struct sockaddr_storage bound {};
-    socklen_t bound_len = sizeof(bound);
-    getsockname(listen_fd.raw(),
-                reinterpret_cast<struct sockaddr*>(&bound), &bound_len);
-    auto local = format_addr(
-        reinterpret_cast<struct sockaddr*>(&bound), bound_len);
-
-    uint16_t actual_port = 0;
-    if (bound.ss_family == AF_INET6) {
-        actual_port = ntohs(
-            reinterpret_cast<struct sockaddr_in6*>(&bound)->sin6_port);
-    } else {
-        actual_port = ntohs(
-            reinterpret_cast<struct sockaddr_in*>(&bound)->sin_port);
-    }
-
-    // A wildcard bind address is not connectable; substitute the loopback
-    // of the same family, keeping the port the kernel assigned.
-    sockaddr_storage wake = bound;
-    if (wake.ss_family == AF_INET6) {
-        auto* w6 = reinterpret_cast<struct sockaddr_in6*>(&wake);
-        if (IN6_IS_ADDR_UNSPECIFIED(&w6->sin6_addr)) {
-            w6->sin6_addr = in6addr_loopback;
-        }
-    } else {
-        auto* w4 = reinterpret_cast<struct sockaddr_in*>(&wake);
-        if (w4->sin_addr.s_addr == htonl(INADDR_ANY)) {
-            w4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        }
-    }
-
-    return {listen_fd, actual_port, std::move(local), wake, bound_len};
-}
-
 // --- URL parsing ---
-
-struct parsed_url {
-    std::string host;
-    uint16_t port = 80;
-    std::string path;
-};
+//
+// The authority-parsing grammar is shared with ws::connect (🎯T48);
+// http adds only the scheme prefix and default port.
 
 parsed_url parse_url(const std::string& url) {
     // Expected: http://host[:port][/path]
-    const std::string prefix = "http://";
-    if (url.size() < prefix.size() ||
-        !iequals(url.substr(0, prefix.size()), prefix)) {
-        throw csp::error("unsupported URL scheme (only http:// is supported)");
-    }
-
-    auto rest = url.substr(prefix.size());
-    parsed_url result;
-
-    // Split host[:port] from path.
-    auto slash = rest.find('/');
-    std::string authority;
-    if (slash == std::string::npos) {
-        authority = rest;
-        result.path = "/";
-    } else {
-        authority = rest.substr(0, slash);
-        result.path = rest.substr(slash);
-    }
-
-    // Handle [IPv6]:port
-    if (!authority.empty() && authority[0] == '[') {
-        auto bracket = authority.find(']');
-        if (bracket == std::string::npos) {
-            throw csp::error("malformed IPv6 address in URL");
-        }
-        result.host = authority.substr(1, bracket - 1);
-        if (bracket + 1 < authority.size() && authority[bracket + 1] == ':') {
-            result.port = static_cast<uint16_t>(
-                std::stoul(authority.substr(bracket + 2)));
-        }
-    } else {
-        auto colon = authority.rfind(':');
-        if (colon == std::string::npos) {
-            result.host = authority;
-        } else {
-            result.host = authority.substr(0, colon);
-            result.port = static_cast<uint16_t>(
-                std::stoul(authority.substr(colon + 1)));
-        }
-    }
-
-    if (result.host.empty()) {
-        throw csp::error("empty host in URL");
-    }
-    return result;
+    return net::parse_authority(url, "http://", 80);
 }
 
 // --- Client request serialization ---
+//
+// One serializer for both fetch overloads (🎯T48).  `body == nullptr`
+// means the body is streamed separately: Content-Length is always
+// emitted (from `content_length`) and no body bytes are appended.  With
+// a buffered body, Content-Length is emitted only when non-empty
+// (preserving the historical buffered-overload behaviour) and the body
+// is appended to the returned wire bytes.
 
 bytes serialize_request(method m, const parsed_url& url,
                         const std::vector<std::pair<std::string, std::string>>& hdrs,
-                        const bytes& body) {
+                        size_t content_length, const bytes* body) {
     std::ostringstream os;
     os << method_name(m) << " " << url.path << " HTTP/1.1\r\n";
     os << "Host: " << url.host;
@@ -609,8 +432,8 @@ bytes serialize_request(method m, const parsed_url& url,
         if (iequals(k, "Content-Length")) has_content_length = true;
         if (iequals(k, "Connection")) has_connection = true;
     }
-    if (!has_content_length && !body.empty()) {
-        os << "Content-Length: " << body.size() << "\r\n";
+    if (!has_content_length && (body == nullptr || content_length > 0)) {
+        os << "Content-Length: " << content_length << "\r\n";
     }
     if (!has_connection) {
         os << "Connection: close\r\n";
@@ -619,9 +442,9 @@ bytes serialize_request(method m, const parsed_url& url,
 
     auto head = os.str();
     bytes out;
-    out.reserve(head.size() + body.size());
+    out.reserve(head.size() + (body ? body->size() : 0));
     out.insert(out.end(), head.begin(), head.end());
-    out.insert(out.end(), body.begin(), body.end());
+    if (body) out.insert(out.end(), body->begin(), body->end());
     return out;
 }
 
@@ -681,6 +504,56 @@ int resp_on_message_complete(llhttp_t* p) {
     return 0;
 }
 
+// Read a full HTTP response from the connection's pull-based source
+// (🎯T17).  Shared by both fetch overloads (🎯T48).
+response read_response(net::connection& conn, size_t read_chunk_size) {
+    resp_parse_state state;
+    llhttp_settings_t settings;
+    llhttp_settings_init(&settings);
+    settings.on_header_field     = resp_on_header_field;
+    settings.on_header_value     = resp_on_header_value;
+    settings.on_headers_complete = resp_on_headers_complete;
+    settings.on_body             = resp_on_body;
+    settings.on_message_complete = resp_on_message_complete;
+
+    llhttp_t parser;
+    llhttp_init(&parser, HTTP_RESPONSE, &settings);
+    parser.data = &state;
+
+    bytes chunk;
+    while (!state.message_complete) {
+        auto reply_r = csp::io::call_source(conn.source, read_chunk_size);
+        if (!(reply_r >> chunk)) break;
+        auto err = llhttp_execute(
+            &parser,
+            reinterpret_cast<const char*>(chunk.data()),
+            chunk.size());
+
+        if (state.message_complete) break;
+
+        if (err != HPE_OK) {
+            throw csp::error(
+                std::string("HTTP response parse error: ") +
+                llhttp_errno_name(err));
+        }
+    }
+
+    if (!state.message_complete) {
+        // Connection closed before a complete response.
+        // If we got headers, return what we have (server may have
+        // signaled end-of-body via connection close).
+        llhttp_finish(&parser);
+        if (!state.message_complete && state.status_code == 0) {
+            throw csp::error("HTTP response incomplete: connection closed");
+        }
+    }
+
+    return response{
+        state.status_code,
+        std::move(state.headers),
+        std::move(state.body)};
+}
+
 } // anonymous namespace
 
 // --- request helpers ---
@@ -713,61 +586,24 @@ server serve(uint16_t port, serve_options opts) {
 }
 
 server serve(const std::string& addr, uint16_t port, serve_options opts) {
-    auto lr = create_listener(addr, port, opts.listen);
+    // Uses its own listener rather than net::listen, so connection handler
+    // imps do not inherit net::listen's cancel scope.  The shared
+    // net::accept_loop (🎯T48) provides the sentinel/stop/wake shutdown
+    // machinery; only the per-connection handler is http-specific.
+    auto lr = net::bind_listener(addr, port, opts.listen,
+                                 "http listen resolve failed: ");
 
-    // The accept loop uses a sentinel pattern for clean shutdown.
-    // When all endpoint readers die, a sentinel imp self-connects to
-    // the listen socket to unblock io::accept, then sets a stop flag.
-    // No cancel scope is used, so connection handler imps are free of
-    // cancel-aware I/O interference.
-
-    auto endpoints = spawn_producer<endpoint>(
-        [listen_fd = lr.listen_fd, wake_addr = lr.wake_addr,
-         wake_len = lr.wake_len,
-         read_chunk_size = opts.read_chunk_size](writer<endpoint> out) {
-            internal::descr("http/serve");
-
-            auto stop = std::make_shared<std::atomic<bool>>(false);
-
-            // Sentinel: self-connect to unblock accept when reader dies.
-            auto out_copy = out.copy();
-            auto stop_flag = stop;
-            csp::spawn([out_copy = std::move(out_copy),
-                         stop_flag, wake_addr, wake_len] {
-                internal::descr("http/serve/sentinel");
-                prialt(~out_copy);
-                stop_flag->store(true, std::memory_order_release);
-                wake_listener(wake_addr, wake_len);
+    auto endpoints = net::accept_loop<endpoint>(
+        lr, "http/serve",
+        [read_chunk_size = opts.read_chunk_size](
+            io::fd_t client_fd, std::string remote, writer<endpoint> o) {
+            csp::spawn([fd = client_fd,
+                        r = std::move(remote),
+                        o = std::move(o),
+                        read_chunk_size]() mutable {
+                handle_connection(fd, std::move(r), std::move(o),
+                                  read_chunk_size);
             });
-
-            for (;;) {
-                struct sockaddr_storage client_addr {};
-                socklen_t client_len = sizeof(client_addr);
-                io::fd_t client_fd = io::accept(
-                    listen_fd,
-                    reinterpret_cast<struct sockaddr*>(&client_addr),
-                    &client_len);
-
-                if (!client_fd ||
-                    stop->load(std::memory_order_acquire)) {
-                    if (client_fd) io::close(client_fd);
-                    break;
-                }
-
-                auto remote = format_addr(
-                    reinterpret_cast<struct sockaddr*>(&client_addr),
-                    client_len);
-
-                auto out_copy2 = out.copy();
-                csp::spawn([fd = client_fd,
-                            r = std::move(remote),
-                            o = std::move(out_copy2),
-                            read_chunk_size]() mutable {
-                    handle_connection(fd, std::move(r), std::move(o),
-                                      read_chunk_size);
-                });
-            }
-            io::close(listen_fd);
         });
 
     return {std::move(endpoints), lr.port, std::move(lr.local_addr)};
@@ -782,64 +618,15 @@ response fetch(
     fetch_options opts) {
 
     auto parsed = parse_url(url);
-    auto wire = serialize_request(m, parsed, headers, body);
+    auto wire = serialize_request(m, parsed, headers, body.size(), &body);
 
-    // Connect via net::dial, then do direct I/O on the fd.
-    // We use the raw fd rather than the connection's channels to avoid
-    // spawning reader/writer imps for a single request-response cycle.
+    // Connect via net::dial, then write the request via the connection's
+    // output channel and read the response through the pull-based source
+    // (🎯T17).
     auto conn = net::dial(parsed.host, parsed.port);
-
-    // Write the request via the connection's output channel.
-    // Then close the writer to signal we're done sending.
     conn.output << std::move(wire);
 
-    // Read the full response via the connection's input channel.
-    resp_parse_state state;
-    llhttp_settings_t settings;
-    llhttp_settings_init(&settings);
-    settings.on_header_field = resp_on_header_field;
-    settings.on_header_value = resp_on_header_value;
-    settings.on_headers_complete = resp_on_headers_complete;
-    settings.on_body = resp_on_body;
-    settings.on_message_complete = resp_on_message_complete;
-
-    llhttp_t parser;
-    llhttp_init(&parser, HTTP_RESPONSE, &settings);
-    parser.data = &state;
-
-    // Read the response through the pull-based source (🎯T17).
-    bytes chunk;
-    while (!state.message_complete) {
-        auto reply_r = csp::io::call_source(conn.source, opts.read_chunk_size);
-        if (!(reply_r >> chunk)) break;
-        auto err = llhttp_execute(
-            &parser,
-            reinterpret_cast<const char*>(chunk.data()),
-            chunk.size());
-
-        if (state.message_complete) break;
-
-        if (err != HPE_OK) {
-            throw csp::error(
-                std::string("HTTP response parse error: ") +
-                llhttp_errno_name(err));
-        }
-    }
-
-    if (!state.message_complete) {
-        // Connection closed before a complete response.
-        // If we got headers, return what we have (server may have
-        // signaled end-of-body via connection close).
-        llhttp_finish(&parser);
-        if (!state.message_complete && state.status_code == 0) {
-            throw csp::error("HTTP response incomplete: connection closed");
-        }
-    }
-
-    return response{
-        state.status_code,
-        std::move(state.headers),
-        std::move(state.body)};
+    return read_response(conn, opts.read_chunk_size);
 }
 
 // Streaming-body overload (🎯T17).  Writes headers, then pulls
@@ -854,33 +641,12 @@ response fetch(
 
     auto parsed = parse_url(url);
 
-    // Build the request head with an explicit Content-Length.
-    std::ostringstream os;
-    os << method_name(m) << " " << parsed.path << " HTTP/1.1\r\n";
-    os << "Host: " << parsed.host;
-    if (parsed.port != 80) os << ":" << parsed.port;
-    os << "\r\n";
-
-    bool has_content_length = false;
-    bool has_connection = false;
-    for (auto& [k, v] : headers) {
-        os << k << ": " << v << "\r\n";
-        if (iequals(k, "Content-Length")) has_content_length = true;
-        if (iequals(k, "Connection"))     has_connection = true;
-    }
-    if (!has_content_length) {
-        os << "Content-Length: " << body_length << "\r\n";
-    }
-    if (!has_connection) {
-        os << "Connection: close\r\n";
-    }
-    os << "\r\n";
-
-    auto head = os.str();
-    bytes head_bytes(head.begin(), head.end());
+    // Request head with an explicit Content-Length (always emitted for
+    // the streaming overload — the body bytes follow separately).
+    auto head = serialize_request(m, parsed, headers, body_length, nullptr);
 
     auto conn = net::dial(parsed.host, parsed.port);
-    conn.output << std::move(head_bytes);
+    conn.output << std::move(head);
 
     // Stream the body in chunks from the source.
     size_t remaining = body_length;
@@ -899,47 +665,7 @@ response fetch(
         remaining -= got;
     }
 
-    // Read the response (identical to the buffered-body overload).
-    resp_parse_state state;
-    llhttp_settings_t settings;
-    llhttp_settings_init(&settings);
-    settings.on_header_field      = resp_on_header_field;
-    settings.on_header_value      = resp_on_header_value;
-    settings.on_headers_complete  = resp_on_headers_complete;
-    settings.on_body              = resp_on_body;
-    settings.on_message_complete  = resp_on_message_complete;
-
-    llhttp_t parser;
-    llhttp_init(&parser, HTTP_RESPONSE, &settings);
-    parser.data = &state;
-
-    bytes chunk;
-    while (!state.message_complete) {
-        auto reply_r = csp::io::call_source(conn.source, opts.read_chunk_size);
-        if (!(reply_r >> chunk)) break;
-        auto err = llhttp_execute(
-            &parser,
-            reinterpret_cast<const char*>(chunk.data()),
-            chunk.size());
-        if (state.message_complete) break;
-        if (err != HPE_OK) {
-            throw csp::error(
-                std::string("HTTP response parse error: ") +
-                llhttp_errno_name(err));
-        }
-    }
-
-    if (!state.message_complete) {
-        llhttp_finish(&parser);
-        if (!state.message_complete && state.status_code == 0) {
-            throw csp::error("HTTP response incomplete: connection closed");
-        }
-    }
-
-    return response{
-        state.status_code,
-        std::move(state.headers),
-        std::move(state.body)};
+    return read_response(conn, opts.read_chunk_size);
 }
 
 // --- Factory for csp::net::serve (🎯T23.1) ---

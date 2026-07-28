@@ -3100,21 +3100,6 @@ using ssize_t = ptrdiff_t;
 #include <sys/socket.h>
 #endif
 
-namespace csp::internal {
-
-#ifdef _WIN32
-void io_wait_readable(SOCKET sock);
-void io_wait_writable(SOCKET sock);
-#else
-// Layer 1 primitives — defined in src/io.cc.
-// Cancel-aware: if a cancel guard is active, these compose the
-// fd readiness signal with the cancel signal in a prialt.
-void io_wait_readable(int fd);
-void io_wait_writable(int fd);
-#endif
-
-}
-
 namespace csp::io {
 
 // --- Platform socket type (internal raw type) ---
@@ -3126,6 +3111,20 @@ constexpr socket_t invalid_socket = INVALID_SOCKET;
 using socket_t = int;
 constexpr socket_t invalid_socket = -1;
 #endif
+
+}
+
+namespace csp::internal {
+
+// Layer 1 primitives — defined in src/io.cc.
+// Cancel-aware: if a cancel guard is active, these compose the
+// fd readiness signal with the cancel signal in a prialt.
+void io_wait_readable(io::socket_t sock);
+void io_wait_writable(io::socket_t sock);
+
+}
+
+namespace csp::io {
 
 // --- Opaque file descriptor wrapper ---
 //
@@ -3335,6 +3334,11 @@ struct resolve_result {
 [[nodiscard]] resolve_result resolve(const std::string& host,
                               const std::string& service = {},
                               const struct addrinfo* hints = nullptr);
+
+// Format a socket address as "host:port" ("[host]:port" for IPv6), or
+// "unknown" if the address cannot be rendered.  🎯T48: single-sourced
+// (formerly copy-pasted into net.cc, http.cc, http2.cc, and quic.cc).
+[[nodiscard]] std::string format_addr(const struct sockaddr* sa, socklen_t len);
 
 // --- Convenience functions ---
 
@@ -3945,6 +3949,7 @@ inline reader<bytes> call_source(source& s, size_t n) {
 } // namespace csp::io
 
 #include <initializer_list>
+#include <string_view>
 
 namespace csp::net {
 
@@ -3989,6 +3994,119 @@ struct listener {
 listener listen(uint16_t port, listen_options opts = {});
 listener listen(const std::string& addr, uint16_t port,
                 listen_options opts = {});
+
+// --- Shared listener plumbing (🎯T48) ----------------------------------
+//
+// bind_listener / wake_listener / accept_loop single-source the TCP
+// listener setup and accept-loop machinery that net::listen and the
+// http/http2 servers previously each carried their own copy of.  The
+// protocol servers layer their per-connection behaviour on top via the
+// accept_loop callback; net::listen keeps its separate cancel-scope
+// shutdown design and uses only bind_listener.
+
+// Result of resolving + binding + listening on a TCP socket.
+struct listen_result {
+    io::fd_t listen_fd;
+    uint16_t port = 0;          // actual bound port (useful with port 0)
+    std::string local_addr;     // bound address string
+    // Address to self-connect to when waking a blocked accept (see
+    // wake_listener).  Derived from getsockname, so it tracks whatever
+    // family and address the listener actually bound; wildcard binds are
+    // substituted with the same-family loopback.
+    sockaddr_storage wake_addr{};
+    socklen_t wake_len = 0;
+};
+
+// Resolve `addr`, create a TCP socket, apply `opts`, bind, listen, and
+// set non-blocking.  `resolve_err_prefix` prefixes the csp::error thrown
+// on resolve failure (per-caller message, e.g. "http listen resolve
+// failed: ").  Throws csp::error on any failure.
+[[nodiscard]] listen_result bind_listener(const std::string& addr,
+                                          uint16_t port,
+                                          const listen_options& opts,
+                                          const std::string& resolve_err_prefix);
+
+// Unblock an accept() by opening a throwaway connection to the listener.
+// The address must match the listener's own family: a listener bound to
+// 127.0.0.1 is unreachable over ::1, and vice versa.
+void wake_listener(const sockaddr_storage& addr, socklen_t len);
+
+// Shared accept loop backing the protocol servers (http::serve,
+// http2::serve, http2::serve_tls).  Spawns a producer imp named `descr`
+// that accepts connections on lr.listen_fd and calls
+// `on_connection(client_fd, remote_addr, out_copy)` for each accepted
+// socket — the callback owns the fd and typically spawns a per-connection
+// handler imp that eventually writes an Endpoint to out_copy.
+//
+// Shutdown: a sentinel imp watches for endpoint-reader death
+// (prialt(~out_copy)), sets the stop flag, and self-connects via
+// wake_listener to unblock a parked accept.  The loop exits on
+// `!client_fd || stop` (closing any just-accepted fd) and closes the
+// listener socket on exit.
+template <typename Endpoint, typename F>
+[[nodiscard]] reader<Endpoint> accept_loop(const listen_result& lr,
+                                           const char* descr,
+                                           F on_connection) {
+    return spawn_producer<Endpoint>(
+        [listen_fd = lr.listen_fd, wake_addr = lr.wake_addr,
+         wake_len = lr.wake_len, descr,
+         on_connection = std::move(on_connection)](
+            writer<Endpoint> out) mutable {
+            internal::descr("%s", descr);
+
+            auto stop = std::make_shared<std::atomic<bool>>(false);
+
+            // Sentinel: self-connect to unblock accept when reader dies.
+            auto out_copy = out.copy();
+            auto stop_flag = stop;
+            csp::spawn([out_copy = std::move(out_copy),
+                        stop_flag, wake_addr, wake_len, descr] {
+                internal::descr("%s/sentinel", descr);
+                prialt(~out_copy);
+                stop_flag->store(true, std::memory_order_release);
+                wake_listener(wake_addr, wake_len);
+            });
+
+            for (;;) {
+                struct sockaddr_storage client_addr {};
+                socklen_t client_len = sizeof(client_addr);
+                io::fd_t client_fd = io::accept(
+                    listen_fd,
+                    reinterpret_cast<struct sockaddr*>(&client_addr),
+                    &client_len);
+
+                if (!client_fd ||
+                    stop->load(std::memory_order_acquire)) {
+                    if (client_fd) io::close(client_fd);
+                    break;
+                }
+
+                auto remote = io::format_addr(
+                    reinterpret_cast<struct sockaddr*>(&client_addr),
+                    client_len);
+
+                on_connection(client_fd, std::move(remote), out.copy());
+            }
+            io::close(listen_fd);
+        });
+}
+
+// --- URL authority parsing (🎯T48) -------------------------------------
+//
+// Parses "<scheme_prefix>host[:port][/path]" — the shape shared by
+// http::parse_url and ws::connect.  Handles "[IPv6]:port" bracketing.
+// The scheme match is case-insensitive.  Throws csp::error on a scheme
+// mismatch, malformed IPv6 brackets, or an empty host.
+
+struct authority {
+    std::string host;
+    uint16_t port = 0;
+    std::string path = "/";
+};
+
+[[nodiscard]] authority parse_authority(std::string_view url,
+                                        std::string_view scheme_prefix,
+                                        uint16_t default_port);
 
 // --- dial: connect to a remote host ---
 //
@@ -4269,9 +4387,7 @@ namespace csp::http2 {
 // --- Server options ---
 
 struct serve_options {
-    int backlog = 128;
-    bool reuse_addr = true;
-    bool dual_stack = true;
+    net::listen_options listen = {};
     size_t read_chunk_size = 16384;
 };
 
@@ -5617,6 +5733,36 @@ struct Runtime {
 };
 
 }
+
+/* csp/internal/strutil.h */
+// Copyright 2026 Marcelo Cantos
+// SPDX-License-Identifier: Apache-2.0
+
+
+#include <cctype>
+
+namespace csp::internal {
+
+// Case-insensitive ASCII string equality (🎯T48: single-sourced; formerly
+// copy-pasted into http.cc, http2.cc, and ws.cc).
+[[nodiscard]] inline bool iequals(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(a[i])) !=
+            std::tolower(static_cast<unsigned char>(b[i])))
+            return false;
+    }
+    return true;
+}
+
+// Lowercase an ASCII string.
+[[nodiscard]] inline std::string to_lower(std::string s) {
+    for (auto& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+} // namespace csp::internal
 
 /* csp/part/batch.h */
 

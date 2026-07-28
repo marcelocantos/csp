@@ -26,6 +26,7 @@
 #include "csp/internal/runtime.h"
 #include "csp/internal/signal.h"
 #include "csp/internal/stack_pool.h"
+#include "csp/internal/strutil.h"
 #include "csp/io.h"
 #include "csp/net.h"
 #include "csp/part/batch.h"

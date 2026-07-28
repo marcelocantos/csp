@@ -77,17 +77,6 @@ ngtcp2_tstamp now_ns() {
             .count());
 }
 
-std::string format_addr(const struct sockaddr* sa, socklen_t len) {
-    char host[NI_MAXHOST];
-    char serv[NI_MAXSERV];
-    if (getnameinfo(sa, len, host, sizeof(host), serv, sizeof(serv),
-                    NI_NUMERICHOST | NI_NUMERICSERV) != 0)
-        return "unknown";
-    if (sa->sa_family == AF_INET6)
-        return std::string("[") + host + "]:" + serv;
-    return std::string(host) + ":" + serv;
-}
-
 // Send a UDP datagram, retrying on EAGAIN by waiting for write-readiness
 // via the kqueue reactor.  Always called from an imp context.
 static void udp_send(int fd, const void* buf, int len,
@@ -942,7 +931,7 @@ listener listen(uint16_t port, listen_options opts) {
     uint16_t actual_port = (bound.ss_family == AF_INET6)
         ? ntohs(reinterpret_cast<struct sockaddr_in6*>(&bound)->sin6_port)
         : ntohs(reinterpret_cast<struct sockaddr_in*>(&bound)->sin_port);
-    std::string local_str = format_addr(
+    std::string local_str = io::format_addr(
         reinterpret_cast<const struct sockaddr*>(&bound), bound_len);
 
     chan<connection> conn_out;
@@ -996,6 +985,27 @@ listener listen(uint16_t port, listen_options opts) {
         int listener_wake_rfd = listener_wake_fds[0];
         int listener_wake_wfd = listener_wake_fds[1];
 
+        // Drain the listener wake pipe (relay-imp pokes) — 🎯T48 lambda
+        // replacing the repeated inline blocks below.
+        auto drain_wake = [&] {
+            char wb[64];
+            while (::read(listener_wake_rfd, wb, sizeof(wb)) > 0) {}
+        };
+
+        // Drain pending stream writes and flush control packets for every
+        // live connection — 🎯T48 lambda replacing the repeated inline
+        // loops below.
+        auto flush_all = [&] {
+            for (auto& [k, sc2] : conns) {
+                if (!sc2->nconn) continue;
+                const struct sockaddr* peer2 =
+                    reinterpret_cast<const struct sockaddr*>(&sc2->peer);
+                drain_stream_writes(sc2->nconn, sc2->shared,
+                                    udp_fd, peer2, sc2->peer_len);
+                flush_ngtcp2_out(sc2->nconn, udp_fd, peer2, sc2->peer_len);
+            }
+        };
+
         uint8_t rbuf[65536];
 
         for (;;) {
@@ -1013,15 +1023,8 @@ listener listen(uint16_t port, listen_options opts) {
                            reinterpret_cast<struct sockaddr*>(&src), &src_len);
             if (n <= 0) {
                 // No data ready — drain wake pipe first, then wait.
-                { char wb[64]; while (::read(listener_wake_rfd, wb, sizeof(wb)) > 0) {} }
-                for (auto& [k, sc2] : conns) {
-                    if (!sc2->nconn) continue;
-                    const struct sockaddr* peer2 =
-                        reinterpret_cast<const struct sockaddr*>(&sc2->peer);
-                    drain_stream_writes(sc2->nconn, sc2->shared,
-                                        udp_fd, peer2, sc2->peer_len);
-                    flush_ngtcp2_out(sc2->nconn, udp_fd, peer2, sc2->peer_len);
-                }
+                drain_wake();
+                flush_all();
 
                 // Wait for UDP packet, relay-imp wake poke, OR listener drop.
                 detail::fd_signal udp_sig  = detail::create_fd_readable(udp_fd);
@@ -1032,15 +1035,8 @@ listener listen(uint16_t port, listen_options opts) {
                 // ~stop_r   fires → res = ~2 = -3 (listener dropped)
                 if (res == ~1) {
                     // Relay poke — drain and continue to check for UDP.
-                    { char wb[64]; while (::read(listener_wake_rfd, wb, sizeof(wb)) > 0) {} }
-                    for (auto& [k, sc2] : conns) {
-                        if (!sc2->nconn) continue;
-                        const struct sockaddr* peer2 =
-                            reinterpret_cast<const struct sockaddr*>(&sc2->peer);
-                        drain_stream_writes(sc2->nconn, sc2->shared,
-                                            udp_fd, peer2, sc2->peer_len);
-                        flush_ngtcp2_out(sc2->nconn, udp_fd, peer2, sc2->peer_len);
-                    }
+                    drain_wake();
+                    flush_all();
                     continue;
                 }
                 if (res != ~0) {
@@ -1049,14 +1045,7 @@ listener listen(uint16_t port, listen_options opts) {
                         // Relay imps may still be racing to push data to out_pending.
                         // Wait until all relay imps exit (out_closed=true) and all data drained.
                         for (;;) {
-                            for (auto& [k, sc2] : conns) {
-                                if (!sc2->nconn) continue;
-                                const struct sockaddr* peer2 =
-                                    reinterpret_cast<const struct sockaddr*>(&sc2->peer);
-                                drain_stream_writes(sc2->nconn, sc2->shared,
-                                                    udp_fd, peer2, sc2->peer_len);
-                                flush_ngtcp2_out(sc2->nconn, udp_fd, peer2, sc2->peer_len);
-                            }
+                            flush_all();
                             bool all_done = true;
                             for (auto& [k, sc2] : conns) {
                                 if (!sc2->nconn) continue;
@@ -1078,7 +1067,7 @@ listener listen(uint16_t port, listen_options opts) {
                                     detail::create_timer_signal(1'000'000LL); // 1 ms
                                 prialt(~wake_sig2, ~drain_timer);
                             }
-                            { char wb2[64]; while (::read(listener_wake_rfd, wb2, sizeof(wb2)) > 0) {} }
+                            drain_wake();
                         }
                     }
                     break; // stop or unexpected — exit
@@ -1224,7 +1213,7 @@ listener listen(uint16_t port, listen_options opts) {
                 ngtcp2_conn_get_handshake_completed(sc.nconn)) {
                 sc.delivered = true;
 
-                std::string raddr = format_addr(
+                std::string raddr = io::format_addr(
                     reinterpret_cast<const struct sockaddr*>(&sc.peer), sc.peer_len);
 
                 // The listener loop itself drives all server connections.
@@ -1308,26 +1297,43 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
     if (fd < 0)
         throw csp::error("quic::dial: socket/bind failed");
 
-    std::string raddr = format_addr(ai->ai_addr, ai->ai_addrlen);
+    // 🎯T48: RAII owners replace the four hand-rolled cleanup ladders that
+    // this function previously carried.  Declaration order is chosen so
+    // that unwinding matches the old ladders exactly: cref, nconn,
+    // ptls_free, free_cptls, tls_ctx, close(fd).  On the success path the
+    // owners .release() into the io imp lambda, which frees everything in
+    // run_io_imp's cleanup.
+    struct FdGuard {
+        int fd;
+        ~FdGuard() { if (fd >= 0) ::close(fd); }
+        int release() { int f = fd; fd = -1; return f; }
+    } fd_guard{fd};
+
+    std::string raddr = io::format_addr(ai->ai_addr, ai->ai_addrlen);
 
     // PicoTLS client context — heap-allocated because ptls_t stores a pointer
     // to it and the io imp (spawned below) outlives this function frame.
-    auto* tls_ctx = new ptls_context_t{};
+    auto tls_ctx = std::make_unique<ptls_context_t>();
     tls_ctx->random_bytes  = ptls_minicrypto_random_bytes;
     tls_ctx->cipher_suites = s_ciphers;
     tls_ctx->key_exchanges = s_kexs;
     tls_ctx->get_time      = &ptls_get_time;
-    ngtcp2_crypto_picotls_configure_client_context(tls_ctx);
+    ngtcp2_crypto_picotls_configure_client_context(tls_ctx.get());
 
-    ptls_t* ptls = ptls_new(tls_ctx, /*is_server=*/0);
-    if (!ptls) {
-        delete tls_ctx;
-        ::close(fd);
+    std::unique_ptr<ngtcp2_crypto_picotls_ctx,
+                    void (*)(ngtcp2_crypto_picotls_ctx*)>
+        cptls_owner(nullptr, &free_cptls);
+
+    std::unique_ptr<ptls_t, void (*)(ptls_t*)>
+        ptls_owner(ptls_new(tls_ctx.get(), /*is_server=*/0), &ptls_free);
+    if (!ptls_owner) {
         throw csp::error("quic::dial: ptls_new failed");
     }
+    ptls_t* ptls = ptls_owner.get();
     ptls_set_server_name(ptls, host.c_str(), 0);
 
-    auto* cptls = new ngtcp2_crypto_picotls_ctx{};
+    cptls_owner.reset(new ngtcp2_crypto_picotls_ctx{});
+    auto* cptls = cptls_owner.get();
     ngtcp2_crypto_picotls_ctx_init(cptls);
     cptls->ptls = ptls;
     // Pre-allocate additional_extensions (required by configure_client_session).
@@ -1368,25 +1374,17 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
         NGTCP2_PROTO_VER_V1, &cb, &settings, &params,
         nullptr, shared.get());
     if (rv != 0) {
-        ptls_free(ptls);
-        free_cptls(cptls);
-        delete tls_ctx;
-        ::close(fd);
         throw csp::error("quic::dial: ngtcp2_conn_client_new failed");
     }
+    std::unique_ptr<ngtcp2_conn, void (*)(ngtcp2_conn*)>
+        nconn_owner(nconn, &ngtcp2_conn_del);
 
-    auto* cref = new ConnRef(nconn);
-    *ptls_get_data_ptr(ptls) = &cref->ref;
+    auto cref_owner = std::make_unique<ConnRef>(nconn);
+    *ptls_get_data_ptr(ptls) = &cref_owner->ref;
     ngtcp2_conn_set_tls_native_handle(nconn, cptls);
 
     rv = ngtcp2_crypto_picotls_configure_client_session(cptls, nconn);
     if (rv != 0) {
-        delete cref;
-        ngtcp2_conn_del(nconn);
-        ptls_free(ptls);
-        free_cptls(cptls);
-        delete tls_ctx;
-        ::close(fd);
         throw csp::error("quic::dial: configure_client_session failed");
     }
 
@@ -1399,17 +1397,12 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
     // Flush Initial packets.
     flush_ngtcp2_out(nconn, fd, peer, peer_len);
 
-    // Handshake loop — block the calling imp until done.
+    // Handshake loop — block the calling imp until done.  Failures just
+    // throw: the RAII owners above unwind in the old ladders' order.
     uint8_t rbuf[65536];
     while (!ngtcp2_conn_get_handshake_completed(nconn)) {
         detail::fd_signal sig = detail::create_fd_readable(fd);
         if (!prialt(~sig)) {
-            delete cref;
-            ngtcp2_conn_del(nconn);
-            ptls_free(ptls);
-            free_cptls(cptls);
-            delete tls_ctx;
-            ::close(fd);
             throw csp::error("quic::dial: cancelled during handshake");
         }
 
@@ -1434,12 +1427,6 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
         rv = ngtcp2_conn_read_pkt(nconn, &ppath, &pi, rbuf,
                                   static_cast<size_t>(n), now_ns());
         if (rv != 0) {
-            delete cref;
-            ngtcp2_conn_del(nconn);
-            ptls_free(ptls);
-            free_cptls(cptls);
-            delete tls_ctx;
-            ::close(fd);
             throw csp::error(std::string("quic::dial: handshake error: ") +
                              ngtcp2_strerror(rv));
         }
@@ -1463,10 +1450,14 @@ connection dial(const std::string& host, uint16_t port, dial_options opts) {
     // in run_io_imp, which then shuts down the connection.
     chan<std::monostate> stop_ch;
 
-    // Handshake complete — spawn the io imp.
-    // tls_ctx is captured because ptls_t stores a pointer to the context;
-    // we must keep it alive until ptls_free is called in the io imp.
-    spawn([nconn, cref, cptls, ptls, tls_ctx, shared, fd,
+    // Handshake complete — spawn the io imp.  Ownership of every handle
+    // transfers into the lambda via .release(); run_io_imp's cleanup frees
+    // them.  tls_ctx is captured because ptls_t stores a pointer to the
+    // context; we must keep it alive until ptls_free is called in the io
+    // imp.
+    spawn([nconn = nconn_owner.release(), cref = cref_owner.release(),
+           cptls = cptls_owner.release(), ptls = ptls_owner.release(),
+           tls_ctx = tls_ctx.release(), shared, fd = fd_guard.release(),
            bound_local, bound_local_len,
            peer_ss, peer_len,
            wake_rfd, wake_wfd,
