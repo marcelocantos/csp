@@ -18,7 +18,7 @@ the open-gap table in the reference page still lists them.
 |-----|--------|
 | Type-erased `csp::spawn(lambda)` trampoline | Main reason real imps stay Default |
 | x86_64 walker | Still a 32 KiB inexact stub |
-| FP/SIMD stack ops, dynamic `SUB SP, Xn`, jump tables | Still limited |
+| Dynamic `SUB SP, Xn`, jump tables | Still limited (FP/SIMD stack ops landed in 🎯T52.1 — see §3/§4) |
 | Mutual indirect-recursion fixed point | Explicitly deferred |
 
 ---
@@ -165,7 +165,16 @@ optimized code. Covers:
 
 ## 3. FP/SIMD stack operations
 
-### Problem
+> **Status: landed** (🎯T52.1, 2026-07-30). The full load/store-pair
+> writeback class — GP *and* FP/SIMD, W/X/S/D/Q, pre- and post-indexed —
+> is decoded structurally (one handler keyed on the class encoding, scale
+> from V/opc), covered by a hand-written asm audit fixture whose exact
+> peak is asserted. Anything in the class that is not decodable (STGP,
+> unallocated opc) is refused by the closed-world SP-write detector
+> (budget + `is_exact=false`) rather than skipped. Kept for design
+> history.
+
+### Problem (historical)
 
 Functions that save/restore NEON registers use 128-bit STP/LDP:
 
@@ -205,7 +214,12 @@ GP STP/LDP handlers with different bit patterns and scale factors.
 
 ## 4. Pre/post-indexed STR/LDR (single-register)
 
-### Problem
+> **Status: landed** (🎯T52.1, 2026-07-30). The load/store register imm9
+> writeback class (GP and FP/SIMD, all widths) is decoded; asm audit
+> fixtures assert exact depths for the X/W/D/Q forms. Kept for design
+> history.
+
+### Problem (historical)
 
 The compiler sometimes uses single-register pre/post-indexed forms instead
 of paired STP/LDP:
@@ -240,6 +254,11 @@ push/pop, typically for leaf functions or when only LR needs saving.
 ---
 
 ## 5. Switch/jump table support
+
+> **Status: deferred** (2026-07-30 appraisal). Pending the 🎯T52.2 corpus
+> metric — until the Small-rate baseline shows how often jump tables are
+> the blocking inexactness source on real workloads, the bounded-table-scan
+> risk (reads past an under-determined table bound) isn't worth taking.
 
 ### Problem
 
@@ -383,46 +402,138 @@ The analyzer is ARM64-only. On x86_64, `analyze_stack_depth` returns
 `{32KB, false}` — a conservative default that wastes memory for small
 closures and underestimates for deep call chains.
 
-### Design
+The original plan here was a hand-rolled variable-length x86_64 decoder
+mirroring the ARM64 walker. The 🎯T52.6 spike (below) supersedes that:
+per-function frame sizes come from `.eh_frame` unwind metadata; a decoder
+is still needed, but only for instruction *lengths* and call-site
+extraction, not for semantic RSP tracking.
 
-x86_64 presents different challenges:
+### Unwind metadata spike (2026-07-30)
 
-- **Variable-length instructions**: Need a length decoder or disassembler
-  library. Options: a minimal decoder for the subset of instructions that
-  affect RSP (PUSH, POP, SUB RSP, ADD RSP, CALL, RET, Jcc), or integrate
-  a lightweight disassembler like Zydis (header-only option available).
-- **Stack frame patterns**: `PUSH RBP` / `SUB RSP, imm` / `ADD RSP, imm` /
-  `POP RBP` / `RET`. Simpler than ARM64 in some ways (fewer addressing
-  mode variants) but more complex in others (REX prefixes, SIB bytes).
-- **Calling convention**: System V AMD64 ABI. RDI = first arg (equivalent
-  to ARM64's X0 for data pointer tracking).
+🎯T52.6 measured whether compiler unwind metadata can reproduce the
+walker's per-function frame sizes. Method: an offline replica of the
+walker's local frame tracking (exactly the SP-affecting forms
+`src/stack_analysis_arm64.cc` decodes, plus a "full decode" variant for
+discrepancy classification) compared against compact unwind /
+`__eh_frame` (macOS, `csp_tests`, 12,208 functions) and `.eh_frame`
+(Linux, `dist/csp.cpp` corpus built with clang-18 in the repo's docker
+images: 829 functions ARM64, 917 x86_64). Tooling + full per-function
+TSVs live in the session scratchpad (`unwind-spike/`, with a re-run
+README); representative rows:
 
-### Approach
+| Function (leg) | Walker frame | Unwind frame | Verdict |
+|---|---|---|---|
+| `noop_entry` (macOS) | 0 | 0 (frameless) | match |
+| `nested_calls_entry` (macOS) | 16 | 16 (frameless) | match |
+| `interp_entry` (macOS) | 32 | — (MODE_FRAME) | unwind insufficient |
+| `volatile_buffer_entry` (macOS) | 1072 | — (MODE_FRAME) | unwind insufficient |
+| `ngtcp2_cmemeq` (macOS) | 0 | 16 (frameless) | **walker wrong** (STP D pre-index missed) |
+| `normal_distribution<double>::op()` (macOS) | 0 (full decode: 64) | — (MODE_FRAME) | walker wrong, unwind also blind |
+| `_OUTLINED_FUNCTION_5` (macOS) | 32 | 0 | both right (outlined epilogue runs in caller's frame) |
+| `prialt_begin_impl` (Linux ARM64) | 528 | 96 (FP-based CFA) | unwind = lower bound only |
+| `static_frame` fixture (Linux x86_64) | 264 | 264 | match |
+| `dyn_alloca` fixture (Linux x86_64) | 24 + dynamic | 8, CFA→RBP | dynamic **detectable** |
+| `dyn_alloca` fixture (macOS/Linux ARM64) | dynamic invisible | MODE_FRAME / CFA→W29 | dynamic **not detectable** |
 
-Start with a minimal RSP-tracking walker that handles:
+Aggregate answers to the four spike questions:
 
-1. `PUSH reg` / `POP reg` (SP ∓ 8)
-2. `SUB RSP, imm32` / `ADD RSP, imm32`
-3. `CALL rel32` → `CALL_DIRECT`
-4. `CALL [reg]` / `CALL [rip+disp]` → `CALL_INDIRECT` or resolved
-5. `RET` → terminate path
-6. `Jcc rel8/rel32` → fork both paths
+1. **Can unwind reproduce the walker's frame sizes?** Where unwind
+   carries a size at all, agreement is near-total. macOS ARM64: walker ==
+   unwind for 1,811 of the 1,818 functions with a size (the 7:
+   4 outlined-epilogue artifacts, 3 walker decode misses). Linux ARM64:
+   764/829 (92.2%) exact; 62 (7.5%) have unwind < walker because SP
+   motion after the CFA switches to W29 is invisible — unwind is a
+   *lower bound*, never an over-estimate (0 cases of unwind > walker).
+   Linux x86_64: 750/760 real functions (98.7%) exact against a linear
+   RSP decode; zero under-reports among compiler-generated code.
+2. **Dynamic stack marking.** x86_64: reliable — clang keeps the CFA on
+   RSP for constant frames and emits `DW_CFA_def_cfa_register RBP` only
+   for alloca/VLA/dynamic realignment, so "CFA leaves SP" ⇒ "frame size
+   not constant" is a sound, parser-detectable signal (over-approximate:
+   it also fires for realigned-but-static frames — those correctly
+   become inexact). ARM64: **not** detectable — clang switches the CFA
+   to W29 for ordinary FP-establishing functions too (81.9% of the Linux
+   corpus), and macOS MODE_FRAME encodings are byte-identical for static
+   and dynamic frames.
+3. **macOS compact-unwind coverage.** Of 9,593 compact entries: 92.3%
+   MODE_FRAME (unwinds via the FP chain — **no frame size encoded at
+   all**), 7.6% frameless (size present, but 1,788 of 1,814 such
+   functions are zero-frame stubs), 3 DWARF FDEs, 1 none. So on macOS
+   ARM64 unwind metadata yields a frame size for ~15% of functions and a
+   *useful* (nonzero) one for well under 1%. That is the soundness hole
+   for any unwind-first design on macOS, not a fallback-rate detail.
+4. **Effort for the two consumers** — see the decisions below.
 
-This covers the vast majority of compiler-generated code. The x86_64
-walker would share the expression tree, bytecode compiler, and evaluator
-with ARM64 — only the instruction decoder differs.
+Spike by-product (separate 🎯 target, not part of this section's plan):
+the shipped walker returns `{max_depth=16, is_exact=true}` for an entry
+performing a 64 KiB runtime `alloca` — clang lowers alloca as
+`mov x9, sp; sub x19, x9, x8; mov sp, x19`, none of which matches the
+walker's `SUB SP, SP, Xn` bail-out, so the dynamic allocation is
+silently invisible and exactness is not cleared. Unwind cross-checking
+does **not** catch this class (no metadata on any leg exposes the
+dynamic amount); the fix is decoding SP-writing moves as
+exactness-clearing.
 
-### Scope
+### Decision (a): ARM64 defence-in-depth cross-check — GO, Linux-scoped
 
-Moderate effort. The variable-length encoding is the main complexity.
-Consider generating the decoder from an instruction table rather than
-hand-coding each pattern.
+Cross-check the walker's per-function SP deltas against unwind data in
+audit builds, as a one-sided oracle: `walker_frame >= eh_frame max
+SP-based CFA offset` must hold; a violation proves a walker decode miss.
+Evidence: on Linux ARM64 the FDE side never exceeded the walker on any
+of 829 functions except via real walker misses, and the spike's
+comparator immediately caught 4 genuine decode misses (128-bit/64-bit
+FP-pair pre-index saves, the §3 gap) in the macOS binary. Scope: the
+check is only meaningful where unwind carries sizes — run it as an
+offline comparator (spike tooling, ~a day to productionise) over the
+Linux ARM64 audit lane; on macOS it covers only the ~15% frameless
+subset and is nearly vacuous. It does not catch the mov-sp alloca class
+above.
+
+### Decision (b): x86_64 unwind-first route — GO
+
+`.eh_frame` replaces semantic RSP tracking entirely on Linux x86_64:
+exact static frame sizes for 98.7% of corpus functions, detectably
+non-constant (→ `is_exact = false`, Default slot) for the rest, and FDE
+coverage is total (the only uncovered symbols were PLT stubs and
+assembly). What the hybrid still needs:
+
+1. **In-process `.eh_frame` access** — `dl_iterate_phdr` →
+   `PT_GNU_EH_FRAME` binary-search table → FDE, plus a CFI interpreter
+   for the small opcode subset clang emits (`def_cfa*`, `advance_loc*`,
+   `offset`, `restore`); roughly 400–700 lines.
+2. **A length-only x86_64 decoder** for a linear sweep that finds call
+   sites: prefixes + opcode map + ModRM/SIB + immediate widths, no
+   semantics; table-driven, roughly 300–600 lines — far smaller than the
+   semantic walker §8 previously planned. In the corpus 94.6% of call
+   edges are direct (`E8 rel32`, target extractable from bytes);
+   indirect calls take `indirect_call_budget` exactly as unresolved
+   `BLR` does on ARM64. Data-pointer provenance for resolving indirects
+   (the T3.4.2/T3.10 analogue) would need semantic decode of `mov`/`lea`
+   chains and stays a later, optional phase.
+3. **Reuse** of the existing expression tree, bytecode compiler, and
+   evaluator unchanged — per-function frame constants come from CFI
+   instead of decode, call edges feed `CALL_DIRECT` as today.
+
+Residue, stated honestly: macOS x86_64 was not measured (Rosetta-only
+target for CSP; compact unwind there has a different mode split and
+would need its own 30-minute measurement before extending the route);
+Windows x86_64 uses SEH `RUNTIME_FUNCTION`/xdata rather than
+`.eh_frame` (unmeasured; its metadata *does* encode frame allocation
+explicitly, so likely friendlier, but that is expectation, not data).
+The go above is for the Linux x86_64 leg the spike measured.
 
 ---
 
 ## 9. Improved budget heuristics
 
-### Problem
+> **Status: cut** (2026-07-30 appraisal). Budget *magnitude* has no
+> consumer: any budget contribution clears `is_exact`, and an inexact
+> result always selects the Default slot — tiering the constant changes
+> nothing downstream. The "recursive cycle → 0" row was also unsound as
+> stated (a cycle's frames do consume stack; only the *analysis* is
+> cut off there). Kept for design history.
+
+### Problem (historical)
 
 When the analyzer can't resolve a path, it assigns a flat
 `indirect_call_budget` (default 2048 bytes). This is either too generous
@@ -450,7 +561,14 @@ analyses, rather than an arbitrary constant.
 
 ## 10. Incremental analysis and warm-up
 
-### Problem
+> **Status: cut** (2026-07-30 appraisal). A background symbol-table sweep
+> conflicts with the runtime's zero-syscall hot-path ethos (standing
+> analysis work and cache churn for functions that may never spawn), and
+> is superseded by the async-worker direction (🎯T52.4: Default-on-miss +
+> a dedicated analysis worker), which warms exactly the entries that are
+> actually spawned. Kept for design history.
+
+### Problem (historical)
 
 `analyze_stack_depth` is called from system-thread spawns (which can
 afford the cost) but `analyze_stack_depth_cached` is used for
@@ -632,7 +750,7 @@ in ~5 ns.
 | 10 | Incremental warm-up | Medium | Medium | None |
 | 8 | x86_64 support | Large | High | None (parallel track) |
 
-Sections 3 and 4 are mechanical additions with immediate payoff — they
-should be done first. Section 2 (ADRP) unlocks the most inexact paths in
-optimized code and enables section 5 (jump tables). Section 8 (x86_64) is
-independent and can proceed in parallel.
+Sections 3 and 4 **landed** in 🎯T52.1 (2026-07-30); sections 9 and 10 are
+**cut** and section 5 is **deferred** pending the 🎯T52.2 corpus metric —
+see the per-section status notes. Section 2 (ADRP) landed earlier
+(🎯T3.4.2). Section 8 (x86_64) is independent and can proceed in parallel.

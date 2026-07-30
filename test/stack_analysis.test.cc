@@ -530,6 +530,146 @@ __attribute__((noinline)) static void rconst_caller(void* data) {
     buf[1] = 2;  // trailing statement → real BL, not a tail-call B.
 }
 
+// ---- 🎯T52.1: call-depth capacity and cycle-set degradation ----
+
+// Families of distinct noinline functions forming deep BL chains. Each test
+// below uses its own Tag: analysis results are cached per function address,
+// and a chain analysed under one depth limit caches results poisoned by that
+// limit, so families must never be shared across tests. The volatile buffer
+// (written with the family/link constants, so no two links fold to identical
+// code) and the trailing statement keep every link a real BL frame — a tail
+// call B would be followed inline by the walker and never enter the
+// evaluator's on-stack set, which is what these tests exercise.
+template <int Tag, int N>
+__attribute__((noinline)) static void chain_fn(void* data) {
+    volatile char buf[16];
+    buf[0] = static_cast<char>(Tag + N);
+    if constexpr (N > 0) {
+        chain_fn<Tag, N - 1>(data);
+    }
+    buf[1] = 2;  // trailing statement → real BL, not a tail-call B
+}
+
+TEST_CASE("Chain-within-depth-limit-is-exact") {
+    // Control: a 10-function chain resolves exactly under the default
+    // 64-deep call-following limit.
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&chain_fn<0, 9>));
+    CHECK(r.is_exact);
+    CHECK(r.max_depth > 0);
+    MESSAGE("chain<9> depth: ", r.max_depth, ", is_exact: ", r.is_exact);
+}
+
+TEST_CASE("max_call_depth-is-wired") {
+    // The same 10-function shape under max_call_depth=4 must degrade to a
+    // budgeted, inexact result — the option is wired to the on-stack
+    // capacity, not decorative.
+    csp::stack_analysis_options opts;
+    opts.max_call_depth = 4;
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&chain_fn<100, 9>), nullptr, opts);
+    CHECK_FALSE(r.is_exact);
+    CHECK(r.max_depth > 0);
+    MESSAGE("chain<9> (max_call_depth=4) depth: ", r.max_depth,
+            ", is_exact: ", r.is_exact);
+}
+
+TEST_CASE("Beyond-64-deep-chain-degrades-to-inexact") {
+    // Regression for the small_ptr_set capacity bug: with 70 distinct
+    // functions simultaneously on-stack, insert() used to no-op silently
+    // past 64 entries, quietly degrading cycle detection. Now the 65th
+    // entry is refused exactly like a detected cycle: budget + inexact.
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&chain_fn<200, 69>));
+    CHECK_FALSE(r.is_exact);
+    CHECK(r.max_depth > 0);
+    MESSAGE("chain<69> depth: ", r.max_depth, ", is_exact: ", r.is_exact);
+}
+
+// A >64-function call cycle whose closing edge lies wholly beyond the
+// 64-entry on-stack window: fn<0> calls back to fn<5>, so the cycle members
+// (5..0) were never inserted when entered from fn<69> under the old
+// silently-degrading set — contains() could not see them and the evaluator
+// churned until the value-stack cap. With the fix the walk refuses at the
+// capacity boundary long before the cycle closes.
+template <int N>
+__attribute__((noinline)) static void cyc_fn(void* data) {
+    volatile char buf[16];
+    buf[0] = static_cast<char>(N);
+    if constexpr (N > 0) {
+        cyc_fn<N - 1>(data);
+    } else {
+        cyc_fn<5>(data);  // closes the cycle (never executed; analysis only)
+    }
+    buf[1] = 2;  // trailing statement → real BL, not a tail-call B
+}
+
+TEST_CASE("Beyond-64-cycle-terminates-inexact") {
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&cyc_fn<69>));
+    CHECK_FALSE(r.is_exact);
+    CHECK(r.max_depth > 0);
+    MESSAGE("cyc_fn<69> depth: ", r.max_depth, ", is_exact: ", r.is_exact);
+}
+
+// The pure tail-call variant of the same >64 cycle: every link is a direct
+// tail call (B), which the walker follows inline; the {pc, sp_delta} visit
+// set terminates the flat-SP cycle. No exactness assertion — codegen may
+// legitimately emit BL for some links (then the on-stack cap refuses
+// instead) — the regression is that analysis terminates at all.
+template <int N>
+__attribute__((noinline)) static void pure_tail_fn(void* data) {
+    if constexpr (N > 0) {
+        return pure_tail_fn<N - 1>(data);
+    } else {
+        return pure_tail_fn<5>(data);  // closes the cycle
+    }
+}
+
+TEST_CASE("Pure-tail-call-cycle-terminates") {
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&pure_tail_fn<69>));
+    CHECK(r.max_depth < (1u << 20));  // terminated with a sane bound
+    MESSAGE("pure_tail_fn<69> depth: ", r.max_depth,
+            ", is_exact: ", r.is_exact);
+}
+
+// ---- 🎯T52.1: MOV-to-SP-lowered alloca must not be invisible ----
+//
+// Clang lowers a runtime alloca as `mov x9, sp; sub xN, x9, x8;
+// mov sp, xN` — never `SUB SP, SP, Xn` — so SP is written through the
+// ADD-immediate MOV-to-SP alias from a register. The pre-T52.1 walker
+// treated that as a no-op: the T52.6 unwind spike measured
+// {max_depth=16, is_exact=true} for this entry with 64 KiB live. The
+// closed-world SP-write detector must refuse the write: is_exact=false
+// with a budget contribution. The size is runtime-derived through the
+// opaque data pointer so the alloca cannot be const-folded into a static
+// frame; the data object is pointer-width per the audit's fixture
+// contract (the walker models data reads as at least 64 bits wide).
+struct alloca_data { int n; int _pad; };
+
+__attribute__((noinline)) static void alloca_use_buf(char* p, int n) {
+    for (int i = 0; i < n; i++) p[i] = static_cast<char>(i);
+    asm volatile("" ::"r"(p) : "memory");
+}
+
+__attribute__((noinline)) static void alloca_entry(void* d) {
+    int n = static_cast<alloca_data*>(d)->n;
+    char* p = static_cast<char*>(__builtin_alloca(n));
+    alloca_use_buf(p, n);
+}
+
+TEST_CASE("Runtime-alloca-forces-inexact") {
+    alloca_data d{65536, 0};
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&alloca_entry), &d);
+    CHECK_FALSE(r.is_exact);
+    // The refused SP write contributes the indirect-call budget, not a
+    // silent small constant.
+    CHECK(r.max_depth >= 2048);
+    MESSAGE("alloca_entry depth: ", r.max_depth, ", is_exact: ", r.is_exact);
+}
+
 TEST_CASE("CONST-arg-prunes-across-BL") {
     rconst_args a{0};
     auto result = csp::analyze_stack_depth(

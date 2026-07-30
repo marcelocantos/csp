@@ -25,6 +25,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <cstring>
 #include <sstream>
 
 // 🎯T31: detect whether this TU is built under a sanitizer that instruments
@@ -42,6 +43,15 @@
 #if !defined(CSP_AUDIT_SANITIZED) && \
     (defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__))
 #  define CSP_AUDIT_SANITIZED 1
+#endif
+
+// 🎯T52.2: painted true-peak watermark. Available exactly where the runtime
+// paints stacks (CSP_STACK_PAINT, from csp_internal.h): ANALYSE arena builds.
+// Where available, the hard under-estimate gate below compares the analyser
+// against the painted TRUE peak, not just the checkpoint-sampled high-water
+// (which structurally misses depth reached between suspend points).
+#if CSP_STACK_PAINT
+#  define CSP_AUDIT_PAINT 1
 #endif
 
 namespace {
@@ -124,6 +134,25 @@ void alt_two_chans_entry(void*) {
 void yield_loop_entry(void*) {
     // A loop that goes through the suspend path several times.
     for (int i = 0; i < 4; ++i) csp::yield();
+}
+
+// 🎯T52.2 watermark fixture: an 8 KB frame that lives and dies BETWEEN
+// suspend checkpoints. The do_switch sampler only sees the shallow stack at
+// the yield (and at exit), so the checkpoint high-water misses the peak
+// entirely — only the painted watermark can observe it. The asm escape pins
+// the buffer to a real stack slot (clang -O2 can otherwise coalesce a
+// non-escaping volatile local to a few bytes; see stack_slot_sizing.test.cc).
+static AUDIT_NOINLINE void deep_transient_helper() {
+    volatile char buf[8192];
+#if !defined(_MSC_VER)
+    asm volatile("" : : "r"(const_cast<char*>(&buf[0])) : "memory");
+#endif
+    for (size_t i = 0; i < sizeof(buf); ++i) buf[i] = static_cast<char>(i);
+}
+
+void transient_peak_entry(void*) {
+    deep_transient_helper();
+    csp::yield();
 }
 
 // --- Tightness fixtures: shapes the analyser is *designed* to size exactly ---
@@ -248,6 +277,58 @@ void const_entry(void* data) {
     buf[1] = 2;
 }
 
+// --- 🎯T52.1 fixtures: decoded writeback forms + SP-write refuse posture ---
+//
+// Hand-written naked asm, so the exact peak SP displacement is known by
+// construction (no compiler prologue, no sanitizer instrumentation) and the
+// analyser must reproduce it bit-for-bit. Guarded to Clang/GCC on ARM64:
+// MSVC has no GNU asm / naked support on ARM64.
+#if defined(__aarch64__) && !defined(_MSC_VER)
+
+// Every decoded writeback family, pre- and post-indexed, balanced so the
+// fixture is executable: GP pairs (X, W), FP/SIMD pairs (S, D, Q), single
+// registers (X, W, D, Q). All adjustments are multiples of 16 to respect
+// hardware SP alignment. Peak depth: 224 bytes, at the pre-indexed LDP.
+__attribute__((naked)) void writeback_forms_entry(void*) {
+    asm volatile(
+        "stp x1, x2, [sp, #-16]!\n"   // 16   GP X pair, pre
+        "stp w1, w2, [sp, #-16]!\n"   // 32   GP W pair, pre
+        "stp q0, q1, [sp, #-64]!\n"   // 96   SIMD Q pair, pre
+        "stp d0, d1, [sp, #-32]!\n"   // 128  FP D pair, pre
+        "stp s0, s1, [sp, #-16]!\n"   // 144  FP S pair, pre
+        "str x1, [sp, #-16]!\n"       // 160  single X, pre
+        "str w1, [sp, #-16]!\n"       // 176  single W, pre
+        "str d0, [sp, #-16]!\n"       // 192  single D, pre
+        "str q0, [sp, #-16]!\n"       // 208  single Q, pre
+        "ldp x3, x4, [sp, #-16]!\n"   // 224  GP pair pre-indexed *load*
+        "stp x3, x4, [sp], #16\n"     // 208  GP pair post-indexed *store*
+        "ldr q0, [sp], #16\n"         // 192  single Q, post
+        "ldr d0, [sp], #16\n"         // 176  single D, post
+        "ldr w1, [sp], #16\n"         // 160  single W, post
+        "ldr x1, [sp], #16\n"         // 144  single X, post
+        "ldp s0, s1, [sp], #16\n"     // 128  FP S pair, post
+        "ldp d0, d1, [sp], #32\n"     // 96   FP D pair, post
+        "ldp q0, q1, [sp], #64\n"     // 32   SIMD Q pair, post
+        "ldp w1, w2, [sp], #16\n"     // 16   GP W pair, post
+        "ldp x1, x2, [sp], #16\n"     // 0    GP X pair, post
+        "ret\n");
+}
+constexpr size_t kWritebackFixturePeak = 224;
+
+// An SP write outside the modelled forms (MOV SP, Xn — the add-immediate
+// alias with Rd=SP, Rn!=SP). The closed-world detector must refuse it:
+// budget + is_exact=false, never a silent SP drift inside an exact result.
+__attribute__((naked)) void sp_mov_refuse_entry(void*) {
+    asm volatile(
+        "mov x9, sp\n"
+        "sub x9, x9, #32\n"
+        "mov sp, x9\n"          // unmodelled SP write → refuse
+        "add sp, sp, #32\n"
+        "ret\n");
+}
+
+#endif // __aarch64__ && !_MSC_VER
+
 struct AuditCase {
     const char* name;
     csp::internal::EntryFn entry;
@@ -274,12 +355,17 @@ const AuditCase kCases[] = {
     {"channel_send_recv",  &channel_send_recv_entry,  nullptr, false},
     {"alt_two_chans",      &alt_two_chans_entry,      nullptr, false},
     {"yield_loop",         &yield_loop_entry,         nullptr, false},
+    // 🎯T52.2: deep transient frame between suspends — checkpoint-invisible,
+    // watermark-visible. The dedicated painted-watermark checks below assert
+    // that the painted peak sees the 8 KB the checkpoint sampler misses.
+    {"transient_peak",     &transient_peak_entry,     nullptr, false},
 };
 
 struct AuditResult {
     const char* name;
     size_t analyser_estimate;
     size_t high_water;
+    size_t true_peak;  // 🎯T52.2 painted watermark peak (0 if painting off)
     bool is_exact;
     bool sound;     // !is_exact || analyser_estimate >= high_water
     bool tight;     // is_exact && analyser_estimate < 2 * high_water + 4096
@@ -302,6 +388,12 @@ AuditResult run_case(const AuditCase& c) {
     csp::await_completion();
 
     r.high_water = csp::detail::get_stack_high_water(c.entry);
+#ifdef CSP_AUDIT_PAINT
+    // 🎯T52.2: TRUE peak from the painted watermark, scanned by destroy_imp
+    // when the imp above exited (await_completion has returned, so the scan
+    // is complete and published).
+    r.true_peak = csp::detail::get_stack_true_peak(c.entry);
+#endif
 
     // Soundness: the analyser may legitimately under-report by up to
     // kFrameRecordOverhead because the runtime high-water includes the
@@ -319,8 +411,20 @@ TEST_SUITE("StackAnalysisAudit") {
 TEST_CASE("soundness-and-tightness-report") {
     size_t candidate_count = 0;
     size_t candidate_tight = 0;
+#ifdef CSP_AUDIT_PAINT
+    // 🎯T52.2: runtime-shell floor for the painted-peak gate, measured as
+    // the painted peak of the leanest possible imp ("noop", first case).
+    // The watermark measures the WHOLE fiber footprint — fcontext boot
+    // record, start() trampoline, and the do_switch(exit) path (which
+    // under ANALYSE includes the high-water table's mutex + hash + malloc
+    // frames) — while the analyser sizes only the entry body. The noop
+    // peak is exactly that shared shell. kShellSlack absorbs allocator
+    // path variance between runs (fast vs slow malloc path).
+    size_t shell = 0;
+    constexpr size_t kShellSlack = 1024;
+#endif
 
-    MESSAGE("Stack analysis audit — name | analyser | high-water | ratio | is_exact | sound | tight | kind");
+    MESSAGE("Stack analysis audit — name | analyser | high-water | true-peak | ratio | is_exact | sound | tight | kind");
     for (const auto& c : kCases) {
         auto r = run_case(c);
 
@@ -337,6 +441,54 @@ TEST_CASE("soundness-and-tightness-report") {
                   << " with is_exact=true";
         CHECK_MESSAGE(r.sound, violation.str());
 
+#ifdef CSP_AUDIT_PAINT
+        if (std::strcmp(r.name, "noop") == 0) shell = r.true_peak;
+
+        // Painting must have happened: every spawned imp leaves a non-zero
+        // painted peak (the boot record alone unpaints bytes).
+        CHECK_MESSAGE(r.true_peak > 0,
+                      "no painted peak recorded for " << r.name);
+
+        // Sanity: the watermark is a superset of the checkpoint sampler —
+        // painted peak >= checkpoint high-water (64-byte slack for the
+        // pathological case where the deepest frame's own bytes equal the
+        // paint pattern).
+        std::ostringstream ws;
+        ws << "watermark below checkpoint high-water for " << r.name
+           << ": true_peak=" << r.true_peak
+           << " < high_water=" << r.high_water;
+        CHECK_MESSAGE(r.true_peak + 64 >= r.high_water, ws.str());
+
+        // Painted-peak soundness gate — HARD (🎯T52.2). The analyser bound
+        // plus the measured runtime shell must cover the TRUE peak, not
+        // just the checkpoint-sampled one. This is the gate the checkpoint
+        // comparison above cannot provide: it sees depth reached BETWEEN
+        // suspend points.
+        bool sound_peak = !r.is_exact ||
+            r.analyser_estimate + kFrameRecordOverhead + shell + kShellSlack
+                >= r.true_peak;
+        std::ostringstream pv;
+        pv << "painted-peak soundness violation for " << r.name
+           << ": analyser=" << r.analyser_estimate
+           << " + frame=" << kFrameRecordOverhead
+           << " + shell=" << shell << " + slack=" << kShellSlack
+           << " < true_peak=" << r.true_peak
+           << " with is_exact=true";
+        CHECK_MESSAGE(sound_peak, pv.str());
+
+        // The fixture built to defeat checkpoint sampling: its 8 KB frame
+        // unwinds before the first suspend, so only the watermark sees it.
+        if (std::strcmp(r.name, "transient_peak") == 0) {
+            CHECK_MESSAGE(r.true_peak >= 8192,
+                          "watermark missed the 8 KB transient frame: "
+                          "true_peak=" << r.true_peak);
+            CHECK_MESSAGE(r.true_peak > r.high_water + 4096,
+                          "checkpoint high-water (" << r.high_water
+                          << ") unexpectedly saw the transient peak ("
+                          << r.true_peak << ")");
+        }
+#endif
+
         double ratio = r.high_water > 0
             ? static_cast<double>(r.analyser_estimate) /
               static_cast<double>(r.high_water)
@@ -346,6 +498,7 @@ TEST_CASE("soundness-and-tightness-report") {
         row << r.name << " | "
             << r.analyser_estimate << " | "
             << r.high_water << " | "
+            << r.true_peak << " | "
             << ratio << " | "
             << (r.is_exact ? "true" : "false") << " | "
             << (r.sound ? "OK" : "VIOLATION") << " | "
@@ -387,5 +540,36 @@ TEST_CASE("soundness-and-tightness-report") {
     MESSAGE("tightness gate skipped — the stack walker is ARM64-only");
 #endif
 }
+
+#if defined(__aarch64__) && !defined(_MSC_VER)
+
+TEST_CASE("writeback-forms-exact-depth") {
+    // 🎯T52.1: the decoded pair/single-register writeback forms (GP + FP/
+    // SIMD, pre/post-indexed) must produce the asm fixture's exact peak —
+    // equality, not a bound, because the fixture is hand-written asm.
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&writeback_forms_entry));
+    CHECK(r.is_exact);
+    CHECK(r.max_depth == kWritebackFixturePeak);
+
+    // Executability cross-check: the fixture is balanced and runs to
+    // completion as a real imp (would fault on any SP misalignment).
+    csp::internal::spawn(&writeback_forms_entry, nullptr);
+    csp::await_completion();
+}
+
+TEST_CASE("unmodelled-sp-write-refused") {
+    // 🎯T52.1: MOV SP, Xn is architecturally an SP write the walker does
+    // not model; the closed-world detector must force inexact rather than
+    // letting the SP delta drift inside an exact result.
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&sp_mov_refuse_entry));
+    CHECK_FALSE(r.is_exact);
+
+    csp::internal::spawn(&sp_mov_refuse_entry, nullptr);
+    csp::await_completion();
+}
+
+#endif // __aarch64__ && !_MSC_VER
 
 } // TEST_SUITE("StackAnalysisAudit")

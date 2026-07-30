@@ -1,9 +1,13 @@
 # Stack Depth Analysis
 
 Canonical system note for CSP’s spawn-time stack depth analyser.
-**As of v0.27.0** (ARM64 walker through 🎯T3.10). Design history lives in
-the papers listed at the end; this page is the authoritative *as shipped*
-picture.
+**As of v0.28.0+** (ARM64 walker through 🎯T3.10, plus the v0.28.0
+audit-campaign fix — `BR` tail-call resolution now respects the
+instruction budget via the shared `resolve_indirect_callee` helper — and
+the 🎯T52.1 structural-soundness pass: closed-world SP-write detection,
+decoded FP/SIMD + single-register writeback, wired `max_call_depth`).
+Design history lives in the papers listed at the end; this page is the
+authoritative *as shipped* picture.
 
 Header: `#include <csp/stack_analysis.h>`  
 Implementation: `src/stack_analysis_arm64.cc`  
@@ -66,7 +70,7 @@ struct stack_analysis {
 
 struct stack_analysis_options {
     size_t indirect_call_budget = 2048;  // bytes per unresolved BLR/BR
-    int max_call_depth = 64;
+    int max_call_depth = 64;             // clamped to [1, 64] (hard cap)
     size_t max_instructions = 100000;
 };
 
@@ -89,6 +93,9 @@ stack_analysis analyze_stack_depth_cached(
   pointers and vtable-like patterns from live memory.
 - `is_exact == false` means the result is a **conservative over-approximation**
   that includes flat budgets for unresolved edges, not a precise frame size.
+- `max_call_depth` (🎯T52.1) is wired to the evaluator’s on-stack cycle-set
+  capacity (hard compile-time cap 64). A call chain deeper than the limit is
+  refused exactly like a detected recursion cycle: budget + `is_exact=false`.
 
 ---
 
@@ -142,10 +149,11 @@ Important implementation properties:
 
 | Class | Instructions / forms |
 |---|---|
-| Frame | `SUB/ADD SP, SP, #imm`; `STP`/`LDP` pre/post-index (64-bit GP) |
+| Frame | `SUB/ADD SP, SP, #imm`; `STP`/`LDP` pre/post-index writeback on SP — GP **and FP/SIMD** pairs (W/X, S/D/Q); single-register `STR`/`LDR` pre/post-index writeback on SP, all widths (🎯T52.1) |
+| Unmodelled SP writes | Closed-world detector (🎯T52.1): any other SP-writing encoding class (`MOV SP, Xn` family, add/sub extended incl. `SUB SP, SP, Xn`, AdvSIMD structure post-index, MTE forms) terminates the path with budget + `is_exact=false` |
 | Return | `RET` |
 | Direct call | `BL offset` → callee compile + eval |
-| Indirect call / tail | `BLR Xn`, `BR Xn` |
+| Indirect call / tail | `BLR Xn`, `BR Xn` (since v0.28.0 `BR` respects the over-budget cap like `BL`/`BLR`, via the shared `resolve_indirect_callee` helper) |
 | Branches | `B`, `B.cond`, `CBZ`/`CBNZ`, `TBZ`/`TBNZ` |
 
 ### Register provenance and data context
@@ -188,6 +196,14 @@ Out-of-bounds or foreign targets fall back to budget (sound over-approx).
 4. **Under sanitizers**, instrumentation stubs (`__asan_*`, `__tsan_*`) live
    outside the walker’s text bound → forced inexact. Soundness still holds;
    tightness is not meaningful there.
+5. **No silent SP drift** (🎯T52.1). Any instruction that can architecturally
+   write SP and is not explicitly decoded is refused by a closed-world
+   structural detector (budget + `is_exact=false`) — the invariant does not
+   depend on the modelled enumeration staying complete.
+6. **Cycle detection never degrades** (🎯T52.1). The evaluator’s on-stack set
+   reports capacity exhaustion; past `max_call_depth` (≤ 64) a callee is
+   refused exactly like a detected cycle instead of silently escaping the
+   set.
 
 Hard CI gate (`test/stack_analysis_audit.test.cc`): if `is_exact &&
 analyser_estimate + floor < high_water`, the build fails.
@@ -262,11 +278,15 @@ Still open (not regressions of the bullets above):
 |---|---|
 | **x86_64 / non-ARM64** | Stub 32 KiB inexact only |
 | **Type-erased spawn trampoline** | Dominant reason real workloads stay Default |
-| **FP/SIMD stack ops** (`STP Q…`) | Silent ignore → rare under-count if those dominate |
-| **Dynamic SP** (`SUB SP, SP, Xn`) | Immediate budget path |
+| **Dynamic SP** (`SUB SP, SP, Xn`, and the `mov x9, sp; sub xN, x9, x8; mov sp, xN` sequence Clang actually emits for runtime `alloca`) | Immediate budget path (via the closed-world SP-write detector; pre-🎯T52.1 the MOV-to-SP lowering was invisible — a 64 KiB alloca analysed as `{16, exact}`) |
 | **Switch / jump tables** | Not followed as tables (only via resolved BLR/BR) |
 | **Mutual indirect recursion fixed-point** | Explicitly out of scope for T3.10 |
 | **Off by default** | Product builds need `CSP_ANALYSE_STACKS` for any effect |
+
+(FP/SIMD stack ops — `STP Q…` writeback and friends — were a gap here until
+🎯T52.1: they were silently ignored, drifting the SP delta *in either
+direction* inside exact results. They are now decoded exactly; any remaining
+unmodelled SP-writing encoding is refused, not skipped.)
 
 Forward-looking design notes (not current truth):  
 [`docs/stack-analysis-future.md`](../stack-analysis-future.md).
@@ -286,6 +306,43 @@ CI: default matrix runs the suite without sizing; a dedicated **“stack
 analyser enabled”** step builds with `ANALYSE=1` and runs slot-sizing tests.
 ASan/UBSan full suite still runs the audit for the soundness gate (tightness
 may skip under instrumentation).
+
+### Ground-truth oracles (🎯T52.2)
+
+Two oracles upgrade the audit from “no violation observed at checkpoints”
+to measured ground truth:
+
+- **Painted true-peak watermark.** On ANALYSE **arena** builds
+  (`CSP_STACK_PAINT`, from `csp_internal.h`), `spawn()` paints every
+  handed-out slot with `0xA5` before the fcontext boot record is written
+  (per handout, so reuse repaints), and `destroy_imp()` scans forward from
+  the guard end for the first unpainted byte before the slot returns to
+  the free list — the TRUE peak, including depth reached *between* suspend
+  points that the checkpoint sampler structurally misses. The audit’s hard
+  under-estimate gate compares exact analyser estimates against this
+  painted peak (plus the measured runtime-shell floor), and separately
+  asserts painted peak ≥ checkpoint high-water. Painting is compiled out
+  elsewhere: Windows stacks are demand-committed `MEM_RESERVE` regions
+  (painting would fault-commit every page), sanitizer builds would trip
+  ASan red-zone poisoning during the scan, and neither has Small slots to
+  gate. `maybe_shrink` is a no-op on arena builds, so painting never races
+  page reclaim.
+
+- **Corpus Small-slot metric + ratchet.** `make ANALYSE=1 stack-metric`
+  runs the real corpus (full test suite + finite examples) with
+  `CSP_STACK_STATS=1` (same env-gated idiom as `CSP_PROC_STATS`); the
+  runtime dumps `CSP_STACK_SPAWNS_TOTAL/_SMALL/_BYTES_SAVED` at exit, and
+  `scripts/stack_metric.py` aggregates Small-slot rate and bytes saved vs
+  all-Default (Small landings × the 108 KiB per-slot footprint delta),
+  then ratchets **both directions** against
+  `scripts/stack_metric_baseline.json` — regressions fail, and
+  improvements fail too until the baseline is deliberately updated
+  (`--update-baseline`) and committed. CI runs it on the Linux arm64 row.
+  Recorded pre-🎯T52.3 baseline (2026-07-30, darwin-arm64): 2 Small in
+  ~1.83 M spawns (rate ≈ 1.1 × 10⁻⁶, ~216 KiB saved) — confirming the
+  expected ≈0: the type-erased `csp::spawn(lambda)` trampoline keeps real
+  workloads on Default slots; the two landings are the audit’s own
+  `internal::spawn` fixtures.
 
 ---
 

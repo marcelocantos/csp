@@ -160,6 +160,20 @@ jobs:
               --args ./build/normal-analyse/csp_tests -ts=StackSlotSizing 2>&1 || true
           fi
 
+      # 🎯T52.2: corpus metric under ANALYSE — Small-slot rate and bytes
+      # saved over the full test suite + finite examples, ratcheted BOTH
+      # directions against scripts/stack_metric_baseline.json (regression
+      # fails; an improvement fails too until the baseline is deliberately
+      # updated and committed). Linux arm64 only: on x86_64 the walker is a
+      # stub (the rate is structurally 0 until an x86 walker exists — wire a
+      # baseline when it does), and the macOS row already runs near its
+      # 45-minute ceiling (this step re-runs the full suite under the
+      # ANALYSE build); macOS is covered by the local `make stack-metric`
+      # gate on the dev machine.
+      - name: Stack corpus metric (ANALYSE)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: make ANALYSE=1 stack-metric ${{ matrix.make_cxx || '' }}
+
       - name: Build examples
         run: make examples ${{ matrix.make_cxx || '' }}
 
