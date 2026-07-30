@@ -12,6 +12,7 @@
 #        make examples                    (build examples)
 #        make run-examples                (build + run examples)
 #        make run-examples-ci             (build + run finite examples, skip servers)
+#        make stack-metric                (ANALYSE corpus Small-slot metric + ratchet)
 #        make docker-test                 (Linux ARM64+x86 in Docker)
 #        make docker-test-arm64           (Linux ARM64 in Docker)
 #        make docker-test-x86             (Linux x86_64 in Docker)
@@ -547,7 +548,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 
 # --- Rules ---
 
-.PHONY: test build bench test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci dist iwyu clean \
+.PHONY: test build bench test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci stack-metric dist iwyu clean \
        docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor libs downstream-test
 
 # Explicit default — keep `make` (no args) running the full test suite.
@@ -767,6 +768,24 @@ run-examples-ci: $(EXAMPLE_BINS)
 		$(EXAMPLE_RUN) || { rc=$$?; echo "[FAIL] $$(basename $$bin) exit=$$rc"; exit $$rc; }; \
 		echo; \
 	done
+
+# --- Stack corpus metric (🎯T52.2) ---
+# Runs the real corpus (full test suite + finite examples) under the
+# ANALYSE build with CSP_STACK_STATS=1, aggregates the Small-slot rate
+# and bytes saved vs all-Default, and ratchets BOTH directions against
+# scripts/stack_metric_baseline.json: a regression fails, and an
+# improvement also fails until the baseline is deliberately updated
+# (scripts/stack_metric.py --update-baseline, commit the diff).
+ifneq ($(ANALYSE),1)
+stack-metric:
+	$(MAKE) ANALYSE=1 stack-metric
+else
+stack-metric: $(TARGET) $(EXAMPLE_BINS)
+	python3 scripts/stack_metric.py \
+		--test-bin $(TARGET) \
+		--baseline scripts/stack_metric_baseline.json \
+		--examples $(EXAMPLE_CI_BINS)
+endif
 
 $(BUILDDIR)/examples/%: examples/%.cc $(LIB_OBJS)
 	@mkdir -p $(dir $@)

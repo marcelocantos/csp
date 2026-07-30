@@ -1,0 +1,22 @@
+{
+  "darwin-arm64": {
+    "observed": {
+      "bytes_saved": 221184,
+      "total_spawns": 1830889
+    },
+    "rate_tolerance": 5e-07,
+    "small_rate": 1.092e-06,
+    "small_spawns": 2,
+    "small_spawns_tolerance": 0
+  },
+  "linux-arm64": {
+    "observed": {
+      "bytes_saved": 331776,
+      "total_spawns": 1830901
+    },
+    "rate_tolerance": 5e-07,
+    "small_rate": 1.639e-06,
+    "small_spawns": 3,
+    "small_spawns_tolerance": 0
+  }
+}

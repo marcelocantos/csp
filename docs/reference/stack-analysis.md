@@ -307,6 +307,43 @@ analyser enabled”** step builds with `ANALYSE=1` and runs slot-sizing tests.
 ASan/UBSan full suite still runs the audit for the soundness gate (tightness
 may skip under instrumentation).
 
+### Ground-truth oracles (🎯T52.2)
+
+Two oracles upgrade the audit from “no violation observed at checkpoints”
+to measured ground truth:
+
+- **Painted true-peak watermark.** On ANALYSE **arena** builds
+  (`CSP_STACK_PAINT`, from `csp_internal.h`), `spawn()` paints every
+  handed-out slot with `0xA5` before the fcontext boot record is written
+  (per handout, so reuse repaints), and `destroy_imp()` scans forward from
+  the guard end for the first unpainted byte before the slot returns to
+  the free list — the TRUE peak, including depth reached *between* suspend
+  points that the checkpoint sampler structurally misses. The audit’s hard
+  under-estimate gate compares exact analyser estimates against this
+  painted peak (plus the measured runtime-shell floor), and separately
+  asserts painted peak ≥ checkpoint high-water. Painting is compiled out
+  elsewhere: Windows stacks are demand-committed `MEM_RESERVE` regions
+  (painting would fault-commit every page), sanitizer builds would trip
+  ASan red-zone poisoning during the scan, and neither has Small slots to
+  gate. `maybe_shrink` is a no-op on arena builds, so painting never races
+  page reclaim.
+
+- **Corpus Small-slot metric + ratchet.** `make ANALYSE=1 stack-metric`
+  runs the real corpus (full test suite + finite examples) with
+  `CSP_STACK_STATS=1` (same env-gated idiom as `CSP_PROC_STATS`); the
+  runtime dumps `CSP_STACK_SPAWNS_TOTAL/_SMALL/_BYTES_SAVED` at exit, and
+  `scripts/stack_metric.py` aggregates Small-slot rate and bytes saved vs
+  all-Default (Small landings × the 108 KiB per-slot footprint delta),
+  then ratchets **both directions** against
+  `scripts/stack_metric_baseline.json` — regressions fail, and
+  improvements fail too until the baseline is deliberately updated
+  (`--update-baseline`) and committed. CI runs it on the Linux arm64 row.
+  Recorded pre-🎯T52.3 baseline (2026-07-30, darwin-arm64): 2 Small in
+  ~1.83 M spawns (rate ≈ 1.1 × 10⁻⁶, ~216 KiB saved) — confirming the
+  expected ≈0: the type-erased `csp::spawn(lambda)` trampoline keeps real
+  workloads on Default slots; the two landings are the audit’s own
+  `internal::spawn` fixtures.
+
 ---
 
 ## Paper and target map

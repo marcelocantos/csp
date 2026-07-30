@@ -25,6 +25,7 @@
 #include <doctest/doctest.h>
 
 #include <atomic>
+#include <cstring>
 #include <sstream>
 
 // 🎯T31: detect whether this TU is built under a sanitizer that instruments
@@ -42,6 +43,15 @@
 #if !defined(CSP_AUDIT_SANITIZED) && \
     (defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__))
 #  define CSP_AUDIT_SANITIZED 1
+#endif
+
+// 🎯T52.2: painted true-peak watermark. Available exactly where the runtime
+// paints stacks (CSP_STACK_PAINT, from csp_internal.h): ANALYSE arena builds.
+// Where available, the hard under-estimate gate below compares the analyser
+// against the painted TRUE peak, not just the checkpoint-sampled high-water
+// (which structurally misses depth reached between suspend points).
+#if CSP_STACK_PAINT
+#  define CSP_AUDIT_PAINT 1
 #endif
 
 namespace {
@@ -124,6 +134,25 @@ void alt_two_chans_entry(void*) {
 void yield_loop_entry(void*) {
     // A loop that goes through the suspend path several times.
     for (int i = 0; i < 4; ++i) csp::yield();
+}
+
+// 🎯T52.2 watermark fixture: an 8 KB frame that lives and dies BETWEEN
+// suspend checkpoints. The do_switch sampler only sees the shallow stack at
+// the yield (and at exit), so the checkpoint high-water misses the peak
+// entirely — only the painted watermark can observe it. The asm escape pins
+// the buffer to a real stack slot (clang -O2 can otherwise coalesce a
+// non-escaping volatile local to a few bytes; see stack_slot_sizing.test.cc).
+static AUDIT_NOINLINE void deep_transient_helper() {
+    volatile char buf[8192];
+#if !defined(_MSC_VER)
+    asm volatile("" : : "r"(const_cast<char*>(&buf[0])) : "memory");
+#endif
+    for (size_t i = 0; i < sizeof(buf); ++i) buf[i] = static_cast<char>(i);
+}
+
+void transient_peak_entry(void*) {
+    deep_transient_helper();
+    csp::yield();
 }
 
 // --- Tightness fixtures: shapes the analyser is *designed* to size exactly ---
@@ -326,12 +355,17 @@ const AuditCase kCases[] = {
     {"channel_send_recv",  &channel_send_recv_entry,  nullptr, false},
     {"alt_two_chans",      &alt_two_chans_entry,      nullptr, false},
     {"yield_loop",         &yield_loop_entry,         nullptr, false},
+    // 🎯T52.2: deep transient frame between suspends — checkpoint-invisible,
+    // watermark-visible. The dedicated painted-watermark checks below assert
+    // that the painted peak sees the 8 KB the checkpoint sampler misses.
+    {"transient_peak",     &transient_peak_entry,     nullptr, false},
 };
 
 struct AuditResult {
     const char* name;
     size_t analyser_estimate;
     size_t high_water;
+    size_t true_peak;  // 🎯T52.2 painted watermark peak (0 if painting off)
     bool is_exact;
     bool sound;     // !is_exact || analyser_estimate >= high_water
     bool tight;     // is_exact && analyser_estimate < 2 * high_water + 4096
@@ -354,6 +388,12 @@ AuditResult run_case(const AuditCase& c) {
     csp::await_completion();
 
     r.high_water = csp::detail::get_stack_high_water(c.entry);
+#ifdef CSP_AUDIT_PAINT
+    // 🎯T52.2: TRUE peak from the painted watermark, scanned by destroy_imp
+    // when the imp above exited (await_completion has returned, so the scan
+    // is complete and published).
+    r.true_peak = csp::detail::get_stack_true_peak(c.entry);
+#endif
 
     // Soundness: the analyser may legitimately under-report by up to
     // kFrameRecordOverhead because the runtime high-water includes the
@@ -371,8 +411,20 @@ TEST_SUITE("StackAnalysisAudit") {
 TEST_CASE("soundness-and-tightness-report") {
     size_t candidate_count = 0;
     size_t candidate_tight = 0;
+#ifdef CSP_AUDIT_PAINT
+    // 🎯T52.2: runtime-shell floor for the painted-peak gate, measured as
+    // the painted peak of the leanest possible imp ("noop", first case).
+    // The watermark measures the WHOLE fiber footprint — fcontext boot
+    // record, start() trampoline, and the do_switch(exit) path (which
+    // under ANALYSE includes the high-water table's mutex + hash + malloc
+    // frames) — while the analyser sizes only the entry body. The noop
+    // peak is exactly that shared shell. kShellSlack absorbs allocator
+    // path variance between runs (fast vs slow malloc path).
+    size_t shell = 0;
+    constexpr size_t kShellSlack = 1024;
+#endif
 
-    MESSAGE("Stack analysis audit — name | analyser | high-water | ratio | is_exact | sound | tight | kind");
+    MESSAGE("Stack analysis audit — name | analyser | high-water | true-peak | ratio | is_exact | sound | tight | kind");
     for (const auto& c : kCases) {
         auto r = run_case(c);
 
@@ -389,6 +441,54 @@ TEST_CASE("soundness-and-tightness-report") {
                   << " with is_exact=true";
         CHECK_MESSAGE(r.sound, violation.str());
 
+#ifdef CSP_AUDIT_PAINT
+        if (std::strcmp(r.name, "noop") == 0) shell = r.true_peak;
+
+        // Painting must have happened: every spawned imp leaves a non-zero
+        // painted peak (the boot record alone unpaints bytes).
+        CHECK_MESSAGE(r.true_peak > 0,
+                      "no painted peak recorded for " << r.name);
+
+        // Sanity: the watermark is a superset of the checkpoint sampler —
+        // painted peak >= checkpoint high-water (64-byte slack for the
+        // pathological case where the deepest frame's own bytes equal the
+        // paint pattern).
+        std::ostringstream ws;
+        ws << "watermark below checkpoint high-water for " << r.name
+           << ": true_peak=" << r.true_peak
+           << " < high_water=" << r.high_water;
+        CHECK_MESSAGE(r.true_peak + 64 >= r.high_water, ws.str());
+
+        // Painted-peak soundness gate — HARD (🎯T52.2). The analyser bound
+        // plus the measured runtime shell must cover the TRUE peak, not
+        // just the checkpoint-sampled one. This is the gate the checkpoint
+        // comparison above cannot provide: it sees depth reached BETWEEN
+        // suspend points.
+        bool sound_peak = !r.is_exact ||
+            r.analyser_estimate + kFrameRecordOverhead + shell + kShellSlack
+                >= r.true_peak;
+        std::ostringstream pv;
+        pv << "painted-peak soundness violation for " << r.name
+           << ": analyser=" << r.analyser_estimate
+           << " + frame=" << kFrameRecordOverhead
+           << " + shell=" << shell << " + slack=" << kShellSlack
+           << " < true_peak=" << r.true_peak
+           << " with is_exact=true";
+        CHECK_MESSAGE(sound_peak, pv.str());
+
+        // The fixture built to defeat checkpoint sampling: its 8 KB frame
+        // unwinds before the first suspend, so only the watermark sees it.
+        if (std::strcmp(r.name, "transient_peak") == 0) {
+            CHECK_MESSAGE(r.true_peak >= 8192,
+                          "watermark missed the 8 KB transient frame: "
+                          "true_peak=" << r.true_peak);
+            CHECK_MESSAGE(r.true_peak > r.high_water + 4096,
+                          "checkpoint high-water (" << r.high_water
+                          << ") unexpectedly saw the transient peak ("
+                          << r.true_peak << ")");
+        }
+#endif
+
         double ratio = r.high_water > 0
             ? static_cast<double>(r.analyser_estimate) /
               static_cast<double>(r.high_water)
@@ -398,6 +498,7 @@ TEST_CASE("soundness-and-tightness-report") {
         row << r.name << " | "
             << r.analyser_estimate << " | "
             << r.high_water << " | "
+            << r.true_peak << " | "
             << ratio << " | "
             << (r.is_exact ? "true" : "false") << " | "
             << (r.sound ? "OK" : "VIOLATION") << " | "

@@ -2223,6 +2223,20 @@ public:
 #endif
     }
 
+    // Per-class slot footprint (guard + usable) in bytes — the address-space
+    // cost of one stack of that class. Used by the 🎯T52.2 corpus metric to
+    // compute bytes saved vs an all-Default allocation. Returns 0 on builds
+    // without distinct slot classes (Windows, sanitizers), where the metric
+    // is structurally zero.
+    static constexpr size_t slot_footprint_bytes(StackClass cls) {
+#if CSP_USE_ARENA_STACKS
+        return kArenaGeometry[static_cast<size_t>(cls)].slot_size;
+#else
+        (void)cls;
+        return 0;
+#endif
+    }
+
     // Total allocations served from the Small free list since process start.
     // Lock-free read intended for tests and observability; not exact under
     // concurrent allocation. Returns 0 on builds without distinct small
@@ -2545,6 +2559,26 @@ char const * getstatus(Imp const * imp) {
 // this layer reports raw observed bytes.
 void record_stack_high_water(::csp::internal::EntryFn fn, size_t depth_bytes);
 size_t get_stack_high_water(::csp::internal::EntryFn fn);
+
+// 🎯T52.2: true-peak stack watermark (audit/ANALYSE arena builds only).
+// spawn() paints each handed-out arena slot with a sentinel byte before the
+// fcontext boot record is written; destroy_imp() scans forward from the
+// guard end for the first unpainted byte (low-water mark) and records
+// peak = entry_sp_ - low_water into a per-entry table. Unlike the
+// checkpoint-sampled high-water above, this measures the TRUE peak — depth
+// reached between suspend points is captured too. Compiled out entirely
+// (symbols vanish) unless CSP_ANALYSE_STACKS and arena mode are both on:
+// on Windows the 1 MB stacks are demand-committed MEM_RESERVE regions
+// (painting would fault-commit every page through the VEH), and under
+// sanitizers the scan would trip ASan stack red-zone poisoning; neither
+// build has Small slots, so the watermark oracle has nothing to gate there.
+#if defined(CSP_ANALYSE_STACKS) && CSP_USE_ARENA_STACKS
+#define CSP_STACK_PAINT 1
+void record_stack_true_peak(::csp::internal::EntryFn fn, size_t peak_bytes);
+size_t get_stack_true_peak(::csp::internal::EntryFn fn);
+#else
+#define CSP_STACK_PAINT 0
+#endif
 
 [[gnu::always_inline]] inline
 void check_stack_overflow(Imp const* imp, void* current_sp) {

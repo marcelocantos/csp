@@ -1574,6 +1574,118 @@ size_t get_stack_high_water(::csp::internal::EntryFn fn) {
 
 }  // namespace csp::detail
 
+#if CSP_STACK_PAINT
+// 🎯T52.2: per-entry-function true-peak table (painted watermark). Same
+// shape and synchronisation rationale as the high-water table above; the
+// writers here are destroy_imp scans (once per imp exit) rather than
+// suspend checkpoints.
+namespace {
+    std::mutex g_true_peak_mu;
+    std::unordered_map<csp::internal::EntryFn, size_t> g_true_peak;
+}
+
+namespace csp::detail {
+
+void record_stack_true_peak(::csp::internal::EntryFn fn, size_t peak_bytes) {
+    if (!fn) return;
+    std::lock_guard lk(g_true_peak_mu);
+    auto& slot = g_true_peak[fn];
+    if (peak_bytes > slot) slot = peak_bytes;
+}
+
+size_t get_stack_true_peak(::csp::internal::EntryFn fn) {
+    if (!fn) return 0;
+    std::lock_guard lk(g_true_peak_mu);
+    auto it = g_true_peak.find(fn);
+    return it == g_true_peak.end() ? 0 : it->second;
+}
+
+// Sentinel for the stack-painting watermark. Painting happens per HANDOUT
+// (not per slot creation) in spawn(), so slot reuse always starts from a
+// fully repainted region; the scan happens in destroy_imp() before the slot
+// returns to the free list. 0xA5 is the classic FreeRTOS pattern — an
+// 8-byte word of it is vanishingly unlikely as legitimate frame data, and
+// the scan below matches word-wise, so a single stray 0xA5 byte inside the
+// deepest frame cannot shift the low-water mark by more than 8 bytes.
+constexpr unsigned char kStackPaintByte = 0xA5;
+
+// Paint [guard end, paint_end) with the sentinel. Called with paint_end =
+// the imp's entry SP (the Imp control block address at the top of the
+// slot), BEFORE make_fcontext writes the boot record — the boot record and
+// everything the imp subsequently touches count as "used".
+static void paint_stack(StackRegion const& region, void const* paint_end) {
+    auto* lo = static_cast<char*>(region.overflow_limit);
+    auto* hi = static_cast<char*>(const_cast<void*>(paint_end));
+    if (lo && lo < hi) {
+        memset(lo, kStackPaintByte, static_cast<size_t>(hi - lo));
+    }
+}
+
+// Forward scan from the guard end for the first unpainted byte — O(unused
+// bytes), fine for audit builds. Returns the true peak in bytes measured
+// from `top` (the imp's entry SP), i.e. the same base the checkpoint
+// high-water uses.
+static size_t scan_stack_true_peak(StackRegion const& region, void const* top) {
+    auto const* lo = static_cast<unsigned char const*>(region.overflow_limit);
+    auto const* hi = static_cast<unsigned char const*>(top);
+    if (!lo || lo >= hi) return 0;
+    uint64_t pattern;
+    memset(&pattern, kStackPaintByte, sizeof(pattern));
+    auto const* p = lo;
+    while (p < hi && (reinterpret_cast<uintptr_t>(p) & 7) != 0) {
+        if (*p != kStackPaintByte) return static_cast<size_t>(hi - p);
+        ++p;
+    }
+    while (p + 8 <= hi) {
+        uint64_t w;
+        memcpy(&w, p, sizeof(w));
+        if (w != pattern) break;
+        p += 8;
+    }
+    while (p < hi && *p == kStackPaintByte) ++p;
+    return static_cast<size_t>(hi - p);
+}
+
+}  // namespace csp::detail
+#endif  // CSP_STACK_PAINT
+
+#ifdef CSP_ANALYSE_STACKS
+// 🎯T52.2: corpus metric counters — total spawns vs spawns that landed a
+// Small slot, dumped at exit when CSP_STACK_STATS is set (same idiom as
+// CSP_PROC_STATS in runtime.cpp). Compiled out with the analyser; the
+// consumer is scripts/stack_metric.py, which aggregates these lines across
+// the test-suite + examples corpus and ratchets the Small-slot rate.
+namespace {
+    std::atomic<size_t> g_spawn_total{0};
+    std::atomic<size_t> g_spawn_small{0};
+
+    void print_stack_stats() {
+        if (std::getenv("CSP_STACK_STATS") == nullptr) return;
+        size_t total = g_spawn_total.load(std::memory_order_relaxed);
+        size_t small = g_spawn_small.load(std::memory_order_relaxed);
+        // Bytes saved vs all-Default = Small spawns × the per-slot
+        // address-space footprint difference (physical pages are demand-
+        // committed/madvised either way; the footprint is the metric).
+        size_t saved = small *
+            (csp::detail::StackPool::slot_footprint_bytes(
+                 csp::detail::StackClass::Default) -
+             csp::detail::StackPool::slot_footprint_bytes(
+                 csp::detail::StackClass::Small));
+        fprintf(stderr,
+                "CSP_STACK_SPAWNS_TOTAL=%zu CSP_STACK_SPAWNS_SMALL=%zu "
+                "CSP_STACK_BYTES_SAVED=%zu\n",
+                total, small, saved);
+    }
+
+    void note_spawn_slot_class(bool small) {
+        [[maybe_unused]] static bool registered =
+            (std::atexit(print_stack_stats), true);
+        g_spawn_total.fetch_add(1, std::memory_order_relaxed);
+        if (small) g_spawn_small.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+#endif  // CSP_ANALYSE_STACKS
+
 
 namespace csp {
 
@@ -1828,6 +1940,18 @@ namespace csp {
         static void destroy_imp(Imp* imp) {
 #if CSP_TSAN
             if (imp->tsan_fiber_) __tsan_destroy_fiber(imp->tsan_fiber_);
+#endif
+#if CSP_STACK_PAINT
+            // 🎯T52.2: scan the painted slot for its low-water mark BEFORE
+            // the slot returns to the free list (release() below madvises
+            // the usable pages away). destroy_imp always runs on the OS
+            // thread that just switched away from the dying imp, so the
+            // scan is ordered after every frame the imp ever wrote.
+            if (imp->stk_ && imp->entry_fn_ && imp->entry_sp_) {
+                record_stack_true_peak(
+                    imp->entry_fn_,
+                    scan_stack_true_peak(imp->stk_, imp->entry_sp_));
+            }
 #endif
             bool was_daemon = imp->daemon_;
             auto region = imp->stk_;
@@ -2155,6 +2279,9 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
             slot_cls = StackClass::Small;
         }
     }
+    // 🎯T52.2 corpus metric: count every spawn and which slot class it
+    // landed (dumped at exit under CSP_STACK_STATS).
+    note_spawn_slot_class(slot_cls == StackClass::Small);
 #endif
 
     try {
@@ -2167,6 +2294,14 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         assert(((uintptr_t)imp % 16) == 0);
         auto* usable_base = static_cast<char*>(region.base) + page_sz;
         [[maybe_unused]] auto usable_size = static_cast<size_t>((char*)imp - usable_base);
+#if CSP_STACK_PAINT
+        // 🎯T52.2: paint the handed-out slot with the watermark sentinel.
+        // Per handout, not per slot creation — a reused slot still carries
+        // the previous occupant's frames. Must precede make_fcontext (the
+        // boot record it writes below `imp` counts as used bytes) and the
+        // warmup switch (which runs the new fiber's first frames).
+        paint_stack(region, imp);
+#endif
 #ifdef _WIN32
         // On Windows, pass only the initially committed stack size to
         // make_fcontext.  This sets NT_TIB StackLimit (saved in the

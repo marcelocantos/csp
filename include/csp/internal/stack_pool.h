@@ -110,6 +110,20 @@ public:
 #endif
     }
 
+    // Per-class slot footprint (guard + usable) in bytes — the address-space
+    // cost of one stack of that class. Used by the 🎯T52.2 corpus metric to
+    // compute bytes saved vs an all-Default allocation. Returns 0 on builds
+    // without distinct slot classes (Windows, sanitizers), where the metric
+    // is structurally zero.
+    static constexpr size_t slot_footprint_bytes(StackClass cls) {
+#if CSP_USE_ARENA_STACKS
+        return kArenaGeometry[static_cast<size_t>(cls)].slot_size;
+#else
+        (void)cls;
+        return 0;
+#endif
+    }
+
     // Total allocations served from the Small free list since process start.
     // Lock-free read intended for tests and observability; not exact under
     // concurrent allocation. Returns 0 on builds without distinct small
