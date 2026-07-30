@@ -50,10 +50,27 @@
 
 #include <csp/internal/csp_internal.h>
 #include <csp/internal/stack_pool.h>
+#include <csp/stack_analysis.h>
 
 #include <doctest/doctest.h>
 
 #include <atomic>
+
+// Detect sanitizers at compile time (same idiom as stack_analysis.test.cc):
+// instrumentation BLs into the ASan/TSan runtime force every analyser
+// result inexact, so the exact-result path below cannot be exercised.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#    define CSP_SANITIZED 1
+#  endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#  undef CSP_SANITIZED
+#  define CSP_SANITIZED 1
+#endif
+#ifndef CSP_SANITIZED
+#  define CSP_SANITIZED 0
+#endif
 
 namespace {
 
@@ -68,6 +85,13 @@ constexpr bool kArena =
 
 constexpr bool kAnalyseWired =
 #ifdef CSP_ANALYSE_STACKS
+    true;
+#else
+    false;
+#endif
+
+constexpr bool kExactAnalysable =
+#if defined(__aarch64__) && !CSP_SANITIZED
     true;
 #else
     false;
@@ -94,6 +118,25 @@ void probe_selection(void*) {
 void probe_profiling(void*) {
     csp::yield();
     g_sink_b = 2;
+    g_probe_ran.fetch_add(1, std::memory_order_relaxed);
+}
+
+// 🎯T52.4: analyser-EXACT entry, unique to the first-spawn test — a leaf
+// body with no runtime calls (no yield: a csp:: call is a BL into
+// unbounded runtime code, which would keep it inexact). The volatile
+// sentinel write keeps ICF from folding it into another EntryFn.
+volatile int g_sink_c = 0;
+
+// Portable noinline: this TU compiles on every platform (MSVC included),
+// even though the Small-slot assertions only run under arena + ANALYSE.
+#if defined(_MSC_VER)
+#define SIZING_NOINLINE __declspec(noinline)
+#else
+#define SIZING_NOINLINE __attribute__((noinline))
+#endif
+
+SIZING_NOINLINE void probe_async_exact(void*) {
+    g_sink_c = 3;
     g_probe_ran.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -172,6 +215,58 @@ TEST_CASE("profile-table-still-records-samples") {
     // do_switch sampled the imp's real depth at its yield checkpoint and
     // stored it — a strictly positive value the fix must not stop recording.
     CHECK(csp::detail::get_stack_high_water(fn) > 0);
+}
+
+// 🎯T52.4: the async-analysis contract. spawn() never analyses on the
+// spawn path: the FIRST spawn of an entry misses the fn-keyed result
+// cache, takes the Default slot, and enqueues the entry for the runtime's
+// analysis worker; once the worker has published (analysis_quiesce()),
+// a LATER spawn of the same entry hits the cache and — the entry being
+// exact and small — lands a Small slot.
+TEST_CASE("first-spawn-defaults-then-small-after-publication") {
+    if constexpr (!kArena || !kAnalyseWired || !kExactAnalysable) {
+        MESSAGE("Requires arena mode + -DCSP_ANALYSE_STACKS + an "
+                "exact-capable analyser (arm64, non-sanitizer); skipping.");
+        return;
+    }
+
+    auto* fn = static_cast<csp::internal::EntryFn>(&probe_async_exact);
+    auto* key = reinterpret_cast<const void*>(fn);
+
+    // Precondition: this entry is unique to this case, so nothing has
+    // published a result for it yet (the cached lookup returns the
+    // conservative miss sentinel).
+    auto pre = csp::analyze_stack_depth_cached(key);
+    REQUIRE_FALSE(pre.is_exact);
+
+    auto& pool = StackPool::instance();
+
+    // First spawn: cache miss → Default slot (and an enqueued request).
+    size_t small_before = pool.small_allocations();
+    g_probe_ran.store(0, std::memory_order_relaxed);
+    csp::internal::spawn(fn, nullptr);
+    csp::await_completion();
+    REQUIRE(g_probe_ran.load(std::memory_order_relaxed) == 1);
+    CHECK_MESSAGE(pool.small_allocations() - small_before == 0,
+        "the first spawn of an entry must take the Default slot — analysis "
+        "is asynchronous and cannot have published before spawn() chose");
+
+    // Drain the worker: the request enqueued above is now published.
+    csp::internal::analysis_quiesce();
+    auto post = csp::analyze_stack_depth_cached(key);
+    REQUIRE_MESSAGE(post.is_exact,
+        "analysis_quiesce() returned but the worker has not published an "
+        "exact result for a trivially exact leaf entry");
+
+    // Post-publication spawn: cache hit, exact and fitting → Small slot.
+    size_t small_mid = pool.small_allocations();
+    g_probe_ran.store(0, std::memory_order_relaxed);
+    csp::internal::spawn(fn, nullptr);
+    csp::await_completion();
+    REQUIRE(g_probe_ran.load(std::memory_order_relaxed) == 1);
+    CHECK_MESSAGE(pool.small_allocations() - small_mid == 1,
+        "a post-publication spawn of an exact, Small-fitting entry must "
+        "land a Small slot");
 }
 
 } // TEST_SUITE("StackSlotSizing")

@@ -1,5 +1,8 @@
 #include <csp/internal/runtime.h>
 #include <csp/csp.h>
+#ifdef CSP_ANALYSE_STACKS
+#include <csp/stack_analysis.h>
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -135,6 +138,16 @@ namespace csp {
             if (num_procs > 1) {
                 watchdog_ = std::thread([this] { watchdog_loop(); });
             }
+
+#ifdef CSP_ANALYSE_STACKS
+            // 🎯T52.4: runtime-owned async stack-analysis worker. spawn()'s
+            // lookup-only stub enqueues cache misses; this thread analyses
+            // them off imp stacks and publishes into the result cache.
+            // Started here (never lazily from the stub — thread creation
+            // allocates) and stopped in shutdown(), so repeated
+            // shutdown_runtime()+set_maxprocs() cycles restart it.
+            start_stack_analysis_worker();
+#endif
         }
 
         void Runtime::shutdown() {
@@ -200,6 +213,13 @@ namespace csp {
             // counters must not carry into the next epoch (🎯T36 / paper 34).
             live_gs.store(0, std::memory_order_release);
             daemon_gs.store(0, std::memory_order_release);
+
+#ifdef CSP_ANALYSE_STACKS
+            // 🎯T52.4: stop the async analysis worker — simple and
+            // unconditional (flag + wake + join). Pending requests are
+            // dropped; a later spawn of the same entry re-enqueues.
+            stop_stack_analysis_worker();
+#endif
         }
 
         void Runtime::notify_watchers() {

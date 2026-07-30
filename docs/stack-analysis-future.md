@@ -564,8 +564,9 @@ analyses, rather than an arbitrary constant.
 > **Status: cut** (2026-07-30 appraisal). A background symbol-table sweep
 > conflicts with the runtime's zero-syscall hot-path ethos (standing
 > analysis work and cache churn for functions that may never spawn), and
-> is superseded by the async-worker direction (🎯T52.4: Default-on-miss +
-> a dedicated analysis worker), which warms exactly the entries that are
+> is superseded by the async worker (🎯T52.4, **landed** — Default-on-miss
+> + a dedicated analysis worker; see the reference page's Pipeline and
+> Spawn-integration sections), which warms exactly the entries that are
 > actually spawned. Kept for design history.
 
 ### Problem (historical)
