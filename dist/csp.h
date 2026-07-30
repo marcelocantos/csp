@@ -9422,6 +9422,38 @@ stack_analysis analyze_stack_depth_cached(
     const void* data = nullptr,
     stack_analysis_options opts = {});
 
+namespace detail {
+
+// 🎯T52.4: the spawn-side async-analysis stub. Fn-keyed result-cache
+// lookup only — on a hit returns the published result; on a miss returns
+// the conservative {32 KiB, inexact} sentinel and enqueues `fn` on a
+// fixed-capacity MPSC ring for the analysis worker (ring-full = the
+// request is silently dropped; a later spawn of the same entry retries).
+// Allocation-free, never suspends, never analyses: this is the only
+// stack-analysis code that executes on imp stacks, and it must stay
+// walkable (test/stack_analysis.test.cc asserts is_exact on it).
+stack_analysis stack_analysis_lookup_or_request(const void* fn) noexcept;
+
+// 🎯T52.4 worker lifecycle, driven by Runtime::init()/shutdown() under
+// CSP_ANALYSE_STACKS. Idempotent; repeated shutdown+re-init cycles
+// restart the worker. The worker is a plain OS thread (not an imp): it
+// dequeues requests, runs the ordinary synchronous analysis on its own
+// full-size stack, and publishes through the spinlocked result caches.
+void start_stack_analysis_worker();
+void stop_stack_analysis_worker();
+
+} // namespace detail
+
+namespace internal {
+
+// 🎯T52.4 test hook: block until every analysis request enqueued before
+// this call has been dequeued and its result published (or the worker is
+// not running, in which case it returns immediately). Test-only; call
+// from a plain OS thread, not from inside an imp.
+void analysis_quiesce();
+
+} // namespace internal
+
 } // namespace csp
 
 /* csp/supervisor.h */

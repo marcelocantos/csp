@@ -745,22 +745,19 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         kSmallUsable > 0) {
         constexpr size_t kHeadroomFloor = 2 * 1024;
 
-        ::csp::stack_analysis_options opts;
-        // Profile-derived budget refines the magnitude of OP_BUDGET results
-        // when the walker can't resolve an indirect call. Recorded
-        // high-water + 50% margin replaces the flat 2 KB default; this is the
-        // indirect_call_budget surface promised by 🎯T3.4.4 (eval-time
-        // consumption keeps the program cache budget-agnostic). It never
-        // selects the slot class — only sharpens the analyser's own estimate,
-        // whose is_exact flag remains the sole gate below.
-        if (size_t hw = ::csp::detail::get_stack_high_water(start_f); hw > 0) {
-            size_t refined = hw + hw / 2;
-            if (refined > opts.indirect_call_budget) {
-                opts.indirect_call_budget = refined;
-            }
-        }
-        auto sa = ::csp::analyze_stack_depth_cached(
-            reinterpret_cast<const void*>(start_f), data, opts);
+        // 🎯T52.4: lookup-only async-analysis stub. On an fn-keyed cache hit
+        // the published result gates the slot class below; on a miss it
+        // returns the conservative sentinel (→ Default) and enqueues the
+        // entry for the runtime-owned analysis worker, so a LATER spawn of
+        // the same entry can hit. Allocation-free and never suspends — no
+        // analysis (and no profile-table mutex) runs on the spawn path; the
+        // 🎯T3.4.4 profile-derived indirect_call_budget refinement is applied
+        // by the worker at analysis time instead. Every published entry is a
+        // data == nullptr walk, which is a sound upper bound for any spawn
+        // `data` (an exact null-data result means no path depended on data;
+        // data-derived pruning only removes paths from the max).
+        auto sa = ::csp::detail::stack_analysis_lookup_or_request(
+            reinterpret_cast<const void*>(start_f));
         // 2× headroom + 2 KB absolute floor (ABI spill / signal frame).
         size_t needed = sa.max_depth * 2 + kHeadroomFloor + sizeof(Imp);
         // Small is gated strictly on a sound static upper bound. An inexact

@@ -2254,22 +2254,19 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         kSmallUsable > 0) {
         constexpr size_t kHeadroomFloor = 2 * 1024;
 
-        ::csp::stack_analysis_options opts;
-        // Profile-derived budget refines the magnitude of OP_BUDGET results
-        // when the walker can't resolve an indirect call. Recorded
-        // high-water + 50% margin replaces the flat 2 KB default; this is the
-        // indirect_call_budget surface promised by 🎯T3.4.4 (eval-time
-        // consumption keeps the program cache budget-agnostic). It never
-        // selects the slot class — only sharpens the analyser's own estimate,
-        // whose is_exact flag remains the sole gate below.
-        if (size_t hw = ::csp::detail::get_stack_high_water(start_f); hw > 0) {
-            size_t refined = hw + hw / 2;
-            if (refined > opts.indirect_call_budget) {
-                opts.indirect_call_budget = refined;
-            }
-        }
-        auto sa = ::csp::analyze_stack_depth_cached(
-            reinterpret_cast<const void*>(start_f), data, opts);
+        // 🎯T52.4: lookup-only async-analysis stub. On an fn-keyed cache hit
+        // the published result gates the slot class below; on a miss it
+        // returns the conservative sentinel (→ Default) and enqueues the
+        // entry for the runtime-owned analysis worker, so a LATER spawn of
+        // the same entry can hit. Allocation-free and never suspends — no
+        // analysis (and no profile-table mutex) runs on the spawn path; the
+        // 🎯T3.4.4 profile-derived indirect_call_budget refinement is applied
+        // by the worker at analysis time instead. Every published entry is a
+        // data == nullptr walk, which is a sound upper bound for any spawn
+        // `data` (an exact null-data result means no path depended on data;
+        // data-derived pruning only removes paths from the max).
+        auto sa = ::csp::detail::stack_analysis_lookup_or_request(
+            reinterpret_cast<const void*>(start_f));
         // 2× headroom + 2 KB absolute floor (ABI spill / signal frame).
         size_t needed = sa.max_depth * 2 + kHeadroomFloor + sizeof(Imp);
         // Small is gated strictly on a sound static upper bound. An inexact
@@ -4369,6 +4366,8 @@ fd_signal create_fd_writable(int fd) {
 } // namespace csp::detail
 
 /* runtime.cpp */
+#ifdef CSP_ANALYSE_STACKS
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -4498,6 +4497,16 @@ namespace csp {
             if (num_procs > 1) {
                 watchdog_ = std::thread([this] { watchdog_loop(); });
             }
+
+#ifdef CSP_ANALYSE_STACKS
+            // 🎯T52.4: runtime-owned async stack-analysis worker. spawn()'s
+            // lookup-only stub enqueues cache misses; this thread analyses
+            // them off imp stacks and publishes into the result cache.
+            // Started here (never lazily from the stub — thread creation
+            // allocates) and stopped in shutdown(), so repeated
+            // shutdown_runtime()+set_maxprocs() cycles restart it.
+            start_stack_analysis_worker();
+#endif
         }
 
         void Runtime::shutdown() {
@@ -4563,6 +4572,13 @@ namespace csp {
             // counters must not carry into the next epoch (🎯T36 / paper 34).
             live_gs.store(0, std::memory_order_release);
             daemon_gs.store(0, std::memory_order_release);
+
+#ifdef CSP_ANALYSE_STACKS
+            // 🎯T52.4: stop the async analysis worker — simple and
+            // unconditional (flag + wake + join). Pending requests are
+            // dropped; a later spawn of the same entry re-enqueues.
+            stop_stack_analysis_worker();
+#endif
         }
 
         void Runtime::notify_watchers() {
@@ -5208,6 +5224,19 @@ reader<int> notify(std::initializer_list<int> sigs) {
 
 #if defined(__aarch64__)
 
+#include <condition_variable>
+
+// 🎯T52.4: the analysis worker consults the profile high-water table
+// (defined in src/csp.cc) to refine the indirect-call budget. Local
+// declarations avoid pulling the full csp_internal.h into this TU; the
+// alias is identical to the one in csp.h, so the amalgamated single-TU
+// build sees one consistent declaration.
+namespace csp::internal {
+using EntryFn = void (*)(void*);
+} // namespace csp::internal
+namespace csp::detail {
+size_t get_stack_high_water(::csp::internal::EntryFn fn);
+} // namespace csp::detail
 
 namespace csp {
 
@@ -7013,6 +7042,256 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
     return {32u << 10, false};
 }
 
+// --- 🎯T52.4: async analysis (Default-on-miss + worker thread) ---
+//
+// Tiered-JIT shape, minus deoptimization (Default is unconditionally
+// safe): the spawn path consults the fn-keyed result cache through the
+// allocation-free stub below; on a miss it takes the Default slot
+// immediately and enqueues the entry on a fixed-capacity MPSC ring. A
+// dedicated runtime-owned OS thread (NOT an imp — a real full-size
+// stack) dequeues, runs the ordinary synchronous analysis, and publishes
+// through the existing spinlocked caches. First-spawn-per-entry misses
+// Small; every later spawn of a published exact-and-fitting entry hits.
+//
+// Only the stub executes on imp stacks, so only the stub must remain
+// allocation-free and walkable. The worker (and everything it calls) may
+// use ordinary containers.
+
+namespace {
+
+// Fixed-capacity MPSC request ring (Vyukov bounded-queue cells). Static
+// storage, no allocation on either side; try-push fails when full (the
+// request is dropped — a later spawn of the same entry retries).
+constexpr size_t kAnalysisQueueCap = 256;  // power of two
+
+struct analysis_queue_cell {
+    std::atomic<size_t> seq;
+    const void* fn;
+};
+
+analysis_queue_cell g_analysis_queue[kAnalysisQueueCap];
+std::atomic<size_t> g_analysis_enqueue_pos{0};
+std::atomic<size_t> g_analysis_dequeue_pos{0};
+
+// One-time sequence-number init (runs during static initialization,
+// strictly before any spawn can enqueue).
+struct analysis_queue_init {
+    analysis_queue_init() {
+        for (size_t i = 0; i < kAnalysisQueueCap; ++i) {
+            g_analysis_queue[i].seq.store(i, std::memory_order_relaxed);
+        }
+    }
+} g_analysis_queue_init;
+
+// Multi-producer push. Pure inline atomics — this is part of the spawn
+// stub's walk corpus, so it must contain no BL to malloc or any other
+// unwalkable callee.
+bool analysis_queue_push(const void* fn) noexcept {
+    size_t pos = g_analysis_enqueue_pos.load(std::memory_order_relaxed);
+    for (;;) {
+        auto& cell = g_analysis_queue[pos & (kAnalysisQueueCap - 1)];
+        size_t seq = cell.seq.load(std::memory_order_acquire);
+        auto dif = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos);
+        if (dif == 0) {
+            if (g_analysis_enqueue_pos.compare_exchange_weak(
+                    pos, pos + 1, std::memory_order_relaxed)) {
+                cell.fn = fn;
+                cell.seq.store(pos + 1, std::memory_order_release);
+                return true;
+            }
+        } else if (dif < 0) {
+            return false;  // full
+        } else {
+            pos = g_analysis_enqueue_pos.load(std::memory_order_relaxed);
+        }
+    }
+}
+
+// Single-consumer pop (worker thread only).
+bool analysis_queue_pop(const void*& fn) noexcept {
+    size_t pos = g_analysis_dequeue_pos.load(std::memory_order_relaxed);
+    for (;;) {
+        auto& cell = g_analysis_queue[pos & (kAnalysisQueueCap - 1)];
+        size_t seq = cell.seq.load(std::memory_order_acquire);
+        auto dif = static_cast<intptr_t>(seq) -
+                   static_cast<intptr_t>(pos + 1);
+        if (dif == 0) {
+            if (g_analysis_dequeue_pos.compare_exchange_weak(
+                    pos, pos + 1, std::memory_order_relaxed)) {
+                fn = cell.fn;
+                cell.seq.store(pos + kAnalysisQueueCap,
+                               std::memory_order_release);
+                return true;
+            }
+        } else if (dif < 0) {
+            return false;  // empty
+        } else {
+            pos = g_analysis_dequeue_pos.load(std::memory_order_relaxed);
+        }
+    }
+}
+
+bool analysis_queue_empty() noexcept {
+    return g_analysis_dequeue_pos.load(std::memory_order_seq_cst) ==
+           g_analysis_enqueue_pos.load(std::memory_order_seq_cst);
+}
+
+// Worker state. Heap-allocated once and deliberately leaked: the worker
+// is stopped by Runtime::shutdown()/~Runtime(), whose static-destruction
+// order relative to this TU's globals is unspecified — a static
+// std::thread/condition_variable here could be destroyed while the
+// worker still runs (std::terminate / UB). A function-local static
+// pointer keeps the state reachable (no LeakSanitizer report) and
+// trivially immortal.
+struct analysis_worker_state {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool stop = false;
+    bool running = false;
+    std::thread thr;
+};
+
+analysis_worker_state& worker_state() {
+    static auto* s = new analysis_worker_state();
+    return *s;
+}
+
+// True between a dequeue and the publication of that request's result,
+// so analysis_quiesce() can distinguish "queue empty" from "drained and
+// published".
+std::atomic<bool> g_analysis_in_flight{false};
+
+void analyse_and_publish(const void* fn) {
+    {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        if (g_eval_cache.find(fn)) return;  // already published
+    }
+    stack_analysis_options opts;
+    // 🎯T3.4.4 profile feedback, applied worker-side: a recorded
+    // high-water (+50% margin) replaces the flat default budget for
+    // unresolved indirect edges. It only sharpens the magnitude of
+    // inexact results; is_exact remains the sole Small gate.
+    if (size_t hw = ::csp::detail::get_stack_high_water(
+            reinterpret_cast<::csp::internal::EntryFn>(
+                const_cast<void*>(fn)));
+        hw > 0) {
+        size_t refined = hw + hw / 2;
+        if (refined > opts.indirect_call_budget) {
+            opts.indirect_call_budget = refined;
+        }
+    }
+    // eval_iterative publishes the fn-keyed root result into g_eval_cache
+    // on completion (data == nullptr path).
+    (void)analyze_stack_depth(fn, nullptr, opts);
+}
+
+void analysis_worker_main() {
+    auto& ws = worker_state();
+    for (;;) {
+        // Drain. in_flight is raised before each pop so quiesce() never
+        // observes {queue empty, not in flight} between a dequeue and its
+        // publication.
+        for (;;) {
+            g_analysis_in_flight.store(true, std::memory_order_seq_cst);
+            const void* fn = nullptr;
+            if (!analysis_queue_pop(fn)) {
+                g_analysis_in_flight.store(false, std::memory_order_seq_cst);
+                break;
+            }
+            analyse_and_publish(fn);
+            g_analysis_in_flight.store(false, std::memory_order_seq_cst);
+        }
+        // Park. Timed wait instead of producer-side notification: the
+        // spawn stub must stay walkable (a condvar/futex wake is a BL
+        // into libc++/libc, which would force the stub inexact), so
+        // producers never signal — the worker polls. 10 ms of publish
+        // latency is irrelevant to the density story (first-spawn misses
+        // Small by design), and an idle condvar timeout costs ~nothing.
+        std::unique_lock<std::mutex> lk(ws.mu);
+        if (ws.stop) return;
+        ws.cv.wait_for(lk, std::chrono::milliseconds(10));
+        if (ws.stop) return;
+    }
+}
+
+} // anonymous namespace
+
+namespace detail {
+
+stack_analysis stack_analysis_lookup_or_request(const void* fn) noexcept {
+    // Fn-keyed lookup. Every published entry is an unspecialised
+    // (data == nullptr) walk, which is a sound upper bound for ANY spawn
+    // data: an exact null-data result means no path depended on data
+    // (data-dependent calls budget to inexact without data), and data-
+    // derived CONST pruning only ever removes paths from the max.
+    {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        if (auto* p = g_eval_cache.find(fn)) return *p;
+    }
+    // Miss: request async analysis (dropped when the ring is full — a
+    // later spawn retries) and stand on the Default-slot sentinel.
+    analysis_queue_push(fn);
+    return {32u << 10, false};
+}
+
+void start_stack_analysis_worker() {
+    auto& ws = worker_state();
+    std::lock_guard<std::mutex> lk(ws.mu);
+    if (ws.running) return;
+    // Stop the worker at exit BEFORE any static destructor can run. The
+    // worker touches this TU's static caches (g_cache / g_eval_cache) and
+    // csp.cc's profile table; their destruction order relative to
+    // runtime.cpp's g_runtime (whose ~Runtime also stops the worker) is
+    // unspecified, and a worker mid-analysis after ~ptr_map is a
+    // use-after-destroy (observed: chat_room SIGABRT, worker freeing a
+    // destroyed g_cache slot during grow()). atexit handlers and static
+    // destructors share one finalization list run in reverse registration
+    // order; this registration happens at first runtime init — after all
+    // static initialization — so it fires before every static destructor.
+    static bool atexit_registered =
+        (std::atexit(stop_stack_analysis_worker), true);
+    (void)atexit_registered;
+    ws.stop = false;
+    ws.thr = std::thread(analysis_worker_main);
+    ws.running = true;
+}
+
+void stop_stack_analysis_worker() {
+    auto& ws = worker_state();
+    {
+        std::lock_guard<std::mutex> lk(ws.mu);
+        if (!ws.running) return;
+        ws.stop = true;
+        ws.cv.notify_one();
+    }
+    ws.thr.join();
+    std::lock_guard<std::mutex> lk(ws.mu);
+    ws.running = false;
+    ws.stop = false;
+}
+
+} // namespace detail
+
+namespace internal {
+
+void analysis_quiesce() {
+    auto& ws = worker_state();
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(ws.mu);
+            if (!ws.running) return;
+            ws.cv.notify_one();  // cut the worker's poll interval short
+        }
+        if (analysis_queue_empty() &&
+            !g_analysis_in_flight.load(std::memory_order_seq_cst)) {
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+}
+
+} // namespace internal
+
 } // namespace csp
 
 #else // !__aarch64__
@@ -7029,6 +7308,26 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
                                           stack_analysis_options opts) {
     return {32u << 10, false};
 }
+
+namespace detail {
+
+// 🎯T52.4: no walker on this architecture — the stub is the same
+// conservative sentinel as the sync API, and there is nothing for a
+// worker to compute, so the lifecycle hooks are no-ops.
+stack_analysis stack_analysis_lookup_or_request(const void*) noexcept {
+    return {32u << 10, false};
+}
+
+void start_stack_analysis_worker() {}
+void stop_stack_analysis_worker() {}
+
+} // namespace detail
+
+namespace internal {
+
+void analysis_quiesce() {}
+
+} // namespace internal
 
 } // namespace csp
 

@@ -683,6 +683,27 @@ TEST_CASE("CONST-arg-prunes-across-BL") {
             ", is_exact: ", result.is_exact);
 }
 
+// ---- 🎯T52.4: the async-analysis stub must itself be walkable ----
+//
+// stack_analysis_lookup_or_request is the ONLY stack-analysis code that
+// executes on imp stacks (spawn calls it under CSP_ANALYSE_STACKS), so it
+// is the only analysis code left in spawn's own walk corpus. It must stay
+// allocation-free — spinlock + open-addressing lookup + fixed-capacity
+// ring push, all pure inline atomics/arithmetic, no BL to malloc or any
+// out-of-text callee — which the analyser itself can verify: walking the
+// stub must produce an EXACT result. Its measured bound is documented in
+// docs/reference/stack-analysis.md (it feeds 🎯T52.3's C_shell audit).
+TEST_CASE("Async-stub-is-walkable-and-exact") {
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(
+            &csp::detail::stack_analysis_lookup_or_request));
+    CHECK(r.is_exact);
+    // A leaf-ish lookup body: a small fixed frame, well under a page.
+    CHECK(r.max_depth < 1024);
+    MESSAGE("stack_analysis_lookup_or_request depth: ", r.max_depth,
+            ", is_exact: ", r.is_exact);
+}
+
 } // TEST_SUITE
 
 #endif // !CSP_SANITIZED
