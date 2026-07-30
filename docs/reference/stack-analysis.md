@@ -1,9 +1,13 @@
 # Stack Depth Analysis
 
 Canonical system note for CSP’s spawn-time stack depth analyser.
-**As of v0.27.0** (ARM64 walker through 🎯T3.10). Design history lives in
-the papers listed at the end; this page is the authoritative *as shipped*
-picture.
+**As of v0.28.0+** (ARM64 walker through 🎯T3.10, plus the v0.28.0
+audit-campaign fix — `BR` tail-call resolution now respects the
+instruction budget via the shared `resolve_indirect_callee` helper — and
+the 🎯T52.1 structural-soundness pass: closed-world SP-write detection,
+decoded FP/SIMD + single-register writeback, wired `max_call_depth`).
+Design history lives in the papers listed at the end; this page is the
+authoritative *as shipped* picture.
 
 Header: `#include <csp/stack_analysis.h>`  
 Implementation: `src/stack_analysis_arm64.cc`  
@@ -66,7 +70,7 @@ struct stack_analysis {
 
 struct stack_analysis_options {
     size_t indirect_call_budget = 2048;  // bytes per unresolved BLR/BR
-    int max_call_depth = 64;
+    int max_call_depth = 64;             // clamped to [1, 64] (hard cap)
     size_t max_instructions = 100000;
 };
 
@@ -89,6 +93,9 @@ stack_analysis analyze_stack_depth_cached(
   pointers and vtable-like patterns from live memory.
 - `is_exact == false` means the result is a **conservative over-approximation**
   that includes flat budgets for unresolved edges, not a precise frame size.
+- `max_call_depth` (🎯T52.1) is wired to the evaluator’s on-stack cycle-set
+  capacity (hard compile-time cap 64). A call chain deeper than the limit is
+  refused exactly like a detected recursion cycle: budget + `is_exact=false`.
 
 ---
 
@@ -142,10 +149,11 @@ Important implementation properties:
 
 | Class | Instructions / forms |
 |---|---|
-| Frame | `SUB/ADD SP, SP, #imm`; `STP`/`LDP` pre/post-index (64-bit GP) |
+| Frame | `SUB/ADD SP, SP, #imm`; `STP`/`LDP` pre/post-index writeback on SP — GP **and FP/SIMD** pairs (W/X, S/D/Q); single-register `STR`/`LDR` pre/post-index writeback on SP, all widths (🎯T52.1) |
+| Unmodelled SP writes | Closed-world detector (🎯T52.1): any other SP-writing encoding class (`MOV SP, Xn` family, add/sub extended incl. `SUB SP, SP, Xn`, AdvSIMD structure post-index, MTE forms) terminates the path with budget + `is_exact=false` |
 | Return | `RET` |
 | Direct call | `BL offset` → callee compile + eval |
-| Indirect call / tail | `BLR Xn`, `BR Xn` |
+| Indirect call / tail | `BLR Xn`, `BR Xn` (since v0.28.0 `BR` respects the over-budget cap like `BL`/`BLR`, via the shared `resolve_indirect_callee` helper) |
 | Branches | `B`, `B.cond`, `CBZ`/`CBNZ`, `TBZ`/`TBNZ` |
 
 ### Register provenance and data context
@@ -188,6 +196,14 @@ Out-of-bounds or foreign targets fall back to budget (sound over-approx).
 4. **Under sanitizers**, instrumentation stubs (`__asan_*`, `__tsan_*`) live
    outside the walker’s text bound → forced inexact. Soundness still holds;
    tightness is not meaningful there.
+5. **No silent SP drift** (🎯T52.1). Any instruction that can architecturally
+   write SP and is not explicitly decoded is refused by a closed-world
+   structural detector (budget + `is_exact=false`) — the invariant does not
+   depend on the modelled enumeration staying complete.
+6. **Cycle detection never degrades** (🎯T52.1). The evaluator’s on-stack set
+   reports capacity exhaustion; past `max_call_depth` (≤ 64) a callee is
+   refused exactly like a detected cycle instead of silently escaping the
+   set.
 
 Hard CI gate (`test/stack_analysis_audit.test.cc`): if `is_exact &&
 analyser_estimate + floor < high_water`, the build fails.
@@ -262,11 +278,15 @@ Still open (not regressions of the bullets above):
 |---|---|
 | **x86_64 / non-ARM64** | Stub 32 KiB inexact only |
 | **Type-erased spawn trampoline** | Dominant reason real workloads stay Default |
-| **FP/SIMD stack ops** (`STP Q…`) | Silent ignore → rare under-count if those dominate |
-| **Dynamic SP** (`SUB SP, SP, Xn`) | Immediate budget path |
+| **Dynamic SP** (`SUB SP, SP, Xn`, and the `mov x9, sp; sub xN, x9, x8; mov sp, xN` sequence Clang actually emits for runtime `alloca`) | Immediate budget path (via the closed-world SP-write detector; pre-🎯T52.1 the MOV-to-SP lowering was invisible — a 64 KiB alloca analysed as `{16, exact}`) |
 | **Switch / jump tables** | Not followed as tables (only via resolved BLR/BR) |
 | **Mutual indirect recursion fixed-point** | Explicitly out of scope for T3.10 |
 | **Off by default** | Product builds need `CSP_ANALYSE_STACKS` for any effect |
+
+(FP/SIMD stack ops — `STP Q…` writeback and friends — were a gap here until
+🎯T52.1: they were silently ignored, drifting the SP delta *in either
+direction* inside exact results. They are now decoded exactly; any remaining
+unmodelled SP-writing encoding is refused, not skipped.)
 
 Forward-looking design notes (not current truth):  
 [`docs/stack-analysis-future.md`](../stack-analysis-future.md).

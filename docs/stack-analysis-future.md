@@ -18,7 +18,7 @@ the open-gap table in the reference page still lists them.
 |-----|--------|
 | Type-erased `csp::spawn(lambda)` trampoline | Main reason real imps stay Default |
 | x86_64 walker | Still a 32 KiB inexact stub |
-| FP/SIMD stack ops, dynamic `SUB SP, Xn`, jump tables | Still limited |
+| Dynamic `SUB SP, Xn`, jump tables | Still limited (FP/SIMD stack ops landed in 🎯T52.1 — see §3/§4) |
 | Mutual indirect-recursion fixed point | Explicitly deferred |
 
 ---
@@ -165,7 +165,16 @@ optimized code. Covers:
 
 ## 3. FP/SIMD stack operations
 
-### Problem
+> **Status: landed** (🎯T52.1, 2026-07-30). The full load/store-pair
+> writeback class — GP *and* FP/SIMD, W/X/S/D/Q, pre- and post-indexed —
+> is decoded structurally (one handler keyed on the class encoding, scale
+> from V/opc), covered by a hand-written asm audit fixture whose exact
+> peak is asserted. Anything in the class that is not decodable (STGP,
+> unallocated opc) is refused by the closed-world SP-write detector
+> (budget + `is_exact=false`) rather than skipped. Kept for design
+> history.
+
+### Problem (historical)
 
 Functions that save/restore NEON registers use 128-bit STP/LDP:
 
@@ -205,7 +214,12 @@ GP STP/LDP handlers with different bit patterns and scale factors.
 
 ## 4. Pre/post-indexed STR/LDR (single-register)
 
-### Problem
+> **Status: landed** (🎯T52.1, 2026-07-30). The load/store register imm9
+> writeback class (GP and FP/SIMD, all widths) is decoded; asm audit
+> fixtures assert exact depths for the X/W/D/Q forms. Kept for design
+> history.
+
+### Problem (historical)
 
 The compiler sometimes uses single-register pre/post-indexed forms instead
 of paired STP/LDP:
@@ -240,6 +254,11 @@ push/pop, typically for leaf functions or when only LR needs saving.
 ---
 
 ## 5. Switch/jump table support
+
+> **Status: deferred** (2026-07-30 appraisal). Pending the 🎯T52.2 corpus
+> metric — until the Small-rate baseline shows how often jump tables are
+> the blocking inexactness source on real workloads, the bounded-table-scan
+> risk (reads past an under-determined table bound) isn't worth taking.
 
 ### Problem
 
@@ -422,7 +441,14 @@ hand-coding each pattern.
 
 ## 9. Improved budget heuristics
 
-### Problem
+> **Status: cut** (2026-07-30 appraisal). Budget *magnitude* has no
+> consumer: any budget contribution clears `is_exact`, and an inexact
+> result always selects the Default slot — tiering the constant changes
+> nothing downstream. The "recursive cycle → 0" row was also unsound as
+> stated (a cycle's frames do consume stack; only the *analysis* is
+> cut off there). Kept for design history.
+
+### Problem (historical)
 
 When the analyzer can't resolve a path, it assigns a flat
 `indirect_call_budget` (default 2048 bytes). This is either too generous
@@ -450,7 +476,14 @@ analyses, rather than an arbitrary constant.
 
 ## 10. Incremental analysis and warm-up
 
-### Problem
+> **Status: cut** (2026-07-30 appraisal). A background symbol-table sweep
+> conflicts with the runtime's zero-syscall hot-path ethos (standing
+> analysis work and cache churn for functions that may never spawn), and
+> is superseded by the async-worker direction (🎯T52.4: Default-on-miss +
+> a dedicated analysis worker), which warms exactly the entries that are
+> actually spawned. Kept for design history.
+
+### Problem (historical)
 
 `analyze_stack_depth` is called from system-thread spawns (which can
 afford the cost) but `analyze_stack_depth_cached` is used for
@@ -632,7 +665,7 @@ in ~5 ns.
 | 10 | Incremental warm-up | Medium | Medium | None |
 | 8 | x86_64 support | Large | High | None (parallel track) |
 
-Sections 3 and 4 are mechanical additions with immediate payoff — they
-should be done first. Section 2 (ADRP) unlocks the most inexact paths in
-optimized code and enables section 5 (jump tables). Section 8 (x86_64) is
-independent and can proceed in parallel.
+Sections 3 and 4 **landed** in 🎯T52.1 (2026-07-30); sections 9 and 10 are
+**cut** and section 5 is **deferred** pending the 🎯T52.2 corpus metric —
+see the per-section status notes. Section 2 (ADRP) landed earlier
+(🎯T3.4.2). Section 8 (x86_64) is independent and can proceed in parallel.

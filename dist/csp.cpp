@@ -5202,18 +5202,31 @@ public:
 };
 
 // Fixed-capacity linear-scan set for cycle detection (bounded by call depth).
+//
+// 🎯T52.1: `limit` wires stack_analysis_options::max_call_depth to the
+// on-stack capacity (clamped to the compile-time MAX). insert() reports
+// failure when the set is full; the caller must treat a failed insert
+// exactly like a detected cycle — a silently dropped entry would let a
+// cycle among un-inserted functions evade contains() and degrade cycle
+// detection past the capacity.
 class small_ptr_set {
     static constexpr int MAX = 64;
     const void* data_[MAX];
     int size_ = 0;
+    int limit_;
 public:
+    explicit small_ptr_set(int limit = MAX)
+        : limit_(limit < 1 ? 1 : (limit > MAX ? MAX : limit)) {}
     bool contains(const void* p) const {
         for (int i = 0; i < size_; i++)
             if (data_[i] == p) return true;
         return false;
     }
-    void insert(const void* p) {
-        if (size_ < MAX) data_[size_++] = p;
+    // Returns false (and does not insert) when the set is at capacity.
+    [[nodiscard]] bool insert(const void* p) {
+        if (size_ >= limit_) return false;
+        data_[size_++] = p;
+        return true;
     }
     void erase(const void* p) {
         for (int i = 0; i < size_; i++) {
@@ -5825,6 +5838,50 @@ expr_ptr resolve_indirect_callee(
     return expr::make_budget(opts.indirect_call_budget);
 }
 
+// 🎯T52.1: closed-world SP-write detector.
+//
+// The walker models the common SP-adjusting forms inline (SUB/ADD SP #imm,
+// pair and single-register writeback on SP). The soundness invariant is
+// stronger than that enumeration: ARM64 can architecturally write SP only
+// through a bounded set of encoding *classes*, so classifying those classes
+// structurally guarantees that any SP-writing instruction the decode loop
+// does not model is refused (budget + is_exact=false) instead of silently
+// drifting the tracked SP delta — including future encodings inside these
+// classes. Anything outside the classes below cannot write SP. Classes:
+//   a. Add/subtract (immediate), incl. the MTE tag variants ADDG/SUBG and
+//      the MOV to/from SP alias — Rd=SP when not flag-setting.
+//   b. Add/subtract (extended register), incl. SUB SP, SP, Xn — Rd=SP when
+//      not flag-setting. (The shifted-register forms use XZR, never SP.)
+//   c. Load/store pair with pre/post-index writeback — Rn=SP.
+//   d. Load/store register (imm9) with pre/post-index writeback — Rn=SP.
+//   e. AdvSIMD load/store structures (LD1/ST1 etc.), post-indexed — Rn=SP.
+//   f. MTE store-tag family (STG/STZG/ST2G/STZ2G), pre/post-index — Rn=SP.
+//   g. IRG Xd|SP, Xn|SP — Rd=SP.
+// Classes c and d overlap the modelled writeback handlers; keeping them
+// here is deliberate so the detector stands alone as the closed world.
+bool writes_sp(uint32_t inst) {
+    uint32_t rd = inst & 0x1F;
+    uint32_t rn = (inst >> 5) & 0x1F;
+    bool flags = (inst & 0x20000000) != 0;  // S bit: register 31 is XZR
+    // a. Add/subtract (immediate) / (immediate, with tags): bits[28:24]=10001.
+    if (match(inst, 0x1F000000, 0x11000000) && rd == 31 && !flags) return true;
+    // b. Add/subtract (extended register): bits[28:21]=01011001.
+    if (match(inst, 0x1FE00000, 0x0B200000) && rd == 31 && !flags) return true;
+    // c. Load/store pair writeback: bits[29:27]=101, bit25=0, bit23=1.
+    if (match(inst, 0x3A800000, 0x28800000) && rn == 31) return true;
+    // d. Load/store register imm9 writeback: bits[29:27]=111, bits[25:24]=00,
+    //    bit21=0, bit10=1.
+    if (match(inst, 0x3B200400, 0x38000400) && rn == 31) return true;
+    // e. AdvSIMD load/store structures, post-indexed: bit31=0,
+    //    bits[29:25]=00110, bit23=1.
+    if (match(inst, 0xBE800000, 0x0C800000) && rn == 31) return true;
+    // f. MTE store-tag writeback: bits[31:24]=11011001, bit21=1, bit10=1.
+    if (match(inst, 0xFF200400, 0xD9200400) && rn == 31) return true;
+    // g. IRG: bits[31:21]=10011010110, bits[15:10]=000100.
+    if (match(inst, 0xFFE0FC00, 0x9AC01000) && rd == 31) return true;
+    return false;
+}
+
 // Walk instructions iteratively, returning one expression per completed path.
 // At conditional branches, both paths are pushed to a worklist instead of
 // recursing.  BL instructions always emit CALL_DIRECT — callee resolution
@@ -5903,24 +5960,58 @@ std::vector<expr_ptr> walk(
                 continue;
             }
 
-            // --- STP pre-indexed [SP, #imm]! (64-bit GP) ---
-            if (match(inst, 0xFFC003E0, 0xA9800000 | (31 << 5))) {
-                int32_t imm7 = (inst >> 15) & 0x7F;
-                int64_t offset = sign_extend(imm7, 7) * 8;
-                state.sp_delta += offset;
-                state.pc++;
-                continue;
+            // --- STP/LDP pre/post-indexed writeback on SP (GP and FP/SIMD) ---
+            // 🎯T52.1 (future doc §3): the full load/store-pair writeback
+            // class, not just the 64-bit GP forms. Class match: bits[29:27]
+            // = 101 (load/store pair), bit25 = 0, bit23 = 1 (post-index 001
+            // / pre-index 011 in bits[25:23]); Rn = SP makes the base
+            // writeback an SP adjustment of sign_extend(imm7) * scale.
+            // Scale: V=1 (FP/SIMD) → 4 << opc (S/D/Q pairs); V=0 → 8 for X
+            // pairs (opc=10), 4 for W pairs (opc=00) and LDPSW (opc=01
+            // loads). The remaining combinations — opc=11 (unallocated) and
+            // opc=01 stores (STGP, an MTE store with a ×16 scale) — are not
+            // decoded; they fall through to the closed-world SP-write
+            // detector below and force the sound inexact posture.
+            if (match(inst, 0x3A800000, 0x28800000) &&
+                ((inst >> 5) & 0x1F) == 31) {
+                uint32_t opc = inst >> 30;
+                bool simd = (inst >> 26) & 1;
+                bool load = (inst >> 22) & 1;
+                if (opc != 3 && (simd || opc != 1 || load)) {
+                    int64_t scale =
+                        simd ? (int64_t{4} << opc) : (opc == 2 ? 8 : 4);
+                    int32_t imm7 = (inst >> 15) & 0x7F;
+                    state.sp_delta += sign_extend(imm7, 7) * scale;
+                    if (!simd && load) {
+                        uint32_t rt = inst & 0x1F;
+                        uint32_t rt2 = (inst >> 10) & 0x1F;
+                        if (rt < 31) state.regs[rt].origin = reg_state::UNKNOWN;
+                        if (rt2 < 31) state.regs[rt2].origin = reg_state::UNKNOWN;
+                    }
+                    state.pc++;
+                    continue;
+                }
+                // Not decodable: fall through to the SP-write detector.
             }
 
-            // --- LDP post-indexed [SP], #imm (64-bit GP) ---
-            if (match(inst, 0xFFC003E0, 0xA8C00000 | (31 << 5))) {
-                int32_t imm7 = (inst >> 15) & 0x7F;
-                int64_t offset = sign_extend(imm7, 7) * 8;
-                state.sp_delta += offset;
-                uint32_t rt = inst & 0x1F;
-                uint32_t rt2 = (inst >> 10) & 0x1F;
-                if (rt < 31) state.regs[rt].origin = reg_state::UNKNOWN;
-                if (rt2 < 31) state.regs[rt2].origin = reg_state::UNKNOWN;
+            // --- STR/LDR (single register) pre/post-indexed writeback on SP ---
+            // 🎯T52.1 (future doc §4): load/store register imm9 writeback
+            // class. Class match: bits[29:27] = 111, bits[25:24] = 00,
+            // bit21 = 0, bit10 = 1 (post-index 01 / pre-index 11 in
+            // bits[11:10]; the bit10=0 forms — unscaled LDUR/STUR and
+            // unprivileged LDTR/STTR — have no writeback). Covers GP and
+            // FP/SIMD single-register forms of every width; imm9 is
+            // unscaled for all of them.
+            if (match(inst, 0x3B200400, 0x38000400) &&
+                ((inst >> 5) & 0x1F) == 31) {
+                int32_t imm9 = (inst >> 12) & 0x1FF;
+                state.sp_delta += sign_extend(imm9, 9);
+                bool simd = (inst >> 26) & 1;
+                uint32_t opc = (inst >> 22) & 0x3;
+                if (!simd && opc != 0) {  // GP load forms write Rt
+                    uint32_t rt = inst & 0x1F;
+                    if (rt < 31) state.regs[rt].origin = reg_state::UNKNOWN;
+                }
                 state.pc++;
                 continue;
             }
@@ -6160,13 +6251,10 @@ std::vector<expr_ptr> walk(
                 break;
             }
 
-            // --- SUB SP, SP, Xn (register-based stack adjustment) ---
-            if (match(inst, 0xFF0003FF, 0xCB0003FF)) {
-                path_results.push_back(expr::make_max(
-                    std::move(result),
-                    expr::make_budget(opts.indirect_call_budget)));
-                break;
-            }
+            // (SUB SP, SP, Xn — register-based dynamic stack adjustment —
+            // assembles to the add/sub extended-register class with Rd=SP
+            // and is handled by the closed-world SP-write detector below:
+            // immediate budget path, is_exact=false.)
 
             // --- Register tracking: LDR Xt, [Xn, #imm] (64-bit, unsigned offset) ---
             if (match(inst, 0xFFC00000, 0xF9400000)) {
@@ -6323,7 +6411,10 @@ std::vector<expr_ptr> walk(
 
             // --- Register tracking: ADD Xd, Xn, #imm ---
             // Note: must check AFTER ADD SP,SP,#imm (which has Rd=Rn=SP).
-            if (match(inst, 0xFF000000, 0x91000000)) {
+            // Rd=SP with Rn!=SP (the MOV SP, Xn alias family) is an
+            // unmodelled SP write — excluded here so it reaches the
+            // closed-world SP-write detector below (🎯T52.1).
+            if (match(inst, 0xFF000000, 0x91000000) && (inst & 0x1F) != 31) {
                 uint32_t rd = inst & 0x1F;
                 uint32_t rn = (inst >> 5) & 0x1F;
                 uint32_t imm12 = (inst >> 10) & 0xFFF;
@@ -6425,6 +6516,23 @@ std::vector<expr_ptr> walk(
                 continue;
             }
 
+            // --- Closed-world SP-write refusal (🎯T52.1) ---
+            // Any instruction that can write SP and was not decoded above
+            // leaves the tracked SP delta meaningless from here on. Sound
+            // posture: terminate the path with the depth reached so far
+            // plus the indirect-call budget (covering plausible further
+            // growth); the BUDGET term clears is_exact at eval time.
+            if (writes_sp(inst)) {
+                path_results.push_back(expr::make_max(
+                    std::move(result),
+                    expr::make_max(
+                        expr::make_const(high_water),
+                        expr::make_add(
+                            expr::make_const(cur_depth),
+                            expr::make_budget(opts.indirect_call_budget)))));
+                break;
+            }
+
             // --- Any other instruction: check if it writes a GP register ---
             // Conservative: mark destination register as unknown for common
             // instruction formats that write to Rd at bits [4:0].
@@ -6522,7 +6630,10 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
         bool cacheable;          // 🎯T3.10: store result keyed by fn only if true
     };
     std::vector<eval_frame> call_stack;
-    small_ptr_set on_stack;  // cycle detection
+    // Cycle detection. 🎯T52.1: capacity = opts.max_call_depth (clamped to
+    // the set's compile-time cap of 64), so the option is the wired
+    // call-following depth limit.
+    small_ptr_set on_stack(opts.max_call_depth);
 
     // Program storage: deque provides stable references on push_back,
     // so ip/end pointers into stored programs remain valid when new
@@ -6536,7 +6647,8 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
 
     const uint8_t* ip = prog_store.back().data();
     const uint8_t* end = ip + prog_store.back().size();
-    on_stack.insert(root_fn);
+    // The root always fits: the on-stack limit is clamped to >= 1.
+    (void)on_stack.insert(root_fn);
     const void* current_data = data;
 
     // 🎯T3.10: enter callee `addr` with forwarded data `fwd_data` and inbound
@@ -6572,9 +6684,18 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
             values[vsp++] = opts.indirect_call_budget;
             return;
         }
+        // 🎯T52.1: on-stack set at capacity — the call chain reached the
+        // wired max_call_depth (hard cap 64). Beyond this point cycle
+        // detection could no longer be trusted (a cycle among un-inserted
+        // functions would evade contains()), so treat exactly like a
+        // detected cycle: budget, clear exactness, do not enter.
+        if (!on_stack.insert(addr)) {
+            is_exact = false;
+            values[vsp++] = opts.indirect_call_budget;
+            return;
+        }
         prog_store.push_back(get_or_compile(addr, opts, fwd_data, seed, cacheable));
         call_stack.push_back({ip, end, addr, is_exact, current_data, cacheable});
-        on_stack.insert(addr);
         is_exact = true;
         current_data = fwd_data;
         ip = prog_store.back().data();

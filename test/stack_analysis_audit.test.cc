@@ -248,6 +248,58 @@ void const_entry(void* data) {
     buf[1] = 2;
 }
 
+// --- 🎯T52.1 fixtures: decoded writeback forms + SP-write refuse posture ---
+//
+// Hand-written naked asm, so the exact peak SP displacement is known by
+// construction (no compiler prologue, no sanitizer instrumentation) and the
+// analyser must reproduce it bit-for-bit. Guarded to Clang/GCC on ARM64:
+// MSVC has no GNU asm / naked support on ARM64.
+#if defined(__aarch64__) && !defined(_MSC_VER)
+
+// Every decoded writeback family, pre- and post-indexed, balanced so the
+// fixture is executable: GP pairs (X, W), FP/SIMD pairs (S, D, Q), single
+// registers (X, W, D, Q). All adjustments are multiples of 16 to respect
+// hardware SP alignment. Peak depth: 224 bytes, at the pre-indexed LDP.
+__attribute__((naked)) void writeback_forms_entry(void*) {
+    asm volatile(
+        "stp x1, x2, [sp, #-16]!\n"   // 16   GP X pair, pre
+        "stp w1, w2, [sp, #-16]!\n"   // 32   GP W pair, pre
+        "stp q0, q1, [sp, #-64]!\n"   // 96   SIMD Q pair, pre
+        "stp d0, d1, [sp, #-32]!\n"   // 128  FP D pair, pre
+        "stp s0, s1, [sp, #-16]!\n"   // 144  FP S pair, pre
+        "str x1, [sp, #-16]!\n"       // 160  single X, pre
+        "str w1, [sp, #-16]!\n"       // 176  single W, pre
+        "str d0, [sp, #-16]!\n"       // 192  single D, pre
+        "str q0, [sp, #-16]!\n"       // 208  single Q, pre
+        "ldp x3, x4, [sp, #-16]!\n"   // 224  GP pair pre-indexed *load*
+        "stp x3, x4, [sp], #16\n"     // 208  GP pair post-indexed *store*
+        "ldr q0, [sp], #16\n"         // 192  single Q, post
+        "ldr d0, [sp], #16\n"         // 176  single D, post
+        "ldr w1, [sp], #16\n"         // 160  single W, post
+        "ldr x1, [sp], #16\n"         // 144  single X, post
+        "ldp s0, s1, [sp], #16\n"     // 128  FP S pair, post
+        "ldp d0, d1, [sp], #32\n"     // 96   FP D pair, post
+        "ldp q0, q1, [sp], #64\n"     // 32   SIMD Q pair, post
+        "ldp w1, w2, [sp], #16\n"     // 16   GP W pair, post
+        "ldp x1, x2, [sp], #16\n"     // 0    GP X pair, post
+        "ret\n");
+}
+constexpr size_t kWritebackFixturePeak = 224;
+
+// An SP write outside the modelled forms (MOV SP, Xn — the add-immediate
+// alias with Rd=SP, Rn!=SP). The closed-world detector must refuse it:
+// budget + is_exact=false, never a silent SP drift inside an exact result.
+__attribute__((naked)) void sp_mov_refuse_entry(void*) {
+    asm volatile(
+        "mov x9, sp\n"
+        "sub x9, x9, #32\n"
+        "mov sp, x9\n"          // unmodelled SP write → refuse
+        "add sp, sp, #32\n"
+        "ret\n");
+}
+
+#endif // __aarch64__ && !_MSC_VER
+
 struct AuditCase {
     const char* name;
     csp::internal::EntryFn entry;
@@ -387,5 +439,36 @@ TEST_CASE("soundness-and-tightness-report") {
     MESSAGE("tightness gate skipped — the stack walker is ARM64-only");
 #endif
 }
+
+#if defined(__aarch64__) && !defined(_MSC_VER)
+
+TEST_CASE("writeback-forms-exact-depth") {
+    // 🎯T52.1: the decoded pair/single-register writeback forms (GP + FP/
+    // SIMD, pre/post-indexed) must produce the asm fixture's exact peak —
+    // equality, not a bound, because the fixture is hand-written asm.
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&writeback_forms_entry));
+    CHECK(r.is_exact);
+    CHECK(r.max_depth == kWritebackFixturePeak);
+
+    // Executability cross-check: the fixture is balanced and runs to
+    // completion as a real imp (would fault on any SP misalignment).
+    csp::internal::spawn(&writeback_forms_entry, nullptr);
+    csp::await_completion();
+}
+
+TEST_CASE("unmodelled-sp-write-refused") {
+    // 🎯T52.1: MOV SP, Xn is architecturally an SP write the walker does
+    // not model; the closed-world detector must force inexact rather than
+    // letting the SP delta drift inside an exact result.
+    auto r = csp::analyze_stack_depth(
+        reinterpret_cast<const void*>(&sp_mov_refuse_entry));
+    CHECK_FALSE(r.is_exact);
+
+    csp::internal::spawn(&sp_mov_refuse_entry, nullptr);
+    csp::await_completion();
+}
+
+#endif // __aarch64__ && !_MSC_VER
 
 } // TEST_SUITE("StackAnalysisAudit")

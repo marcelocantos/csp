@@ -11,7 +11,11 @@ struct stack_analysis {
 
 struct stack_analysis_options {
     size_t indirect_call_budget = 2048; // Budget per unresolvable BLR (bytes)
-    int max_call_depth = 64;            // Max recursive call-following depth
+    int max_call_depth = 64;            // Max call-following depth. Clamped to
+                                        // [1, 64] (64 is a hard compile-time
+                                        // cap); deeper call chains degrade to
+                                        // a budgeted, inexact result exactly
+                                        // like a detected recursion cycle.
     size_t max_instructions = 100000;   // Safety limit on total instructions analyzed
 };
 
