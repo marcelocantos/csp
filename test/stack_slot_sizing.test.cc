@@ -127,7 +127,15 @@ void probe_profiling(void*) {
 // sentinel write keeps ICF from folding it into another EntryFn.
 volatile int g_sink_c = 0;
 
-__attribute__((noinline)) void probe_async_exact(void*) {
+// Portable noinline: this TU compiles on every platform (MSVC included),
+// even though the Small-slot assertions only run under arena + ANALYSE.
+#if defined(_MSC_VER)
+#define SIZING_NOINLINE __declspec(noinline)
+#else
+#define SIZING_NOINLINE __attribute__((noinline))
+#endif
+
+SIZING_NOINLINE void probe_async_exact(void*) {
     g_sink_c = 3;
     g_probe_ran.fetch_add(1, std::memory_order_relaxed);
 }
