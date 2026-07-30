@@ -11,12 +11,12 @@
   },
   "linux-arm64": {
     "observed": {
-      "bytes_saved": 331776,
-      "total_spawns": 1830901
+      "bytes_saved": 442368,
+      "total_spawns": 1830912
     },
     "rate_tolerance": 5e-07,
-    "small_rate": 1.639e-06,
-    "small_spawns": 3,
+    "small_rate": 2.185e-06,
+    "small_spawns": 4,
     "small_spawns_tolerance": 0
   }
 }
