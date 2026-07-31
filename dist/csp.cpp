@@ -7627,16 +7627,10 @@ void analysis_worker_main() {
 
 namespace detail {
 
-// Process-wide scratch for large snapshot buffers (miss path only).
-// Serialised by g_scratch_mu. Not on the imp/frame stack.
-prescan_result g_prescan_scratch;
-analysis_request g_req_scratch;
-spinlock g_scratch_mu;
-
 // Data-path miss work: pre-scan + sub-cache + enqueue. noinline so the
-// thin front-door stub's walk stays a handful of spinlocks + one BL into
-// this function (both walkable). Marked no_stack_protector for the same
-// reason as the front door.
+// thin front-door stub stays small. Snapshot buffers live in thread_local
+// storage (OS-thread TLS, not the fiber stack) — no process-wide spinlock
+// (a global scratch lock hung macOS ASan dist CI under spawn storms).
 __attribute__((noinline, no_stack_protector))
 static stack_analysis lookup_or_request_data_miss(const void* fn,
                                                   const void* data) noexcept {
@@ -7654,9 +7648,12 @@ static stack_analysis lookup_or_request_data_miss(const void* fn,
         return {32u << 10, false};
     }
 
-    std::lock_guard<spinlock> scratch(g_scratch_mu);
-    prescan_call_indirects(prog_data, prog_len, data, g_prescan_scratch);
-    if (!g_prescan_scratch.ok) {
+    // TLS: per-OS-thread, re-entrant across imps on the same worker thread
+    // only if nested (doesn't happen — spawn path doesn't re-enter).
+    thread_local prescan_result tls_ps;
+    thread_local analysis_request tls_req;
+    prescan_call_indirects(prog_data, prog_len, data, tls_ps);
+    if (!tls_ps.ok) {
         analysis_queue_push_null(fn);
         return {32u << 10, false};
     }
@@ -7664,20 +7661,19 @@ static stack_analysis lookup_or_request_data_miss(const void* fn,
     {
         std::lock_guard<spinlock> lk(g_eval_cache_mu);
         if (auto* e = g_eval_cache.find(fn)) {
-            if (auto* r = e->find_sub(g_prescan_scratch.fingerprint))
-                return *r;
+            if (auto* r = e->find_sub(tls_ps.fingerprint)) return *r;
         }
     }
 
-    g_req_scratch.fn = fn;
-    g_req_scratch.kind = 1;
-    g_req_scratch.n_targets = g_prescan_scratch.n;
-    g_req_scratch.fingerprint = g_prescan_scratch.fingerprint;
-    for (uint8_t i = 0; i < g_prescan_scratch.n; ++i) {
-        g_req_scratch.offsets[i] = g_prescan_scratch.offsets[i];
-        g_req_scratch.targets[i] = g_prescan_scratch.targets[i];
+    tls_req.fn = fn;
+    tls_req.kind = 1;
+    tls_req.n_targets = tls_ps.n;
+    tls_req.fingerprint = tls_ps.fingerprint;
+    for (uint8_t i = 0; i < tls_ps.n; ++i) {
+        tls_req.offsets[i] = tls_ps.offsets[i];
+        tls_req.targets[i] = tls_ps.targets[i];
     }
-    analysis_queue_push(g_req_scratch);
+    analysis_queue_push(tls_req);
     return {32u << 10, false};
 }
 
