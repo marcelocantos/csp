@@ -7460,6 +7460,33 @@ inline bool analysis_queue_push(const analysis_request& req) noexcept {
     }
 }
 
+// Scalar-only kind=0 enqueue — no large analysis_request on the caller's
+// stack (the full struct's arrays are what blew the macos-14 frame budget).
+__attribute__((always_inline, no_stack_protector))
+inline bool analysis_queue_push_null(const void* fn) noexcept {
+    size_t pos = g_analysis_enqueue_pos.load(std::memory_order_relaxed);
+    for (;;) {
+        auto& cell = g_analysis_queue[pos & (kAnalysisQueueCap - 1)];
+        size_t seq = cell.seq.load(std::memory_order_acquire);
+        auto dif = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos);
+        if (dif == 0) {
+            if (g_analysis_enqueue_pos.compare_exchange_weak(
+                    pos, pos + 1, std::memory_order_relaxed)) {
+                cell.req.fn = fn;
+                cell.req.kind = 0;
+                cell.req.n_targets = 0;
+                cell.req.fingerprint = 0;
+                cell.seq.store(pos + 1, std::memory_order_release);
+                return true;
+            }
+        } else if (dif < 0) {
+            return false;
+        } else {
+            pos = g_analysis_enqueue_pos.load(std::memory_order_relaxed);
+        }
+    }
+}
+
 // Single-consumer pop (worker thread only — may use ordinary copies).
 bool analysis_queue_pop(analysis_request& req) noexcept {
     size_t pos = g_analysis_dequeue_pos.load(std::memory_order_relaxed);
@@ -7600,12 +7627,17 @@ void analysis_worker_main() {
 
 namespace detail {
 
-// no_stack_protector: the stub holds large on-stack snapshot arrays
-// (analysis_request / prescan_result). -fstack-protector-strong (default
-// on several Apple clang toolchains, including GitHub macos-14) inserts
-// __stack_chk_* BLs that the walker cannot resolve, making the spawn path
-// inexact (observed: depth 2656 / is_exact=false vs 608 / exact without
-// the canary). This is analysis machinery, not a trust boundary.
+// Process-wide scratch for large snapshot buffers — NOT on the imp/frame
+// stack. On-stack analysis_request/prescan_result arrays made the spawn
+// stub inexact on Apple clang 15 (GitHub macos-14): depth 2656 =
+// ~608 + 2048 budget even with -fno-stack-protector. Static storage is
+// ADRP-addressable (walkable); thread_local would emit TLV getter BLs
+// that are also unwalkable. Serialised by g_scratch_mu (miss path only).
+prescan_result g_prescan_scratch;
+analysis_request g_req_scratch;
+spinlock g_scratch_mu;
+
+// no_stack_protector: residual locals must not grow canary BLs.
 __attribute__((no_stack_protector))
 stack_analysis stack_analysis_lookup_or_request(const void* fn,
                                                 const void* data) noexcept {
@@ -7627,12 +7659,7 @@ stack_analysis stack_analysis_lookup_or_request(const void* fn,
     }
 
     if (!data) {
-        analysis_request req;
-        req.fn = fn;
-        req.kind = 0;
-        req.n_targets = 0;
-        req.fingerprint = 0;
-        analysis_queue_push(req);
+        analysis_queue_push_null(fn);
         return {32u << 10, false};
     }
 
@@ -7649,49 +7676,37 @@ stack_analysis stack_analysis_lookup_or_request(const void* fn,
     if (!prog_data) {
         // Program not compiled yet — enqueue null-data analysis so a later
         // spawn can pre-scan. Do not touch live data without a program.
-        analysis_request req;
-        req.fn = fn;
-        req.kind = 0;
-        req.n_targets = 0;
-        req.fingerprint = 0;
-        analysis_queue_push(req);
+        analysis_queue_push_null(fn);
         return {32u << 10, false};
     }
 
-    // Pre-scan: bounded loads + hash only (no VM, no allocation). Out-param
-    // so the arrays are never memcpy'd by a by-value return.
-    prescan_result ps;
-    prescan_call_indirects(prog_data, prog_len, data, ps);
-    if (!ps.ok) {
-        // Too many sites or corrupt program — stand on Default; still try
-        // to warm null-data if missing.
-        analysis_request req;
-        req.fn = fn;
-        req.kind = 0;
-        req.n_targets = 0;
-        req.fingerprint = 0;
-        analysis_queue_push(req);
+    // Pre-scan + optional enqueue under scratch lock (miss path only).
+    // Arrays live in g_*_scratch, not on this frame.
+    std::lock_guard<spinlock> scratch(g_scratch_mu);
+    prescan_call_indirects(prog_data, prog_len, data, g_prescan_scratch);
+    if (!g_prescan_scratch.ok) {
+        analysis_queue_push_null(fn);
         return {32u << 10, false};
     }
 
     {
         std::lock_guard<spinlock> lk(g_eval_cache_mu);
         if (auto* e = g_eval_cache.find(fn)) {
-            if (auto* r = e->find_sub(ps.fingerprint)) return *r;
+            if (auto* r = e->find_sub(g_prescan_scratch.fingerprint))
+                return *r;
         }
     }
 
-    // Sub-cache miss: snapshot by value into the async request.
-    analysis_request req;
-    req.fn = fn;
-    req.kind = 1;
-    req.n_targets = ps.n;
-    req.fingerprint = ps.fingerprint;
-    for (uint8_t i = 0; i < ps.n; ++i) {
-        req.offsets[i] = ps.offsets[i];
-        req.targets[i] = ps.targets[i];
+    // Sub-cache miss: snapshot by value into scratch request, then enqueue.
+    g_req_scratch.fn = fn;
+    g_req_scratch.kind = 1;
+    g_req_scratch.n_targets = g_prescan_scratch.n;
+    g_req_scratch.fingerprint = g_prescan_scratch.fingerprint;
+    for (uint8_t i = 0; i < g_prescan_scratch.n; ++i) {
+        g_req_scratch.offsets[i] = g_prescan_scratch.offsets[i];
+        g_req_scratch.targets[i] = g_prescan_scratch.targets[i];
     }
-    analysis_queue_push(req);
+    analysis_queue_push(g_req_scratch);
     return {32u << 10, false};
 }
 
