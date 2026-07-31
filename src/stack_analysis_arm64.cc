@@ -2413,43 +2413,19 @@ void analysis_worker_main() {
 
 namespace detail {
 
-// Process-wide scratch for large snapshot buffers — NOT on the imp/frame
-// stack. On-stack analysis_request/prescan_result arrays made the spawn
-// stub inexact on Apple clang 15 (GitHub macos-14): depth 2656 =
-// ~608 + 2048 budget even with -fno-stack-protector. Static storage is
-// ADRP-addressable (walkable); thread_local would emit TLV getter BLs
-// that are also unwalkable. Serialised by g_scratch_mu (miss path only).
+// Process-wide scratch for large snapshot buffers (miss path only).
+// Serialised by g_scratch_mu. Not on the imp/frame stack.
 prescan_result g_prescan_scratch;
 analysis_request g_req_scratch;
 spinlock g_scratch_mu;
 
-// no_stack_protector: residual locals must not grow canary BLs.
-__attribute__((no_stack_protector))
-stack_analysis stack_analysis_lookup_or_request(const void* fn,
-                                                const void* data) noexcept {
-    // 🎯T52.5 spawn stub: allocation-free, VM-free, walkable.
-    //
-    // 1. Exact null-data hit → sound upper bound for any data; return it.
-    // 2. With data + cached program: pre-scan CALL_INDIRECT targets,
-    //    fingerprint, sub-cache lookup; miss → enqueue snapshot + Default.
-    // 3. Otherwise: enqueue null-data analysis (warms program + no_data) and
-    //    return Default. Inexact null-data hits do NOT short-circuit the
-    //    data path — they only mean "no data" could not resolve targets.
-    {
-        std::lock_guard<spinlock> lk(g_eval_cache_mu);
-        if (auto* e = g_eval_cache.find(fn); e && e->has_no_data) {
-            if (e->no_data.is_exact) return e->no_data;
-            // Inexact no_data: fall through to data path when data is set.
-            if (!data) return e->no_data;
-        }
-    }
-
-    if (!data) {
-        analysis_queue_push_null(fn);
-        return {32u << 10, false};
-    }
-
-    // Data path: need the null-data program for pre-scan offsets.
+// Data-path miss work: pre-scan + sub-cache + enqueue. noinline so the
+// thin front-door stub's walk stays a handful of spinlocks + one BL into
+// this function (both walkable). Marked no_stack_protector for the same
+// reason as the front door.
+__attribute__((noinline, no_stack_protector))
+static stack_analysis lookup_or_request_data_miss(const void* fn,
+                                                  const void* data) noexcept {
     const uint8_t* prog_data = nullptr;
     size_t prog_len = 0;
     {
@@ -2460,14 +2436,10 @@ stack_analysis stack_analysis_lookup_or_request(const void* fn,
         }
     }
     if (!prog_data) {
-        // Program not compiled yet — enqueue null-data analysis so a later
-        // spawn can pre-scan. Do not touch live data without a program.
         analysis_queue_push_null(fn);
         return {32u << 10, false};
     }
 
-    // Pre-scan + optional enqueue under scratch lock (miss path only).
-    // Arrays live in g_*_scratch, not on this frame.
     std::lock_guard<spinlock> scratch(g_scratch_mu);
     prescan_call_indirects(prog_data, prog_len, data, g_prescan_scratch);
     if (!g_prescan_scratch.ok) {
@@ -2483,7 +2455,6 @@ stack_analysis stack_analysis_lookup_or_request(const void* fn,
         }
     }
 
-    // Sub-cache miss: snapshot by value into scratch request, then enqueue.
     g_req_scratch.fn = fn;
     g_req_scratch.kind = 1;
     g_req_scratch.n_targets = g_prescan_scratch.n;
@@ -2494,6 +2465,28 @@ stack_analysis stack_analysis_lookup_or_request(const void* fn,
     }
     analysis_queue_push(g_req_scratch);
     return {32u << 10, false};
+}
+
+// 🎯T52.5 spawn front door: keep this function tiny and exact so it is
+// walkable on every supported Apple clang (incl. macos-14 CI). Miss/data
+// work lives in lookup_or_request_data_miss.
+__attribute__((no_stack_protector))
+stack_analysis stack_analysis_lookup_or_request(const void* fn,
+                                                const void* data) noexcept {
+    {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        if (auto* e = g_eval_cache.find(fn); e && e->has_no_data) {
+            if (e->no_data.is_exact) return e->no_data;
+            if (!data) return e->no_data;
+        }
+    }
+
+    if (!data) {
+        analysis_queue_push_null(fn);
+        return {32u << 10, false};
+    }
+
+    return lookup_or_request_data_miss(fn, data);
 }
 
 void start_stack_analysis_worker() {
