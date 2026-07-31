@@ -1,5 +1,6 @@
 #include "csp.h"
 
+#include <chrono>
 #include <doctest/doctest.h>
 
 #if defined(__aarch64__)
@@ -696,12 +697,166 @@ TEST_CASE("CONST-arg-prunes-across-BL") {
 TEST_CASE("Async-stub-is-walkable-and-exact") {
     auto r = csp::analyze_stack_depth(
         reinterpret_cast<const void*>(
-            &csp::detail::stack_analysis_lookup_or_request));
+            static_cast<csp::stack_analysis (*)(const void*, const void*)
+                            noexcept>(
+                &csp::detail::stack_analysis_lookup_or_request)));
     CHECK(r.is_exact);
-    // A leaf-ish lookup body: a small fixed frame, well under a page.
+    // Pre-scan + fingerprint path grows the frame vs T52.4's pure lookup,
+    // but it must stay well under a page and exact.
     CHECK(r.max_depth < 1024);
     MESSAGE("stack_analysis_lookup_or_request depth: ", r.max_depth,
             ", is_exact: ", r.is_exact);
+}
+
+// ---- 🎯T52.5: fingerprint sub-cache + freeze-at-spawn snapshot ----
+//
+// Distinct closures with the same function-pointer layout share a
+// fingerprint and reuse the sub-cache entry. Mutating a function pointer
+// between lookups produces a different fingerprint and must not reuse the
+// previous result.
+
+// Unique entry for the sub-cache tests so null-data / sub entries from
+// other cases cannot interfere (caches are process-global).
+__attribute__((noinline)) static void t525_leaf_a(void*) {
+    volatile char buf[48];
+    buf[0] = 1;
+}
+// Second target — only its address matters for the fingerprint-miss test
+// (depths may coincide under O2; the assertion is about cache identity).
+__attribute__((noinline)) static void t525_leaf_b(void*) {
+    volatile char buf[48];
+    buf[0] = 2;
+}
+struct t525_closure {
+    void (*fn)(void*);
+    int capture;  // non-callable payload — layout identity ignores this
+};
+__attribute__((noinline)) static void t525_indirect(void* data) {
+    volatile char buf[64];
+    buf[0] = 1;
+    auto* d = static_cast<t525_closure*>(data);
+    d->fn(nullptr);
+    buf[1] = 2;
+}
+
+TEST_CASE("Sub-cache-reuses-same-layout-distinct-captures") {
+    // Worker is only auto-started under CSP_ANALYSE_STACKS; start it here so
+    // the sub-cache path is exercised in the default test build too.
+    csp::detail::start_stack_analysis_worker();
+    auto* key = reinterpret_cast<const void*>(&t525_indirect);
+
+    // Warm the null-data program into g_cache (and publish inexact no_data).
+    (void)csp::analyze_stack_depth(key, nullptr);
+
+    t525_closure c1{&t525_leaf_a, 11};
+    t525_closure c2{&t525_leaf_a, 22};  // same fn ptr, different capture
+
+    // First data-path lookup: sub-cache miss → Default sentinel + enqueue.
+    auto miss = csp::detail::stack_analysis_lookup_or_request(key, &c1);
+    CHECK_FALSE(miss.is_exact);
+    CHECK(miss.max_depth == (32u << 10));
+
+    csp::internal::analysis_quiesce();
+
+    // Same fingerprint (same targets) → sub-cache hit, exact.
+    auto hit1 = csp::detail::stack_analysis_lookup_or_request(key, &c1);
+    CHECK(hit1.is_exact);
+    CHECK(hit1.max_depth > 0);
+    CHECK(hit1.max_depth < (32u << 10));
+
+    // Distinct capture, identical function-pointer layout → same hit.
+    auto hit2 = csp::detail::stack_analysis_lookup_or_request(key, &c2);
+    CHECK(hit2.is_exact);
+    CHECK(hit2.max_depth == hit1.max_depth);
+    MESSAGE("sub-cache same-layout reuse depth: ", hit1.max_depth);
+}
+
+TEST_CASE("Sub-cache-misses-on-pointer-mutation") {
+    csp::detail::start_stack_analysis_worker();
+    auto* key = reinterpret_cast<const void*>(&t525_indirect);
+    (void)csp::analyze_stack_depth(key, nullptr);
+
+    t525_closure c{&t525_leaf_a, 0};
+    (void)csp::detail::stack_analysis_lookup_or_request(key, &c);
+    csp::internal::analysis_quiesce();
+    auto with_a = csp::detail::stack_analysis_lookup_or_request(key, &c);
+    REQUIRE(with_a.is_exact);
+
+    // Mutate the function pointer in place between "spawns". The fingerprint
+    // changes, so this must NOT hit the sub-cache entry published for A
+    // (freeze-at-spawn: a later layout must miss, not silently reuse).
+    c.fn = &t525_leaf_b;
+    auto after_mut = csp::detail::stack_analysis_lookup_or_request(key, &c);
+    CHECK_FALSE(after_mut.is_exact);
+    CHECK(after_mut.max_depth == (32u << 10));
+
+    // A's entry must still be intact after the B miss/enqueue.
+    c.fn = &t525_leaf_a;
+    auto still_a = csp::detail::stack_analysis_lookup_or_request(key, &c);
+    CHECK(still_a.is_exact);
+    CHECK(still_a.max_depth == with_a.max_depth);
+
+    // After the worker publishes B, both fingerprints coexist.
+    c.fn = &t525_leaf_b;
+    csp::internal::analysis_quiesce();
+    auto with_b = csp::detail::stack_analysis_lookup_or_request(key, &c);
+    CHECK(with_b.is_exact);
+    MESSAGE("sub-cache after mutation: a=", with_a.max_depth,
+            " b=", with_b.max_depth, " (fingerprints independent)");
+}
+
+TEST_CASE("Warm-data-path-cost-near-cache-hit") {
+    // Microbench: after the sub-cache is warm, lookup_or_request(fn, data)
+    // should be within the same ballpark as a null-data cache hit (both are
+    // spinlock + open-addressing lookup; pre-scan adds a few loads + hash).
+    // Numbers are recorded in the MESSAGE for the 🎯T52.5 commit note.
+    csp::detail::start_stack_analysis_worker();
+    auto* key = reinterpret_cast<const void*>(&t525_indirect);
+    (void)csp::analyze_stack_depth(key, nullptr);
+
+    t525_closure c{&t525_leaf_a, 0};
+    (void)csp::detail::stack_analysis_lookup_or_request(key, &c);
+    csp::internal::analysis_quiesce();
+    // Confirm warm hit.
+    REQUIRE(csp::detail::stack_analysis_lookup_or_request(key, &c).is_exact);
+
+    // Leaf with no data dependence — pure fn-keyed hit baseline.
+    auto* leaf_key = reinterpret_cast<const void*>(&t525_leaf_a);
+    (void)csp::analyze_stack_depth(leaf_key, nullptr);
+
+    constexpr int kIters = 5000;
+    // Warm the clocks / i-cache.
+    for (int i = 0; i < 200; ++i) {
+        (void)csp::detail::stack_analysis_lookup_or_request(leaf_key, nullptr);
+        (void)csp::detail::stack_analysis_lookup_or_request(key, &c);
+    }
+
+    using clock = std::chrono::steady_clock;
+    auto t0 = clock::now();
+    for (int i = 0; i < kIters; ++i) {
+        auto r = csp::detail::stack_analysis_lookup_or_request(leaf_key, nullptr);
+        // Prevent the compiler from eliding the call.
+        asm volatile("" ::"r"(r.max_depth), "r"(r.is_exact) : "memory");
+    }
+    auto t1 = clock::now();
+    for (int i = 0; i < kIters; ++i) {
+        auto r = csp::detail::stack_analysis_lookup_or_request(key, &c);
+        asm volatile("" ::"r"(r.max_depth), "r"(r.is_exact) : "memory");
+    }
+    auto t2 = clock::now();
+
+    auto ns_hit = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0)
+                      .count() / static_cast<double>(kIters);
+    auto ns_data = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1)
+                       .count() / static_cast<double>(kIters);
+    // Data-path warm hit includes pre-scan loads + FNV; allow generous slack
+    // (≤ 20× a pure cache hit) — the contract is "≈ cache-hit cost" vs the
+    // historical ~142 ns full replay, not cycle-identical.
+    CHECK(ns_data < ns_hit * 20.0 + 200.0);
+    MESSAGE("🎯T52.5 warm costs (ns/op, ", kIters, " iters): "
+            "fn-keyed hit=", ns_hit,
+            ", data-path sub-cache hit=", ns_data,
+            ", ratio=", (ns_hit > 0 ? ns_data / ns_hit : 0.0));
 }
 
 } // TEST_SUITE

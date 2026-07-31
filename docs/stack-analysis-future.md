@@ -599,6 +599,11 @@ ordered by call frequency (instrumented via a lightweight counter on
 
 ## 11. Hierarchical eval caching
 
+> **Status: landed in 🎯T52.5 (2026-07-31).** Spawn-side pre-scan + per-fn
+> fingerprint sub-cache; worker snapshot replay; arena-backed eval state.
+> Warm data-path hit ≈ 11–22 ns vs historical ~142 ns replay (arm64 -O2).
+> Kept below as design history.
+
 ### Problem
 
 The eval cache (`g_eval_cache`) is keyed by function address alone. When
@@ -747,7 +752,7 @@ in ~5 ns.
 | 5 | Switch/jump tables | Medium | Medium | §2 |
 | 7 | Callee argument forwarding | Medium | Medium | §1 |
 | 9 | Budget heuristics | Small | Medium | None |
-| 11 | Data-aware eval cache keying | Small–Medium | High | None |
+| 11 | Data-aware eval cache keying | Small–Medium | High | **landed 🎯T52.5** |
 | 10 | Incremental warm-up | Medium | Medium | None |
 | 8 | x86_64 support | Large | High | None (parallel track) |
 

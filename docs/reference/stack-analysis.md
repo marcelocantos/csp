@@ -49,7 +49,7 @@ upper bound fits with headroom.
 | `spawn_invoke<F>` | `include/csp/csp.h` | 🎯T52.3 concrete analysis root (direct call into `F`) |
 | `kShellStackBytes` (`C_shell`) | `stack_analysis.h` | Fixed imp-entry overhead composed with user-entry depth |
 | `analyze_stack_depth*` | `stack_analysis.h`, `stack_analysis_arm64.cc` | Walk machine code; return `{max_depth, is_exact}` |
-| `stack_analysis_lookup_or_request` | `stack_analysis_arm64.cc` | 🎯T52.4 spawn-side stub: fn-keyed cache lookup; miss → enqueue |
+| `stack_analysis_lookup_or_request` | `stack_analysis_arm64.cc` | 🎯T52.4/T52.5 spawn-side stub: fn-keyed + fingerprint sub-cache lookup; pre-scan + snapshot enqueue on miss |
 | Analysis worker | `stack_analysis_arm64.cc` | 🎯T52.4 runtime-owned OS thread: dequeues, analyses, publishes |
 | `spawn` | `src/csp.cc` | Chooses `StackClass::Small` only if exact and tight enough |
 | `StackPool` | `stack_pool.*` | Default vs Small free lists (arena mode) |
@@ -127,57 +127,72 @@ for a sketch of what that would require.
 
 ```mermaid
 flowchart LR
-  subgraph imp["imp stack (spawn, 🎯T52.4 stub only)"]
-    G{CSP_ANALYSE_STACKS spawn} --> L[fn-keyed cache lookup]
-    L -->|hit, exact and fits| H[StackClass::Small]
+  subgraph imp["imp stack (spawn, 🎯T52.4/T52.5 stub)"]
+    G{CSP_ANALYSE_STACKS spawn} --> L[fn-keyed / fingerprint lookup]
+    L -->|exact hit and fits| H[StackClass::Small]
     L -->|hit, else| I[StackClass::Default]
-    L -->|miss| I2[StackClass::Default + enqueue]
+    L -->|miss| P[pre-scan CALL_INDIRECT + fingerprint]
+    P -->|sub-cache hit| H2[use published result]
+    P -->|miss| I2[Default + enqueue snapshot]
   end
   I2 -.->|MPSC ring| W[analysis worker thread]
-  subgraph worker["worker thread (full-size OS stack)"]
+  subgraph worker["worker thread (full-size OS stack, arena eval)"]
     W --> B[ARM64 worklist walker]
     B --> C[Expression IR]
     C --> D[Bytecode compile]
-    D --> E[Iterative evaluator]
+    D --> E[Arena-backed iterative evaluator]
     E --> F["{max_depth, is_exact}"]
   end
-  F -.->|spinlocked publish| L
+  F -.->|spinlocked publish no_data / by_targets| L
 ```
 
-Since 🎯T52.4 no analysis executes on imp stacks. `spawn`'s stub
-(`csp::detail::stack_analysis_lookup_or_request`) is lookup-only: an
-fn-keyed cache hit gates the slot class; a miss takes **Default
-immediately** and enqueues the entry on a fixed-capacity (256-slot) MPSC
-ring for a runtime-owned worker thread — a plain `std::thread`, not an
-imp — which runs the ordinary synchronous pipeline and publishes through
-the existing spinlocked caches. A full ring drops the request silently
-(Default stands; a later spawn retries). The worker is started by
-`Runtime::init()` and stopped (flag + wake + join) by
-`Runtime::shutdown()`, so `shutdown_runtime()` + `set_maxprocs()`
-re-init cycles restart it; an `atexit` stop registered at first start
-also joins it before any static destructor can tear the caches out from
-under a mid-analysis walk. The synchronous public API
-(`analyze_stack_depth`, `analyze_stack_depth_cached`) is unchanged.
+Since 🎯T52.4 no analysis VM executes on imp stacks. 🎯T52.5 extends the
+spawn stub (`csp::detail::stack_analysis_lookup_or_request(fn, data)`)
+with a **bounded pre-scan**: when the null-data program is already
+compiled, the stub resolves `OP_CALL_INDIRECT` offsets against live
+closure memory (allocation-free loads + FNV fingerprint), looks up a
+per-fn sub-cache `((fn, targets) → result)`, and on a miss enqueues a
+**by-value target snapshot** for the worker. The worker replays the
+null-data program against the snapshot (never re-reads live closure
+memory) and publishes into the sub-cache. Exact null-data hits remain a
+sound upper bound for any data and short-circuit the data path.
+
+A miss of either kind takes **Default immediately**. A full ring drops
+the request silently (Default stands; a later spawn retries). The worker
+is started by `Runtime::init()` and stopped by `Runtime::shutdown()` /
+`atexit` as in T52.4. Eval state on the worker is **arena-backed**
+(256 KiB per-thread cap; exhaustion → `is_exact=false`). The synchronous
+public API (`analyze_stack_depth`, `analyze_stack_depth_cached`) is
+unchanged for live-data specialised walks (CONST pruning, etc.).
+
+**Warm costs (🎯T52.5, arm64 -O2, 5000 iters):** fn-keyed hit ≈ 2–7 ns;
+data-path sub-cache hit ≈ 11–22 ns (≈ 3–5× a pure hit; historical data
+replay was ~142 ns).
 
 Important implementation properties:
 
 1. **Iterative** walk and eval (no deep C++ recursion for the CFG / call graph).
-2. **Bootstrap-safe code applies only to the spawn stub** (🎯T52.4). The
-   stub — spinlock + open-addressing lookup + ring push — is
-   allocation-free pure inline atomics/arithmetic, and it is the only
-   analysis code left in spawn's own walk corpus: the analyser verifies
-   its own stub (`is_exact`, measured frame **0 bytes** at -O2 — a true
-   leaf, no BL, no SP write; this feeds 🎯T52.3's `C_shell` audit). The
-   worker may use ordinary containers and, in future, third-party code
-   (Zydis, unwind parsers) — the historical requirement that the whole
-   analyser stay self-analysable is dissolved. The walker/evaluator still
-   use the open-addressing containers and intrusive `expr_ptr` they were
-   built with, but that is now an implementation detail, not a contract.
+2. **Bootstrap-safe code applies only to the spawn stub** (🎯T52.4/T52.5). The
+   stub — spinlock + open-addressing lookup + scalar pre-scan loads + hash +
+   ring push — is allocation-free pure inline atomics/arithmetic (no
+   `memcpy`/`memset` of large structs — those are libsystem BLs), and it is
+   the only analysis code left in spawn's own walk corpus: the analyser
+   verifies its own stub (`is_exact`, measured frame **608 bytes** at -O2
+   with the T52.5 pre-scan path; this feeds 🎯T52.3's `C_shell` audit). The
+   worker may use ordinary containers for compile and a capped arena for
+   eval state — the historical requirement that the whole analyser stay
+   self-analysable is dissolved.
 3. **Program cache** keyed by function address for default-seed,
    `data == nullptr` walks.
-4. **Specialised walks** (live `data` and/or non-default register seeds from
-   🎯T3.10) are compiled on demand and **not** mixed into the fn-only cache
-   (soundness: paper [30](../papers/30-walker-register-provenance.md)).
+4. **Fingerprint sub-cache** (🎯T52.5): per-fn FIFO table (cap 16) keyed by
+   the ordered hash of snapshotted `CALL_INDIRECT` targets. Distinct
+   captures with the same function-pointer layout share an entry; mutating
+   a function pointer between spawns produces a new fingerprint (no
+   incorrect reuse).
+5. **Specialised walks** (live `data` and/or non-default register seeds from
+   🎯T3.10) are compiled on demand by the sync API and **not** mixed into the
+   fn-only / fingerprint caches (soundness: paper
+   [30](../papers/30-walker-register-provenance.md)).
 
 ---
 
@@ -250,15 +265,16 @@ analyser_estimate + floor < high_water`, the build fails.
 
 ## Spawn integration (slot class)
 
-Under `CSP_ANALYSE_STACKS` and arena Small slots (🎯T52.3 + 🎯T52.4):
+Under `CSP_ANALYSE_STACKS` and arena Small slots (🎯T52.3 + 🎯T52.4 + 🎯T52.5):
 
 ```text
 // csp::spawn<F> passes analyse_fn = &spawn_invoke<F> (concrete root)
 // direct internal::spawn leaves analyse_fn null → walk entry itself
 root ← analyse_fn ? analyse_fn : entry_fn
-sa   ← stack_analysis_lookup_or_request(root)   // lookup-only stub
-         hit  → the worker-published result
-         miss → {32 KiB, inexact} + enqueue(root) for the worker
+sa   ← stack_analysis_lookup_or_request(root, data)
+         exact null-data hit        → published unspecialised result
+         fingerprint sub-cache hit  → published snapshot result
+         miss → {32 KiB, inexact} + enqueue(null-data | snapshot)
 depth ← sa.max_depth + (analyse_fn ? kShellStackBytes : 0)
 needed ← depth * 2 + 2 KiB + sizeof(Imp)
 if sa.is_exact && needed ≤ 16 KiB usable → Small else Default
@@ -301,14 +317,13 @@ async worker still walks with `data == nullptr` today.
 Default (analysis has not run yet); spawns after the worker publishes
 take Small when the result is exact and fits. This is irrelevant to the
 density story — the win is per-entry steady state, not the first
-instance.
+instance. Data-dependent entries need one null-data warm (to compile the
+program) plus one snapshot publication before the sub-cache hits.
 
-**Data soundness:** the fn-keyed cache holds only unspecialised
-(`data == nullptr`) results, and the stub serves them for any spawn
-`data`. That is sound: an exact null-data result means no path depended
-on data (data-dependent calls budget to inexact without data), and
-data-derived CONST pruning only ever removes paths from the max — the
-null-data bound covers every closure.
+**Data soundness:** exact null-data results remain a sound upper bound
+for any spawn `data` and short-circuit the pre-scan. When null-data is
+inexact (typical CALL_INDIRECT shape), the fingerprint sub-cache
+provides exact, layout-specific results from freeze-at-spawn snapshots.
 
 **Profile budget:** the 🎯T3.4.4 high-water refinement of
 `indirect_call_budget` is applied by the worker at analysis time, not on

@@ -745,18 +745,17 @@ int spawn(EntryFn start_f, void * data, bool daemon, const void * analyse_fn) {
         kSmallUsable > 0) {
         constexpr size_t kHeadroomFloor = 2 * 1024;
 
-        // 🎯T52.3 + 🎯T52.4: analyse the concrete user-entry when the
-        // template layer supplied one (`analyse_fn` = spawn_invoke<F>);
-        // otherwise walk the EntryFn itself (direct internal::spawn
-        // callers / tests). Lookup-only async stub: cache hit gates the
-        // slot class; miss → Default + enqueue for the worker. Every
-        // published entry is a data == nullptr walk (sound upper bound
-        // for any spawn data — see stack_analysis_lookup_or_request).
+        // 🎯T52.3 + 🎯T52.4 + 🎯T52.5: analyse the concrete user-entry when
+        // the template layer supplied one (`analyse_fn` = spawn_invoke<F>);
+        // otherwise walk the EntryFn itself. Async stub: exact null-data
+        // hit or fingerprint sub-cache hit gates the slot; miss → Default
+        // + enqueue (null-data warm or by-value CALL_INDIRECT snapshot).
+        // Pre-scan is bounded loads + hash only — never the eval VM.
         const void* analysis_root = analyse_fn
             ? analyse_fn
             : reinterpret_cast<const void*>(start_f);
         auto sa = ::csp::detail::stack_analysis_lookup_or_request(
-            analysis_root);
+            analysis_root, data);
         // 🎯T52.3: depth = C_shell + user-entry when the root is the
         // invoke thunk (shell frames are outside that walk). Direct
         // EntryFn analysis already includes its own frames; only the

@@ -1535,7 +1535,7 @@ targets:
     achieved: 2026-07-30
   T52.5:
     name: Data-dependent analysis is a bounded synchronous pre-scan with a fingerprint sub-cache; the eval VM never runs on imp stacks
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1549,6 +1549,7 @@ targets:
     - T52.4
     origin: subdivide(🎯T52)
     discovered: 2026-07-30
+    achieved: 2026-07-31
   T52.6:
     name: 'Unwind-metadata frame-size spike: go/no-go recorded'
     status: achieved

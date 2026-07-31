@@ -61,15 +61,20 @@ stack_analysis analyze_stack_depth_cached(
 
 namespace detail {
 
-// 🎯T52.4: the spawn-side async-analysis stub. Fn-keyed result-cache
-// lookup only — on a hit returns the published result; on a miss returns
-// the conservative {32 KiB, inexact} sentinel and enqueues `fn` on a
-// fixed-capacity MPSC ring for the analysis worker (ring-full = the
-// request is silently dropped; a later spawn of the same entry retries).
-// Allocation-free, never suspends, never analyses: this is the only
+// 🎯T52.4 / 🎯T52.5: the spawn-side async-analysis stub.
+//
+// Lookup + (optional) bounded pre-scan of CALL_INDIRECT targets against
+// live `data`, hashed into a per-fn fingerprint sub-cache. On a hit
+// returns the published result; on a miss returns the conservative
+// {32 KiB, inexact} sentinel and enqueues a request (null-data analysis
+// or a by-value target snapshot) on a fixed-capacity MPSC ring for the
+// analysis worker (ring-full = drop; a later spawn retries).
+//
+// Allocation-free, VM-free, never suspends: this is the only
 // stack-analysis code that executes on imp stacks, and it must stay
 // walkable (test/stack_analysis.test.cc asserts is_exact on it).
-stack_analysis stack_analysis_lookup_or_request(const void* fn) noexcept;
+stack_analysis stack_analysis_lookup_or_request(
+    const void* fn, const void* data = nullptr) noexcept;
 
 // 🎯T52.4 worker lifecycle, driven by Runtime::init()/shutdown() under
 // CSP_ANALYSE_STACKS. Idempotent; repeated shutdown+re-init cycles
