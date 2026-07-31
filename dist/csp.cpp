@@ -5848,7 +5848,8 @@ struct prescan_result {
 
 // Advance ip past one complete bytecode instruction. Returns false if the
 // stream is truncated or the opcode is unknown.
-bool skip_opcode(const uint8_t*& ip, const uint8_t* end) {
+__attribute__((always_inline))
+inline bool skip_opcode(const uint8_t*& ip, const uint8_t* end) {
     if (ip >= end) return false;
     uint8_t op = *ip++;
     switch (op) {
@@ -5905,9 +5906,13 @@ inline const void* load_ptr_raw(const void* p) {
 }
 
 // Out-parameter form: returning prescan_result by value would memcpy the
-// arrays (libsystem BL → spawn stub inexact).
-void prescan_call_indirects(const uint8_t* prog, size_t len,
-                            const void* data, prescan_result& out) {
+// arrays (libsystem BL → spawn stub inexact). always_inline keeps the
+// body in the spawn stub's walk corpus on compilers that would otherwise
+// outline it; no_stack_protector blocks the canary BL that -fstack-
+// protector-strong emits for the large target arrays (macOS CI default).
+__attribute__((always_inline, no_stack_protector))
+inline void prescan_call_indirects(const uint8_t* prog, size_t len,
+                                   const void* data, prescan_result& out) {
     out.n = 0;
     out.ok = false;
     out.fingerprint = 0;
@@ -7397,6 +7402,7 @@ struct analysis_request {
 
 // Scalar field copy — never operator=/memcpy of the whole struct (those
 // become BL into libsystem and make the spawn stub inexact).
+__attribute__((always_inline, no_stack_protector))
 inline void copy_analysis_request(analysis_request& dst,
                                   const analysis_request& src) noexcept {
     dst.fn = src.fn;
@@ -7431,8 +7437,9 @@ struct analysis_queue_init {
 
 // Multi-producer push. Pure inline atomics + scalar field copy — this is
 // part of the spawn stub's walk corpus, so it must contain no BL to malloc
-// or any other unwalkable callee.
-bool analysis_queue_push(const analysis_request& req) noexcept {
+// or any other unwalkable callee (incl. stack-canary helpers).
+__attribute__((always_inline, no_stack_protector))
+inline bool analysis_queue_push(const analysis_request& req) noexcept {
     size_t pos = g_analysis_enqueue_pos.load(std::memory_order_relaxed);
     for (;;) {
         auto& cell = g_analysis_queue[pos & (kAnalysisQueueCap - 1)];
@@ -7593,6 +7600,13 @@ void analysis_worker_main() {
 
 namespace detail {
 
+// no_stack_protector: the stub holds large on-stack snapshot arrays
+// (analysis_request / prescan_result). -fstack-protector-strong (default
+// on several Apple clang toolchains, including GitHub macos-14) inserts
+// __stack_chk_* BLs that the walker cannot resolve, making the spawn path
+// inexact (observed: depth 2656 / is_exact=false vs 608 / exact without
+// the canary). This is analysis machinery, not a trust boundary.
+__attribute__((no_stack_protector))
 stack_analysis stack_analysis_lookup_or_request(const void* fn,
                                                 const void* data) noexcept {
     // 🎯T52.5 spawn stub: allocation-free, VM-free, walkable.
