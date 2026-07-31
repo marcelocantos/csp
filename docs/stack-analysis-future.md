@@ -4,22 +4,31 @@ Ideas that could push the ARM64 walker beyond what is already shipped.
 
 **Current system (authoritative):**  
 [`docs/reference/stack-analysis.md`](reference/stack-analysis.md) — as of
-v0.27.0 / 🎯T3.10. Read that page for capabilities, wiring, soundness, and
+v0.28.0+ / 🎯T3.10 + 🎯T52.1/.2/.4/.6. Read that page for capabilities,
+wiring, soundness, the async worker pipeline, ground-truth oracles, and
 what is *already* implemented (interprocedural data / X0–X7 provenance,
-PC-relative + vtables, profile budgets, spawn Small slots, etc.).
+PC-relative + vtables, closed-world SP-write detection, FP/SIMD writeback,
+profile budgets, spawn Small slots, Default-on-miss analysis worker, etc.).
 
 This file is **forward-looking only**. Several sections below pre-date
-T3.4.2–T3.10; treat overlapping “problems” as historical design notes unless
-the open-gap table in the reference page still lists them.
+T3.4.2–T3.10 and the 🎯T52 wave; treat overlapping “problems” as historical
+design notes unless the open-gap table in the reference page still lists
+them.
+
+**Severity labels** (shared with the reference page): **landed** (shipped),
+**deferred** (open with a stated revisit condition), **cut** (no product
+consumer / superseded — kept for design history only).
 
 ### Remaining high-value gaps (summary)
 
-| Gap | Notes |
-|-----|--------|
-| Type-erased `csp::spawn(lambda)` trampoline | **Landed in 🎯T52.3** — `spawn_invoke<F>` + `C_shell`; residual Default is channel/scheduler bodies and data-dependent closures (🎯T52.5) |
-| x86_64 walker | Still a 32 KiB inexact stub |
-| Dynamic `SUB SP, Xn`, jump tables | Still limited (FP/SIMD stack ops landed in 🎯T52.1 — see §3/§4) |
-| Mutual indirect-recursion fixed point | Explicitly deferred |
+| Gap | Severity | Notes |
+|-----|----------|--------|
+| Type-erased `csp::spawn(lambda)` trampoline | **landed** (🎯T52.3) | Concrete `spawn_invoke<F>` + `C_shell`; residual Default is channel-bound / first-miss |
+| x86_64 walker | open (🎯T52.6 go) | Still a 32 KiB inexact stub; spike chose Linux x86_64 **unwind-first** (§8) |
+| Dynamic `SUB SP, Xn` / Clang `mov sp` alloca | open | Budget path via closed-world SP-write detector |
+| Switch / jump tables | **deferred** (§5) | Sound via budget; revisit only if corpus metric implicates switch-heavy entries |
+| Data-dependent eval cache (§11) | **landed** (🎯T52.5) | Fingerprint sub-cache + bounded pre-scan; eval never on imp stacks |
+| Mutual indirect-recursion fixed point | **deferred** | Explicitly out of scope |
 
 ---
 
@@ -255,10 +264,13 @@ push/pop, typically for leaf functions or when only LR needs saving.
 
 ## 5. Switch/jump table support
 
-> **Status: deferred** (2026-07-30 appraisal). Pending the 🎯T52.2 corpus
-> metric — until the Small-rate baseline shows how often jump tables are
-> the blocking inexactness source on real workloads, the bounded-table-scan
-> risk (reads past an under-determined table bound) isn't worth taking.
+> **Status: deferred** (2026-07-30 appraisal; revisit condition restated
+> after 🎯T52.2 **landed**). The corpus metric is now wired and ratcheted
+> (pre-🎯T52.3 rate ≈ 10⁻⁶ — trampoline-dominated, not switch-dominated).
+> Revisit only if a post-trampoline baseline, or a named workload,
+> implicates jump tables as the blocking inexactness source. Until then
+> the bounded-table-scan risk (reads past an under-determined table
+> bound) isn't worth taking; unresolved `BR` stays sound via budget.
 
 ### Problem
 
@@ -742,21 +754,30 @@ in ~5 ns.
 
 ## Priority and sequencing
 
-| § | Innovation | Effort | Value | Dependencies |
-|---|-----------|--------|-------|-------------|
-| 3 | FP/SIMD stack ops | Small | High | None |
-| 4 | Pre/post-indexed STR/LDR | Small | Medium | None |
-| 2 | ADRP+ADD resolution | Medium | High | None |
-| 6 | Dynamic SP (const prop) | Medium | Medium | None |
-| 1 | Multi-level data propagation | Medium | Medium | None |
-| 5 | Switch/jump tables | Medium | Medium | §2 |
-| 7 | Callee argument forwarding | Medium | Medium | §1 |
-| 9 | Budget heuristics | Small | Medium | None |
-| 11 | Data-aware eval cache keying | Small–Medium | High | **landed 🎯T52.5** |
-| 10 | Incremental warm-up | Medium | Medium | None |
-| 8 | x86_64 support | Large | High | None (parallel track) |
+| § | Innovation | Status | Effort | Value | Dependencies |
+|---|-----------|--------|--------|-------|-------------|
+| 3 | FP/SIMD stack ops | **landed** (🎯T52.1) | — | — | — |
+| 4 | Pre/post-indexed STR/LDR | **landed** (🎯T52.1) | — | — | — |
+| 2 | ADRP+ADD resolution | **landed** (🎯T3.4.2) | — | — | — |
+| 1 | Multi-level data propagation | **landed** (🎯T3.4.3 / T3.10) | — | — | — |
+| 9 | Budget heuristics | **cut** | — | — | — |
+| 10 | Incremental warm-up | **cut** (superseded by 🎯T52.4) | — | — | — |
+| 5 | Switch/jump tables | **deferred** | Medium | Medium | §2 |
+| 11 | Data-aware eval cache keying | **landed** (🎯T52.5) | — | — | 🎯T52.4 |
+| 6 | Dynamic SP (const prop) | open | Medium | Medium | None |
+| 7 | Callee argument forwarding | open | Medium | Medium | §1 |
+| 8 | x86_64 support | open (🎯T52.6 **go** unwind-first on Linux) | Large | High | None (parallel track) |
 
-Sections 3 and 4 **landed** in 🎯T52.1 (2026-07-30); sections 9 and 10 are
-**cut** and section 5 is **deferred** pending the 🎯T52.2 corpus metric —
-see the per-section status notes. Section 2 (ADRP) landed earlier
-(🎯T3.4.2). Section 8 (x86_64) is independent and can proceed in parallel.
+Disposition summary (2026-07-30 appraisal + 🎯T52 wave):
+
+- **Landed:** §1, §2, §3, §4 (plus the async worker / Default-on-miss
+  pipeline in 🎯T52.4 — see the reference page, not a numbered section
+  here).
+- **Cut:** §9 (budget magnitude has no consumer; cycle→0 was unsound),
+  §10 (background symbol-table sweep; superseded by 🎯T52.4).
+- **Deferred:** §5 jump tables — corpus metric (🎯T52.2) is wired and
+  shows a trampoline-dominated ≈0 rate; revisit only if the metric
+  implicates switch-heavy entries after 🎯T52.3.
+- **Open next:** 🎯T52.3 (trampoline), 🎯T52.5 / §11 (data-dependent
+  pre-scan), §8 (Linux x86_64 unwind-first per the 🎯T52.6 spike), §6
+  (dynamic SP / Clang alloca decode).

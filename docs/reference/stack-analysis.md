@@ -386,21 +386,27 @@ scheduler-bound bodies stay on **Default**. The corpus Small-rate
 
 ## Known limits and next leaps
 
+Severity labels match
+[`docs/stack-analysis-future.md`](../stack-analysis-future.md):
+**landed** (shipped), **deferred** (open with a stated revisit condition),
+**cut** (no product consumer / superseded — design history only).
+
 Still open (not regressions of the bullets above):
 
-| Gap | Impact |
-|---|---|
-| **x86_64 / non-ARM64** | Stub 32 KiB inexact only |
-| **Data-dependent closures on the async path** | Worker walks with `data == nullptr`; live-closure resolution is 🎯T52.5 |
-| **Dynamic SP** (`SUB SP, SP, Xn`, and the `mov x9, sp; sub xN, x9, x8; mov sp, xN` sequence Clang actually emits for runtime `alloca`) | Immediate budget path (via the closed-world SP-write detector; pre-🎯T52.1 the MOV-to-SP lowering was invisible — a 64 KiB alloca analysed as `{16, exact}`) |
-| **Switch / jump tables** | Not followed as tables (only via resolved BLR/BR) |
-| **Mutual indirect recursion fixed-point** | Explicitly out of scope for T3.10 |
-| **Off by default** | Product builds need `CSP_ANALYSE_STACKS` for any effect |
+| Gap | Severity | Impact |
+|---|---|---|
+| **x86_64 / non-ARM64** | open (🎯T52.6 go for Linux x86_64 unwind-first) | Stub 32 KiB inexact only today |
+| **Dynamic SP** (`SUB SP, SP, Xn`, and the `mov x9, sp; sub xN, x9, x8; mov sp, xN` sequence Clang emits for runtime `alloca`) | open | Budget path via closed-world SP-write detector |
+| **Switch / jump tables** | **deferred** (future §5) | Not followed as tables (only via resolved BLR/BR); revisit only if corpus metric implicates switch-heavy entries |
+| **Mutual indirect recursion fixed-point** | **deferred** | Explicitly out of scope since T3.10 |
+| **Tiered budgets** | **cut** (future §9) | Inexact always selects Default; budget magnitude has no consumer |
+| **Background symbol-table warm-up** | **cut** (future §10) | Superseded by 🎯T52.4 Default-on-miss async worker |
+| **Off by default** | product gate | Builds need `CSP_ANALYSE_STACKS` for any effect |
 
 (FP/SIMD stack ops — `STP Q…` writeback and friends — were a gap here until
-🎯T52.1: they were silently ignored, drifting the SP delta *in either
-direction* inside exact results. They are now decoded exactly; any remaining
-unmodelled SP-writing encoding is refused, not skipped.)
+🎯T52.1 **landed**: they were silently ignored, drifting the SP delta *in
+either direction* inside exact results. They are now decoded exactly; any
+remaining unmodelled SP-writing encoding is refused, not skipped.)
 
 Forward-looking design notes (not current truth):  
 [`docs/stack-analysis-future.md`](../stack-analysis-future.md).
@@ -421,10 +427,17 @@ until every request enqueued before the call has been dequeued and its
 result published (returns immediately when the worker is not running).
 Test-only; call from a plain OS thread, not from inside an imp.
 
-CI: default matrix runs the suite without sizing; a dedicated **“stack
-analyser enabled”** step builds with `ANALYSE=1` and runs slot-sizing tests.
-ASan/UBSan full suite still runs the audit for the soundness gate (tightness
-may skip under instrumentation).
+CI (`.github/workflows/ci.yml`):
+
+| Step | When | Role |
+|---|---|---|
+| Build and test (stack analyser enabled) | every matrix row | `make ANALYSE=1 build` + `StackSlotSizing` |
+| **Stack corpus metric (ANALYSE)** | Linux arm64 only (`ubuntu-24.04-arm`) | `make ANALYSE=1 stack-metric` — 🎯T52.2 ratchet |
+| ASan/UBSan full suite | sanitizer rows | audit soundness gate (tightness may skip under instrumentation) |
+
+macOS is covered by the local `make stack-metric` gate (the CI macOS row
+is already near its wall-time ceiling). x86_64 is structurally rate-0
+until an x86 walker exists — no baseline wired there yet.
 
 ### Ground-truth oracles (🎯T52.2)
 
@@ -456,20 +469,24 @@ to measured ground truth:
   then ratchets **both directions** against
   `scripts/stack_metric_baseline.json` — regressions fail, and
   improvements fail too until the baseline is deliberately updated
-  (`--update-baseline`) and committed. CI runs it on the Linux arm64 row.
-  Recorded pre-🎯T52.3 baseline (locked in
-  `scripts/stack_metric_baseline.json`, 2026-07-30): darwin-arm64 4
-  Small / ~1.83 M spawns (rate ≈ 2.2 × 10⁻⁶); linux-arm64 5 Small /
-  ~1.83 M (rate ≈ 2.7 × 10⁻⁶) — confirming the expected ≈0: the
-  type-erased trampoline kept real workloads on Default; the few
-  landings were `internal::spawn` fixtures with exact EntryFns.
+  (`--update-baseline`) and committed. Wired in CI as **Stack corpus
+  metric (ANALYSE)** on the Linux arm64 row.
 
-  Post-🎯T52.3 (darwin-arm64, 2026-07-31): **1 054 292 Small /
+  **Pre-🎯T52.3 baseline** (committed in
+  `scripts/stack_metric_baseline.json`, post-🎯T52.1/.4):
+
+  | Platform | Small / total | Rate | Bytes saved |
+  |---|---|---|---|
+  | darwin-arm64 | 4 / ~1.83 M | ≈ 2.2 × 10⁻⁶ | ~432 KiB |
+  | linux-arm64 | 5 / ~1.83 M | ≈ 2.7 × 10⁻⁶ | ~540 KiB |
+
+  Confirmed the expected ≈0 before the trampoline fix.
+
+  **Post-🎯T52.3** (darwin-arm64, 2026-07-31): **1 054 292 Small /
   1 830 909 spawns (rate ≈ 0.576, ~108.6 GiB address-space footprint
-  saved)** — material lift from ≈0. The residual Default mass is
+  saved)** — material lift from ≈0. Residual Default mass is
   channel/scheduler-bound bodies and first-spawn-per-entry misses
-  (async publish). Baseline locked in
-  `scripts/stack_metric_baseline.json` with noise-tolerant windows.
+  (async publish). Baseline locked with noise-tolerant windows.
 
 ---
 
@@ -483,7 +500,12 @@ to measured ground truth:
 | [23 gap audit](../papers/23-stack-analysis-gaps.md) | T3.4 decomposition; **pre-wiring snapshot** — superseded for “is it wired?” |
 | [30 register provenance](../papers/30-walker-register-provenance.md) | T3.10 design + what landed |
 | 🎯T3.4, T3.4.1–T3.4.5, T3.10 | All **achieved** in `bullseye.yaml` |
-| 🎯T52.1, T52.2, T52.3, T52.4 | Structural soundness; ground-truth oracles; concrete invoke + `C_shell`; async off-imp-stack analysis |
+| 🎯T52.1 **achieved** | Structural soundness: closed-world SP writes, FP/SIMD + single-register writeback, wired `max_call_depth` |
+| 🎯T52.2 **achieved** | Painted true-peak oracle + ratcheted corpus Small-rate metric in CI |
+| 🎯T52.3 **achieved** | Concrete invoke + `C_shell`; material corpus Small-rate lift |
+| 🎯T52.4 **achieved** | Async worker, Default-on-miss; no analysis on imp stacks beyond the walkable stub |
+| 🎯T52.5 **achieved** | Bounded pre-scan + fingerprint sub-cache; eval VM off imp stacks |
+| 🎯T52.6 **achieved** | Unwind-metadata spike: Linux x86_64 unwind-first **go**; ARM64 defence-in-depth Linux-scoped **go** |
 | [fable 2026-07](../audit/fable-2026-07.md) | Why profile must not select Small |
 
 When this document and a paper disagree about *current* behaviour, **prefer
