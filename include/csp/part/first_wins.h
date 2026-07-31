@@ -14,29 +14,22 @@ template <typename T>
 T first_wins(std::vector<reader<T>> inputs) {
     T t{};
     std::vector<internal::ChanOp> chanops;
-    for (auto& r : inputs) {
-        chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
-    }
+    chanops.reserve(inputs.size());
+    for (auto& r : inputs)
+        detail::fan_in_push_read(chanops, r, t);
 
-    while (!inputs.empty()) {
-        internal::AltMatch m;
-        internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
-        if (m.src && m.dst)
-            *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
-        internal::alt_end(&m);
-
-        if (m.result >= 0) {
-            return std::move(t);
-        }
-        // Reader died — remove it.
-        size_t slot = static_cast<size_t>(~m.result);
-        inputs[slot] = std::move(inputs.back());
-        inputs.pop_back();
-        chanops[slot] = chanops.back();
-        chanops.pop_back();
-    }
-
-    throw std::runtime_error("first_wins: all readers closed without producing a value");
+    bool got = false;
+    T result{};
+    (void)detail::fan_in(inputs, chanops, t, /*base=*/0, /*watch_out=*/false,
+                         [&](T& v) {
+                             result = std::move(v);
+                             got = true;
+                             return false;  // stop after first value
+                         });
+    if (!got)
+        throw std::runtime_error(
+            "first_wins: all readers closed without producing a value");
+    return result;
 }
 
 }

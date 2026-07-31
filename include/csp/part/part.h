@@ -301,6 +301,98 @@ auto operator|(chan<T> ch, consumer<T, F> c) {
 
 namespace detail {
 
+// --- Homogeneous dynamic-alt fan-in (🎯T51) ---
+//
+// Contract: build the ChanOp vector once; mutate in place for the life of
+// the loop (swap-and-pop on death, push_back on growth). Never rebuild per
+// iteration — race.h rebuilds on the public chan_op surface; these parts
+// stay on the T34/T35-tuned raw-ChanOp path.
+//
+// Slot layout is caller-owned:
+//   base=0: ops[i] ↔ inputs[i]
+//   base=1: ops[0] is out-death; ops[1+i] ↔ inputs[i]
+//   base=2: out-death + outer-input precede sub-stream reads
+
+// Homogeneous typed transfer of T via the pre-configured ChanOp.buf.
+template <typename T>
+[[nodiscard]] internal::AltMatch fan_in_step(internal::ChanOp* ops, int n) {
+    internal::AltMatch m;
+    internal::alt_begin(&m, ops, n, 0);
+    if (m.src && m.dst)
+        *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
+    internal::alt_end(&m);
+    return m;
+}
+
+template <typename T>
+[[nodiscard]] internal::AltMatch fan_in_step(std::vector<internal::ChanOp>& ops) {
+    return fan_in_step<T>(ops.data(), static_cast<int>(ops.size()));
+}
+
+// Custom-transfer step (merge_all dual-type, fanout multi-type, etc.).
+template <typename Xfer>
+[[nodiscard]] internal::AltMatch fan_in_step(std::vector<internal::ChanOp>& ops,
+                                             Xfer&& xfer) {
+    internal::AltMatch m;
+    internal::alt_begin(&m, ops.data(), static_cast<int>(ops.size()), 0);
+    if (m.src && m.dst)
+        xfer(m);
+    internal::alt_end(&m);
+    return m;
+}
+
+// Append a homogeneous read of r into buf.
+template <typename T>
+void fan_in_push_read(std::vector<internal::ChanOp>& ops, reader<T>& r, T& buf) {
+    ops.push_back({internal::wait(r.internal_reader()), &buf,
+                   internal::get_slot(r.internal_reader().ptr)});
+}
+
+// Out-death watch op (slot 0 of merge / merge_all / flat_map).
+template <typename T>
+internal::ChanOp fan_in_out_dead(writer<T>& out) {
+    return {internal::wait_dead(out.internal_writer()), nullptr,
+            internal::get_slot(out.internal_writer().ptr)};
+}
+
+// Swap-and-pop dead reader at ChanOp index `slot`.
+template <typename T>
+void fan_in_remove(std::vector<reader<T>>& inputs,
+                   std::vector<internal::ChanOp>& ops,
+                   size_t slot, size_t base) {
+    size_t i = slot - base;
+    inputs[i] = std::move(inputs.back());
+    inputs.pop_back();
+    ops[slot] = ops.back();
+    ops.pop_back();
+}
+
+// Fixed-set homogeneous fan-in loop over build-once ops.
+// Returns false if stopped early (out died or on_value returned false);
+// true if all inputs exhausted.
+//
+// on_value(T&) is invoked after a successful read; return true to continue.
+template <typename T, typename OnValue>
+[[nodiscard]] bool fan_in(std::vector<reader<T>>& inputs,
+                          std::vector<internal::ChanOp>& ops,
+                          T& buf,
+                          size_t base,
+                          bool watch_out,
+                          OnValue&& on_value) {
+    while (!inputs.empty()) {
+        auto m = fan_in_step<T>(ops);
+        if (watch_out && m.result == ~0)
+            return false;
+        if (m.result >= 0) {
+            if (!on_value(buf))
+                return false;
+        } else {
+            fan_in_remove(inputs, ops, static_cast<size_t>(~m.result), base);
+        }
+    }
+    return true;
+}
+
 // Shared machinery for heterogeneous fan-in parts (mux, combine_latest —
 // 🎯T49: formerly duplicated per part).
 

@@ -17,36 +17,16 @@ auto merge(std::vector<reader<T>> inputs) {
 
             T t;
             std::vector<internal::ChanOp> chanops;
+            chanops.reserve(inputs.size() + 1);
             // Slot 0: death-watch on output.
-            chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
+            chanops.push_back(detail::fan_in_out_dead(out));
             // Slots 1..N: reads from each input.
-            for (auto& r : inputs) {
-                chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
-            }
+            for (auto& r : inputs)
+                detail::fan_in_push_read(chanops, r, t);
 
-            while (!inputs.empty()) {
-                internal::AltMatch m;
-                internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
-                if (m.src && m.dst)
-                    *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
-                internal::alt_end(&m);
-
-                if (m.result == ~0) {
-                    // Output peer died.
-                    return;
-                } else if (m.result >= 0) {
-                    // Read succeeded — forward to output.
-                    if (!(out << std::move(t))) return;
-                } else {
-                    // A reader died. Slot index from complement.
-                    size_t slot = static_cast<size_t>(~m.result);
-                    size_t i = slot - 1; // 0-based index into inputs.
-                    inputs[i] = std::move(inputs.back());
-                    inputs.pop_back();
-                    chanops[slot] = chanops.back();
-                    chanops.pop_back();
-                }
-            }
+            // base=1 (slot 0 is out-death); stop on out death or write fail.
+            (void)detail::fan_in(inputs, chanops, t, /*base=*/1, /*watch_out=*/true,
+                                 [&](T& v) { return bool(out << std::move(v)); });
         });
 }
 

@@ -3723,6 +3723,98 @@ auto operator|(chan<T> ch, consumer<T, F> c) {
 
 namespace detail {
 
+// --- Homogeneous dynamic-alt fan-in (🎯T51) ---
+//
+// Contract: build the ChanOp vector once; mutate in place for the life of
+// the loop (swap-and-pop on death, push_back on growth). Never rebuild per
+// iteration — race.h rebuilds on the public chan_op surface; these parts
+// stay on the T34/T35-tuned raw-ChanOp path.
+//
+// Slot layout is caller-owned:
+//   base=0: ops[i] ↔ inputs[i]
+//   base=1: ops[0] is out-death; ops[1+i] ↔ inputs[i]
+//   base=2: out-death + outer-input precede sub-stream reads
+
+// Homogeneous typed transfer of T via the pre-configured ChanOp.buf.
+template <typename T>
+[[nodiscard]] internal::AltMatch fan_in_step(internal::ChanOp* ops, int n) {
+    internal::AltMatch m;
+    internal::alt_begin(&m, ops, n, 0);
+    if (m.src && m.dst)
+        *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
+    internal::alt_end(&m);
+    return m;
+}
+
+template <typename T>
+[[nodiscard]] internal::AltMatch fan_in_step(std::vector<internal::ChanOp>& ops) {
+    return fan_in_step<T>(ops.data(), static_cast<int>(ops.size()));
+}
+
+// Custom-transfer step (merge_all dual-type, fanout multi-type, etc.).
+template <typename Xfer>
+[[nodiscard]] internal::AltMatch fan_in_step(std::vector<internal::ChanOp>& ops,
+                                             Xfer&& xfer) {
+    internal::AltMatch m;
+    internal::alt_begin(&m, ops.data(), static_cast<int>(ops.size()), 0);
+    if (m.src && m.dst)
+        xfer(m);
+    internal::alt_end(&m);
+    return m;
+}
+
+// Append a homogeneous read of r into buf.
+template <typename T>
+void fan_in_push_read(std::vector<internal::ChanOp>& ops, reader<T>& r, T& buf) {
+    ops.push_back({internal::wait(r.internal_reader()), &buf,
+                   internal::get_slot(r.internal_reader().ptr)});
+}
+
+// Out-death watch op (slot 0 of merge / merge_all / flat_map).
+template <typename T>
+internal::ChanOp fan_in_out_dead(writer<T>& out) {
+    return {internal::wait_dead(out.internal_writer()), nullptr,
+            internal::get_slot(out.internal_writer().ptr)};
+}
+
+// Swap-and-pop dead reader at ChanOp index `slot`.
+template <typename T>
+void fan_in_remove(std::vector<reader<T>>& inputs,
+                   std::vector<internal::ChanOp>& ops,
+                   size_t slot, size_t base) {
+    size_t i = slot - base;
+    inputs[i] = std::move(inputs.back());
+    inputs.pop_back();
+    ops[slot] = ops.back();
+    ops.pop_back();
+}
+
+// Fixed-set homogeneous fan-in loop over build-once ops.
+// Returns false if stopped early (out died or on_value returned false);
+// true if all inputs exhausted.
+//
+// on_value(T&) is invoked after a successful read; return true to continue.
+template <typename T, typename OnValue>
+[[nodiscard]] bool fan_in(std::vector<reader<T>>& inputs,
+                          std::vector<internal::ChanOp>& ops,
+                          T& buf,
+                          size_t base,
+                          bool watch_out,
+                          OnValue&& on_value) {
+    while (!inputs.empty()) {
+        auto m = fan_in_step<T>(ops);
+        if (watch_out && m.result == ~0)
+            return false;
+        if (m.result >= 0) {
+            if (!on_value(buf))
+                return false;
+        } else {
+            fan_in_remove(inputs, ops, static_cast<size_t>(~m.result), base);
+        }
+    }
+    return true;
+}
+
 // Shared machinery for heterogeneous fan-in parts (mux, combine_latest —
 // 🎯T49: formerly duplicated per part).
 
@@ -6847,29 +6939,22 @@ template <typename T>
 T first_wins(std::vector<reader<T>> inputs) {
     T t{};
     std::vector<internal::ChanOp> chanops;
-    for (auto& r : inputs) {
-        chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
-    }
+    chanops.reserve(inputs.size());
+    for (auto& r : inputs)
+        detail::fan_in_push_read(chanops, r, t);
 
-    while (!inputs.empty()) {
-        internal::AltMatch m;
-        internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
-        if (m.src && m.dst)
-            *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
-        internal::alt_end(&m);
-
-        if (m.result >= 0) {
-            return std::move(t);
-        }
-        // Reader died — remove it.
-        size_t slot = static_cast<size_t>(~m.result);
-        inputs[slot] = std::move(inputs.back());
-        inputs.pop_back();
-        chanops[slot] = chanops.back();
-        chanops.pop_back();
-    }
-
-    throw std::runtime_error("first_wins: all readers closed without producing a value");
+    bool got = false;
+    T result{};
+    (void)detail::fan_in(inputs, chanops, t, /*base=*/0, /*watch_out=*/false,
+                         [&](T& v) {
+                             result = std::move(v);
+                             got = true;
+                             return false;  // stop after first value
+                         });
+    if (!got)
+        throw std::runtime_error(
+            "first_wins: all readers closed without producing a value");
+    return result;
 }
 
 }
@@ -6883,6 +6968,11 @@ namespace csp::part {
 // Maps each input element to a sub-stream via f, then merges all sub-streams
 // into one output. Sub-streams are read concurrently (non-deterministic order).
 // Output closes when the input is exhausted and all sub-streams are drained.
+//
+// Kept as a single-imp specialised body rather than `map | merge_all`
+// (🎯T51): composition adds an intermediate channel + map imp per pipeline
+// (extra rendezvous hop on every outer element) and delays cancellation
+// propagation by one hop on output death. See docs/design/fan-in-unification.md.
 template <typename A, typename B, typename F>
 auto flat_map(F&& f) {
     return make_filter<A, B>([f = std::forward<F>(f)](reader<A> in, writer<B> out) {
@@ -6894,28 +6984,23 @@ auto flat_map(F&& f) {
         std::vector<internal::ChanOp> chanops;
 
         // Slot 0: death-watch on output.
-        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
+        chanops.push_back(detail::fan_in_out_dead(out));
         // Slot 1: read from input (removed when input exhausted).
-        chanops.push_back({internal::wait(in.internal_reader()), &a, internal::get_slot(in.internal_reader().ptr)});
+        detail::fan_in_push_read(chanops, in, a);
 
         bool input_alive = true;
 
         while (input_alive || !subs.empty()) {
             size_t sub_base = input_alive ? 2 : 1;
 
-            internal::AltMatch m;
-            internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
-
-            // Type-aware transfer: input slot reads A, sub-stream slots read B.
-            if (m.src && m.dst) {
-                if (input_alive && m.result == 1) {
-                    *static_cast<A*>(m.dst) = std::move(*static_cast<A*>(m.src));
+            auto m = detail::fan_in_step(chanops, [&](internal::AltMatch& am) {
+                // Type-aware transfer: input slot reads A, sub-stream slots read B.
+                if (input_alive && am.result == 1) {
+                    *static_cast<A*>(am.dst) = std::move(*static_cast<A*>(am.src));
                 } else {
-                    *static_cast<B*>(m.dst) = std::move(*static_cast<B*>(m.src));
+                    *static_cast<B*>(am.dst) = std::move(*static_cast<B*>(am.src));
                 }
-            }
-
-            internal::alt_end(&m);
+            });
 
             if (m.result == ~0) {
                 // Output died.
@@ -6923,7 +7008,7 @@ auto flat_map(F&& f) {
             } else if (input_alive && m.result == 1) {
                 // New input element — spawn sub-stream.
                 reader<B> sub = f(std::move(a));
-                chanops.push_back({internal::wait(sub.internal_reader()), &b, internal::get_slot(sub.internal_reader().ptr)});
+                detail::fan_in_push_read(chanops, sub, b);
                 subs.push_back(std::move(sub));
             } else if (input_alive && m.result == ~1) {
                 // Input exhausted — remove input slot.
@@ -6934,12 +7019,8 @@ auto flat_map(F&& f) {
                 if (!(out << std::move(b))) return;
             } else {
                 // Sub-stream died — swap-and-pop.
-                size_t slot = static_cast<size_t>(~m.result);
-                size_t i = slot - sub_base;
-                subs[i] = std::move(subs.back());
-                subs.pop_back();
-                chanops[slot] = chanops.back();
-                chanops.pop_back();
+                detail::fan_in_remove(subs, chanops,
+                                     static_cast<size_t>(~m.result), sub_base);
             }
         }
     });
@@ -7195,28 +7276,12 @@ template <typename T>
 void join(std::vector<reader<T>> inputs) {
     T t;
     std::vector<internal::ChanOp> chanops;
-    for (auto& r : inputs) {
-        chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
-    }
+    chanops.reserve(inputs.size());
+    for (auto& r : inputs)
+        detail::fan_in_push_read(chanops, r, t);
 
-    while (!inputs.empty()) {
-        internal::AltMatch m;
-        internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
-        if (m.src && m.dst)
-            *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
-        internal::alt_end(&m);
-
-        if (m.result >= 0) {
-            // Value received — discard.
-            continue;
-        }
-        // Reader died — remove it.
-        size_t slot = static_cast<size_t>(~m.result);
-        inputs[slot] = std::move(inputs.back());
-        inputs.pop_back();
-        chanops[slot] = chanops.back();
-        chanops.pop_back();
-    }
+    (void)detail::fan_in(inputs, chanops, t, /*base=*/0, /*watch_out=*/false,
+                         [](T&) { return true; });
 }
 
 }
@@ -7312,36 +7377,16 @@ auto merge(std::vector<reader<T>> inputs) {
 
             T t;
             std::vector<internal::ChanOp> chanops;
+            chanops.reserve(inputs.size() + 1);
             // Slot 0: death-watch on output.
-            chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
+            chanops.push_back(detail::fan_in_out_dead(out));
             // Slots 1..N: reads from each input.
-            for (auto& r : inputs) {
-                chanops.push_back({internal::wait(r.internal_reader()), &t, internal::get_slot(r.internal_reader().ptr)});
-            }
+            for (auto& r : inputs)
+                detail::fan_in_push_read(chanops, r, t);
 
-            while (!inputs.empty()) {
-                internal::AltMatch m;
-                internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
-                if (m.src && m.dst)
-                    *static_cast<T*>(m.dst) = std::move(*static_cast<T*>(m.src));
-                internal::alt_end(&m);
-
-                if (m.result == ~0) {
-                    // Output peer died.
-                    return;
-                } else if (m.result >= 0) {
-                    // Read succeeded — forward to output.
-                    if (!(out << std::move(t))) return;
-                } else {
-                    // A reader died. Slot index from complement.
-                    size_t slot = static_cast<size_t>(~m.result);
-                    size_t i = slot - 1; // 0-based index into inputs.
-                    inputs[i] = std::move(inputs.back());
-                    inputs.pop_back();
-                    chanops[slot] = chanops.back();
-                    chanops.pop_back();
-                }
-            }
+            // base=1 (slot 0 is out-death); stop on out death or write fail.
+            (void)detail::fan_in(inputs, chanops, t, /*base=*/1, /*watch_out=*/true,
+                                 [&](T& v) { return bool(out << std::move(v)); });
         });
 }
 
@@ -7367,35 +7412,30 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
         std::vector<internal::ChanOp> chanops;
 
         // Slot 0: death-watch on output.
-        chanops.push_back({internal::wait_dead(out.internal_writer()), nullptr, internal::get_slot(out.internal_writer().ptr)});
+        chanops.push_back(detail::fan_in_out_dead(out));
         // Slot 1: read from input (removed when input exhausted).
-        chanops.push_back({internal::wait(in.internal_reader()), &new_sub, internal::get_slot(in.internal_reader().ptr)});
+        detail::fan_in_push_read(chanops, in, new_sub);
 
         bool input_alive = true;
 
         while (input_alive || !subs.empty()) {
             size_t sub_base = input_alive ? 2 : 1;
 
-            internal::AltMatch m;
-            internal::alt_begin(&m, chanops.data(), static_cast<int>(chanops.size()), 0);
-
-            if (m.src && m.dst) {
-                if (input_alive && m.result == 1) {
-                    *static_cast<reader<B>*>(m.dst) =
-                        std::move(*static_cast<reader<B>*>(m.src));
+            auto m = detail::fan_in_step(chanops, [&](internal::AltMatch& am) {
+                if (input_alive && am.result == 1) {
+                    *static_cast<reader<B>*>(am.dst) =
+                        std::move(*static_cast<reader<B>*>(am.src));
                 } else {
-                    *static_cast<B*>(m.dst) =
-                        std::move(*static_cast<B*>(m.src));
+                    *static_cast<B*>(am.dst) =
+                        std::move(*static_cast<B*>(am.src));
                 }
-            }
-
-            internal::alt_end(&m);
+            });
 
             if (m.result == ~0) {
                 return;  // Output died.
             } else if (input_alive && m.result == 1) {
                 // New sub-reader.
-                chanops.push_back({internal::wait(new_sub.internal_reader()), &b, internal::get_slot(new_sub.internal_reader().ptr)});
+                detail::fan_in_push_read(chanops, new_sub, b);
                 subs.push_back(std::move(new_sub));
             } else if (input_alive && m.result == ~1) {
                 // Input exhausted — remove input slot.
@@ -7406,12 +7446,8 @@ inline auto const merge_all = make_filter<reader<B>, B>([](reader<reader<B>> in,
                 if (!(out << std::move(b))) return;
             } else {
                 // Sub-stream died — swap-and-pop.
-                size_t slot = static_cast<size_t>(~m.result);
-                size_t i = slot - sub_base;
-                subs[i] = std::move(subs.back());
-                subs.pop_back();
-                chanops[slot] = chanops.back();
-                chanops.pop_back();
+                detail::fan_in_remove(subs, chanops,
+                                     static_cast<size_t>(~m.result), sub_base);
             }
         }
     });
