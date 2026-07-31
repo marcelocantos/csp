@@ -129,7 +129,13 @@ struct AltMatch {
 using EntryFn = void (*)(void *);
 
 // Imp management.
-int spawn(EntryFn entry, void * data, bool daemon = false);
+// `analyse_fn`, when non-null, is the concrete user-entry root the
+// stack analyser should walk (🎯T52.3). `csp::spawn<F>` passes the
+// specialised invoke thunk here so slot selection is not defeated by
+// the type-erased `spawn_entry<F>` trampoline; direct `internal::spawn`
+// callers leave it null and the entry itself is analysed.
+int spawn(EntryFn entry, void * data, bool daemon = false,
+          const void * analyse_fn = nullptr);
 int run();
 void await_idle();
 void await_quiescent();
@@ -1236,6 +1242,18 @@ struct spawn_data {
     writer<std::exception_ptr> w;
 };
 
+// 🎯T52.3: concrete user-entry root for stack analysis. Specialised per
+// F so the walker sees a direct `BL` into `F::operator()` (and any
+// data-resolvable callees) instead of the type-erased exception /
+// channel shell in `spawn_entry`. Analysis-only — the live path still
+// runs through `spawn_entry`. Taking the address from `spawn<F>` keeps
+// the symbol live for the analyser.
+template <typename F>
+inline void spawn_invoke(void * data) {
+    auto * sd = static_cast<spawn_data<F> *>(data);
+    sd->f();
+}
+
 template <typename F>
 inline void spawn_entry(void * data) {
     using SD = spawn_data<F>;
@@ -1265,9 +1283,16 @@ inline void spawn_entry(void * data) {
 
 template <typename F>
 reader<std::exception_ptr> spawn(F && f, bool daemon = false) {
+    using Fd = std::decay_t<F>;
     reader<std::exception_ptr> r;
-    auto sd = new detail::spawn_data<F>{std::move(f), ++r};
-    if (!internal::spawn(detail::spawn_entry<F>, sd, daemon)) {
+    auto sd = new detail::spawn_data<Fd>{std::forward<F>(f), ++r};
+    // Hand the concrete invoke thunk (and the live closure as `data`)
+    // across the type-erasure boundary so slot selection can analyse
+    // the user entry rather than the exception/channel trampoline
+    // (🎯T52.3). The worker still walks with data == nullptr (🎯T52.4);
+    // the closure is available for a future data-path pre-scan (🎯T52.5).
+    if (!internal::spawn(detail::spawn_entry<Fd>, sd, daemon,
+                         reinterpret_cast<const void *>(&detail::spawn_invoke<Fd>))) {
         throw error("spawn failed");
     }
     return r;

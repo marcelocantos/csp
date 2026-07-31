@@ -9,6 +9,29 @@ struct stack_analysis {
     bool is_exact;      // false if unresolvable indirect calls or other unknowns
 };
 
+// 🎯T52.3: fixed runtime imp-entry overhead composed with user-entry
+// analysis when `csp::spawn<F>` supplies a concrete invoke thunk.
+//
+// Derivation (measured + guard margin, audited):
+//   - Painted true-peak of the leanest imp (`noop_entry`) under
+//     ANALYSE + arena is ≈352 B (darwin-arm64) / similar on linux-arm64.
+//     That peak covers fcontext boot, `start()` trampoline frames live
+//     under the entry, and the exit path.
+//   - `spawn_entry<F>` frames live under the user body (unique_ptr,
+//     exception_ptr storage, try-region setup) are intentionally not in
+//     the invoke-thunk walk; a ≥2× margin on the measured shell absorbs
+//     them and minor ABI/codegen drift.
+//   - Slot selection: depth = kShellStackBytes + analyze(invoke).max_depth,
+//     then the usual 2× headroom + 2 KiB floor + sizeof(Imp).
+//   - Residual (documented, not in C_shell): the exception-report path
+//     in `spawn_entry` (`w << ex`) is deep and scheduler-bound; Small
+//     selection is for the non-throwing body. Soft-guard overflow checks
+//     remain the tripwire for residual paths.
+//
+// The audit asserts measured noop true-peak ≤ kShellStackBytes whenever
+// painting is on. Bump the constant (with evidence) if that gate fails.
+inline constexpr size_t kShellStackBytes = 1024;
+
 struct stack_analysis_options {
     size_t indirect_call_budget = 2048; // Budget per unresolvable BLR (bytes)
     int max_call_depth = 64;            // Max call-following depth. Clamped to

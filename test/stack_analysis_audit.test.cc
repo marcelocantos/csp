@@ -162,8 +162,10 @@ void transient_peak_entry(void*) {
 // indirect call nor constant-fold the branch away (single-TU interprocedural
 // constant propagation would otherwise resolve everything at compile time,
 // making the test pass for the wrong reason). They are analysed and run with
-// the same live `data`, exactly as csp::spawn() analyses spawn_entry<F> with
-// the live closure. Each exercises one resolution path the analyser must size
+// the same live `data`. Production `csp::spawn<F>` analyses the concrete
+// `spawn_invoke<F>` root (🎯T52.3) rather than the type-erased trampoline;
+// these fixtures mirror that shape by analysing the entry with its live
+// closure. Each exercises one resolution path the analyser must size
 // tightly: closure-held vtable dispatch (🎯T3.4.2), interprocedural data
 // forwarding (🎯T3.4.3), and per-register provenance forwarding of a callable
 // arriving in a callee's X1 and a CONST discriminator (🎯T3.10).
@@ -420,6 +422,9 @@ TEST_CASE("soundness-and-tightness-report") {
     // frames) — while the analyser sizes only the entry body. The noop
     // peak is exactly that shared shell. kShellSlack absorbs allocator
     // path variance between runs (fast vs slow malloc path).
+    //
+    // 🎯T52.3: the same measured shell must sit under kShellStackBytes
+    // (the production C_shell constant composed with user-entry analysis).
     size_t shell = 0;
     constexpr size_t kShellSlack = 1024;
 #endif
@@ -442,7 +447,17 @@ TEST_CASE("soundness-and-tightness-report") {
         CHECK_MESSAGE(r.sound, violation.str());
 
 #ifdef CSP_AUDIT_PAINT
-        if (std::strcmp(r.name, "noop") == 0) shell = r.true_peak;
+        if (std::strcmp(r.name, "noop") == 0) {
+            shell = r.true_peak;
+            // 🎯T52.3 C_shell audit: the production constant must cover the
+            // measured runtime shell. If this fails, bump kShellStackBytes
+            // with fresh evidence (see docs/reference/stack-analysis.md).
+            CHECK_MESSAGE(shell <= csp::kShellStackBytes,
+                          "measured runtime shell (" << shell
+                          << ") exceeds kShellStackBytes ("
+                          << csp::kShellStackBytes
+                          << ") — C_shell is no longer a sound floor");
+        }
 
         // Painting must have happened: every spawned imp leaves a non-zero
         // painted peak (the boot record alone unpaints bytes).

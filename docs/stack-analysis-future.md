@@ -16,7 +16,7 @@ the open-gap table in the reference page still lists them.
 
 | Gap | Notes |
 |-----|--------|
-| Type-erased `csp::spawn(lambda)` trampoline | Main reason real imps stay Default |
+| Type-erased `csp::spawn(lambda)` trampoline | **Landed in 🎯T52.3** — `spawn_invoke<F>` + `C_shell`; residual Default is channel/scheduler bodies and data-dependent closures (🎯T52.5) |
 | x86_64 walker | Still a 32 KiB inexact stub |
 | Dynamic `SUB SP, Xn`, jump tables | Still limited (FP/SIMD stack ops landed in 🎯T52.1 — see §3/§4) |
 | Mutual indirect-recursion fixed point | Explicitly deferred |
