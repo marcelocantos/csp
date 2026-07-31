@@ -621,6 +621,16 @@ $(BENCH_TARGET): $(LIB_OBJS) $(BENCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # Library sources
+# 🎯T52.5: the spawn-time analysis stub must stay walker-exact. Apple clang
+# on GitHub macos-14 injects stack-canary BLs for the stub's large on-stack
+# snapshot arrays even with __attribute__((no_stack_protector)) on the
+# function (attribute alone fixed local clang 21 but not the CI toolchain).
+# Compile the analyser TU without stack protector so the canary never
+# poisons the walk. Same flag for dist/csp.cpp which amalgamates this code.
+$(BUILDDIR)/src/stack_analysis_arm64.o: src/stack_analysis_arm64.cc
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -fno-stack-protector $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
+
 $(BUILDDIR)/src/%.o: src/%.cc
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
@@ -698,6 +708,10 @@ $(BUILDDIR)/src/ngtcp2_crypto_picotls_minicrypto.o: src/ngtcp2_crypto_picotls_mi
 endif
 
 # Distribution sources
+$(BUILDDIR)/dist/csp.o: dist/csp.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -fno-stack-protector $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
+
 $(BUILDDIR)/dist/%.o: dist/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
