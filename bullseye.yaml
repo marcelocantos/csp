@@ -1461,7 +1461,8 @@ targets:
     achieved: 2026-07-31
   T52:
     name: Stack analysis delivers measured Small-slot wins on real workloads
-    status: identified
+    status: achieved
+    achieved: 2026-07-31
     value: 0.0
     cost: 0.0
     acceptance:
