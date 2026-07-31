@@ -1565,15 +1565,17 @@ targets:
     achieved: 2026-07-30
   T53:
     name: The audit's soundness margin holds under sanitizer-inflated runtime-shell frames (ASan+ANALYSE combination)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 2.0
     acceptance:
     - ASan + ANALYSE build runs the audit suite green (locally at minimum; decide and record whether a CI row should cover the combination)
     - The shell allowance is measured or sanitizer-scaled, not a bare constant that sanitizer instrumentation can silently outgrow
     context: 'Found during 🎯T52.4 oracles, reproduced on the pre-T52.4 tree (not a regression): under ASan + CSP_ANALYSE_STACKS together, the audit''s soundness gate fails for the noop fixture — analyser=0 + frame allowance 256 &lt; high_water=272 with is_exact — because an empty function gets no ASan instrumentation (stays exact) while ASan fattens the runtime-shell frames past the fixed 256-byte allowance. The combination is in no CI row (ASan rows are non-ANALYSE; the ANALYSE row is unsanitized), so nothing is red today. Fix direction: the shell allowance should be measured (the painted-peak shell measurement from 🎯T52.2 gives it directly) rather than a constant, or the audit''s tightness/margin checks should self-scale under CSP_AUDIT_SANITIZED like the existing tightness gating does.'
     origin: 🎯T52.4 oracle run, 2026-07-30
     discovered: 2026-07-30
+    achieved: 2026-07-31
   T6:
     name: Local Docker testing covers Linux scenarios
     status: achieved
