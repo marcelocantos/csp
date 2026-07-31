@@ -11,7 +11,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
-#include <deque>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -547,10 +546,193 @@ inline callee_seed default_seed() {
 spinlock g_cache_mu;
 ptr_map<std::vector<uint8_t>> g_cache;
 
-// Eval result cache: for data=nullptr evaluations, the result is deterministic.
-// Keyed by function address.
+// Eval result cache (🎯T52.5 hierarchical): keyed by function address, with a
+// per-fn sub-cache of data-dependent results keyed by the fingerprint of the
+// CALL_INDIRECT targets resolved at spawn (see future doc §11).
+//
+// no_data is the unspecialised (data == nullptr) result — a sound upper bound
+// for any spawn data when exact. by_targets maps a resolved-target fingerprint
+// to the result of replaying the null-data program against that snapshot.
 spinlock g_eval_cache_mu;
-ptr_map<stack_analysis> g_eval_cache;
+
+// Cap on per-fn fingerprint sub-cache entries. FIFO eviction past the cap
+// keeps memory bounded when a function is spawned with many distinct
+// function-pointer layouts (acceptance: "Sub-cache is capped with eviction").
+static constexpr size_t kSubCacheCap = 16;
+
+// Max CALL_INDIRECT sites snapshotted into an async request / pre-scan buffer.
+// Real entry functions almost never have this many; overflow bails the
+// data-dependent path (Default + null-data enqueue to warm the program).
+static constexpr size_t kMaxSnapshotTargets = 16;
+
+struct fn_eval_entry {
+    bool has_no_data = false;
+    stack_analysis no_data{0, false};
+
+    struct sub_slot {
+        uint64_t fingerprint = 0;
+        stack_analysis result{};
+        bool occupied = false;
+    };
+    sub_slot subs[kSubCacheCap];
+    size_t sub_fifo = 0;  // next insert / eviction index
+
+    stack_analysis* find_sub(uint64_t fp) {
+        for (size_t i = 0; i < kSubCacheCap; ++i) {
+            if (subs[i].occupied && subs[i].fingerprint == fp)
+                return &subs[i].result;
+        }
+        return nullptr;
+    }
+
+    void put_sub(uint64_t fp, stack_analysis r) {
+        for (size_t i = 0; i < kSubCacheCap; ++i) {
+            if (subs[i].occupied && subs[i].fingerprint == fp) {
+                subs[i].result = r;
+                return;
+            }
+        }
+        size_t i = sub_fifo;
+        subs[i] = {fp, r, true};
+        sub_fifo = (sub_fifo + 1) % kSubCacheCap;
+    }
+};
+
+ptr_map<fn_eval_entry> g_eval_cache;
+
+fn_eval_entry* ensure_fn_entry(const void* fn) {
+    if (auto* e = g_eval_cache.find(fn)) return e;
+    g_eval_cache.emplace(fn, fn_eval_entry{});
+    return g_eval_cache.find(fn);
+}
+
+// Snapshot of CALL_INDIRECT targets frozen at spawn (by value). The worker
+// replays against this table and never re-reads live closure memory.
+struct call_indirect_snapshot {
+    uint8_t n = 0;
+    const uint64_t* offsets = nullptr;     // length n
+    const void* const* targets = nullptr;  // length n
+
+    const void* resolve(uint64_t off) const {
+        for (uint8_t i = 0; i < n; ++i) {
+            if (offsets[i] == off) return targets[i];
+        }
+        return nullptr;  // missing → caller budgets
+    }
+};
+
+// Pre-scan result: allocation-free, stack-resident (imp-stack safe).
+// Arrays are deliberately uninitialised — zeroing them would emit a memset
+// BL into libsystem, which would make the spawn stub inexact when walked.
+struct prescan_result {
+    uint8_t n;
+    bool ok;  // false → truncated/unknown opcode or too many targets
+    uint64_t fingerprint;
+    uint64_t offsets[kMaxSnapshotTargets];
+    const void* targets[kMaxSnapshotTargets];
+};
+
+// Advance ip past one complete bytecode instruction. Returns false if the
+// stream is truncated or the opcode is unknown.
+__attribute__((always_inline))
+inline bool skip_opcode(const uint8_t*& ip, const uint8_t* end) {
+    if (ip >= end) return false;
+    uint8_t op = *ip++;
+    switch (op) {
+    case OP_MAX:
+    case OP_ADD:
+        return true;
+    case OP_PUSH:
+    case OP_BUDGET:
+    case OP_CALL_DIRECT:
+    case OP_CALL_INDIRECT:
+        if (ip + 8 > end) return false;
+        ip += 8;
+        return true;
+    case OP_CALL_DIRECT_WITH_DATA:
+        if (ip + 16 > end) return false;
+        ip += 16;
+        return true;
+    case OP_CALL_DIRECT_WITH_ARGS: {
+        if (ip + 9 > end) return false;
+        ip += 8;  // target addr
+        uint8_t count = *ip++;
+        for (uint8_t k = 0; k < count; ++k) {
+            if (ip + 10 > end) return false;
+            ip += 2 + 8;  // reg, origin, payload
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+// Pre-scan a compiled (null-data) program: extract every OP_CALL_INDIRECT
+// offset, load the target from live `data` (same raw load as the evaluator),
+// and fingerprint the ordered target list. Allocation-free — safe on imp
+// stacks. Segment-bounds gating of the *resolved target* matches enter_callee
+// (out-of-text targets stay in the snapshot; eval budgets them), so the
+// fingerprint still distinguishes different OOB pointer values.
+// Load a little-endian u64 without calling memcpy (spawn-stub walkability).
+inline uint64_t load_u64_raw(const void* p) {
+    const auto* b = static_cast<const uint8_t*>(p);
+    return (uint64_t)b[0]
+         | ((uint64_t)b[1] << 8)
+         | ((uint64_t)b[2] << 16)
+         | ((uint64_t)b[3] << 24)
+         | ((uint64_t)b[4] << 32)
+         | ((uint64_t)b[5] << 40)
+         | ((uint64_t)b[6] << 48)
+         | ((uint64_t)b[7] << 56);
+}
+
+inline const void* load_ptr_raw(const void* p) {
+    return reinterpret_cast<const void*>(load_u64_raw(p));
+}
+
+// Out-parameter form: returning prescan_result by value would memcpy the
+// arrays (libsystem BL → spawn stub inexact). always_inline keeps the
+// body in the spawn stub's walk corpus on compilers that would otherwise
+// outline it; no_stack_protector blocks the canary BL that -fstack-
+// protector-strong emits for the large target arrays (macOS CI default).
+__attribute__((always_inline, no_stack_protector))
+inline void prescan_call_indirects(const uint8_t* prog, size_t len,
+                                   const void* data, prescan_result& out) {
+    out.n = 0;
+    out.ok = false;
+    out.fingerprint = 0;
+    if (!prog || !data) return;
+    const uint8_t* ip = prog;
+    const uint8_t* end = prog + len;
+    // FNV-1a 64-bit over the ordered target pointer list + count.
+    uint64_t h = 0xcbf29ce484222325ULL;
+    while (ip < end) {
+        if (*ip == OP_CALL_INDIRECT) {
+            ++ip;
+            if (ip + 8 > end) return;
+            uint64_t off = load_u64_raw(ip);
+            ip += 8;
+            const void* target = load_ptr_raw(
+                static_cast<const char*>(data) + off);
+            // Same text-segment gate as enter_callee: OOB targets are kept in
+            // the fingerprint (so mutation of a bad pointer still misses) and
+            // the worker will budget them at replay.
+            h ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(target));
+            h *= 0x100000001b3ULL;
+            if (out.n >= kMaxSnapshotTargets) return;  // overflow → !ok
+            out.offsets[out.n] = off;
+            out.targets[out.n] = target;
+            ++out.n;
+        } else {
+            if (!skip_opcode(ip, end)) return;
+        }
+    }
+    h ^= out.n;
+    h *= 0x100000001b3ULL;
+    out.fingerprint = h;
+    out.ok = true;
+}
 
 // Forward declaration.
 std::vector<uint8_t> analyze_and_compile(const void* fn,
@@ -1560,18 +1742,86 @@ std::vector<uint8_t> analyze_and_compile(const void* fn,
 // which itself is non-recursive) and entered by pushing the current
 // instruction pointer onto the call stack.  This keeps the C++ stack
 // at constant depth regardless of the analysed program's call chain.
+//
+// 🎯T52.5: eval state (call frames, program store, value stack) lives in a
+// capped per-thread arena. Exhaustion bails to is_exact=false — the escape
+// hatch that makes a fixed arena sound. Compile still temporarily uses
+// std::vector on the worker/sync path; the resulting bytes are copied into
+// the arena before the vector is destroyed, so no heap pointer outlives the
+// copy. The imp-stack path never reaches here.
 
 static constexpr int EVAL_STACK_SIZE = 256;
+static constexpr size_t kEvalArenaBytes = 256 * 1024;
+static constexpr int kMaxEvalCallFrames = 64;   // matches small_ptr_set MAX
+static constexpr int kMaxEvalPrograms = 128;    // root + callees in one eval
 
-stack_analysis eval_iterative(const void* root_fn, const void* data,
-                               const stack_analysis_options& opts) {
-    // Check eval cache for the root (data=nullptr only).
-    if (!data) {
-        std::lock_guard<spinlock> lk(g_eval_cache_mu);
-        if (auto* p = g_eval_cache.find(root_fn)) return *p;
+struct eval_arena {
+    alignas(16) char buf[kEvalArenaBytes];
+    size_t used = 0;
+    bool overflowed = false;
+
+    void reset() {
+        used = 0;
+        overflowed = false;
     }
 
-    // Evaluation state.
+    void* alloc(size_t n, size_t align = alignof(std::max_align_t)) {
+        size_t p = (used + align - 1) & ~(align - 1);
+        if (p + n > sizeof(buf)) {
+            overflowed = true;
+            return nullptr;
+        }
+        used = p + n;
+        return buf + p;
+    }
+
+    uint8_t* copy_bytes(const uint8_t* src, size_t n) {
+        auto* d = static_cast<uint8_t*>(alloc(n, 1));
+        if (!d) return nullptr;
+        if (n) std::memcpy(d, src, n);
+        return d;
+    }
+};
+
+// One arena per OS thread. The worker reuses it across requests; sync tests
+// on the main thread get their own. Not used on imp stacks.
+eval_arena& thread_eval_arena() {
+    thread_local eval_arena a;
+    return a;
+}
+
+struct arena_prog {
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+};
+
+// Copy a compiled program into the arena. Returns false on overflow.
+bool arena_store_prog(eval_arena& arena, arena_prog* store, int& n_store,
+                      const std::vector<uint8_t>& prog) {
+    if (n_store >= kMaxEvalPrograms) {
+        arena.overflowed = true;
+        return false;
+    }
+    auto* bytes = arena.copy_bytes(prog.data(), prog.size());
+    if (!bytes && !prog.empty()) return false;
+    store[n_store++] = {bytes, prog.size()};
+    return true;
+}
+
+stack_analysis eval_iterative(const void* root_fn, const void* data,
+                              const stack_analysis_options& opts,
+                              const call_indirect_snapshot* snap = nullptr) {
+    // Check eval cache for the root (data=nullptr, no snapshot — unspecialised).
+    if (!data && !snap) {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        if (auto* e = g_eval_cache.find(root_fn); e && e->has_no_data)
+            return e->no_data;
+    }
+
+    auto& arena = thread_eval_arena();
+    arena.reset();
+
+    // Evaluation state — all arena- or stack-resident (no std containers).
     size_t values[EVAL_STACK_SIZE];
     int vsp = 0;
     bool is_exact = true;
@@ -1582,29 +1832,47 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
         const void* fn;
         bool is_exact_before;
         const void* saved_data;
-        bool cacheable;          // 🎯T3.10: store result keyed by fn only if true
+        bool cacheable;  // 🎯T3.10: store result keyed by fn only if true
     };
-    std::vector<eval_frame> call_stack;
+    auto* call_stack = static_cast<eval_frame*>(
+        arena.alloc(sizeof(eval_frame) * kMaxEvalCallFrames, alignof(eval_frame)));
+    int call_sp = 0;
+    if (!call_stack) {
+        return {opts.indirect_call_budget, false};
+    }
+
     // Cycle detection. 🎯T52.1: capacity = opts.max_call_depth (clamped to
     // the set's compile-time cap of 64), so the option is the wired
     // call-following depth limit.
     small_ptr_set on_stack(opts.max_call_depth);
 
-    // Program storage: deque provides stable references on push_back,
-    // so ip/end pointers into stored programs remain valid when new
-    // programs are added for callees.
+    // Program storage: arena-backed copies with stable pointers.
     //
-    // The root function is compiled with data when available so that
-    // integer fields in the closure can be materialised as CONST registers
-    // at walk time, enabling branch pruning (e.g. CBZ on a tag field).
-    std::deque<std::vector<uint8_t>> prog_store;
-    prog_store.push_back(get_or_compile(root_fn, opts, data));
+    // Snapshot mode (🎯T52.5 worker replay) always uses the null-data program
+    // (CALL_INDIRECT offsets must match the pre-scan). Live-data mode
+    // compiles the root with data so integer fields can be materialised as
+    // CONST at walk time (branch pruning).
+    auto* prog_store = static_cast<arena_prog*>(
+        arena.alloc(sizeof(arena_prog) * kMaxEvalPrograms, alignof(arena_prog)));
+    int n_progs = 0;
+    if (!prog_store) {
+        return {opts.indirect_call_budget, false};
+    }
 
-    const uint8_t* ip = prog_store.back().data();
-    const uint8_t* end = ip + prog_store.back().size();
+    {
+        const void* root_data = snap ? nullptr : data;
+        auto prog = get_or_compile(root_fn, opts, root_data);
+        if (!arena_store_prog(arena, prog_store, n_progs, prog)) {
+            return {opts.indirect_call_budget, false};
+        }
+    }
+
+    const uint8_t* ip = prog_store[0].data;
+    const uint8_t* end = ip + prog_store[0].size;
     // The root always fits: the on-stack limit is clamped to >= 1.
     (void)on_stack.insert(root_fn);
-    const void* current_data = data;
+    // Snapshot mode: current_data stays null; OP_CALL_INDIRECT reads snap.
+    const void* current_data = snap ? nullptr : data;
 
     // 🎯T3.10: enter callee `addr` with forwarded data `fwd_data` and inbound
     // register `seed`. `cacheable` selects whether the address-keyed eval
@@ -1616,9 +1884,9 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
                             const callee_seed& seed, bool cacheable) {
         if (cacheable) {
             std::lock_guard<spinlock> lk(g_eval_cache_mu);
-            if (auto* r = g_eval_cache.find(addr)) {
-                is_exact &= r->is_exact;
-                values[vsp++] = r->max_depth;
+            if (auto* e = g_eval_cache.find(addr); e && e->has_no_data) {
+                is_exact &= e->no_data.is_exact;
+                values[vsp++] = e->no_data.max_depth;
                 return;
             }
         }
@@ -1649,27 +1917,46 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
             values[vsp++] = opts.indirect_call_budget;
             return;
         }
-        prog_store.push_back(get_or_compile(addr, opts, fwd_data, seed, cacheable));
-        call_stack.push_back({ip, end, addr, is_exact, current_data, cacheable});
+        if (call_sp >= kMaxEvalCallFrames) {
+            on_stack.erase(addr);
+            is_exact = false;
+            values[vsp++] = opts.indirect_call_budget;
+            return;
+        }
+        auto prog = get_or_compile(addr, opts, fwd_data, seed, cacheable);
+        if (!arena_store_prog(arena, prog_store, n_progs, prog)) {
+            on_stack.erase(addr);
+            is_exact = false;
+            values[vsp++] = opts.indirect_call_budget;
+            return;
+        }
+        call_stack[call_sp++] = {ip, end, addr, is_exact, current_data, cacheable};
         is_exact = true;
         current_data = fwd_data;
-        ip = prog_store.back().data();
-        end = ip + prog_store.back().size();
+        ip = prog_store[n_progs - 1].data;
+        end = ip + prog_store[n_progs - 1].size;
     };
 
     while (true) {
+        if (arena.overflowed) {
+            is_exact = false;
+            break;
+        }
         if (ip >= end) {
-            if (call_stack.empty()) break;
+            if (call_sp == 0) break;
             // Return from callee — cache its result only for unspecialised
             // (cacheable) walks; a result specialised to forwarded data or a
             // non-default register seed must not be served keyed by fn alone.
-            auto& frame = call_stack.back();
+            auto& frame = call_stack[--call_sp];
             bool callee_exact = is_exact;
             size_t callee_depth = vsp > 0 ? values[vsp - 1] : 0;
             if (frame.cacheable) {
                 std::lock_guard<spinlock> lk(g_eval_cache_mu);
-                g_eval_cache.emplace(frame.fn,
-                    stack_analysis{callee_depth, callee_exact});
+                auto* e = ensure_fn_entry(frame.fn);
+                if (!e->has_no_data) {
+                    e->no_data = {callee_depth, callee_exact};
+                    e->has_no_data = true;
+                }
             }
             // Restore caller state.
             is_exact = frame.is_exact_before & callee_exact;
@@ -1677,7 +1964,6 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
             on_stack.erase(frame.fn);
             ip = frame.return_ip;
             end = frame.return_end;
-            call_stack.pop_back();
             continue;
         }
 
@@ -1709,11 +1995,21 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
         }
         case OP_CALL_INDIRECT: {
             auto off = read_u64(ip);
-            if (!current_data) {
+            const void* target = nullptr;
+            if (snap) {
+                // 🎯T52.5: worker/spawn-frozen targets — no live memory.
+                target = snap->resolve(off);
+                if (!target) {
+                    is_exact = false;
+                    values[vsp++] = opts.indirect_call_budget;
+                    break;
+                }
+                enter_callee(target, nullptr, default_seed(), /*cacheable=*/true);
+            } else if (!current_data) {
                 is_exact = false;
                 values[vsp++] = opts.indirect_call_budget;
             } else {
-                auto target = *reinterpret_cast<const void* const*>(
+                target = *reinterpret_cast<const void* const*>(
                     static_cast<const char*>(current_data) + off);
                 enter_callee(target, nullptr, default_seed(), /*cacheable=*/true);
             }
@@ -1805,11 +2101,19 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
     }
 
     stack_analysis result = {vsp > 0 ? values[0] : 0, is_exact};
+    if (arena.overflowed) {
+        result.is_exact = false;
+        if (result.max_depth == 0) result.max_depth = opts.indirect_call_budget;
+    }
 
-    // Cache root result for data=nullptr.
-    if (!data) {
+    // Cache root result for unspecialised (data=nullptr, no snapshot) walks.
+    if (!data && !snap) {
         std::lock_guard<spinlock> lk(g_eval_cache_mu);
-        g_eval_cache.emplace(root_fn, result);
+        auto* e = ensure_fn_entry(root_fn);
+        if (!e->has_no_data) {
+            e->no_data = result;
+            e->has_no_data = true;
+        }
     }
 
     return result;
@@ -1819,34 +2123,49 @@ stack_analysis eval_iterative(const void* root_fn, const void* data,
 
 stack_analysis analyze_stack_depth(const void* fn, const void* data,
                                   stack_analysis_options opts) {
-    return eval_iterative(fn, data, opts);
+    // Sync live-data path preserves CONST branch pruning / walk-time
+    // materialisation. Snapshot sub-cache is the spawn/async contract
+    // (lookup_or_request); tests that need specialised walks call here.
+    return eval_iterative(fn, data, opts, nullptr);
 }
 
 stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
                                           stack_analysis_options opts) {
+    (void)opts;
     // Check eval cache only — no recursive analysis.
-    if (!data) {
-        std::lock_guard<spinlock> lk(g_eval_cache_mu);
-        if (auto* p = g_eval_cache.find(fn)) return *p;
+    std::lock_guard<spinlock> lk(g_eval_cache_mu);
+    if (auto* e = g_eval_cache.find(fn)) {
+        if (!data && e->has_no_data) return e->no_data;
+        // data != nullptr: cannot fingerprint without a pre-scan (needs
+        // the program). Cache-only API returns the null-data result when
+        // exact (sound upper bound); otherwise the miss sentinel.
+        if (data && e->has_no_data && e->no_data.is_exact) return e->no_data;
     }
     // Not cached — return conservative default.
     return {32u << 10, false};
 }
 
-// --- 🎯T52.4: async analysis (Default-on-miss + worker thread) ---
+// --- 🎯T52.4 / 🎯T52.5: async analysis (Default-on-miss + worker thread) ---
 //
 // Tiered-JIT shape, minus deoptimization (Default is unconditionally
-// safe): the spawn path consults the fn-keyed result cache through the
+// safe): the spawn path consults the result cache through the
 // allocation-free stub below; on a miss it takes the Default slot
-// immediately and enqueues the entry on a fixed-capacity MPSC ring. A
+// immediately and enqueues a request on a fixed-capacity MPSC ring. A
 // dedicated runtime-owned OS thread (NOT an imp — a real full-size
 // stack) dequeues, runs the ordinary synchronous analysis, and publishes
-// through the existing spinlocked caches. First-spawn-per-entry misses
-// Small; every later spawn of a published exact-and-fitting entry hits.
+// through the existing spinlocked caches.
+//
+// 🎯T52.5 extends the stub with a bounded pre-scan: when the null-data
+// program is already compiled, the stub resolves CALL_INDIRECT offsets
+// against live closure memory, fingerprints the target set, and looks
+// up a per-fn sub-cache. A sub-cache miss enqueues the snapshotted
+// targets; the worker replays against the snapshot (no live memory) and
+// publishes into the sub-cache. Warm data-path spawns hit at ~cache-hit
+// cost.
 //
 // Only the stub executes on imp stacks, so only the stub must remain
-// allocation-free and walkable. The worker (and everything it calls) may
-// use ordinary containers.
+// allocation-free and walkable. Worker eval state is arena-backed
+// (🎯T52.5); compile may still use ordinary containers on the worker.
 
 namespace {
 
@@ -1855,9 +2174,37 @@ namespace {
 // request is dropped — a later spawn of the same entry retries).
 constexpr size_t kAnalysisQueueCap = 256;  // power of two
 
+// kind: 0 = null-data unspecialised analysis; 1 = snapshot replay.
+// No defaulted array members: value-init would emit memset (libsystem BL)
+// and poison the spawn stub's walk.
+struct analysis_request {
+    const void* fn;
+    uint8_t kind;
+    uint8_t n_targets;
+    uint64_t fingerprint;
+    uint64_t offsets[kMaxSnapshotTargets];
+    const void* targets[kMaxSnapshotTargets];
+};
+
+// Scalar field copy — never operator=/memcpy of the whole struct (those
+// become BL into libsystem and make the spawn stub inexact).
+__attribute__((always_inline, no_stack_protector))
+inline void copy_analysis_request(analysis_request& dst,
+                                  const analysis_request& src) noexcept {
+    dst.fn = src.fn;
+    dst.kind = src.kind;
+    dst.n_targets = src.n_targets;
+    dst.fingerprint = src.fingerprint;
+    // Copy only the live prefix; unused slots are ignored by the worker.
+    for (uint8_t i = 0; i < src.n_targets && i < kMaxSnapshotTargets; ++i) {
+        dst.offsets[i] = src.offsets[i];
+        dst.targets[i] = src.targets[i];
+    }
+}
+
 struct analysis_queue_cell {
     std::atomic<size_t> seq;
-    const void* fn;
+    analysis_request req;
 };
 
 analysis_queue_cell g_analysis_queue[kAnalysisQueueCap];
@@ -1874,10 +2221,11 @@ struct analysis_queue_init {
     }
 } g_analysis_queue_init;
 
-// Multi-producer push. Pure inline atomics — this is part of the spawn
-// stub's walk corpus, so it must contain no BL to malloc or any other
-// unwalkable callee.
-bool analysis_queue_push(const void* fn) noexcept {
+// Multi-producer push. Pure inline atomics + scalar field copy — this is
+// part of the spawn stub's walk corpus, so it must contain no BL to malloc
+// or any other unwalkable callee (incl. stack-canary helpers).
+__attribute__((always_inline, no_stack_protector))
+inline bool analysis_queue_push(const analysis_request& req) noexcept {
     size_t pos = g_analysis_enqueue_pos.load(std::memory_order_relaxed);
     for (;;) {
         auto& cell = g_analysis_queue[pos & (kAnalysisQueueCap - 1)];
@@ -1886,7 +2234,7 @@ bool analysis_queue_push(const void* fn) noexcept {
         if (dif == 0) {
             if (g_analysis_enqueue_pos.compare_exchange_weak(
                     pos, pos + 1, std::memory_order_relaxed)) {
-                cell.fn = fn;
+                copy_analysis_request(cell.req, req);
                 cell.seq.store(pos + 1, std::memory_order_release);
                 return true;
             }
@@ -1898,8 +2246,35 @@ bool analysis_queue_push(const void* fn) noexcept {
     }
 }
 
-// Single-consumer pop (worker thread only).
-bool analysis_queue_pop(const void*& fn) noexcept {
+// Scalar-only kind=0 enqueue — no large analysis_request on the caller's
+// stack (the full struct's arrays are what blew the macos-14 frame budget).
+__attribute__((always_inline, no_stack_protector))
+inline bool analysis_queue_push_null(const void* fn) noexcept {
+    size_t pos = g_analysis_enqueue_pos.load(std::memory_order_relaxed);
+    for (;;) {
+        auto& cell = g_analysis_queue[pos & (kAnalysisQueueCap - 1)];
+        size_t seq = cell.seq.load(std::memory_order_acquire);
+        auto dif = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos);
+        if (dif == 0) {
+            if (g_analysis_enqueue_pos.compare_exchange_weak(
+                    pos, pos + 1, std::memory_order_relaxed)) {
+                cell.req.fn = fn;
+                cell.req.kind = 0;
+                cell.req.n_targets = 0;
+                cell.req.fingerprint = 0;
+                cell.seq.store(pos + 1, std::memory_order_release);
+                return true;
+            }
+        } else if (dif < 0) {
+            return false;
+        } else {
+            pos = g_analysis_enqueue_pos.load(std::memory_order_relaxed);
+        }
+    }
+}
+
+// Single-consumer pop (worker thread only — may use ordinary copies).
+bool analysis_queue_pop(analysis_request& req) noexcept {
     size_t pos = g_analysis_dequeue_pos.load(std::memory_order_relaxed);
     for (;;) {
         auto& cell = g_analysis_queue[pos & (kAnalysisQueueCap - 1)];
@@ -1909,7 +2284,7 @@ bool analysis_queue_pop(const void*& fn) noexcept {
         if (dif == 0) {
             if (g_analysis_dequeue_pos.compare_exchange_weak(
                     pos, pos + 1, std::memory_order_relaxed)) {
-                fn = cell.fn;
+                copy_analysis_request(req, cell.req);
                 cell.seq.store(pos + kAnalysisQueueCap,
                                std::memory_order_release);
                 return true;
@@ -1952,11 +2327,7 @@ analysis_worker_state& worker_state() {
 // published".
 std::atomic<bool> g_analysis_in_flight{false};
 
-void analyse_and_publish(const void* fn) {
-    {
-        std::lock_guard<spinlock> lk(g_eval_cache_mu);
-        if (g_eval_cache.find(fn)) return;  // already published
-    }
+stack_analysis_options worker_opts_for(const void* fn) {
     stack_analysis_options opts;
     // 🎯T3.4.4 profile feedback, applied worker-side: a recorded
     // high-water (+50% margin) replaces the flat default budget for
@@ -1971,9 +2342,38 @@ void analyse_and_publish(const void* fn) {
             opts.indirect_call_budget = refined;
         }
     }
-    // eval_iterative publishes the fn-keyed root result into g_eval_cache
-    // on completion (data == nullptr path).
-    (void)analyze_stack_depth(fn, nullptr, opts);
+    return opts;
+}
+
+void analyse_and_publish(const analysis_request& req) {
+    auto opts = worker_opts_for(req.fn);
+    if (req.kind == 0) {
+        // Null-data unspecialised walk. eval_iterative publishes into
+        // fn_eval_entry::no_data.
+        {
+            std::lock_guard<spinlock> lk(g_eval_cache_mu);
+            if (auto* e = g_eval_cache.find(req.fn); e && e->has_no_data)
+                return;
+        }
+        (void)eval_iterative(req.fn, nullptr, opts, nullptr);
+        return;
+    }
+    // Snapshot replay (🎯T52.5): never re-read live closure memory.
+    {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        if (auto* e = g_eval_cache.find(req.fn)) {
+            if (e->find_sub(req.fingerprint)) return;
+        }
+    }
+    call_indirect_snapshot snap;
+    snap.n = req.n_targets;
+    snap.offsets = req.offsets;
+    snap.targets = req.targets;
+    auto result = eval_iterative(req.fn, nullptr, opts, &snap);
+    {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        ensure_fn_entry(req.fn)->put_sub(req.fingerprint, result);
+    }
 }
 
 void analysis_worker_main() {
@@ -1984,12 +2384,16 @@ void analysis_worker_main() {
         // publication.
         for (;;) {
             g_analysis_in_flight.store(true, std::memory_order_seq_cst);
-            const void* fn = nullptr;
-            if (!analysis_queue_pop(fn)) {
+            analysis_request req;
+            req.fn = nullptr;
+            req.kind = 0;
+            req.n_targets = 0;
+            req.fingerprint = 0;
+            if (!analysis_queue_pop(req)) {
                 g_analysis_in_flight.store(false, std::memory_order_seq_cst);
                 break;
             }
-            analyse_and_publish(fn);
+            analyse_and_publish(req);
             g_analysis_in_flight.store(false, std::memory_order_seq_cst);
         }
         // Park. Timed wait instead of producer-side notification: the
@@ -2009,20 +2413,76 @@ void analysis_worker_main() {
 
 namespace detail {
 
-stack_analysis stack_analysis_lookup_or_request(const void* fn) noexcept {
-    // Fn-keyed lookup. Every published entry is an unspecialised
-    // (data == nullptr) walk, which is a sound upper bound for ANY spawn
-    // data: an exact null-data result means no path depended on data
-    // (data-dependent calls budget to inexact without data), and data-
-    // derived CONST pruning only ever removes paths from the max.
+// Data-path miss work: pre-scan + sub-cache + enqueue. noinline so the
+// thin front-door stub stays small. Snapshot buffers live in thread_local
+// storage (OS-thread TLS, not the fiber stack) — no process-wide spinlock
+// (a global scratch lock hung macOS ASan dist CI under spawn storms).
+__attribute__((noinline, no_stack_protector))
+static stack_analysis lookup_or_request_data_miss(const void* fn,
+                                                  const void* data) noexcept {
+    const uint8_t* prog_data = nullptr;
+    size_t prog_len = 0;
+    {
+        std::lock_guard<spinlock> lk(g_cache_mu);
+        if (auto* p = g_cache.find(fn)) {
+            prog_data = p->data();
+            prog_len = p->size();
+        }
+    }
+    if (!prog_data) {
+        analysis_queue_push_null(fn);
+        return {32u << 10, false};
+    }
+
+    // TLS: per-OS-thread, re-entrant across imps on the same worker thread
+    // only if nested (doesn't happen — spawn path doesn't re-enter).
+    thread_local prescan_result tls_ps;
+    thread_local analysis_request tls_req;
+    prescan_call_indirects(prog_data, prog_len, data, tls_ps);
+    if (!tls_ps.ok) {
+        analysis_queue_push_null(fn);
+        return {32u << 10, false};
+    }
+
     {
         std::lock_guard<spinlock> lk(g_eval_cache_mu);
-        if (auto* p = g_eval_cache.find(fn)) return *p;
+        if (auto* e = g_eval_cache.find(fn)) {
+            if (auto* r = e->find_sub(tls_ps.fingerprint)) return *r;
+        }
     }
-    // Miss: request async analysis (dropped when the ring is full — a
-    // later spawn retries) and stand on the Default-slot sentinel.
-    analysis_queue_push(fn);
+
+    tls_req.fn = fn;
+    tls_req.kind = 1;
+    tls_req.n_targets = tls_ps.n;
+    tls_req.fingerprint = tls_ps.fingerprint;
+    for (uint8_t i = 0; i < tls_ps.n; ++i) {
+        tls_req.offsets[i] = tls_ps.offsets[i];
+        tls_req.targets[i] = tls_ps.targets[i];
+    }
+    analysis_queue_push(tls_req);
     return {32u << 10, false};
+}
+
+// 🎯T52.5 spawn front door: keep this function tiny and exact so it is
+// walkable on every supported Apple clang (incl. macos-14 CI). Miss/data
+// work lives in lookup_or_request_data_miss.
+__attribute__((no_stack_protector))
+stack_analysis stack_analysis_lookup_or_request(const void* fn,
+                                                const void* data) noexcept {
+    {
+        std::lock_guard<spinlock> lk(g_eval_cache_mu);
+        if (auto* e = g_eval_cache.find(fn); e && e->has_no_data) {
+            if (e->no_data.is_exact) return e->no_data;
+            if (!data) return e->no_data;
+        }
+    }
+
+    if (!data) {
+        analysis_queue_push_null(fn);
+        return {32u << 10, false};
+    }
+
+    return lookup_or_request_data_miss(fn, data);
 }
 
 void start_stack_analysis_worker() {
@@ -2102,10 +2562,11 @@ stack_analysis analyze_stack_depth_cached(const void* fn, const void* data,
 
 namespace detail {
 
-// 🎯T52.4: no walker on this architecture — the stub is the same
+// 🎯T52.4/T52.5: no walker on this architecture — the stub is the same
 // conservative sentinel as the sync API, and there is nothing for a
 // worker to compute, so the lifecycle hooks are no-ops.
-stack_analysis stack_analysis_lookup_or_request(const void*) noexcept {
+stack_analysis stack_analysis_lookup_or_request(const void*,
+                                                const void*) noexcept {
     return {32u << 10, false};
 }
 

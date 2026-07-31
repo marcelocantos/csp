@@ -25,7 +25,11 @@ MAKEFLAGS += -j$(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || ech
 
 BUILDDIR := build/normal
 CXX      := c++ -std=c++20 -stdlib=libc++
-CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter
+# -fno-stack-protector: fiber stacks + the spawn-time stack analyser walk
+# both break under canary BLs (walker sees __stack_chk_* as unresolved;
+# macOS CI depth 2656 / inexact on the T52.5 stub). Attributes alone do
+# not suppress canaries on Apple clang 15/macos-14.
+CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter -fno-stack-protector
 LDFLAGS  :=
 LDLIBS   :=
 
@@ -621,6 +625,14 @@ $(BENCH_TARGET): $(LIB_OBJS) $(BENCH_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # Library sources
+# 🎯T52.5: spawn-time analysis stub must stay walker-exact. Apple clang on
+# GitHub macos-14 injects stack-canary BLs for the stub's large on-stack
+# snapshot arrays (depth 2656 / inexact) even with no_stack_protector on
+# the function. Target-specific CXXFLAGS (not a separate recipe) so the
+# normal pattern rule picks up -fno-stack-protector reliably.
+$(BUILDDIR)/src/stack_analysis_arm64.o: CXXFLAGS += -fno-stack-protector
+$(BUILDDIR)/dist/csp.o: CXXFLAGS += -fno-stack-protector
+
 $(BUILDDIR)/src/%.o: src/%.cc
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<

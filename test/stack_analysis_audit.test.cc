@@ -67,7 +67,7 @@ namespace {
 #define AUDIT_NOINLINE __attribute__((noinline))
 #endif
 
-// Constant per-function ABI overhead the analyser doesn't model:
+// Floor for per-function ABI overhead the analyser doesn't model:
 //   - stp x29, x30, [sp, #-16]! (AAPCS frame record): 16 bytes
 //   - alignment padding when the body has no local allocas
 //   - stack-protector canary load + spill (Linux with -fstack-protector)
@@ -76,12 +76,21 @@ namespace {
 // adjustments inside the function body. The runtime high-water,
 // measured from entry_sp_ (which points at the imp's Imp object at
 // the top of the slot), naturally includes all prologue overhead.
-// Observed values for a true noop: ~16 bytes on macOS, ~48 bytes on
-// Linux arm64. 256 bytes is comfortably above both with enough slack
-// for stack-protector variants and future minor codegen drift. This
-// floor is for the audit test only — the slot-selection path uses
-// 2× headroom + 2 KB ABI floor + sizeof(Imp), which already absorbs
-// the prologue overhead.
+// Observed values for a true noop (unsanitized): ~16 bytes on macOS,
+// ~48 bytes on Linux arm64. 256 is the unsanitized floor with slack
+// for stack-protector variants and minor codegen drift.
+//
+// 🎯T53: this is a FLOOR, not the live allowance. Under ASan the
+// runtime-shell frames between entry_sp_ and the entry body inflate
+// past 256 (observed 272 on macOS arm64) while empty fixtures stay
+// analyser-exact at 0 — so a bare constant can silently fail the
+// soundness gate. The live allowance is measured from the noop
+// fixture's high-water (see frame_allowance in the report test) and
+// taken as max(this floor, measured shell). Painted true_peak is
+// unavailable under sanitizers (arena stacks — and paint — are off),
+// so the checkpoint high-water of the leanest imp is the portable
+// shell measurement. Audit-test only — the slot-selection path uses
+// 2× headroom + 2 KB ABI floor + sizeof(Imp).
 constexpr size_t kFrameRecordOverhead = 256;
 
 
@@ -162,8 +171,10 @@ void transient_peak_entry(void*) {
 // indirect call nor constant-fold the branch away (single-TU interprocedural
 // constant propagation would otherwise resolve everything at compile time,
 // making the test pass for the wrong reason). They are analysed and run with
-// the same live `data`, exactly as csp::spawn() analyses spawn_entry<F> with
-// the live closure. Each exercises one resolution path the analyser must size
+// the same live `data`. Production `csp::spawn<F>` analyses the concrete
+// `spawn_invoke<F>` root (🎯T52.3) rather than the type-erased trampoline;
+// these fixtures mirror that shape by analysing the entry with its live
+// closure. Each exercises one resolution path the analyser must size
 // tightly: closure-held vtable dispatch (🎯T3.4.2), interprocedural data
 // forwarding (🎯T3.4.3), and per-register provenance forwarding of a callable
 // arriving in a callee's X1 and a CONST discriminator (🎯T3.10).
@@ -395,9 +406,9 @@ AuditResult run_case(const AuditCase& c) {
     r.true_peak = csp::detail::get_stack_true_peak(c.entry);
 #endif
 
-    // Soundness: the analyser may legitimately under-report by up to
-    // kFrameRecordOverhead because the runtime high-water includes the
-    // AAPCS frame-record (stp x29, x30) that the walker doesn't see.
+    // Preliminary soundness with the unsanitized floor only. The report
+    // test recomputes against the measured shell allowance (🎯T53) once
+    // the noop fixture has published its high-water.
     r.sound = !r.is_exact ||
               r.analyser_estimate + kFrameRecordOverhead >= r.high_water;
     r.tight = r.is_exact && r.analyser_estimate < 2 * r.high_water + 4096;
@@ -411,6 +422,18 @@ TEST_SUITE("StackAnalysisAudit") {
 TEST_CASE("soundness-and-tightness-report") {
     size_t candidate_count = 0;
     size_t candidate_tight = 0;
+    // 🎯T53: live shell allowance for the checkpoint soundness gate.
+    // Starts at the unsanitized AAPCS floor; raised to the measured
+    // residual from the noop fixture (kCases[0]) once that case runs.
+    // Under ASan+ANALYSE the residual is the sanitizer-inflated runtime
+    // shell (no arena/paint under sanitizers — true_peak stays 0). No CI
+    // row covers ASan+ANALYSE: Small-slot selection is arena-only so the
+    // combination is diagnostic-only, and a dual rebuild would cost a full
+    // sanitizer matrix rebuild for no production-path coverage. The
+    // measured allowance is the durable fix; exercise it locally with
+    // `make SANITIZE=address ANALYSE=1` and
+    // `./build/address-analyse/csp_tests -ts=StackAnalysisAudit`.
+    size_t frame_allowance = kFrameRecordOverhead;
 #ifdef CSP_AUDIT_PAINT
     // 🎯T52.2: runtime-shell floor for the painted-peak gate, measured as
     // the painted peak of the leanest possible imp ("noop", first case).
@@ -420,29 +443,53 @@ TEST_CASE("soundness-and-tightness-report") {
     // frames) — while the analyser sizes only the entry body. The noop
     // peak is exactly that shared shell. kShellSlack absorbs allocator
     // path variance between runs (fast vs slow malloc path).
+    //
+    // 🎯T52.3: the same measured shell must sit under kShellStackBytes
+    // (the production C_shell constant composed with user-entry analysis).
     size_t shell = 0;
     constexpr size_t kShellSlack = 1024;
 #endif
+
+    // Shell measurement contracts on noop being first (checkpoint + paint).
+    REQUIRE(std::strcmp(kCases[0].name, "noop") == 0);
 
     MESSAGE("Stack analysis audit — name | analyser | high-water | true-peak | ratio | is_exact | sound | tight | kind");
     for (const auto& c : kCases) {
         auto r = run_case(c);
 
+        // 🎯T53: raise the allowance to the measured noop residual before
+        // the soundness check (noop is first; subsequent cases inherit).
+        if (std::strcmp(r.name, "noop") == 0 && r.high_water > frame_allowance) {
+            frame_allowance = r.high_water;
+        }
+        r.sound = !r.is_exact ||
+                  r.analyser_estimate + frame_allowance >= r.high_water;
+
         // Soundness gate — HARD, over *every* case (tightness candidates and
         // runtime-bound shapes alike). Any exact analyser estimate that falls
-        // below the observed high-water (allowing the AAPCS frame-record
-        // floor) means the walker missed a path that would overflow a
-        // tightly-sized stack.
+        // below the observed high-water (allowing the measured shell / AAPCS
+        // frame-record floor) means the walker missed a path that would
+        // overflow a tightly-sized stack.
         std::ostringstream violation;
         violation << "soundness violation for " << r.name
                   << ": analyser=" << r.analyser_estimate
-                  << " + frame=" << kFrameRecordOverhead
+                  << " + frame=" << frame_allowance
                   << " < high_water=" << r.high_water
                   << " with is_exact=true";
         CHECK_MESSAGE(r.sound, violation.str());
 
 #ifdef CSP_AUDIT_PAINT
-        if (std::strcmp(r.name, "noop") == 0) shell = r.true_peak;
+        if (std::strcmp(r.name, "noop") == 0) {
+            shell = r.true_peak;
+            // 🎯T52.3 C_shell audit: the production constant must cover the
+            // measured runtime shell. If this fails, bump kShellStackBytes
+            // with fresh evidence (see docs/reference/stack-analysis.md).
+            CHECK_MESSAGE(shell <= csp::kShellStackBytes,
+                          "measured runtime shell (" << shell
+                          << ") exceeds kShellStackBytes ("
+                          << csp::kShellStackBytes
+                          << ") — C_shell is no longer a sound floor");
+        }
 
         // Painting must have happened: every spawned imp leaves a non-zero
         // painted peak (the boot record alone unpaints bytes).
@@ -463,14 +510,16 @@ TEST_CASE("soundness-and-tightness-report") {
         // plus the measured runtime shell must cover the TRUE peak, not
         // just the checkpoint-sampled one. This is the gate the checkpoint
         // comparison above cannot provide: it sees depth reached BETWEEN
-        // suspend points.
+        // suspend points. frame_allowance (🎯T53) replaces the bare
+        // kFrameRecordOverhead so sanitizer-scaled shells stay consistent
+        // if paint is ever enabled under instrumentation.
         bool sound_peak = !r.is_exact ||
-            r.analyser_estimate + kFrameRecordOverhead + shell + kShellSlack
+            r.analyser_estimate + frame_allowance + shell + kShellSlack
                 >= r.true_peak;
         std::ostringstream pv;
         pv << "painted-peak soundness violation for " << r.name
            << ": analyser=" << r.analyser_estimate
-           << " + frame=" << kFrameRecordOverhead
+           << " + frame=" << frame_allowance
            << " + shell=" << shell << " + slack=" << kShellSlack
            << " < true_peak=" << r.true_peak
            << " with is_exact=true";

@@ -6,9 +6,10 @@ audit-campaign fix — `BR` tail-call resolution now respects the
 instruction budget via the shared `resolve_indirect_callee` helper — the
 🎯T52.1 structural-soundness pass: closed-world SP-write detection,
 decoded FP/SIMD + single-register writeback, wired `max_call_depth` —
-and the 🎯T52.4 async pipeline: spawn never analyses on imp stacks;
-cache misses take Default and enqueue for a runtime-owned worker
-thread).
+the 🎯T52.4 async pipeline: spawn never analyses on imp stacks; cache
+misses take Default and enqueue for a runtime-owned worker thread —
+and 🎯T52.3: `csp::spawn<F>` analyses the concrete invoke thunk past
+the type-erasure boundary, composed with a documented `C_shell`).
 Design history lives in the papers listed at the end; this page is the
 authoritative *as shipped* picture.
 
@@ -45,8 +46,10 @@ upper bound fits with headroom.
 | Actor | File | Role |
 |---|---|---|
 | User callable `F` + optional `data` | caller | Entry function address and live closure / data pointer |
+| `spawn_invoke<F>` | `include/csp/csp.h` | 🎯T52.3 concrete analysis root (direct call into `F`) |
+| `kShellStackBytes` (`C_shell`) | `stack_analysis.h` | Fixed imp-entry overhead composed with user-entry depth |
 | `analyze_stack_depth*` | `stack_analysis.h`, `stack_analysis_arm64.cc` | Walk machine code; return `{max_depth, is_exact}` |
-| `stack_analysis_lookup_or_request` | `stack_analysis_arm64.cc` | 🎯T52.4 spawn-side stub: fn-keyed cache lookup; miss → enqueue |
+| `stack_analysis_lookup_or_request` | `stack_analysis_arm64.cc` | 🎯T52.4/T52.5 spawn-side stub: fn-keyed + fingerprint sub-cache lookup; pre-scan + snapshot enqueue on miss |
 | Analysis worker | `stack_analysis_arm64.cc` | 🎯T52.4 runtime-owned OS thread: dequeues, analyses, publishes |
 | `spawn` | `src/csp.cc` | Chooses `StackClass::Small` only if exact and tight enough |
 | `StackPool` | `stack_pool.*` | Default vs Small free lists (arena mode) |
@@ -124,57 +127,72 @@ for a sketch of what that would require.
 
 ```mermaid
 flowchart LR
-  subgraph imp["imp stack (spawn, 🎯T52.4 stub only)"]
-    G{CSP_ANALYSE_STACKS spawn} --> L[fn-keyed cache lookup]
-    L -->|hit, exact and fits| H[StackClass::Small]
+  subgraph imp["imp stack (spawn, 🎯T52.4/T52.5 stub)"]
+    G{CSP_ANALYSE_STACKS spawn} --> L[fn-keyed / fingerprint lookup]
+    L -->|exact hit and fits| H[StackClass::Small]
     L -->|hit, else| I[StackClass::Default]
-    L -->|miss| I2[StackClass::Default + enqueue]
+    L -->|miss| P[pre-scan CALL_INDIRECT + fingerprint]
+    P -->|sub-cache hit| H2[use published result]
+    P -->|miss| I2[Default + enqueue snapshot]
   end
   I2 -.->|MPSC ring| W[analysis worker thread]
-  subgraph worker["worker thread (full-size OS stack)"]
+  subgraph worker["worker thread (full-size OS stack, arena eval)"]
     W --> B[ARM64 worklist walker]
     B --> C[Expression IR]
     C --> D[Bytecode compile]
-    D --> E[Iterative evaluator]
+    D --> E[Arena-backed iterative evaluator]
     E --> F["{max_depth, is_exact}"]
   end
-  F -.->|spinlocked publish| L
+  F -.->|spinlocked publish no_data / by_targets| L
 ```
 
-Since 🎯T52.4 no analysis executes on imp stacks. `spawn`'s stub
-(`csp::detail::stack_analysis_lookup_or_request`) is lookup-only: an
-fn-keyed cache hit gates the slot class; a miss takes **Default
-immediately** and enqueues the entry on a fixed-capacity (256-slot) MPSC
-ring for a runtime-owned worker thread — a plain `std::thread`, not an
-imp — which runs the ordinary synchronous pipeline and publishes through
-the existing spinlocked caches. A full ring drops the request silently
-(Default stands; a later spawn retries). The worker is started by
-`Runtime::init()` and stopped (flag + wake + join) by
-`Runtime::shutdown()`, so `shutdown_runtime()` + `set_maxprocs()`
-re-init cycles restart it; an `atexit` stop registered at first start
-also joins it before any static destructor can tear the caches out from
-under a mid-analysis walk. The synchronous public API
-(`analyze_stack_depth`, `analyze_stack_depth_cached`) is unchanged.
+Since 🎯T52.4 no analysis VM executes on imp stacks. 🎯T52.5 extends the
+spawn stub (`csp::detail::stack_analysis_lookup_or_request(fn, data)`)
+with a **bounded pre-scan**: when the null-data program is already
+compiled, the stub resolves `OP_CALL_INDIRECT` offsets against live
+closure memory (allocation-free loads + FNV fingerprint), looks up a
+per-fn sub-cache `((fn, targets) → result)`, and on a miss enqueues a
+**by-value target snapshot** for the worker. The worker replays the
+null-data program against the snapshot (never re-reads live closure
+memory) and publishes into the sub-cache. Exact null-data hits remain a
+sound upper bound for any data and short-circuit the data path.
+
+A miss of either kind takes **Default immediately**. A full ring drops
+the request silently (Default stands; a later spawn retries). The worker
+is started by `Runtime::init()` and stopped by `Runtime::shutdown()` /
+`atexit` as in T52.4. Eval state on the worker is **arena-backed**
+(256 KiB per-thread cap; exhaustion → `is_exact=false`). The synchronous
+public API (`analyze_stack_depth`, `analyze_stack_depth_cached`) is
+unchanged for live-data specialised walks (CONST pruning, etc.).
+
+**Warm costs (🎯T52.5, arm64 -O2, 5000 iters):** fn-keyed hit ≈ 2–7 ns;
+data-path sub-cache hit ≈ 11–22 ns (≈ 3–5× a pure hit; historical data
+replay was ~142 ns).
 
 Important implementation properties:
 
 1. **Iterative** walk and eval (no deep C++ recursion for the CFG / call graph).
-2. **Bootstrap-safe code applies only to the spawn stub** (🎯T52.4). The
-   stub — spinlock + open-addressing lookup + ring push — is
-   allocation-free pure inline atomics/arithmetic, and it is the only
-   analysis code left in spawn's own walk corpus: the analyser verifies
-   its own stub (`is_exact`, measured frame **0 bytes** at -O2 — a true
-   leaf, no BL, no SP write; this feeds 🎯T52.3's `C_shell` audit). The
-   worker may use ordinary containers and, in future, third-party code
-   (Zydis, unwind parsers) — the historical requirement that the whole
-   analyser stay self-analysable is dissolved. The walker/evaluator still
-   use the open-addressing containers and intrusive `expr_ptr` they were
-   built with, but that is now an implementation detail, not a contract.
+2. **Bootstrap-safe code applies only to the spawn stub** (🎯T52.4/T52.5). The
+   stub — spinlock + open-addressing lookup + scalar pre-scan loads + hash +
+   ring push — is allocation-free pure inline atomics/arithmetic (no
+   `memcpy`/`memset` of large structs — those are libsystem BLs), and it is
+   the only analysis code left in spawn's own walk corpus: the analyser
+   verifies its own stub (`is_exact`, measured frame **608 bytes** at -O2
+   with the T52.5 pre-scan path; this feeds 🎯T52.3's `C_shell` audit). The
+   worker may use ordinary containers for compile and a capped arena for
+   eval state — the historical requirement that the whole analyser stay
+   self-analysable is dissolved.
 3. **Program cache** keyed by function address for default-seed,
    `data == nullptr` walks.
-4. **Specialised walks** (live `data` and/or non-default register seeds from
-   🎯T3.10) are compiled on demand and **not** mixed into the fn-only cache
-   (soundness: paper [30](../papers/30-walker-register-provenance.md)).
+4. **Fingerprint sub-cache** (🎯T52.5): per-fn FIFO table (cap 16) keyed by
+   the ordered hash of snapshotted `CALL_INDIRECT` targets. Distinct
+   captures with the same function-pointer layout share an entry; mutating
+   a function pointer between spawns produces a new fingerprint (no
+   incorrect reuse).
+5. **Specialised walks** (live `data` and/or non-default register seeds from
+   🎯T3.10) are compiled on demand by the sync API and **not** mixed into the
+   fn-only / fingerprint caches (soundness: paper
+   [30](../papers/30-walker-register-provenance.md)).
 
 ---
 
@@ -247,28 +265,65 @@ analyser_estimate + floor < high_water`, the build fails.
 
 ## Spawn integration (slot class)
 
-Under `CSP_ANALYSE_STACKS` and arena Small slots (🎯T52.4):
+Under `CSP_ANALYSE_STACKS` and arena Small slots (🎯T52.3 + 🎯T52.4 + 🎯T52.5):
 
 ```text
-sa ← stack_analysis_lookup_or_request(entry_fn)     // lookup-only stub
-        hit  → the worker-published result
-        miss → {32 KiB, inexact} + enqueue(entry_fn) for the worker
-needed ← sa.max_depth * 2 + 2 KiB + sizeof(Imp)
+// csp::spawn<F> passes analyse_fn = &spawn_invoke<F> (concrete root)
+// direct internal::spawn leaves analyse_fn null → walk entry itself
+root ← analyse_fn ? analyse_fn : entry_fn
+sa   ← stack_analysis_lookup_or_request(root, data)
+         exact null-data hit        → published unspecialised result
+         fingerprint sub-cache hit  → published snapshot result
+         miss → {32 KiB, inexact} + enqueue(null-data | snapshot)
+depth ← sa.max_depth + (analyse_fn ? kShellStackBytes : 0)
+needed ← depth * 2 + 2 KiB + sizeof(Imp)
 if sa.is_exact && needed ≤ 16 KiB usable → Small else Default
 ```
+
+### Type-erasure boundary (🎯T52.3)
+
+Before this target, `spawn` analysed the type-erased `spawn_entry<F>`
+trampoline. That shell contains exception landing pads and a channel
+send on the report path, so the walker almost never returned `is_exact`
+for real `csp::spawn(lambda)` imps — the dominant Default fallback was
+a **wiring gap**, not a walker gap.
+
+`csp::spawn<F>` now hands the specialised `spawn_invoke<F>` address
+(and the live closure as `data`) to `internal::spawn`. The invoke thunk
+is a direct call into `F::operator()` with no exception/channel shell,
+so bodies the walker can bound go exact. Slot depth composes:
+
+```text
+depth = C_shell + analyze(spawn_invoke<F>).max_depth
+```
+
+where `C_shell = kShellStackBytes` (1024 B). Derivation:
+
+| Source | Value |
+|---|---|
+| Painted true-peak of `noop_entry` (ANALYSE arena, darwin-arm64) | ≈352 B |
+| Guard margin for `spawn_entry` frames under the user body + ABI drift | ≥2× |
+| **`kShellStackBytes`** | **1024 B** |
+
+The audit asserts measured noop true-peak ≤ `kShellStackBytes` whenever
+painting is on. Residual (not in `C_shell`): the exception-report path
+(`w << ex` inside `spawn_entry`) is scheduler-bound and deep; Small
+selection covers the non-throwing body. Soft-guard overflow checks
+remain the tripwire for residual paths. The live closure is available
+on the spawn path for a future data-path pre-scan (🎯T52.5); the
+async worker still walks with `data == nullptr` today.
 
 **First-spawn semantics:** the first spawn of an entry always takes
 Default (analysis has not run yet); spawns after the worker publishes
 take Small when the result is exact and fits. This is irrelevant to the
 density story — the win is per-entry steady state, not the first
-instance.
+instance. Data-dependent entries need one null-data warm (to compile the
+program) plus one snapshot publication before the sub-cache hits.
 
-**Data soundness:** the fn-keyed cache holds only unspecialised
-(`data == nullptr`) results, and the stub serves them for any spawn
-`data`. That is sound: an exact null-data result means no path depended
-on data (data-dependent calls budget to inexact without data), and
-data-derived CONST pruning only ever removes paths from the max — the
-null-data bound covers every closure.
+**Data soundness:** exact null-data results remain a sound upper bound
+for any spawn `data` and short-circuit the pre-scan. When null-data is
+inexact (typical CALL_INDIRECT shape), the fingerprint sub-cache
+provides exact, layout-specific results from freeze-at-spawn snapshots.
 
 **Profile budget:** the 🎯T3.4.4 high-water refinement of
 `indirect_call_budget` is applied by the worker at analysis time, not on
@@ -277,7 +332,8 @@ spinlock). It still only sharpens inexact magnitudes; `is_exact` remains
 the sole Small gate.
 
 Constants: `kArenaSmallSlotUsable = 16 KiB`, software guard 4 KB
-(`include/csp/internal/stack_pool.h`).
+(`include/csp/internal/stack_pool.h`); `kShellStackBytes = 1024`
+(`include/csp/stack_analysis.h`).
 
 ---
 
@@ -309,39 +365,48 @@ the audit.
 
 ### Shapes that stay inexact (by design today)
 
-Anything that bottoms out in **type-erased** runtime dispatch the walker
-cannot follow from the entry alone — especially **`csp::spawn(lambda)`**
-trampolines and much of the channel / scheduler body. Those cases remain
-**sound** (budgeted, Default slot) but not tight.
+Bodies that bottom out in **type-erased** runtime dispatch the walker
+cannot follow from the invoke root alone — channel rendezvous, `yield`,
+scheduler internals, PLT stubs. Those cases remain **sound** (budgeted,
+Default slot) but not tight. The type-erased `spawn_entry` trampoline
+itself is no longer on the analysis path for `csp::spawn<F>` (🎯T52.3).
 
 Typical audit split (ARM64, non-sanitizer): tightness candidates exact;
 channel/yield/buffer fixtures marked soundness-only and `is_exact=false`.
 
 ### Product consequence
 
-Most real CSP imps still land on **Default** stacks. Small-slot wins show up
-for shallow, data-resolvable entries when the feature is compiled in — not
-as a universal “every lambda is 16 KB” mode.
+Shallow, exact-analysable user bodies (no channel/scheduler callees)
+land on **Small** after the worker publishes. Channel-heavy and
+scheduler-bound bodies stay on **Default**. The corpus Small-rate
+(🎯T52.2 metric) is the product number; see below for the pre/post
+🎯T52.3 baseline.
 
 ---
 
 ## Known limits and next leaps
 
+Severity labels match
+[`docs/stack-analysis-future.md`](../stack-analysis-future.md):
+**landed** (shipped), **deferred** (open with a stated revisit condition),
+**cut** (no product consumer / superseded — design history only).
+
 Still open (not regressions of the bullets above):
 
-| Gap | Impact |
-|---|---|
-| **x86_64 / non-ARM64** | Stub 32 KiB inexact only |
-| **Type-erased spawn trampoline** | Dominant reason real workloads stay Default |
-| **Dynamic SP** (`SUB SP, SP, Xn`, and the `mov x9, sp; sub xN, x9, x8; mov sp, xN` sequence Clang actually emits for runtime `alloca`) | Immediate budget path (via the closed-world SP-write detector; pre-🎯T52.1 the MOV-to-SP lowering was invisible — a 64 KiB alloca analysed as `{16, exact}`) |
-| **Switch / jump tables** | Not followed as tables (only via resolved BLR/BR) |
-| **Mutual indirect recursion fixed-point** | Explicitly out of scope for T3.10 |
-| **Off by default** | Product builds need `CSP_ANALYSE_STACKS` for any effect |
+| Gap | Severity | Impact |
+|---|---|---|
+| **x86_64 / non-ARM64** | open (🎯T52.6 go for Linux x86_64 unwind-first) | Stub 32 KiB inexact only today |
+| **Dynamic SP** (`SUB SP, SP, Xn`, and the `mov x9, sp; sub xN, x9, x8; mov sp, xN` sequence Clang emits for runtime `alloca`) | open | Budget path via closed-world SP-write detector |
+| **Switch / jump tables** | **deferred** (future §5) | Not followed as tables (only via resolved BLR/BR); revisit only if corpus metric implicates switch-heavy entries |
+| **Mutual indirect recursion fixed-point** | **deferred** | Explicitly out of scope since T3.10 |
+| **Tiered budgets** | **cut** (future §9) | Inexact always selects Default; budget magnitude has no consumer |
+| **Background symbol-table warm-up** | **cut** (future §10) | Superseded by 🎯T52.4 Default-on-miss async worker |
+| **Off by default** | product gate | Builds need `CSP_ANALYSE_STACKS` for any effect |
 
 (FP/SIMD stack ops — `STP Q…` writeback and friends — were a gap here until
-🎯T52.1: they were silently ignored, drifting the SP delta *in either
-direction* inside exact results. They are now decoded exactly; any remaining
-unmodelled SP-writing encoding is refused, not skipped.)
+🎯T52.1 **landed**: they were silently ignored, drifting the SP delta *in
+either direction* inside exact results. They are now decoded exactly; any
+remaining unmodelled SP-writing encoding is refused, not skipped.)
 
 Forward-looking design notes (not current truth):  
 [`docs/stack-analysis-future.md`](../stack-analysis-future.md).
@@ -362,10 +427,17 @@ until every request enqueued before the call has been dequeued and its
 result published (returns immediately when the worker is not running).
 Test-only; call from a plain OS thread, not from inside an imp.
 
-CI: default matrix runs the suite without sizing; a dedicated **“stack
-analyser enabled”** step builds with `ANALYSE=1` and runs slot-sizing tests.
-ASan/UBSan full suite still runs the audit for the soundness gate (tightness
-may skip under instrumentation).
+CI (`.github/workflows/ci.yml`):
+
+| Step | When | Role |
+|---|---|---|
+| Build and test (stack analyser enabled) | every matrix row | `make ANALYSE=1 build` + `StackSlotSizing` |
+| **Stack corpus metric (ANALYSE)** | Linux arm64 only (`ubuntu-24.04-arm`) | `make ANALYSE=1 stack-metric` — 🎯T52.2 ratchet |
+| ASan/UBSan full suite | sanitizer rows | audit soundness gate (tightness may skip under instrumentation) |
+
+macOS is covered by the local `make stack-metric` gate (the CI macOS row
+is already near its wall-time ceiling). x86_64 is structurally rate-0
+until an x86 walker exists — no baseline wired there yet.
 
 ### Ground-truth oracles (🎯T52.2)
 
@@ -397,12 +469,24 @@ to measured ground truth:
   then ratchets **both directions** against
   `scripts/stack_metric_baseline.json` — regressions fail, and
   improvements fail too until the baseline is deliberately updated
-  (`--update-baseline`) and committed. CI runs it on the Linux arm64 row.
-  Recorded pre-🎯T52.3 baseline (2026-07-30, darwin-arm64): 2 Small in
-  ~1.83 M spawns (rate ≈ 1.1 × 10⁻⁶, ~216 KiB saved) — confirming the
-  expected ≈0: the type-erased `csp::spawn(lambda)` trampoline keeps real
-  workloads on Default slots; the two landings are the audit’s own
-  `internal::spawn` fixtures.
+  (`--update-baseline`) and committed. Wired in CI as **Stack corpus
+  metric (ANALYSE)** on the Linux arm64 row.
+
+  **Pre-🎯T52.3 baseline** (committed in
+  `scripts/stack_metric_baseline.json`, post-🎯T52.1/.4):
+
+  | Platform | Small / total | Rate | Bytes saved |
+  |---|---|---|---|
+  | darwin-arm64 | 4 / ~1.83 M | ≈ 2.2 × 10⁻⁶ | ~432 KiB |
+  | linux-arm64 | 5 / ~1.83 M | ≈ 2.7 × 10⁻⁶ | ~540 KiB |
+
+  Confirmed the expected ≈0 before the trampoline fix.
+
+  **Post-🎯T52.3** (darwin-arm64, 2026-07-31): **1 054 292 Small /
+  1 830 909 spawns (rate ≈ 0.576, ~108.6 GiB address-space footprint
+  saved)** — material lift from ≈0. Residual Default mass is
+  channel/scheduler-bound bodies and first-spawn-per-entry misses
+  (async publish). Baseline locked with noise-tolerant windows.
 
 ---
 
@@ -416,7 +500,12 @@ to measured ground truth:
 | [23 gap audit](../papers/23-stack-analysis-gaps.md) | T3.4 decomposition; **pre-wiring snapshot** — superseded for “is it wired?” |
 | [30 register provenance](../papers/30-walker-register-provenance.md) | T3.10 design + what landed |
 | 🎯T3.4, T3.4.1–T3.4.5, T3.10 | All **achieved** in `bullseye.yaml` |
-| 🎯T52.1, T52.2, T52.4 | Structural soundness; ground-truth oracles; async off-imp-stack analysis |
+| 🎯T52.1 **achieved** | Structural soundness: closed-world SP writes, FP/SIMD + single-register writeback, wired `max_call_depth` |
+| 🎯T52.2 **achieved** | Painted true-peak oracle + ratcheted corpus Small-rate metric in CI |
+| 🎯T52.3 **achieved** | Concrete invoke + `C_shell`; material corpus Small-rate lift |
+| 🎯T52.4 **achieved** | Async worker, Default-on-miss; no analysis on imp stacks beyond the walkable stub |
+| 🎯T52.5 **achieved** | Bounded pre-scan + fingerprint sub-cache; eval VM off imp stacks |
+| 🎯T52.6 **achieved** | Unwind-metadata spike: Linux x86_64 unwind-first **go**; ARM64 defence-in-depth Linux-scoped **go** |
 | [fable 2026-07](../audit/fable-2026-07.md) | Why profile must not select Small |
 
 When this document and a paper disagree about *current* behaviour, **prefer

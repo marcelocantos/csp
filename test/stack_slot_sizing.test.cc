@@ -269,4 +269,65 @@ TEST_CASE("first-spawn-defaults-then-small-after-publication") {
         "land a Small slot");
 }
 
+// 🎯T52.3: csp::spawn<F> analyses the concrete invoke thunk (not the
+// type-erased spawn_entry trampoline). A shallow lambda whose body is
+// exact and Small-fitting must land a Small slot after the worker
+// publishes — the pre-T52.3 path never did, because spawn_entry's
+// exception/channel shell forced inexact.
+//
+// Each lambda type is unique to this TU, so the first spawn misses and
+// the second (post-quiesce) hits — same contract as the EntryFn case
+// above, but through the public template.
+TEST_CASE("spawn-template-concrete-invoke-takes-small") {
+    if constexpr (!kArena || !kAnalyseWired || !kExactAnalysable) {
+        MESSAGE("Requires arena mode + -DCSP_ANALYSE_STACKS + an "
+                "exact-capable analyser (arm64, non-sanitizer); skipping.");
+        return;
+    }
+
+    auto& pool = StackPool::instance();
+
+    // Unique shallow body: a few locals, no channel/scheduler calls the
+    // walker would budget. The invoke thunk specialises on this lambda
+    // type so its analysis key collides with nothing else in the suite.
+    auto body = [] {
+        volatile char buf[64];
+        buf[0] = 1;
+        (void)buf[0];
+    };
+
+    // First spawn: miss → Default + enqueue(spawn_invoke<F>).
+    size_t small_before = pool.small_allocations();
+    csp::spawn(body);
+    csp::await_completion();
+    CHECK_MESSAGE(pool.small_allocations() - small_before == 0,
+        "first csp::spawn of a fresh lambda type must take Default "
+        "(async analysis has not published yet)");
+
+    csp::internal::analysis_quiesce();
+
+    // The invoke thunk must have been published exact.
+    auto* invoke = reinterpret_cast<const void*>(
+        &csp::detail::spawn_invoke<decltype(body)>);
+    auto sa = csp::analyze_stack_depth_cached(invoke);
+    REQUIRE_MESSAGE(sa.is_exact,
+        "worker did not publish an exact result for spawn_invoke of a "
+        "shallow lambda (depth=" << sa.max_depth << ")");
+    // C_shell + user depth with headroom must fit Small, or the case
+    // cannot exercise the slot-selection win.
+    size_t depth = sa.max_depth + csp::kShellStackBytes;
+    size_t needed = depth * 2 + 2 * 1024 + 256;  // floor + Imp allowance
+    REQUIRE_MESSAGE(needed <= StackPool::small_slot_usable_bytes(),
+        "fixture no longer fits Small after C_shell composition "
+        "(needed=" << needed << ", depth=" << depth << ")");
+
+    // Post-publication: Small.
+    size_t small_mid = pool.small_allocations();
+    csp::spawn(body);
+    csp::await_completion();
+    CHECK_MESSAGE(pool.small_allocations() - small_mid == 1,
+        "post-publication csp::spawn of an exact, Small-fitting lambda "
+        "must land a Small slot (T52.3 concrete-invoke path)");
+}
+
 } // TEST_SUITE("StackSlotSizing")

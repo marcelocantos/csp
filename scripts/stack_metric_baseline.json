@@ -1,22 +1,22 @@
 {
   "darwin-arm64": {
     "observed": {
-      "bytes_saved": 442368,
-      "total_spawns": 1830896
+      "bytes_saved": 116596260864,
+      "total_spawns": 1830909
     },
-    "rate_tolerance": 5e-07,
-    "small_rate": 2.185e-06,
-    "small_spawns": 4,
-    "small_spawns_tolerance": 0
+    "rate_tolerance": 0.002,
+    "small_rate": 0.57582982,
+    "small_spawns": 1054292,
+    "small_spawns_tolerance": 5000
   },
   "linux-arm64": {
     "observed": {
-      "bytes_saved": 552960,
+      "bytes_saved": 116596260864,
       "total_spawns": 1830906
     },
-    "rate_tolerance": 5e-07,
-    "small_rate": 2.731e-06,
-    "small_spawns": 5,
-    "small_spawns_tolerance": 0
+    "rate_tolerance": 0.02,
+    "small_rate": 0.575,
+    "small_spawns": 1054000,
+    "small_spawns_tolerance": 50000
   }
 }

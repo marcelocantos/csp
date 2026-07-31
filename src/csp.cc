@@ -711,7 +711,7 @@ static void start(transfer_t t) {
 
 namespace csp::internal {
 
-int spawn(EntryFn start_f, void * data, bool daemon) {
+int spawn(EntryFn start_f, void * data, bool daemon, const void * analyse_fn) {
     (void)current_p(); // Ensure current_imp() is bound before use.
     auto* self = current_imp();
     // Reclaim unused stack pages at this API boundary.
@@ -745,24 +745,28 @@ int spawn(EntryFn start_f, void * data, bool daemon) {
         kSmallUsable > 0) {
         constexpr size_t kHeadroomFloor = 2 * 1024;
 
-        // 🎯T52.4: lookup-only async-analysis stub. On an fn-keyed cache hit
-        // the published result gates the slot class below; on a miss it
-        // returns the conservative sentinel (→ Default) and enqueues the
-        // entry for the runtime-owned analysis worker, so a LATER spawn of
-        // the same entry can hit. Allocation-free and never suspends — no
-        // analysis (and no profile-table mutex) runs on the spawn path; the
-        // 🎯T3.4.4 profile-derived indirect_call_budget refinement is applied
-        // by the worker at analysis time instead. Every published entry is a
-        // data == nullptr walk, which is a sound upper bound for any spawn
-        // `data` (an exact null-data result means no path depended on data;
-        // data-derived pruning only removes paths from the max).
+        // 🎯T52.3 + 🎯T52.4 + 🎯T52.5: analyse the concrete user-entry when
+        // the template layer supplied one (`analyse_fn` = spawn_invoke<F>);
+        // otherwise walk the EntryFn itself. Async stub: exact null-data
+        // hit or fingerprint sub-cache hit gates the slot; miss → Default
+        // + enqueue (null-data warm or by-value CALL_INDIRECT snapshot).
+        // Pre-scan is bounded loads + hash only — never the eval VM.
+        const void* analysis_root = analyse_fn
+            ? analyse_fn
+            : reinterpret_cast<const void*>(start_f);
         auto sa = ::csp::detail::stack_analysis_lookup_or_request(
-            reinterpret_cast<const void*>(start_f));
+            analysis_root, data);
+        // 🎯T52.3: depth = C_shell + user-entry when the root is the
+        // invoke thunk (shell frames are outside that walk). Direct
+        // EntryFn analysis already includes its own frames; only the
+        // fcontext bootstrap remains, absorbed by kHeadroomFloor.
+        size_t depth = sa.max_depth;
+        if (analyse_fn) depth += ::csp::kShellStackBytes;
         // 2× headroom + 2 KB absolute floor (ABI spill / signal frame).
-        size_t needed = sa.max_depth * 2 + kHeadroomFloor + sizeof(Imp);
-        // Small is gated strictly on a sound static upper bound. An inexact
-        // analyser result (the common type-erased csp::spawn(lambda) case)
-        // keeps the Default slot no matter what the profile observed.
+        size_t needed = depth * 2 + kHeadroomFloor + sizeof(Imp);
+        // Small is gated strictly on a sound static upper bound. An
+        // inexact analyser result keeps the Default slot no matter what
+        // the profile observed.
         if (sa.is_exact && needed <= kSmallUsable) {
             slot_cls = StackClass::Small;
         }

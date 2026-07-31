@@ -9,6 +9,29 @@ struct stack_analysis {
     bool is_exact;      // false if unresolvable indirect calls or other unknowns
 };
 
+// 🎯T52.3: fixed runtime imp-entry overhead composed with user-entry
+// analysis when `csp::spawn<F>` supplies a concrete invoke thunk.
+//
+// Derivation (measured + guard margin, audited):
+//   - Painted true-peak of the leanest imp (`noop_entry`) under
+//     ANALYSE + arena is ≈352 B (darwin-arm64) / similar on linux-arm64.
+//     That peak covers fcontext boot, `start()` trampoline frames live
+//     under the entry, and the exit path.
+//   - `spawn_entry<F>` frames live under the user body (unique_ptr,
+//     exception_ptr storage, try-region setup) are intentionally not in
+//     the invoke-thunk walk; a ≥2× margin on the measured shell absorbs
+//     them and minor ABI/codegen drift.
+//   - Slot selection: depth = kShellStackBytes + analyze(invoke).max_depth,
+//     then the usual 2× headroom + 2 KiB floor + sizeof(Imp).
+//   - Residual (documented, not in C_shell): the exception-report path
+//     in `spawn_entry` (`w << ex`) is deep and scheduler-bound; Small
+//     selection is for the non-throwing body. Soft-guard overflow checks
+//     remain the tripwire for residual paths.
+//
+// The audit asserts measured noop true-peak ≤ kShellStackBytes whenever
+// painting is on. Bump the constant (with evidence) if that gate fails.
+inline constexpr size_t kShellStackBytes = 1024;
+
 struct stack_analysis_options {
     size_t indirect_call_budget = 2048; // Budget per unresolvable BLR (bytes)
     int max_call_depth = 64;            // Max call-following depth. Clamped to
@@ -38,15 +61,20 @@ stack_analysis analyze_stack_depth_cached(
 
 namespace detail {
 
-// 🎯T52.4: the spawn-side async-analysis stub. Fn-keyed result-cache
-// lookup only — on a hit returns the published result; on a miss returns
-// the conservative {32 KiB, inexact} sentinel and enqueues `fn` on a
-// fixed-capacity MPSC ring for the analysis worker (ring-full = the
-// request is silently dropped; a later spawn of the same entry retries).
-// Allocation-free, never suspends, never analyses: this is the only
+// 🎯T52.4 / 🎯T52.5: the spawn-side async-analysis stub.
+//
+// Lookup + (optional) bounded pre-scan of CALL_INDIRECT targets against
+// live `data`, hashed into a per-fn fingerprint sub-cache. On a hit
+// returns the published result; on a miss returns the conservative
+// {32 KiB, inexact} sentinel and enqueues a request (null-data analysis
+// or a by-value target snapshot) on a fixed-capacity MPSC ring for the
+// analysis worker (ring-full = drop; a later spawn retries).
+//
+// Allocation-free, VM-free, never suspends: this is the only
 // stack-analysis code that executes on imp stacks, and it must stay
 // walkable (test/stack_analysis.test.cc asserts is_exact on it).
-stack_analysis stack_analysis_lookup_or_request(const void* fn) noexcept;
+stack_analysis stack_analysis_lookup_or_request(
+    const void* fn, const void* data = nullptr) noexcept;
 
 // 🎯T52.4 worker lifecycle, driven by Runtime::init()/shutdown() under
 // CSP_ANALYSE_STACKS. Idempotent; repeated shutdown+re-init cycles
