@@ -272,7 +272,7 @@ items:
   # ============================ GOVERNANCE / META ========================
   - id: governance.license
     dim: governance
-    desc: Apache-2.0 LICENSE present, with NOTICES for vendored deps
+    desc: Apache-2.0 LICENSE present, with NOTICE for vendored deps
     state: present
     cadence: once-must-hold
     enforce: blocking
