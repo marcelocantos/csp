@@ -66,12 +66,7 @@ items:
       non-required and runs scripts/win-ci-smoke.ps1 (core units only)
       for a fast amd64 compile+smoke. 🎯T39 listen hang fixed in
       v0.27.0 (FD_ACCEPT). TLS/picotls unported on Windows.
-    evidence:
-      {
-        script: scripts/win-validate.sh,
-        smoke: scripts/win-ci-smoke.ps1,
-        ci_job: ci.yml#windows,
-      }
+    evidence: {ci_job: "ci.yml#windows"}
 
   - id: correctness.examples-run
     dim: correctness
