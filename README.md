@@ -16,7 +16,11 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
   with `operator|` composition
 - **Non-blocking I/O** via platform-native reactor (kqueue/epoll/WSAEventSelect)
 - **TCP networking** — `net::listen` / `net::dial` with pull-based sources
-- **HTTP/1.1, HTTP/2, HTTP/3, WebSocket, QUIC** — optional per-protocol drop-ins
+- **HTTP/1.1, HTTP/2, HTTP/3, WebSocket, QUIC** — optional per-protocol
+  drop-ins. HTTP/2, HTTP/3, WebSocket and QUIC are POSIX-only: the CMake
+  build (the Windows path) compiles HTTP/1.1 alone, because nghttp2 /
+  wslay / nghttp3 / ngtcp2 are not wired through CMake
+  (`WINDOWS_OMITTED_SRCS` in `CMakeLists.txt`)
 - **Unix/Windows signals** — signal channels composable with `alt`
 - **TLS** — cancel-aware TLS 1.3 via PicoTLS (`#ifdef CSP_TLS`)
 - **Cooperative cancellation** — scope-based, with deadlines, composable in `alt`
@@ -26,7 +30,8 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
   non-blocking RPC and callable writer endpoints
 - **Imp-local storage** — per-imp variables (not inherited)
 - **Imp exit / supervision** — restart policies, worker groups, supervised execution
-- **Cross-platform** — macOS, Linux (x86_64/arm64), Windows (x86_64)
+- **Cross-platform** — macOS, Linux (x86_64/arm64), Windows (x86_64;
+  HTTP/1.1 only — see the protocol note above)
 
 ## Quick start
 

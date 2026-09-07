@@ -141,6 +141,19 @@ if(CSP_TLS)
     list(APPEND LIB_SRCS src/tls.cc)
 endif()
 
+# --- Declared omissions from the CMake build graph ---
+# The Makefile (POSIX developer build) compiles these; CMake does not,
+# because nghttp2/wslay/nghttp3/ngtcp2 are not wired through CMake yet.
+# Consumers of the CMake build — notably Windows — get HTTP/1.1 only.
+# scripts/lint_source_lists.py fails if a src/*.cc is in neither this list
+# nor LIB_SRCS, so the two source lists cannot silently diverge again.
+set(WINDOWS_OMITTED_SRCS
+    src/http2.cc
+    src/ws.cc
+    src/http3.cc
+    src/quic.cc
+)
+
 # --- llhttp (vendored HTTP parser) ---
 set(LLHTTP_DIR vendor/github.com/nodejs/llhttp)
 add_library(llhttp_csp STATIC
@@ -236,6 +249,8 @@ if(CSP_BUILD_TESTS)
         list(FILTER TEST_SRCS EXCLUDE REGEX "http3\\.test\\.cc$")
         # WebSocket not built on Windows (wslay not wired through CMake yet)
         list(FILTER TEST_SRCS EXCLUDE REGEX "ws\\.test\\.cc$")
+        # QUIC not built on Windows (ngtcp2 not wired through CMake yet)
+        list(FILTER TEST_SRCS EXCLUDE REGEX "quic\\.test\\.cc$")
         # HTTP suite still broad on Windows CMake (serve path has more surface).
         list(FILTER TEST_SRCS EXCLUDE REGEX "http\\.test\\.cc$")
         # net.test.cc is included: 🎯T39 fixed FD_ACCEPT on Windows reactor.

@@ -560,7 +560,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 # by virtue of appearing first.
 .DEFAULT_GOAL := test
 
-test: $(TARGET) check-md-links lint-frontdoor check-part-headers
+test: $(TARGET) check-md-links lint-frontdoor lint-source-lists check-part-headers
 	$(TEST_RUN)
 
 # --- Front-door TU lint (🎯T23.4) ---
@@ -571,6 +571,13 @@ test: $(TARGET) check-md-links lint-frontdoor check-part-headers
 # make-dist time.
 lint-frontdoor:
 	@python3 scripts/lint_frontdoor.py
+
+# --- Source-list lint (ENT-001) ---
+# The Makefile and CMakeLists.txt each carry their own LIB_SRCS. They
+# drifted by four TUs (http2/ws/http3/quic compiled only by the Makefile).
+# This asserts src/ is the authority and every omission is declared.
+lint-source-lists:
+	@python3 scripts/lint_source_lists.py
 
 # --- Standing invariants (consumed by `bullseye_convergence`) ---
 # Exit 0 if all green, non-zero on first violation. Stdout is relayed
@@ -590,6 +597,8 @@ bullseye:
 	 (echo "✗ md-links"; python3 scripts/check_md_links.py; exit 1)
 	@python3 scripts/lint_frontdoor.py >/dev/null && echo "✓ lint-frontdoor" || \
 	 (echo "✗ lint-frontdoor"; python3 scripts/lint_frontdoor.py; exit 1)
+	@python3 scripts/lint_source_lists.py >/dev/null && echo "✓ source-lists" || \
+	 (echo "✗ source-lists"; python3 scripts/lint_source_lists.py; exit 1)
 	@python3 scripts/check_part_headers.py >/dev/null && echo "✓ part-headers" || \
 	 (echo "✗ part-headers"; python3 scripts/check_part_headers.py; exit 1)
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \

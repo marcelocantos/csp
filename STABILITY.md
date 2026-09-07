@@ -461,8 +461,13 @@ Items that must be addressed before 1.0:
 11. **Windows portability** — v0.12.0 makes the arena overflow check
     portable (`__debugbreak()` on MSVC, `__builtin_trap()` elsewhere).
     `[[gnu::always_inline]]` produces a recoverable warning, not an
-    error, on MSVC. Windows CI compiles cleanly; ws/http3 test suites
-    are excluded pending CMake wiring of wslay / nghttp3 / ngtcp2.
+    error, on MSVC. Windows CI compiles cleanly. HTTP/2, WebSocket,
+    HTTP/3 and QUIC are **not built on Windows at all**: their TUs
+    (`src/http2.cc`, `src/ws.cc`, `src/http3.cc`, `src/quic.cc`) are
+    listed in `WINDOWS_OMITTED_SRCS` in `CMakeLists.txt` pending CMake
+    wiring of nghttp2 / wslay / nghttp3 / ngtcp2, and their test suites
+    are excluded to match. `scripts/lint_source_lists.py` enforces that
+    the omission stays declared rather than drifting silently.
 
 ## Out of scope for 1.0
 

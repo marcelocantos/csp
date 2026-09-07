@@ -65,7 +65,11 @@ items:
       (MSVC ARM64, scripts/win-validate.sh). Cloud Windows x86_64 is
       non-required and runs scripts/win-ci-smoke.ps1 (core units only)
       for a fast amd64 compile+smoke. 🎯T39 listen hang fixed in
-      v0.27.0 (FD_ACCEPT). TLS/picotls unported on Windows.
+      v0.27.0 (FD_ACCEPT). TLS/picotls unported on Windows, and
+      HTTP/2, WebSocket, HTTP/3 and QUIC are not compiled at all in
+      the CMake build (CMakeLists.txt WINDOWS_OMITTED_SRCS; the
+      omission is enforced-as-declared by
+      scripts/lint_source_lists.py).
     evidence: {ci_job: "ci.yml#windows"}
 
   - id: correctness.examples-run
