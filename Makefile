@@ -545,6 +545,22 @@ EXAMPLE_BINS := $(patsubst examples/%.cc,$(BUILDDIR)/examples/%,$(EXAMPLE_SRCS))
 
 ALL_OBJS := $(LIB_OBJS) $(TEST_OBJS) $(BENCH_OBJS) $(PERF_OBJS)
 ALL_DEPS := $(ALL_OBJS:.o=.d)
+
+# --- Compile-flag dependency ---
+#
+# Objects must rebuild when the flags that produced them change. Without
+# this, editing CXXFLAGS leaves every existing .o in place and make says
+# "Nothing to be done for `build'", so you silently link objects built
+# with the old flags — which is how the dead -DDEBUG survived a flag edit
+# long enough to be noticed. The stamp is rewritten only when the flags
+# actually differ, so it does not force a rebuild on every run.
+FLAGS_STAMP := $(BUILDDIR)/.cxxflags
+FLAGS_VALUE := $(CXXFLAGS) $(INCLUDES) $(PICOTLS_CFLAGS) $(NGTCP2_CFLAGS) $(LLHTTP_CFLAGS)
+$(shell mkdir -p $(BUILDDIR))
+$(shell printf '%s' '$(FLAGS_VALUE)' | cmp -s - $(FLAGS_STAMP) 2>/dev/null || \
+        printf '%s' '$(FLAGS_VALUE)' > $(FLAGS_STAMP))
+
+$(ALL_OBJS): $(FLAGS_STAMP)
 TARGET       := $(BUILDDIR)/csp_tests
 BENCH_TARGET := $(BUILDDIR)/csp_bench
 PERF_TARGET  := $(BUILDDIR)/csp_ratchet
