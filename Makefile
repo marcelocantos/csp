@@ -29,7 +29,7 @@ CXX      := c++ -std=c++20 -stdlib=libc++
 # both break under canary BLs (walker sees __stack_chk_* as unresolved;
 # macOS CI depth 2656 / inexact on the T52.5 stub). Attributes alone do
 # not suppress canaries on Apple clang 15/macos-14.
-CXXFLAGS := -O2 -g -DDEBUG -Wall -Wextra -Wno-unused-parameter -fno-stack-protector
+CXXFLAGS := -O2 -g -Wall -Wextra -Wno-unused-parameter -fno-stack-protector
 LDFLAGS  :=
 LDLIBS   :=
 
@@ -517,6 +517,7 @@ TEST_SRCS    := $(filter-out test/stack_analysis_audit.test.cc,$(TEST_SRCS))
 TEST_SRCS    := $(filter-out test/stack_slot_sizing.test.cc,$(TEST_SRCS))
 endif
 BENCH_SRCS   := $(wildcard bench/*.bench.cc)
+PERF_SRCS    := $(wildcard perf/*.cc)
 EXAMPLE_SRCS := $(wildcard examples/*.cc)
 
 # --- Objects ---
@@ -538,17 +539,19 @@ LIB_OBJS   += $(NGTCP2_OBJS)
 endif
 TEST_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(TEST_SRCS))
 BENCH_OBJS := $(patsubst %.cc,$(BUILDDIR)/%.o,$(BENCH_SRCS))
+PERF_OBJS  := $(patsubst %.cc,$(BUILDDIR)/%.o,$(PERF_SRCS))
 
 EXAMPLE_BINS := $(patsubst examples/%.cc,$(BUILDDIR)/examples/%,$(EXAMPLE_SRCS))
 
-ALL_OBJS := $(LIB_OBJS) $(TEST_OBJS) $(BENCH_OBJS)
+ALL_OBJS := $(LIB_OBJS) $(TEST_OBJS) $(BENCH_OBJS) $(PERF_OBJS)
 ALL_DEPS := $(ALL_OBJS:.o=.d)
 TARGET       := $(BUILDDIR)/csp_tests
 BENCH_TARGET := $(BUILDDIR)/csp_bench
+PERF_TARGET  := $(BUILDDIR)/csp_ratchet
 
 # --- Rules ---
 
-.PHONY: test build bench test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci stack-metric dist iwyu clean \
+.PHONY: test build bench perf test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci stack-metric dist iwyu clean \
        docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor libs downstream-test check-dist-test-parity
 
 # Explicit default — keep `make` (no args) running the full test suite.
@@ -597,6 +600,7 @@ bullseye:
 	 (echo "✗ source-lists"; python3 scripts/lint_source_lists.py; exit 1)
 	@python3 scripts/check_part_headers.py >/dev/null && echo "✓ part-headers" || \
 	 (echo "✗ part-headers"; python3 scripts/check_part_headers.py; exit 1)
+	@$(MAKE) --no-print-directory perf || (echo "✗ perf ratchet"; exit 1)
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
 	if [ -z "$$dirty" ]; then echo "✓ working tree clean"; \
 	else \
@@ -637,10 +641,19 @@ build: $(TARGET)
 bench: $(BENCH_TARGET)
 	./$(BENCH_TARGET)
 
+# Allocation ratchet — deterministic, unlike the wall-clock benchmarks in
+# bench/, so this is what the gate locks. Both directions: see
+# docs/perf/baseline.md.
+perf: $(PERF_TARGET)
+	@./$(PERF_TARGET) >/dev/null && echo "✓ perf ratchet" 
+
 $(TARGET): $(LIB_OBJS) $(TEST_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BENCH_TARGET): $(LIB_OBJS) $(BENCH_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(PERF_TARGET): $(LIB_OBJS) $(PERF_OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # Library sources
@@ -740,6 +753,10 @@ $(BUILDDIR)/test/%.o: test/%.cc
 
 # Benchmark sources
 $(BUILDDIR)/bench/%.o: bench/%.cc
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
+
+$(BUILDDIR)/perf/%.o: perf/%.cc
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c -o $@ $<
 
