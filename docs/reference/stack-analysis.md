@@ -506,7 +506,7 @@ to measured ground truth:
 | 🎯T52.4 **achieved** | Async worker, Default-on-miss; no analysis on imp stacks beyond the walkable stub |
 | 🎯T52.5 **achieved** | Bounded pre-scan + fingerprint sub-cache; eval VM off imp stacks |
 | 🎯T52.6 **achieved** | Unwind-metadata spike: Linux x86_64 unwind-first **go**; ARM64 defence-in-depth Linux-scoped **go** |
-| [fable 2026-07](../audit/fable-2026-07.md) | Why profile must not select Small |
+| [fable 2026-07](../_archived/audit-fable-2026-07.md) | Why profile must not select Small |
 
 When this document and a paper disagree about *current* behaviour, **prefer
 this document and the code**.

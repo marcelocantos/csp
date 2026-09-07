@@ -1,4 +1,4 @@
-# CLAUDE.md
+# CSP — a C++20 imp-based concurrency library with typed, synchronous channels
 
 ## Project Overview
 
@@ -42,15 +42,45 @@ tools + the bundled CMake, Git.
 
 ## Build System
 
+**First, populate the vendored submodules** — a fresh clone or `git worktree`
+has them empty and `make` fails with
+`No rule to make target '.../nghttp2ver.h.in'`:
+
 ```bash
-make        # build and run all tests
-make build  # compile only
-make dist   # generate distribution files (dist/)
-make iwyu   # remove unused includes (clang-tidy misc-include-cleaner)
-make clean  # remove build/
+git submodule update --init --recursive
+```
+
+```bash
+make            # build and run all tests (also runs the doc/link lints)
+make build      # compile only
+make bench      # build and run the benchmarks
+make examples   # build examples/; `make run-examples` runs them
+make check      # run the TLA+ model checker over formal/
+make dist       # generate distribution files (dist/)
+make libs       # build the pre-built static/shared libraries
+make iwyu       # remove unused includes (clang-tidy misc-include-cleaner)
+make clean      # remove build/
 ```
 
 Build artifacts go to `build/`. Compiler: Clang, C++20, libc++, `-O2 -g`.
+
+## Diagnostic environment variables
+
+Read at runtime by the shipped code (`src/csp_globals.cpp:44`,
+`src/channel.cc:50,54`, `src/log.cc:43`). All are opt-in and default off.
+
+| Variable | Effect |
+|---|---|
+| `CSP_MAXPROCS` | Worker-thread count when `set_maxprocs()` is never called (`0` = hardware concurrency, `1` = single-threaded) |
+| `CSP_PROC_STATS` | Print per-processor scheduler counters at exit |
+| `CSP_STACK_STATS` | Print stack-pool / slot-sizing counters at exit |
+| `CSP_ALT_STATS` | Print alt fast-path hit/miss counters at exit (`opt_hit`, `opt_miss`, `classic_match`) |
+| `CSP_DEBUG_DEATH` | Trace endpoint-death propagation in `channel.cc` |
+| `BB_LOG` | ECMAScript regex matched against `Logger` component names; matching components log to stderr |
+
+Compile-time macros (`-D...`) are separate: `CSP_TLS`, `CSP_LIGHT_SWITCH`
+(see `LIGHT_SWITCH=1`), `CSP_ANALYSE_STACKS`, `CSP_USE_ARENA_STACKS`,
+`CSP_USE_VM_STACKS`, `CSP_STACK_PAINT`.
 
 ## C++20 Style
 
@@ -138,15 +168,29 @@ referenced from `dist/AGENTS-CSP.md`.
 - **include/csp/signal.h** — Unix signal channels.
 - **include/csp/blocking.h** — Blocking thread pool.
 - **include/csp/dynamic.h** — `dynamic<T>` dynamic-scoped variables (HAMT).
+- **include/csp/imp_exit.h** — `supervised`, `on_exit`, `exit_guard`,
+  `restart_policy`; **include/csp/supervisor.h** — `worker_group` (deprecated).
+- **include/csp/file.h** — `file::read`/`file::write`;
+  **include/csp/source.h**, **byte_reader.h**, **ringbuffer.h** — pull-based
+  source plumbing shared by the protocol drop-ins.
+- **include/csp/stack_analysis.h** — ARM64 spawn-time stack walker
+  (`CSP_ANALYSE_STACKS`).
+- **include/csp/{ws,http2,http3,quic}.h** — optional protocol front doors,
+  each paired with a `dist/csp_<proto>.cpp` drop-in.
+- **include/csp/win/** — Windows shims (WSAEventSelect reactor, signals).
 - **include/csp/part/** — 70+ stream combinators (`filter`, `producer`,
   `consumer` with `operator|` composition).
 - **include/csp/internal/** — Imp struct, runtime, processor,
   stack pool, HAMT, reactor, blocking pool, signal types.
-- **src/** — Implementation files (`csp.cc`, `channel.cc`, `runtime.cpp`,
-  `csp_globals.cpp`, `reactor.cc`, `blocking_pool.cc`, `signal.cc`,
-  `stack_pool.cc`, `hamt.cc`, `stack_analysis_arm64.cc`, `log.cc`,
-  `cancel.cc`, `timer.cc`, `io.cc`, `clock.cc`, `tls.cc`, `net.cc`,
-  `http.cc`).
+- **src/** — Implementation files. Core: `csp.cc`, `channel.cc`,
+  `runtime.cpp`, `csp_globals.cpp`, `reactor.cc`, `blocking_pool.cc`,
+  `signal.cc` (+ `win_signal.cc`), `stack_pool.cc`, `hamt.cc`,
+  `stack_analysis_arm64.cc`, `log.cc`, `cancel.cc`, `timer.cc`, `io.cc`,
+  `file.cc`, `byte_reader.cc`, `clock.cc`, `imp_exit.cc`, `supervisor.cc`.
+  Protocols: `tls.cc`, `net.cc`, `http.cc`, `http2.cc`, `http3.cc`,
+  `ws.cc`, `quic.cc`, `ngtcp2_crypto_picotls_minicrypto.c`. Assembly:
+  `src/asm/` (Boost.Context fcontext) and `light_switch_arm64_{elf,macho}.S`
+  (`LIGHT_SWITCH=1`).
 
 ### Stream combinator conventions
 
@@ -265,10 +309,17 @@ with `.test.cc` extension.
 - **PicoTLS** (vendored as git submodule in
   `vendor/github.com/h2o/picotls/` with minicrypto backend; compiled when
   `CSP_TLS=1`, which is the default; TLS 1.3 only, no OpenSSL dependency)
-- **llhttp** (vendored in `vendor/github.com/nodejs/llhttp/`; MIT licence;
-  HTTP/1.1 parser from Node.js; compiled as part of the normal build;
+- **llhttp** (vendored in-tree at `vendor/github.com/nodejs/llhttp/`; MIT
+  licence; HTTP/1.1 parser from Node.js; compiled as part of the normal build;
   excluded from the dist amalgamation)
+- **wslay** (vendored in-tree at `vendor/github.com/tatsuhiro-t/wslay/`;
+  WebSocket framing)
+- **nghttp2**, **nghttp3**, **ngtcp2** (git submodules under
+  `vendor/github.com/{nghttp2,ngtcp2}/`; HTTP/2, HTTP/3 and QUIC)
 - **doctest** (vendored, header-only)
+
+All five submodules (`git submodule update --init --recursive`) are required
+for the in-tree build; CI checks out with `submodules: recursive`.
 
 ### Optional tools
 

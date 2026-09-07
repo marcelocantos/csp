@@ -127,13 +127,27 @@ imps to completion.
 
 ## Development
 
+Building from source needs the vendored submodules (Boost.Context, PicoTLS,
+nghttp2, nghttp3, ngtcp2). A fresh clone has them empty and `make` fails with
+`No rule to make target '.../nghttp2ver.h.in'`, so init them first:
+
+```bash
+git clone https://github.com/marcelocantos/csp.git
+cd csp
+git submodule update --init --recursive
+```
+
 ```bash
 make        # build and run tests
 make build  # compile only
+make bench  # build and run benchmarks
 make dist   # regenerate distribution files from source
 make check  # run TLA+ model checker
 make clean  # remove build artifacts
 ```
+
+Consumers of the `dist/` drop-ins need none of this: `scripts/vendor-deps.sh`
+fetches only the third-party libraries the protocols they pick actually need.
 
 On arm64 (macOS/Linux), `make LIGHT_SWITCH=1` — or `-DCSP_LIGHT_SWITCH`
 when compiling the dist files — opts into a minimal-save context switch
