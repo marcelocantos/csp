@@ -387,14 +387,16 @@ std::string json(Reply const& reply) {
     out << "],\"cargo\":[";
     bool comma = false;
     for (auto const& [id, item] : s.items) {
-        if (comma) out << ','; comma = true;
+        if (comma) out << ',';
+        comma = true;
         out << "{\"id\":" << id << ",\"type\":" << id % 3 << ",\"actor\":" << item.actor
             << ",\"stage\":" << quote(item.stage) << ",\"from\":" << quote(item.from)
             << ",\"at\":" << item.at << ",\"duration\":" << item.duration << '}';
     }
     out << "],\"events\":["; comma = false;
     for (auto const& event : s.notes) {
-        if (comma) out << ','; comma = true;
+        if (comma) out << ',';
+        comma = true;
         out << "{\"at\":" << event.at << ",\"actor\":" << event.actor << ",\"text\":" << quote(event.text) << '}';
     }
     return out.str() + "]}";
