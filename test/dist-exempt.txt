@@ -1,0 +1,23 @@
+# White-box tests that reach csp::detail via <csp/internal/...> headers.
+# Those headers are not shipped in dist/csp.h as separately includable
+# files, so the cases stay source-layout only. One name per line.
+# stack_pool.test.cc
+default-allocate-release-roundtrip
+small-allocate-shape
+small-pool-recycles
+small-allocations-counter
+small-and-default-distinct-pools
+small-slot-usable-bytes-is-positive-on-arena
+# stack_profile.test.cc
+record-and-get-roundtrip
+null-entry-function-is-noop
+spawn-records-high-water-via-suspend
+# stack_analysis_audit.test.cc
+soundness-and-tightness-report
+writeback-forms-exact-depth
+unmodelled-sp-write-refused
+# stack_slot_sizing.test.cc
+profiled-inexact-entry-never-gets-small-slot
+profile-table-still-records-samples
+first-spawn-defaults-then-small-after-publication
+spawn-template-concrete-invoke-takes-small

@@ -493,15 +493,11 @@ endif
 endif
 
 TEST_SRCS    := test/main.cc $(wildcard test/*.test.cc)
-# The protocol tests (net/http/http2/http3/ws/quic) include per-protocol
-# headers like <csp/net.h> that don't exist in the dist drop-in (everything
-# is folded into the single dist/csp.h). The dist build still compiles each
-# protocol's per-protocol .cpp file (csp_http.cpp etc.), so we verify the
-# implementation TUs build, just not the protocol tests themselves. Fixing
-# the tests to work against both layouts is follow-up work (sub-target of
-# 🎯T23).
+# Protocol tests include test/csp_headers.h, which maps <csp/net.h> etc. onto
+# dist/csp.h when CSP_INCLUDE=dist, so they compile against both layouts.
+# scripts/check_dist_test_parity.sh fails if any of those cases disappear
+# from the dist listing without an entry in test/dist-exempt.txt.
 ifeq ($(CSP_INCLUDE),dist)
-TEST_SRCS    := $(filter-out test/net.test.cc test/http.test.cc test/http2.test.cc test/http3.test.cc test/ws.test.cc test/quic.test.cc,$(TEST_SRCS))
 # stack_pool.test.cc exercises csp::detail::StackPool directly via
 # <csp/internal/stack_pool.h>, which isn't shipped in dist (everything is
 # folded into dist/csp.h). The pool itself is still compiled into dist via
@@ -553,7 +549,7 @@ BENCH_TARGET := $(BUILDDIR)/csp_bench
 # --- Rules ---
 
 .PHONY: test build bench test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci stack-metric dist iwyu clean \
-       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor libs downstream-test
+       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor libs downstream-test check-dist-test-parity
 
 # Explicit default — keep `make` (no args) running the full test suite.
 # Without this, the `bullseye` rule below would become the default target
@@ -871,11 +867,15 @@ downstream-test: libs
 	$(MAKE) -C examples/downstream run \
 	    CSP_INCLUDE="$(abspath $(LIBS_OUT))" CSP_LIB="$(abspath $(LIBS_OUT))"
 
+check-dist-test-parity:
+	@DIST_BIN=build/normal-dist/csp_tests scripts/check_dist_test_parity.sh
+
 test-dist: dist
 ifneq ($(findstring thread,$(SANITIZE)),)
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=0 test
 else
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=1 test
+	$(MAKE) check-dist-test-parity
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=0 test
 endif
 

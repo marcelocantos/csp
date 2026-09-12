@@ -1,6 +1,5 @@
 #include "testutil.h"
-
-#include <csp/net.h>
+#include "csp_headers.h"
 
 using namespace csp;
 

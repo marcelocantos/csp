@@ -13,10 +13,9 @@
 // anticipated test structure.
 
 #include "testutil.h"
+#include "csp_headers.h"
 
 #ifdef CSP_TLS
-
-#include <csp/http3.h>
 
 extern "C" {
 #include <nghttp3/nghttp3.h>

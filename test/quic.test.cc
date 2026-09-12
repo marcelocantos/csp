@@ -10,8 +10,7 @@
 #if defined(CSP_TLS)
 
 #include "testutil.h"
-
-#include <csp/quic.h>
+#include "csp_headers.h"
 
 #include <atomic>
 #include <string>

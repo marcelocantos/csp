@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "testutil.h"
-
-#include <csp/http2.h>
-#include <csp/net.h>
+#include "csp_headers.h"
 
 #include <string>
 #include <vector>
