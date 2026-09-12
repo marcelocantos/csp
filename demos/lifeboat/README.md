@@ -119,6 +119,18 @@ sent, with clock heartbeats every 200 ms while movement is active. The browser
 keeps bounded recent revisions to render across message arrival boundaries,
 applies removals on the same delayed clock, and freezes on disconnection.
 
+Measured on macOS with the default local server and Chromium on 2026-09-13:
+
+| Scenario | Duration | Scene frames | JSON payload | Mean payload rate | Largest frame |
+|---|---:|---:|---:|---:|---:|
+| Normal arrivals | 29.83 s | 279 | 275,500 bytes | 9.02 KiB/s | 3,756 bytes |
+| Full congestion/recovery journey | 167.05 s | 1,181 | 1,767,996 bytes | 10.34 KiB/s | 5,203 bytes |
+
+These are observations from the live stream, excluding WebSocket/TCP framing,
+not performance thresholds. The normal run sent 729 bytes of acknowledgement
+payload in the reverse direction. The browser journey writes fresh traffic
+measurements to its `result.json` on each run.
+
 ## Verification
 
 ```sh
@@ -158,3 +170,9 @@ both I/O imps before releasing the socket. Fixed models run in `make check`;
 their `_Bug` companions expose the eager move, early socket release and
 undrained completion failures. Real-socket WebSocket tests cover blocked
 reads, writes and channel forwarding, plus message and fragmentation limits.
+
+The same local journey delivered all 28 accepted cargo through 112 logistics
+handoffs, completed 1,148 motion commands and left no logistics or motion imps.
+It checked 1,381 rendered samples, including 5,496 moving-pose comparisons,
+with zero pose discrepancy. These runs validate the local macOS path;
+Linux and Windows socket behavior still need their platform runs.
