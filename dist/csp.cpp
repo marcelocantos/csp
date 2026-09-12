@@ -5061,9 +5061,10 @@ namespace csp {
                 }
             }
             // has_global_work_ is release-stored by push_to_global and
-            // cleared under global_mu when the queue drains — sufficient
-            // for the park TOCTOU check without taking global_mu (which
-            // was a major idle-worker cost under high MAXPROCS).
+            // cleared under global_mu when the queue drains. The paired
+            // SC fences in notify_quiesce_watchers and wake_a_worker make
+            // this lock-free park recheck safe: either we see the work or
+            // the publisher sees us parked and posts a wake.
             return has_global_work_.load(std::memory_order_acquire);
         }
 

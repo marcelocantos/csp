@@ -35,6 +35,7 @@ ObserveWake ==
     /\ note' = Awake /\ sleeper' = "done"
     /\ UNCHANGED waker
 
+(* TLA:NoteWake.TryWake *)
 TryWake ==
     /\ waker = "try_wake"
     /\ IF note = Sleeping
@@ -42,6 +43,7 @@ TryWake ==
        ELSE /\ UNCHANGED note /\ waker' = "try_flag"
     /\ UNCHANGED sleeper
 
+(* TLA:NoteWake.TryFlag *)
 TryFlag ==
     /\ waker = "try_flag"
     /\ IF note = Awake

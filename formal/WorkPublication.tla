@@ -39,6 +39,7 @@ PublishStore ==
     /\ workVisible' = TRUE
     /\ UNCHANGED <<queued, parked, wake, note, publisher, worker>>
 
+(* TLA:WorkPublication.PublisherFence *)
 PublisherFence ==
     /\ publisher = "fence"
     /\ workVisible' = IF FencePublisher THEN TRUE ELSE workVisible
@@ -63,6 +64,7 @@ Register ==
     /\ worker' = "fence"
     /\ UNCHANGED <<queued, workVisible, parked, wake, note, publisher>>
 
+(* TLA:WorkPublication.WorkerFence *)
 WorkerFence ==
     /\ worker = "fence"
     /\ parked' = TRUE
