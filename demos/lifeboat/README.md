@@ -15,7 +15,7 @@ build/lifeboat/lifeboat
 
 Open <http://127.0.0.1:8042>. No npm install, external assets, or submodule
 initialization is needed: this consumer compiles the checked-in `dist/` core
-and HTTP/1.1 files with the in-tree llhttp dependency.
+and HTTP/1.1 and WebSocket files with the in-tree llhttp and wslay dependencies.
 
 Use `--port 8043` for another port, or `--assets PATH` when running outside
 the repository root. `--help-agent` describes the HTTP controls. The server
@@ -27,20 +27,21 @@ binds to loopback by default. Stop it with Ctrl-C.
    cranes wait to hand over cargo; eventually arrival control waits too.
 2. Enable **Channel view** to see the topology and actual stage populations.
    Select a structure to inspect its live status. Drag, scroll, or use the
-   zoom controls to explore. Keyboard arrows select actors when the scene
+   zoom controls to explore. Keyboard arrows select structures when the scene
    has focus; `+`, `-`, and `0` control the camera.
 3. **Resume the fabricator**. The backlog drains through the same channels.
 4. **Close Aster bay**. It finishes its current cargo; Boreal takes arrivals.
    Reopen it, then **trip a crane controller**. CSP supervision restarts Aster
    while preserving its accepted cargo.
-5. **Evacuate the dock**. Arrival control stops admitting work, paused actors
+5. **Evacuate the dock**. Arrival control stops admitting work, paused imps
    resume, and endpoint closure propagates downstream. The completion screen
-   appears only after all accepted cargo is delivered and all six actors exit.
+   appears only after all accepted cargo is delivered and every logistics and
+   motion imp exits.
    Start another shift without restarting the server.
 
 ## What is real
 
-Six independently scheduled actors use typed CSP channels:
+Six independently scheduled logistics imps use typed CSP channels:
 
 ```text
                       ┌─ Aster ─┐
@@ -62,16 +63,61 @@ workers wait on full channels. Full control mailboxes reject commands instead
 of blocking telemetry. Evacuation retries pending notifications while events
 continue to drain.
 
-HTTP handlers request snapshots through capacity-one reply mailboxes. A slow
-or disconnected viewer cannot hold the coordinator waiting for a reply read.
-The canvas interpolates within the last reported stage; it cannot create,
-route, or deliver cargo. Ship shapes, cargo colors, buildings and lights are
-illustrative. Stage counts are observed cargo populations, not exact buffer
-occupancy; a worker may hold an item from that stage.
+Every crane rig, ship, box, cargo door, fabricator effect and Meridian carrier
+also has its own imp and typed motion-command inbox. Each imp owns its pose,
+executes timed waypoints and acknowledges completion. Logistics imps wait for
+those acknowledgements before making the next physical handoff. A crane fault
+freezes its twins at their current poses; supervision resumes the unfinished
+movement without replaying completed steps. These are conventional CSP imps,
+with no AI control.
+
+Select a box to follow its ID. It arrives on a ship, is lifted onto the powered
+receiving lane, travels around the hold and enters through the rear gate.
+The warehouse door releases that same box to the fabricator. Inside, raw cargo
+becomes finished supplies with gold shipping bands. A visible output conveyor
+feeds Meridian's platform; the carrier delivers the box into the habitat and
+returns empty. Storage and platform slots are bounded channel resources.
+
+The browser receives timed motion revisions over one shared WebSocket. It
+interpolates generic waypoints at display refresh rate with an 80 ms playback
+delay; it never chooses
+a route, advances the choreography, or reports physical completion. Decorative
+stars and indicator lights are illustrative. Stage counts are observed cargo
+populations, not exact buffer occupancy; an imp may hold an item from that stage.
+
+Each viewer has at most one unacknowledged frame. Until it acknowledges that
+frame, the server requests no further snapshots for it and queues no scene
+updates. The next frame catches up to the current scene. A five-second timeout
+hard-closes both socket imps, and reconnecting starts with a complete snapshot.
+Snapshot replies use capacity-one mailboxes, so abandoned viewers cannot block
+the observation coordinator.
 
 This is the first dock, not a full city or a deterministic replay engine.
-Scheduling and wall-clock timings vary. The six actors exclude HTTP handlers,
-the observation coordinator and CSP's runtime support processes.
+Scheduling and wall-clock timings vary. The imp counters distinguish the six
+logistics imps from the changing population of motion imps; both exclude HTTP
+handlers, the observation coordinator and CSP's runtime support processes.
+
+## Scene protocol
+
+`GET /api/stream` upgrades to a WebSocket. Each text frame contains
+`type: "scene"`, a connection-local `seq`, station clock `now`, shift `run`, `reset`,
+changed `motions`, and timestamped `removed` entries. Telemetry appears in
+`state` at most every 200 ms. The first frame and every new shift carry the
+complete scene. The client acknowledges with the decimal sequence alone, such
+as `"12"`; messages are limited to 20 bytes. Invalid acknowledgements close the
+connection.
+
+A motion identifies its visual channel by `key` (for example `cargo:17` or
+`crane:1`) and carries `kind`, `phase`, `cargo`, `actor`, `revision`, start `at`,
+`duration`, and `frames: [[t,x,y,z], ...]`. Normalized keyframe times run from
+zero to one, with smoothstep interpolation per segment. Doors and effects use
+the x coordinate as an opening or intensity value. The logical channels share
+one transport; there is no socket per imp and no per-pixel stream.
+
+Snapshots are sampled at most every 50 ms. Only changed motion revisions are
+sent, with clock heartbeats every 200 ms while movement is active. The browser
+keeps bounded recent revisions to render across message arrival boundaries,
+applies removals on the same delayed clock, and freezes on disconnection.
 
 ## Verification
 
@@ -85,13 +131,19 @@ The self-test exercises this same distributed-library consumer with one and
 four runtime workers: flow, congestion, recovery, an injected controller
 failure, an abandoned viewer, evacuation, and a new shift. It checks cargo
 conservation, bounded population, exactly four completed sends per delivered
-cargo, one supervisor restart and complete actor shutdown.
+cargo, one supervisor restart, continuous motion endpoints and complete imp
+shutdown.
 
 The Playwright journey starts the actual server and operates the rendered UI.
-It checks the same conservation relationships, control effects, keyboard
-inspection, responsive geometry, evacuation and restart. Screenshots and logs
-go to a temporary directory; `--artifacts PATH` selects another scratch path.
-The `lifeboat` CI job runs both live self-tests and this browser journey.
+It checks each phase and physical waypoint of a complete cargo journey,
+compares sampled canvas poses with the real motion stream, and exercises
+control selection while a cargo with move-only imp endpoints is blocked.
+It verifies slow-viewer coalescing, reconnect, timeout, responsive geometry,
+evacuation and restart. A second viewer receives an intentionally translated
+motion with unchanged telemetry: both wire and render checks must reject this
+teleport. Screenshots and logs go to a temporary directory; `--artifacts PATH`
+selects another scratch path. The `lifeboat` CI job runs both live self-tests
+and this browser journey.
 
 `formal/Lifeboat.tla`, included in `make check`, explores a three-cargo,
 capacity-one routing abstraction. TLC checks unique ownership, conservation,
@@ -99,3 +151,10 @@ bounded stages and eventual drain after admissions stop under weak fairness.
 It does not prove the C++ implementation, controller recovery, event ordering,
 or the memory model. The live tests cover those observable scenarios; visual
 clarity and whether the experience feels compelling remain human judgments.
+
+`CargoSelection.tla` models retaining cargo ownership when a competing control
+wins a channel selection. `WebSocketClose.tla` models cancellation and joining
+both I/O imps before releasing the socket. Fixed models run in `make check`;
+their `_Bug` companions expose the eager move, early socket release and
+undrained completion failures. Real-socket WebSocket tests cover blocked
+reads, writes and channel forwarding, plus message and fragmentation limits.

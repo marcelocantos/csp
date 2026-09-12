@@ -1,8 +1,9 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
-// The picture observes this application. Every cargo handoff below is a real
-// CSP channel operation; the browser never advances the simulation.
+// Motion imps own the choreography. Every cargo handoff below is a real CSP
+// channel operation; the browser interpolates their streamed visual twins.
 #include "csp.h"
+#include "scene.h"
 
 #include <algorithm>
 #include <array>
@@ -32,14 +33,32 @@ constexpr std::array<const char*, actor_count> names = {
     "Arrival control", "Crane Aster", "Crane Boreal", "Warehouse", "Fabricator", "Tram Meridian"};
 enum class Command { snapshot, bay, factory, fault, surge, evacuate, reset, quit };
 enum class Signal { toggle, fault, surge, evacuate };
-enum class Kind { created, moved, handoff, status, delivered, finished, restarted, violation };
-struct Cargo { int id = 0; };
+enum class Kind { created, handoff, status, delivered, finished, restarted, violation,
+                  entity_started, motion, motion_done, entity_stopped };
 struct Event {
     Kind kind;
-    int actor;
-    Cargo cargo{};
+    int actor = 0, cargo = 0;
     std::string stage;
-    double duration = 0;
+    Motion motion;
+};
+enum class MotionAction { move, freeze, stop };
+struct MotionOrder {
+    MotionAction action = MotionAction::move;
+    std::string phase, kind;
+    int cargo = 0, actor = 0;
+    double seconds = 0;
+    time_point when{};
+    std::vector<Point> targets;
+    writer<bool> done;
+};
+struct Entity {
+    std::string key;
+    writer<MotionOrder> commands;
+    Entity copy() const { return {key, commands.copy()}; }
+};
+struct Cargo {
+    int id = 0, berth = 0, rack = 0, platform = 0;
+    Entity box, ship;
 };
 struct Item { int id; int actor; std::string stage, from; double at, duration; };
 struct ActorState { std::string status = "starting"; int cargo = 0; };
@@ -47,32 +66,111 @@ struct Note { double at; int actor; std::string text; };
 struct Snapshot {
     int run = 0, created = 0, delivered = 0, active = actor_count;
     int transfers = 0, restarts = 0, violations = 0;
+    int animation_active = 0, motion_completed = 0, motion_violations = 0;
+    unsigned long motion_serial = 0;
     bool bay_closed = false, factory_paused = false, surge = false;
     double now = 0;
     std::string mode = "running";
     std::array<ActorState, actor_count> actors;
     std::map<int, Item> items;
+    std::map<std::string, Motion> motions;
     std::deque<Note> notes;
 };
 struct Reply { Snapshot state; bool ok = true; };
 struct Query { Command command; writer<Reply> reply; };
 struct CraneFault {};
 
-// A worker owns its control state. Control remains selectable even while a
-// downstream channel is full. Closing a bay finishes its current delivery.
+// Every visual twin has a conventional typed CSP inbox and its own imp. Its
+// imp owns position and time; neither the observer nor browser advances it.
+Entity make_entity(std::string key, std::string kind, Point initial, int actor,
+                   int cargo, writer<Event> events, time_point epoch, double speed) {
+    chan<MotionOrder> commands;
+    chan<bool> registered(1);
+    spawn([r = std::move(commands.r), events = std::move(events), ready = std::move(registered.w),
+           key, kind, initial, actor, cargo, epoch, speed]() mutable {
+        auto seconds = [&] { return std::chrono::duration<double>(csp::now() - epoch).count() * speed; };
+        auto scaled = [&](double value) { return std::chrono::duration_cast<duration>(std::chrono::duration<double>(value / speed)); };
+        Motion current{key, kind, "ready", cargo, actor, 0, seconds(), 0, {{0, initial}, {1, initial}}};
+        events << Event{Kind::entity_started, actor, cargo, {}, current};
+        ready << true;
+        std::optional<Motion> interrupted;
+        double interrupted_at = 0;
+        std::string completed_phase;
+        int completed_cargo = -1;
+        bool stop = false;
+        while (!stop) {
+            MotionOrder order;
+            if (!(r >> order)) break;
+            if (order.action == MotionAction::stop) { order.done << true; break; }
+            if (order.action == MotionAction::freeze) { order.done << true; continue; }
+            // Retrying a choreography step never replays a completed movement.
+            if (order.phase == completed_phase && order.cargo == completed_cargo) { order.done << true; continue; }
+            Point position = interpolate(current, seconds());
+            double length = order.seconds;
+            auto targets = std::move(order.targets);
+            if (interrupted && interrupted->phase == order.phase && interrupted->cargo == order.cargo) {
+                targets.clear();
+                for (auto const& frame : interrupted->frames) if (frame.t > interrupted_at) targets.push_back(frame.p);
+                length = interrupted->duration * (1 - interrupted_at);
+            }
+            interrupted.reset();
+            auto begin = std::max(order.when, csp::now());
+            current = {key, order.kind, order.phase, order.cargo, order.actor, 0,
+                std::chrono::duration<double>(begin - epoch).count() * speed, length, {{0, position}}};
+            if (targets.empty()) targets.push_back(position);
+            for (size_t i = 0; i < targets.size(); ++i) current.frames.push_back({double(i + 1) / targets.size(), targets[i]});
+            events << Event{Kind::motion, current.actor, current.cargo, {}, current};
+            auto end = begin + scaled(length);
+            bool complete = false;
+            for (;;) {
+                MotionOrder next;
+                int selected = prialt(r >> next, after(std::max(duration::zero(), end - csp::now())) >> nullptr);
+                if (selected == 1) { complete = true; break; }
+                if (selected != 0) { stop = true; break; }
+                if (next.action == MotionAction::move) { next.done << false; continue; }
+                // A fault suspends the actual pose, and remembers only the
+                // unfinished waypoints for a supervisor-driven retry.
+                interrupted = current;
+                const double frozen_at = seconds();
+                interrupted_at = current.duration > 0 ? std::clamp((frozen_at - current.at) / current.duration, 0.0, 1.0) : 1;
+                Point frozen = interpolate(current, frozen_at);
+                current.at = frozen_at; current.duration = 0;
+                current.frames = {{0, frozen}, {1, frozen}};
+                events << Event{Kind::motion, current.actor, current.cargo, {}, current};
+                next.done << true;
+                stop = next.action == MotionAction::stop;
+                break;
+            }
+            order.done << complete;
+            if (complete) {
+                completed_phase = order.phase; completed_cargo = order.cargo;
+                events << Event{Kind::motion_done, current.actor, current.cargo, {}, {}};
+            }
+        }
+        current.at = seconds();
+        events << Event{Kind::entity_stopped, current.actor, current.cargo, key, current};
+    });
+    bool ready = false;
+    registered.r >> ready;
+    return {std::move(key), std::move(commands.w)};
+}
+struct Move { Entity* entity; std::string kind; std::vector<Point> targets; };
+
 struct Actor {
     int id;
     double speed;
+    time_point epoch;
     reader<Signal> control;
     writer<Event> events;
     bool paused = false, stopping = false, surge = false;
     duration scaled(double seconds) const {
         return std::chrono::duration_cast<duration>(std::chrono::duration<double>(seconds / speed));
     }
-    void report(Kind kind, Cargo cargo = {}, std::string stage = {}, double seconds = 0) {
-        events << Event{kind, id, cargo, std::move(stage), seconds};
+    void report(Kind kind, int cargo = 0, std::string stage = {}) { events << Event{kind, id, cargo, std::move(stage), {}}; }
+    void state(const char* value, int cargo = 0) { report(Kind::status, cargo, value); }
+    Entity entity(std::string key, std::string kind, Point p, int cargo = 0) {
+        return make_entity(std::move(key), std::move(kind), p, id, cargo, events.copy(), epoch, speed);
     }
-    void state(const char* value, Cargo cargo = {}) { report(Kind::status, cargo, value); }
     void handle(Signal signal) {
         switch (signal) {
         case Signal::toggle: paused = !paused; break;
@@ -97,113 +195,197 @@ struct Actor {
             else break;
         }
     }
-    bool receive(reader<Cargo>& input, Cargo& cargo) {
+    template<class T> bool receive(reader<T>& input, T& value, bool intake = true) {
         for (;;) {
-            ready();
+            if (intake) ready();
             state("awaiting cargo");
             Signal signal;
-            int choice = prialt(control >> signal, input >> cargo);
+            int choice = prialt(control >> signal, input >> value);
             if (choice == 0) handle(signal);
             else return choice == 1;
         }
     }
-    bool send(writer<Cargo>& output, Cargo cargo) {
-        state("backpressure", cargo);
+    bool send(writer<Cargo>& output, Cargo& cargo) {
+        state("backpressure", cargo.id);
         for (;;) {
             Signal signal;
-            int choice = prialt(control >> signal, output << cargo);
+            // Retain the imp endpoints if a control signal wins this alt.
+            auto transfer = chan_op<Cargo>(output.internal_writer(), cargo,
+                                           chan_op<Cargo>::ref_tag{});
+            int choice = prialt(control >> signal, std::move(transfer));
             if (choice == 0) handle(signal);
             else return choice == 1;
         }
+    }
+    void play(std::string phase, double seconds, int cargo, std::initializer_list<Move> moves) {
+        std::vector<reader<bool>> completions;
+        auto begin = csp::now() + scaled(0.01);
+        for (auto const& move : moves) {
+            chan<bool> done(1);
+            MotionOrder order{MotionAction::move, phase, move.kind, cargo, id, seconds, begin, move.targets, std::move(done.w)};
+            if (!(move.entity->commands << std::move(order))) throw std::runtime_error("animation imp stopped");
+            completions.push_back(std::move(done.r));
+        }
+        state(phase.c_str(), cargo);
+        for (auto& done : completions) {
+            for (;;) {
+                Signal signal; bool complete = false;
+                int selected = prialt(control >> signal, done >> complete);
+                if (selected == 0) handle(signal);
+                else if (selected == 1 && complete) break;
+                else throw std::runtime_error("animation did not complete");
+            }
+        }
+    }
+    void interrupt(Entity& entity, MotionAction action) {
+        if (!entity.commands) return;
+        chan<bool> done(1);
+        MotionOrder order; order.action = action; order.done = std::move(done.w);
+        if (entity.commands << std::move(order)) { bool ok; done.r >> ok; }
+        if (action == MotionAction::stop) entity.commands = {};
     }
 };
 
-// Only the coordinator owns Snapshot. Worker event streams are lossless;
-// browser replies use single-slot mailboxes, so slow viewers do not block it.
-std::array<writer<Signal>, actor_count> start(writer<Event> events, double speed) {
+Point parking(int berth) { return {-620.0 - (berth / 3) * 100, -130.0 + (berth % 3) * 125, 22}; }
+Point rack(int slot) { return {-80.0 + (slot % 6) * 22, -100.0 - (slot / 6) * 25, 8}; }
+Point platform(int slot) { return {111.0 + slot * 30, 228, 12}; }
+
+std::array<writer<Signal>, actor_count> start(writer<Event> events, double speed, time_point epoch) {
     chan<Cargo> arrivals(approach_capacity), storage(warehouse_capacity), fabrication, departures(tram_capacity);
+    chan<int> berths(9), racks(11), platforms(5), intake_lease(1);
+    for (int i = 0; i < 9; ++i) berths.w << i;
+    for (int i = 0; i < 11; ++i) racks.w << i;
+    for (int i = 0; i < 5; ++i) platforms.w << i;
+    intake_lease.w << 0;
+    auto intake = make_entity("door:hold-in", "door", {}, 3, 0, events.copy(), epoch, speed);
     std::array<writer<Signal>, actor_count> controls;
     std::array<reader<Signal>, actor_count> inputs;
     for (int i = 0; i < actor_count; ++i) {
         chan<Signal> control(8);
-        controls[i] = std::move(control.w);
-        inputs[i] = std::move(control.r);
+        controls[i] = std::move(control.w); inputs[i] = std::move(control.r);
     }
     auto launch = [&](int id, auto work) {
-        spawn([actor = Actor{id, speed, std::move(inputs[id]), events.copy()}, work = std::move(work)]() mutable {
+        spawn([actor = Actor{id, speed, epoch, std::move(inputs[id]), events.copy()}, work = std::move(work)]() mutable {
             try { work(actor); }
-            catch (...) { actor.report(Kind::violation, {}, "worker failed"); }
+            catch (...) { actor.report(Kind::violation, 0, "worker failed"); }
             actor.report(Kind::finished);
         });
     };
-    launch(0, [out = std::move(arrivals.w)](Actor& a) mutable {
+    launch(0, [out = std::move(arrivals.w), slots = std::move(berths.r)](Actor& a) mutable {
         int serial = 0;
         while (!a.stopping) {
-            a.state("inbound guidance");
-            a.delay(a.surge ? 0.16 : 0.60);
+            a.state("inbound guidance"); a.delay(a.surge ? 0.20 : 2.90);
             if (a.stopping) break;
-            Cargo cargo{++serial};
-            a.report(Kind::created, cargo, "approach", 0.60);
-            // An admitted cargo is always handed off, even after evacuation.
+            Cargo cargo;
+            if (!a.receive(slots, cargo.berth) || a.stopping) break;
+            cargo.id = ++serial;
+            auto target = parking(cargo.berth);
+            Point origin{target.x - 260, target.y - 80, target.z + 60};
+            cargo.box = a.entity("cargo:" + std::to_string(cargo.id), "raw", origin, cargo.id);
+            cargo.ship = a.entity("ship:" + std::to_string(cargo.id), "ship", origin, cargo.id);
+            a.report(Kind::created, cargo.id, "arrival");
+            a.play("arrival", 0.75, cargo.id, {{&cargo.box, "raw", {target}}, {&cargo.ship, "ship", {target}}});
+            int id = cargo.id;
             if (!a.send(out, cargo)) break;
-            a.report(Kind::handoff, cargo, "approach");
+            a.report(Kind::handoff, id);
         }
     });
     for (int id : {1, 2}) {
-        launch(id, [in = arrivals.r.copy(), out = storage.w.copy()](Actor& a) mutable {
+        launch(id, [in = arrivals.r.copy(), out = storage.w.copy(), returns = berths.w.copy(),
+                    slots = racks.r.copy(), lease = intake_lease.r.copy(), release = intake_lease.w.copy(),
+                    door = intake.copy()](Actor& a) mutable {
+            auto rig = a.entity("crane:" + std::to_string(a.id), "rig", a.id == 1 ? Point{-425,-90,140} : Point{-330,200,140});
             std::optional<Cargo> held;
-            // The durable slot survives a failed worker invocation. Restart
-            // cannot lose a cargo or start a duplicate delivery.
-            auto policy = on_exit([&a](imp_event event) {
+            int step = 0, token = 0;
+            bool leased = false, slotted = false;
+            auto policy = on_exit([&](imp_event event) {
                 if (!event.error) return;
                 try { std::rethrow_exception(event.error); }
                 catch (CraneFault const&) {
-                    a.report(Kind::restarted, {}, "controller restarting");
+                    a.interrupt(rig, MotionAction::freeze);
+                    if (held) { a.interrupt(held->box, MotionAction::freeze); a.interrupt(held->ship, MotionAction::freeze); }
+                    if (leased) a.interrupt(door, MotionAction::freeze);
+                    a.report(Kind::restarted, 0, "controller restarting");
                     event.restart(a.scaled(1.8));
                 }
-                catch (...) { a.report(Kind::violation, {}, "unexpected controller failure"); }
+                catch (...) { a.report(Kind::violation, 0, "unexpected controller failure"); }
             });
             supervised([&] {
                 for (;;) {
-                    if (!held) {
-                        Cargo cargo;
-                        if (!a.receive(in, cargo)) return;
-                        held = cargo;
+                    if (!held) { Cargo cargo; if (!a.receive(in, cargo)) return; held = std::move(cargo); step = 0; slotted = false; }
+                    auto& c = *held;
+                    Point berth = a.id == 1 ? Point{-425,-90,22} : Point{-330,200,22};
+                    Point high{berth.x, berth.y, 112};
+                    Point drop = a.id == 1 ? Point{-225,-2,8} : Point{-185,120,8};
+                    if (step == 0) { a.play("berth", 0.65, c.id, {{&c.box,"raw",{berth}}, {&c.ship,"ship",{berth}}, {&rig,"rig",{{berth.x,berth.y,140}}}}); ++step; }
+                    if (step == 1) { a.play("hook-lower", 0.28, c.id, {{&rig,"rig",{berth}}}); ++step; }
+                    if (step == 2) { a.play("crane-lift", 0.55, c.id, {{&rig,"rig",{high}}, {&c.box,"raw",{high}}}); ++step; }
+                    if (step == 3) {
+                        Point middle = a.id == 1 ? Point{-350,-140,128} : Point{-270,102,128};
+                        a.play("crane-slew", 0.70, c.id, {{&rig,"rig",{middle,{drop.x,drop.y,112}}}, {&c.box,"raw",{middle,{drop.x,drop.y,112}}}, {&c.ship,"ship",{{berth.x-480,berth.y-100,100}}}});
+                        a.interrupt(c.ship, MotionAction::stop); returns << c.berth; ++step;
                     }
-                    a.report(Kind::moved, *held, a.id == 1 ? "craneA" : "craneB", 1.15);
-                    a.state("lifting", *held);
-                    a.delay(1.15);
-                    if (!a.send(out, *held)) return;
-                    a.report(Kind::handoff, *held, "warehouse", 0.35);
+                    if (step == 4) { a.play("crane-lower", 0.40, c.id, {{&rig,"rig",{drop}}, {&c.box,"raw",{drop}}}); ++step; }
+                    if (!slotted) { if (!a.receive(slots, c.rack, false)) return; slotted = true; }
+                    if (step <= 8 && !leased) { if (!a.receive(lease, token, false)) return; leased = true; }
+                    if (step == 5) { a.play("road-to-hold", 0.85, c.id, {{&c.box,"raw",{{-148,52,8},{-148,-196,8},{-50,-180,8}}}, {&rig,"rig",{{drop.x,drop.y,140}}}}); ++step; }
+                    if (step == 6) { a.play("hold-in-open", 0.18, c.id, {{&door,"door",{{1,0,0}}}}); ++step; }
+                    if (step == 7) { a.play("hold-intake", 0.35, c.id, {{&c.box,"raw",{rack(c.rack)}}}); ++step; }
+                    if (step == 8) { a.play("stored", 0.18, c.id, {{&c.box,"hidden",{rack(c.rack)}}, {&door,"door",{{0,0,0}}}}); ++step; }
+                    if (leased) { release << token; leased = false; }
+                    int serial = c.id;
+                    if (!a.send(out, c)) return;
+                    a.report(Kind::handoff, serial);
                     held.reset();
                 }
             })();
         });
     }
-    launch(3, [in = std::move(storage.r), out = std::move(fabrication.w)](Actor& a) mutable {
-        Cargo cargo;
-        while (a.receive(in, cargo)) {
-            if (!a.send(out, cargo)) break;
-            a.report(Kind::handoff, cargo, "factory");
+    launch(3, [in = std::move(storage.r), out = std::move(fabrication.w), returns = std::move(racks.w)](Actor& a) mutable {
+        auto door = a.entity("door:hold", "door", {});
+        Cargo c;
+        while (a.receive(in, c)) {
+            a.play("hold-door-open", 0.22, c.id, {{&door,"door",{{1,0,0}}}});
+            a.play("warehouse-out", 0.55, c.id, {{&c.box,"raw",{{-49,-60,8},{-49,-12,8}}}});
+            returns << c.rack;
+            a.play("to-fabricator", 0.75, c.id, {{&c.box,"raw",{{-9,12,8},{120,12,8},{175,-23,8}}}, {&door,"door",{{0,0,0}}}});
+            int serial = c.id;
+            if (!a.send(out, c)) break;
+            a.report(Kind::handoff, serial);
         }
     });
-    launch(4, [in = std::move(fabrication.r), out = std::move(departures.w)](Actor& a) mutable {
-        Cargo cargo;
-        while (a.receive(in, cargo)) {
-            a.report(Kind::moved, cargo, "factory", 0.48);
-            a.state("fabricating", cargo);
-            a.delay(0.48);
-            if (!a.send(out, cargo)) break;
-            a.report(Kind::handoff, cargo, "platform", 0.25);
+    launch(4, [in = std::move(fabrication.r), out = std::move(departures.w), slots = std::move(platforms.r)](Actor& a) mutable {
+        auto inlet = a.entity("door:fab-in", "door", {});
+        auto outlet = a.entity("door:fab-out", "door", {});
+        auto effect = a.entity("factory:4", "effect", {});
+        Cargo c;
+        while (a.receive(in, c)) {
+            a.play("fab-door-open", 0.20, c.id, {{&inlet,"door",{{1,0,0}}}});
+            a.play("fab-intake", 0.35, c.id, {{&c.box,"raw",{{175,-77,8}}}});
+            a.play("processing", 0.65, c.id, {{&c.box,"hidden",{{175,-77,8}}}, {&inlet,"door",{{0,0,0}}}, {&effect,"effect",{{1,0,0}}}});
+            a.play("conversion", 0.35, c.id, {{&c.box,"hidden",{{270,-77,8}}}, {&effect,"effect",{{2,0,0}}}});
+            a.play("fab-out-open", 0.20, c.id, {{&outlet,"door",{{1,0,0}}}});
+            a.play("fab-out", 0.40, c.id, {{&c.box,"goods",{{284,-10,8}}}});
+            if (!a.receive(slots, c.platform, false)) break;
+            a.play("conveyor", 0.90, c.id, {{&c.box,"goods",{{330,30,8},{330,165,8},{260,205,12},platform(c.platform)}}, {&outlet,"door",{{0,0,0}}}, {&effect,"effect",{{0,0,0}}}});
+            a.play("platform", 0.12, c.id, {{&c.box,"goods",{platform(c.platform)}}});
+            int serial = c.id;
+            if (!a.send(out, c)) break;
+            a.report(Kind::handoff, serial);
         }
     });
-    launch(5, [in = std::move(departures.r)](Actor& a) mutable {
-        Cargo cargo;
-        while (a.receive(in, cargo)) {
-            a.report(Kind::moved, cargo, "tram", 0.52);
-            a.state("delivering", cargo);
-            a.delay(0.52);
-            a.report(Kind::delivered, cargo, "habitat");
+    launch(5, [in = std::move(departures.r), returns = std::move(platforms.w)](Actor& a) mutable {
+        auto tram = a.entity("tram:5", "tram", {165,276,0});
+        Cargo c;
+        while (a.receive(in, c)) {
+            auto load = platform(c.platform);
+            a.play("loading", 0.55, c.id, {{&c.box,"goods",{{load.x,244,48},{165,283,33}}}});
+            returns << c.platform;
+            a.play("tram-ride", 1.0, c.id, {{&tram,"tram",{{398,276,0}}}, {&c.box,"goods",{{398,283,33}}}});
+            a.play("habitat-unload", 0.50, c.id, {{&c.box,"goods",{{420,270,50},{430,237,50}}}});
+            a.interrupt(c.box, MotionAction::stop);
+            a.report(Kind::delivered, c.id, "habitat");
+            a.play("tram-return", 0.75, c.id, {{&tram,"tram",{{165,276,0}}}});
         }
     });
     return controls;
@@ -213,8 +395,8 @@ void coordinate(reader<Query> requests, double speed) {
     chan<Event> events(event_capacity);
     Snapshot state;
     state.run = 1;
-    auto controls = start(events.w.copy(), speed);
     auto epoch = csp::now();
+    auto controls = start(events.w.copy(), speed, epoch);
     double last_fault = -10;
     bool quitting = false;
     std::array<bool, actor_count> pending_evac{};
@@ -231,15 +413,6 @@ void coordinate(reader<Query> requests, double speed) {
         note(0, "Evacuation: arrivals stopped; accepted cargo is draining");
     };
     note(0, "Dock online. Every moving cargo is a real channel handoff.");
-    auto rank = [](std::string const& stage) {
-        if (stage == "approach") return 0;
-        if (stage == "craneA" || stage == "craneB") return 1;
-        if (stage == "warehouse") return 2;
-        if (stage == "factory") return 3;
-        if (stage == "platform") return 4;
-        if (stage == "tram") return 5;
-        return -1;
-    };
     for (;;) {
         bool pending = false;
         for (int i = 0; i < actor_count; ++i) if (pending_evac[i]) {
@@ -262,59 +435,61 @@ void coordinate(reader<Query> requests, double speed) {
             auto& actor = state.actors[event.actor];
             switch (event.kind) {
             case Kind::created:
-                if (event.cargo.id != state.created + 1) ++state.violations;
+                if (event.cargo != state.created + 1) ++state.violations;
                 ++state.created;
-                state.items.emplace(event.cargo.id, Item{event.cargo.id, event.actor, "approach", "space", seconds(), event.duration});
+                state.items.emplace(event.cargo, Item{event.cargo, event.actor, "arrival", "space", seconds(), 0});
                 break;
-            case Kind::moved:
-            case Kind::handoff: {
-                // Completion notifications can arrive after a receiver's next
-                // stage. Count the committed send once, but never rewind cargo.
-                if (event.kind == Kind::handoff) ++state.transfers;
-                auto found = state.items.find(event.cargo.id);
-                if (found == state.items.end()) {
-                    if (event.kind != Kind::handoff) ++state.violations;
-                    break;
+            case Kind::handoff: ++state.transfers; break;
+            case Kind::delivered:
+                if (state.items.erase(event.cargo) != 1) ++state.violations;
+                else ++state.delivered;
+                note(event.actor, "Habitat received finished supplies " + std::to_string(event.cargo));
+                break;
+            case Kind::status: actor.status = event.stage; actor.cargo = event.cargo; break;
+            case Kind::finished: actor.status = "offline"; actor.cargo = 0; --state.active; break;
+            case Kind::restarted: ++state.restarts; actor.status = "restarting"; note(event.actor, "Controller failed; its motion imps hold their poses until restart"); break;
+            case Kind::violation: ++state.violations; note(event.actor, event.stage); break;
+            case Kind::entity_started: ++state.animation_active; [[fallthrough]];
+            case Kind::motion: {
+                auto& motion = event.motion;
+                auto old = state.motions.find(motion.key);
+                if (old != state.motions.end()) {
+                    auto p = interpolate(old->second, motion.at);
+                    auto q = motion.frames.front().p;
+                    if (std::hypot(p.x-q.x, p.y-q.y, p.z-q.z) > 0.01) ++state.motion_violations;
                 }
-                auto previous = found->second.stage;
-                if (rank(event.stage) < rank(previous) ||
-                    (event.kind == Kind::handoff && rank(event.stage) == rank(previous))) break;
-                int destination = event.actor;
-                if (event.kind == Kind::handoff) {
-                    if (event.stage == "warehouse") destination = 3;
-                    if (event.stage == "factory") destination = 4;
-                    if (event.stage == "platform") destination = 5;
+                if (motion.frames.size() < 2 || motion.frames.front().t != 0 || motion.frames.back().t != 1 || motion.duration < 0) ++state.motion_violations;
+                motion.revision = ++state.motion_serial;
+                if (motion.key.starts_with("cargo:")) {
+                    auto item = state.items.find(motion.cargo);
+                    if (item != state.items.end()) item->second = {motion.cargo, motion.actor, motion.phase, item->second.stage, motion.at, motion.duration};
                 }
-                found->second = {event.cargo.id, destination, event.stage, previous, seconds(), event.duration};
+                auto key = motion.key;
+                state.motions[key] = std::move(motion);
                 break;
             }
-            case Kind::delivered:
-                if (state.items.erase(event.cargo.id) != 1) ++state.violations;
-                else ++state.delivered;
-                if (state.delivered % 8 == 0) note(event.actor, "Habitat received cargo " + std::to_string(event.cargo.id));
+            case Kind::motion_done: ++state.motion_completed; break;
+            case Kind::entity_stopped:
+                state.motions.erase(event.stage); ++state.motion_serial; --state.animation_active;
                 break;
-            case Kind::status: actor.status = event.stage; actor.cargo = event.cargo.id; break;
-            case Kind::finished: actor.status = "offline"; actor.cargo = 0; --state.active; break;
-            case Kind::restarted: ++state.restarts; actor.status = "restarting"; note(event.actor, "Controller failed; supervisor is restarting its work"); break;
-            case Kind::violation: ++state.violations; note(event.actor, event.stage); break;
             }
             if (state.created != state.delivered + static_cast<int>(state.items.size()) || state.items.size() > cargo_limit) ++state.violations;
-            if (state.active == 0 && state.mode != "evacuated") {
+            if (state.active == 0 && state.animation_active == 0 && state.mode != "evacuated") {
                 if (!state.items.empty()) ++state.violations;
-                state.mode = state.violations ? "failed" : "evacuated";
-                note(0, state.violations ? "Dock stopped with an invariant failure; inspect cargo and diagnostics."
-                                       : "Dock evacuated. All accepted cargo delivered; all six actors stopped.");
+                state.mode = state.violations || state.motion_violations ? "failed" : "evacuated";
+                note(0, state.mode == "failed" ? "Dock stopped with an invariant failure."
+                                              : "All supplies delivered. Logistics and animation imps have stopped.");
             }
         } else if (selected == 1) {
             bool ok = true;
             switch (query.command) {
             case Command::snapshot: break;
             case Command::reset:
-                if (state.active) ok = false;
+                if (state.active || state.animation_active) ok = false;
                 else {
                     int run = state.run + 1;
                     state = Snapshot{}; state.run = run; epoch = csp::now(); last_fault = -10;
-                    controls = start(events.w.copy(), speed);
+                    controls = start(events.w.copy(), speed, epoch);
                     pending_evac.fill(false);
                     note(0, "A new shift is online");
                 }
@@ -346,7 +521,7 @@ void coordinate(reader<Query> requests, double speed) {
             // never waits for a renderer, socket or subsequent browser poll.
             query.reply << Reply{state, ok};
         }
-        if (quitting && !state.active) return;
+        if (quitting && !state.active && !state.animation_active) return;
     }
 }
 
@@ -376,6 +551,8 @@ std::string json(Reply const& reply) {
         << ",\"created\":" << s.created << ",\"delivered\":" << s.delivered
         << ",\"inFlight\":" << s.items.size() << ",\"activeActors\":" << s.active
         << ",\"transfers\":" << s.transfers << ",\"restarts\":" << s.restarts
+        << ",\"animationActors\":" << s.animation_active << ",\"motionCompleted\":" << s.motion_completed
+        << ",\"motionViolations\":" << s.motion_violations << ",\"motionRevision\":" << s.motion_serial
         << ",\"violations\":" << s.violations
         << ",\"bayClosed\":" << (s.bay_closed ? "true" : "false")
         << ",\"factoryPaused\":" << (s.factory_paused ? "true" : "false")
@@ -401,7 +578,11 @@ std::string json(Reply const& reply) {
     }
     return out.str() + "]}";
 }
+} // namespace lifeboat
 
+#include "stream.h"
+
+namespace lifeboat {
 bool self_test(int workers) {
     bool passed = true;
     set_maxprocs(workers);
@@ -413,7 +594,7 @@ bool self_test(int workers) {
         };
         auto wait_for = [&](auto predicate) {
             Reply reply;
-            for (int i = 0; i < 1000; ++i) {
+            for (int i = 0; i < 5000; ++i) {
                 reply = ask(w, Command::snapshot);
                 if (predicate(reply.state)) return reply.state;
                 csp::sleep(5ms);
@@ -441,8 +622,10 @@ bool self_test(int workers) {
         // A viewer can abandon a full reply mailbox without stalling workers.
         { chan<Reply> abandoned(1); w << Query{Command::snapshot, std::move(abandoned.w)}; }
         ask(w, Command::evacuate);
-        auto drained = wait_for([](auto const& s) { return s.active == 0; });
+        auto drained = wait_for([](auto const& s) { return s.active == 0 && s.animation_active == 0; });
         check(drained.created == drained.delivered && drained.items.empty(), "evacuation drains every cargo exactly once");
+        check(drained.motion_violations == 0, "every motion starts at its previous pose");
+        check(drained.motions.empty() && drained.motion_completed > drained.created * 15, "every visual twin finishes its choreography and exits");
         check(drained.violations == 0, "ownership and bounded population invariants hold");
         check(drained.transfers == drained.created * 4, "each delivered cargo completed exactly four channel sends");
         check(drained.restarts == 1, "the real CSP supervisor restarted the injected failure");
@@ -478,6 +661,14 @@ void serve(int port, std::string const& host, std::string const& assets) {
             spawn([endpoint = std::move(endpoint), w = w.copy(), &files]() mutable {
                 http::request request;
                 while (endpoint.requests >> request) {
+                    if (request.method == http::method::GET && request.url == "/api/stream") {
+                        try {
+                            stream_scene(ws::upgrade(request, {.max_message_size = stream_ack_limit}), w.copy());
+                        } catch (csp::error const&) {
+                            // upgrade() sends the 400 response for bad handshakes.
+                        }
+                        return;
+                    }
                     http::response response;
                     std::string body, type = "application/json";
                     if (request.method == http::method::GET && request.url == "/api/state") body = json(ask(w, Command::snapshot));
@@ -517,7 +708,8 @@ int main(int argc, char** argv) {
                     "Run from the CSP root: make lifeboat && build/lifeboat/lifeboat\n"
                     "Options: --port 8042 --host 127.0.0.1 --assets demos/lifeboat/web\n"
                     "         --self-test --workers 4 | --version | --help-agent\n"
-                    "GET /api/state returns the live snapshot. POST /api/{bay,factory,fault,surge,evacuate,reset}\n"
+                    "GET /api/stream streams motion twins over WebSocket; ACK each decimal seq.\n"
+                    "GET /api/state returns telemetry. POST /api/{bay,factory,fault,surge,evacuate,reset}\n"
                     "with header X-Lifeboat-Control: 1 changes the simulation. No request body.\n";
                 return 0;
             }

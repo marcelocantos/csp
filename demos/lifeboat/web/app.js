@@ -8,6 +8,7 @@
   const ctx = canvas.getContext('2d');
   const $ = id => document.getElementById(id);
   const colors = ['#89ebcb', '#efbc74', '#85acf5'];
+  const cargoSize = 19;
   const cargoNames = ['Food & biosystems', 'Energy cells', 'Fabrication stock'];
   const capacity = 28;
   const nodes = [
@@ -56,7 +57,6 @@
   let drag = null;
   let hitAreas = [];
   let lastEvents = '';
-  let lastFrame = 0;
   let hover = -1;
 
   const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
@@ -534,7 +534,9 @@
   function drawCrane(id) {
     const node = nodes[id];
     const motion = poses.get(`crane:${id}`);
-    const hook = motion?.position || point(node.x - 90, node.y, 110);
+    const load = motion?.position || point(node.x - 90, node.y, 110);
+    // Rig and cargo share a load-origin anchor. The spreader grips its top.
+    const hook = point(load.x + cargoSize / 2, load.y + cargoSize * 0.39, load.z + cargoSize * 0.72);
     const end = point(hook.x, hook.y, 155);
     const angle = Math.atan2(hook.y - node.y, hook.x - node.x);
     const x = node.x, y = node.y;
@@ -698,7 +700,7 @@
     lamp(x + 50, y + 4, z + 15, '#d4f7e1', 1.8); lamp(x + 50, y + 19, z + 15, '#d4f7e1', 1.8);
   }
 
-  function cargoBox(p, type, size = 19, finished = false) {
+  function cargoBox(p, type, size = cargoSize, finished = false) {
     const color = colors[type] || colors[0];
     shadow(p.x, p.y, size, size * 0.78, 0.15);
     box(p.x, p.y, size, size * 0.78, size * 0.72, color, hexAlpha(color, 0.65), hexAlpha(color, 0.84), p.z);
@@ -741,7 +743,7 @@
       const shape = visibility.clip.map(p => project(p.x, p.y, p.z));
       ctx.beginPath(); shape.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); ctx.clip();
     }
-    cargoBox(motion.position, motion.cargo % colors.length, 19, motion.kind === 'goods');
+    cargoBox(motion.position, motion.cargo % colors.length, cargoSize, motion.kind === 'goods');
     ctx.restore();
   }
   function drawShip(motion) {
@@ -933,9 +935,7 @@
     requestAnimationFrame(frame);
   }
   function frame(now) {
-    // A thirty-frame cadence keeps the observatory inexpensive on laptops.
-    if (now - lastFrame < 1000 / 30) { requestAnimationFrame(frame); return; }
-    lastFrame = now;
+    // Smooth display-rate interpolation does not increase server traffic.
     draw(now);
   }
   function changeZoom(factor, origin = { x: width / 2, y: height / 2 }) {
