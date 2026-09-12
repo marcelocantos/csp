@@ -75,7 +75,7 @@
     return colors[0];
   };
   const actorAt = id => state?.actors.find(actor => actor.id === id);
-  const stageCount = stages => state ? state.cargo.filter(item => stages.includes(item.stage)).length : 0;
+  const phaseCount = (phases, actor) => state ? state.cargo.filter(item => phases.includes(item.stage) && (actor === undefined || item.actor === actor)).length : 0;
 
   function selectActor(id) {
     if (!Number.isInteger(id) || id < 0 || id >= nodes.length) return;
@@ -111,28 +111,30 @@
       const item = state?.cargo.find(item => item.id === selectedCargo);
       $('inspectorTitle').textContent = `Cargo ${String(selectedCargo).padStart(3, '0')}`;
       $('inspectorDetail').textContent = `${cargoNames[selectedCargo % colors.length]}. Follow this same cargo from its ship, through storage and fabrication, to the habitat. Finished goods keep their color and ID and receive gold shipping bands.`;
-      $('inspectorStatus').textContent = motion ? `${motion.phase.replaceAll('-', ' ')} · ${motion.kind === 'goods' ? 'finished goods' : motion.kind === 'hidden' ? 'inside the building' : 'raw material'} · motion actor cargo:${selectedCargo}`
+      $('inspectorStatus').textContent = motion ? `${motion.phase.replaceAll('-', ' ')} · ${motion.kind === 'goods' ? 'finished goods' : motion.kind === 'hidden' ? 'inside the building' : 'raw material'} · motion imp cargo:${selectedCargo}`
         : item ? item.stage : 'Journey completed. Select another cargo to follow it.';
       $('inspectorStatus').style.color = colors[selectedCargo % colors.length];
       return;
     }
     if (selected < 0) {
       $('inspectorStatus').textContent = state
-        ? `${state.activeActors} logistics actors · ${state.animationActors ?? '—'} motion actors · typed channels`
+        ? `${state.activeActors} logistics imps · ${state.animationActors ?? '—'} motion imps · typed channels`
         : 'Awaiting station telemetry';
       return;
     }
     const actor = actorAt(selected);
     $('inspectorTitle').textContent = actor?.name || nodes[selected].title;
     $('inspectorDetail').textContent = descriptions[selected];
-    let detail = actor?.status || 'awaiting telemetry';
+    let detail = actor?.status.replaceAll('-', ' ') || 'awaiting telemetry';
     if (actor?.cargo) detail += ` · cargo ${String(actor.cargo).padStart(3, '0')}`;
-    if (selected === 0) detail += ` · ${stageCount(['approach'])} approaching`;
-    if (selected === 3) detail += ` · ${stageCount(['warehouse'])} in storage stage`;
-    if (selected === 5) detail += ` · ${stageCount(['platform'])} at platform`;
+    if (selected === 0) detail += ` · ${phaseCount(['arrival'])} approaching`;
+    if (selected === 1 || selected === 2) detail += ` · ${phaseCount(['berth', 'hook-lower', 'crane-lift', 'crane-slew', 'crane-lower'], selected)} in crane transfer`;
+    if (selected === 3) detail += ` · ${phaseCount(['road-to-hold', 'hold-in-open', 'hold-intake', 'stored', 'hold-door-open', 'warehouse-out'])} in storage flow`;
+    if (selected === 4) detail += ` · ${phaseCount(['to-fabricator', 'fab-door-open', 'fab-intake', 'processing', 'conversion', 'fab-out-open', 'fab-out'])} in fabrication flow`;
+    if (selected === 5) detail += ` · ${phaseCount(['conveyor', 'platform', 'loading', 'tram-ride', 'habitat-unload'])} in delivery flow`;
     if (selected === 1 && state?.restarts) detail += ` · ${state.restarts} controller restart${state.restarts === 1 ? '' : 's'}`;
     const channels = ['', 'crane:1', 'crane:2', 'door:hold-in / door:hold', 'door:fab-in / factory:4 / door:fab-out', 'tram:5'];
-    if (channels[selected]) detail += ` · motion actor ${channels[selected]}`;
+    if (channels[selected]) detail += ` · motion imp ${channels[selected]}`;
     $('inspectorStatus').textContent = detail;
     $('inspectorStatus').style.color = statusColor(actor);
     canvas.setAttribute('aria-label', `${actor?.name || nodes[selected].title}: ${detail}. Use left and right arrows to select other structures.`);
@@ -170,16 +172,16 @@
     $('integrity').style.color = conserved ? colors[0] : '#ff8d83';
     $('sceneStatus').textContent = !connected ? 'Telemetry interrupted. Reconnecting…'
       : state.mode === 'failed' ? `Station failure · ${state.inFlight} cargo remaining · check the station log`
-      : state.mode === 'evacuated' ? 'All cargo delivered. All actors stopped.'
+      : state.mode === 'evacuated' ? 'All cargo delivered. All imps stopped.'
       : state.mode === 'draining' ? `Draining the dock · ${state.inFlight} cargo remaining`
       : state.factoryPaused ? 'Fabricator paused. Watch storage fill upstream.'
       : actorAt(1)?.status === 'restarting' ? 'Aster controller recovering. Its cargo is preserved.'
       : state.bayClosed ? 'Aster bay closed. Boreal is receiving arrivals.'
       : state.surge ? 'Traffic surge. The channels keep the port in balance.'
-      : 'Every moving part has its own CSP actor. Follow a cargo to see the full journey.';
+      : 'Every moving part has its own CSP imp. Follow a cargo to see the full journey.';
     $('evacuated').hidden = state.mode !== 'evacuated';
     $('evacSummary').textContent = conserved
-      ? `All ${state.created} accepted cargo delivered. ${state.transfers} handoffs completed. Every actor has stopped safely.`
+      ? `All ${state.created} accepted cargo delivered. ${state.transfers} handoffs completed. Every imp has stopped safely.`
       : `The port has stopped with ${state.inFlight} cargo remaining and ${state.violations + (state.motionViolations ?? 0)} recorded integrity violations.`;
     const eventKey = JSON.stringify(state.events);
     if (lastEvents !== eventKey) {
