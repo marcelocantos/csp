@@ -41,3 +41,4 @@ debugging of the CSP imp-based concurrency library.
 34. **[33 — Channel hot-path performance analysis](33-channel-hot-path-performance.md)**
 35. **[Paper 34 — Suite-context SIGABRT and coin-flip hang](34-suite-teardown-abort-and-hang.md)**
 36. **[35 — Non-channel performance surfaces (🎯T38)](35-non-channel-performance-surfaces.md)**
+37. **[36 — A sleeping worker with runnable work](36-worker-lost-wake.md)**

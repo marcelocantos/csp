@@ -5422,29 +5422,36 @@ public:
     // If the owner is AWAKE: set FLAGGED so next sleep() returns immediately.
     // If already FLAGGED: no-op (flag already pending).
     void wake() noexcept {
-        int32_t expected = SLEEPING;
-        if (val_.compare_exchange_strong(expected, AWAKE,
-                std::memory_order_release, std::memory_order_relaxed)) {
+        for (;;) {
+            int32_t expected = SLEEPING;
+            // TLA:NoteWake.TryWake
+            if (val_.compare_exchange_strong(expected, AWAKE,
+                    std::memory_order_release, std::memory_order_relaxed)) {
 #if CSP_NOTE_FUTEX
-            // The sleeper either hasn't entered the wait syscall yet (the
-            // kernel's value check sees AWAKE and returns immediately) or
-            // is blocked and this wake releases it.
-            note_futex::wake(&val_);
+                // The sleeper either hasn't entered the wait syscall yet (the
+                // kernel's value check sees AWAKE and returns immediately) or
+                // is blocked and this wake releases it.
+                note_futex::wake(&val_);
 #else
-            // Notify the condvar. The sleeping thread will see val_!=SLEEPING
-            // and return from cv_.wait(). Acquiring the lock first closes the
-            // gap where the sleeper has evaluated the predicate as false but
-            // has not yet blocked.
-            std::lock_guard<std::mutex> lk(mu_);
-            cv_.notify_one();
+                // Notify the condvar. The sleeping thread will see val_!=SLEEPING
+                // and return from cv_.wait(). Acquiring the lock first closes the
+                // gap where the sleeper has evaluated the predicate as false but
+                // has not yet blocked.
+                std::lock_guard<std::mutex> lk(mu_);
+                cv_.notify_one();
 #endif
-            return;
+                return;
+            }
+            // TLA:NoteWake.TryFlag
+            expected = AWAKE;
+            if (val_.compare_exchange_strong(expected, FLAGGED,
+                    std::memory_order_release, std::memory_order_relaxed)
+                || expected == FLAGGED) {
+                return;
+            }
+            // The worker entered SLEEPING between our two CAS attempts.
+            // Retry the wake: returning here would strand queued work.
         }
-        // Not SLEEPING. Try to set FLAGGED.
-        expected = AWAKE;
-        val_.compare_exchange_strong(expected, FLAGGED,
-            std::memory_order_release, std::memory_order_relaxed);
-        // If already FLAGGED, the CAS fails benignly.
     }
 
     // Returns true if this note is in SLEEPING state (worker is parked on it).

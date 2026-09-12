@@ -907,16 +907,31 @@ downstream-test: libs
 	$(MAKE) -C examples/downstream run \
 	    CSP_INCLUDE="$(abspath $(LIBS_OUT))" CSP_LIB="$(abspath $(LIBS_OUT))"
 
-check-dist-test-parity:
-	@DIST_BIN=build/normal-dist/csp_tests scripts/check_dist_test_parity.sh
+# Query through make so sanitizer, TLS, analyser, and context-switch variants
+# cannot accidentally compare against stale normal-build binaries.
+.PHONY: print-test-target
+print-test-target:
+	@printf '%s\n' '$(abspath $(TARGET))'
+
+check-dist-test-parity: dist
+	$(MAKE) CSP_INCLUDE=include build
+	$(MAKE) CSP_INCLUDE=dist build
+	@include_bin="$$( $(MAKE) --no-print-directory -s CSP_INCLUDE=include print-test-target)" && \
+	dist_bin="$$( $(MAKE) --no-print-directory -s CSP_INCLUDE=dist print-test-target)" && \
+	INCLUDE_BIN="$$include_bin" DIST_BIN="$$dist_bin" scripts/check_dist_test_parity.sh
 
 test-dist: dist
+# The parent has generated the configuration-independent distribution once.
+# Reuse it for parity; regenerating here touches headers and recompiles the
+# entire suite immediately after it just ran.
 ifneq ($(findstring thread,$(SANITIZE)),)
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=0 test
+	$(MAKE) -o dist CSP_TLS=0 check-dist-test-parity
 else
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=1 test
-	$(MAKE) check-dist-test-parity
+	$(MAKE) -o dist CSP_TLS=1 check-dist-test-parity
 	$(MAKE) CSP_INCLUDE=dist CSP_TLS=0 test
+	$(MAKE) -o dist CSP_TLS=0 check-dist-test-parity
 endif
 
 # --- include cleaner (clang-tidy) ---

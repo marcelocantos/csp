@@ -240,6 +240,9 @@ namespace csp {
         void Runtime::notify_quiesce_watchers() {
             // Same gate protocol, second instance (TLA:ParkGate) —
             // counts only watchers whose predicate reads parked state.
+            // Also pairs worker parked publication with wake_a_worker's
+            // fence before its scan. Keep this before the zero-waiter return.
+            // TLA:WorkPublication.WorkerFence
             std::atomic_thread_fence(std::memory_order_seq_cst);
             if (quiesce_waiters_.load(std::memory_order_relaxed) == 0) {
                 return;
@@ -254,6 +257,12 @@ namespace csp {
         }
 
         bool Runtime::wake_a_worker() {
+            // Pair work publication with the worker's parked publication
+            // and fence (notify_quiesce_watchers), before its final has_work
+            // check. Release/acquire alone permits both sides to miss the
+            // other's store, stranding queued work with every worker asleep.
+            // TLA:WorkPublication.PublisherFence
+            std::atomic_thread_fence(std::memory_order_seq_cst);
             // Wake exactly one parked worker. Scan for a sleeping Note and CAS
             // SLEEPING->AWAKE + futex_wake on the first match. If no worker is
             // sleeping yet (all awake or in transition), flag one so it skips
