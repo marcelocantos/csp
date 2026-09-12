@@ -968,3 +968,14 @@ clean:
 
 # Pull in generated dependency files (silently ignored on first build).
 -include $(ALL_DEPS)
+
+# Lifeboat uses the same distributed files an external application vendors.
+.PHONY: lifeboat test-lifeboat journey-lifeboat
+lifeboat:
+	$(MAKE) -C demos/lifeboat
+
+test-lifeboat: $(TLA_JAR)
+	$(MAKE) -C demos/lifeboat test
+
+journey-lifeboat: lifeboat
+	uv run demos/lifeboat/journey.py

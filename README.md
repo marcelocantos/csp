@@ -35,6 +35,11 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
 
 ## Quick start
 
+Want to see channels at work? **[Lifeboat](demos/lifeboat/)** is an interactive
+orbital dock: pause a factory, overwhelm its cranes, trip a controller, then
+watch the whole system recover and drain. Build it with `make lifeboat` and
+run `build/lifeboat/lifeboat`.
+
 CSP is distributed as a small set of vendor drop-in files from `dist/`. The
 **core trio** is always required; network protocols are optional extra
 `.cpp` files (see [`dist/AGENTS-CSP.md`](dist/AGENTS-CSP.md) and

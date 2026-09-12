@@ -1,5 +1,10 @@
 # CSP Demos
 
+**[Lifeboat — Port Meridian](lifeboat/)** is the interactive visual demo:
+a live orbital dock with cargo, cranes, a fabricator and a tram. Pause work,
+create congestion, inject a controller failure, and evacuate the whole dock.
+From the repository root, run `make lifeboat && build/lifeboat/lifeboat`.
+
 20 bite-sized programs that showcase what changes when you swap threads +
 locks for imps + channels. Each demo targets **one idea**, fits in a single
 file, and opens with a header comment contrasting the CSP approach with

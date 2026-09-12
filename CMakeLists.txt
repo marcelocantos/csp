@@ -154,6 +154,25 @@ set(WINDOWS_OMITTED_SRCS
     src/quic.cc
 )
 
+# Check the direct CMake entry point as well as the developer Makefile lint.
+# GLOB is an inventory, never an implicit expansion of the build's support.
+file(GLOB CSP_SOURCE_INVENTORY RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+    CONFIGURE_DEPENDS src/*.cc src/*.cpp)
+set(CSP_ACCOUNTED_SRCS ${LIB_SRCS} ${WINDOWS_OMITTED_SRCS})
+if(WIN32)
+    list(APPEND CSP_ACCOUNTED_SRCS src/signal.cc)
+else()
+    list(APPEND CSP_ACCOUNTED_SRCS src/win_signal.cc)
+endif()
+if(NOT CSP_TLS)
+    list(APPEND CSP_ACCOUNTED_SRCS src/tls.cc)
+endif()
+foreach(source IN LISTS CSP_SOURCE_INVENTORY)
+    if(NOT source IN_LIST CSP_ACCOUNTED_SRCS)
+        message(FATAL_ERROR "Unaccounted CSP source: ${source}; add it to LIB_SRCS or declare its omission")
+    endif()
+endforeach()
+
 # --- llhttp (vendored HTTP parser) ---
 set(LLHTTP_DIR vendor/github.com/nodejs/llhttp)
 add_library(llhttp_csp STATIC
