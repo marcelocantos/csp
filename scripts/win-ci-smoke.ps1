@@ -2,8 +2,8 @@
 #
 # Full `csp_tests.exe -s --duration` is the local VM gate
 # (scripts/win-validate.ps1). Cloud CI runs this smoke instead so the
-# job finishes in seconds of test time and does not hit the 🎯T39 hang
-# (mid-suite / Random---UniformInt under full load).
+# job finishes in seconds of test time. This is an intentional cloud subset;
+# the former 🎯T39 listen hang was fixed in v0.27.0.
 #
 # Coverage intent: MSVC build + core channels/runtime units that
 # exercise rendezvous, alt, cancel, timers, and basic invariants —

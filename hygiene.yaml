@@ -244,13 +244,14 @@ items:
   # ========================== RELEASE & VERSIONING =======================
   - id: release.semver-minor
     dim: release
-    desc: Releases bump MINOR only; CSP_VERSION constant matches the latest git tag
+    desc: Releases bump MINOR only; public version metadata agrees and CSP_VERSION matches the latest git tag
     state: enforced
     cadence: per-release
     enforce: blocking
     tier: 2
     evidence:
       command: >-
+        python3 scripts/check_public_metadata.py &&
         test "$(grep -oE 'CSP_VERSION "[0-9.]+"' include/csp/csp.h | grep -oE '[0-9.]+')"
         = "$(git describe --tags --abbrev=0 | tr -d v)"
 
@@ -351,12 +352,12 @@ items:
 
   - id: docs.tla-tags
     dim: docs
-    desc: TLA+ spec tags referenced in code/docs stay in sync with the specs
+    desc: TLA+ and C++ tag anchors match the reviewed baseline, including explicitly recorded correspondence debt
     state: enforced
     cadence: continuous
     enforce: blocking
     tier: 3
-    evidence: {make_target: check-tla-tags}
+    evidence: {command: 'python3 scripts/check_tla_tags.py'}
 
   - id: docs.bullseye
     dim: docs
@@ -432,4 +433,4 @@ items:
     cadence: once-must-hold
     enforce: informational
     tier: 2
-    evidence: {file: {path: docs/overview.md}}
+    evidence: {file: {path: README.md, matches: 'git submodule update --init --recursive'}}

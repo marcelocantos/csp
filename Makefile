@@ -568,14 +568,14 @@ PERF_TARGET  := $(BUILDDIR)/csp_ratchet
 # --- Rules ---
 
 .PHONY: test build bench perf test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci stack-metric dist iwyu clean \
-       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor libs downstream-test check-dist-test-parity
+       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor lint-source-lists libs downstream-test check-dist-test-parity check-public-metadata check-vendor-metadata
 
 # Explicit default — keep `make` (no args) running the full test suite.
 # Without this, the `bullseye` rule below would become the default target
 # by virtue of appearing first.
 .DEFAULT_GOAL := test
 
-test: $(TARGET) check-md-links lint-frontdoor lint-source-lists check-part-headers
+test: $(TARGET) check-md-links lint-frontdoor lint-source-lists check-part-headers check-tla-tags check-public-metadata check-vendor-metadata
 	$(TEST_RUN)
 
 # --- Front-door TU lint (🎯T23.4) ---
@@ -593,6 +593,12 @@ lint-frontdoor:
 # This asserts src/ is the authority and every omission is declared.
 lint-source-lists:
 	@python3 scripts/lint_source_lists.py
+
+check-public-metadata:
+	@python3 scripts/check_public_metadata.py
+
+check-vendor-metadata:
+	@python3 scripts/check_vendor_metadata.py
 
 # --- Standing invariants (consumed by `bullseye_convergence`) ---
 # Exit 0 if all green, non-zero on first violation. Stdout is relayed
@@ -616,6 +622,7 @@ bullseye:
 	 (echo "✗ source-lists"; python3 scripts/lint_source_lists.py; exit 1)
 	@python3 scripts/check_part_headers.py >/dev/null && echo "✓ part-headers" || \
 	 (echo "✗ part-headers"; python3 scripts/check_part_headers.py; exit 1)
+	@$(MAKE) --no-print-directory check-tla-tags check-public-metadata check-vendor-metadata
 	@$(MAKE) --no-print-directory perf || (echo "✗ perf ratchet"; exit 1)
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
 	if [ -z "$$dirty" ]; then echo "✓ working tree clean"; \

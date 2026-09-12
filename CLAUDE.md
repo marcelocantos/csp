@@ -14,9 +14,9 @@ Followable work is tracked as bullseye targets in `bullseye.yaml`
 
 homebrew_tap: disabled
 
-CSP is a C++ source library distributed as three files in `dist/` — users
-vendor them into their own project. There is no binary to install, so the
-release skill's Homebrew tap plumbing does not apply.
+CSP is a C++ source library distributed as core and optional protocol files
+in `dist/` — users vendor them into their own project. There is no binary to
+install, so the release skill's Homebrew tap plumbing does not apply.
 
 ## Gates
 
@@ -182,15 +182,10 @@ referenced from `dist/AGENTS-CSP.md`.
   `consumer` with `operator|` composition).
 - **include/csp/internal/** — Imp struct, runtime, processor,
   stack pool, HAMT, reactor, blocking pool, signal types.
-- **src/** — Implementation files. Core: `csp.cc`, `channel.cc`,
-  `runtime.cpp`, `csp_globals.cpp`, `reactor.cc`, `blocking_pool.cc`,
-  `signal.cc` (+ `win_signal.cc`), `stack_pool.cc`, `hamt.cc`,
-  `stack_analysis_arm64.cc`, `log.cc`, `cancel.cc`, `timer.cc`, `io.cc`,
-  `file.cc`, `byte_reader.cc`, `clock.cc`, `imp_exit.cc`, `supervisor.cc`.
-  Protocols: `tls.cc`, `net.cc`, `http.cc`, `http2.cc`, `http3.cc`,
-  `ws.cc`, `quic.cc`, `ngtcp2_crypto_picotls_minicrypto.c`. Assembly:
-  `src/asm/` (Boost.Context fcontext) and `light_switch_arm64_{elf,macho}.S`
-  (`LIGHT_SWITCH=1`).
+- **src/** — Core runtime and protocol implementation files; the build lists
+  and declared Windows omissions are checked against this directory by
+  `make lint-source-lists`. `scripts/amalgamate.py` defines the optional
+  protocol drop-ins. `src/asm/` contains context-switch assembly.
 
 ### Stream combinator conventions
 
@@ -252,11 +247,14 @@ When making code changes, keep the following documentation in sync:
 - **`docs/reference/`** — Per-topic reference pages (channels, scheduling,
   timers, I/O, signals, blocking, dynamic scoping, combinators, multiplexing).
   Update when the corresponding API surface changes.
-- **`include/csp.h`** — Gateway header. Add an `#include` when creating a
-  new public header.
+- **`include/csp.h`** — Generated gateway header. Run `make dist` when adding
+  a header; `make check-public-metadata` rejects a stale gateway. Do not edit
+  its include list by hand.
 
 `make` runs `scripts/check_md_links.py` which verifies all markdown
-cross-references resolve. Broken links fail the build.
+cross-references resolve. Broken links fail the build. The default test path
+also checks the [formal correspondence baseline](formal/README.md), public
+version metadata, gateway freshness, and vendored metadata agreement.
 
 ## Debugging hard concurrency bugs
 

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Generate CSP distribution files: csp.h, csp.cpp, csp_globals.cpp, AGENTS-CSP.md"""
+"""Generate the gateway, core and optional protocol distribution files.
+
+dist/AGENTS-CSP.md is maintained by hand.
+"""
 
 import re
 import sys
@@ -398,10 +401,10 @@ def dedup_includes(filepath):
         print(f'  {filepath}: removed {removed} duplicate include(s)')
 
 
-def generate_gateway(include_dir, csp_dir):
+def generate_gateway(include_dir, csp_dir, output=None):
     """Generate include/csp.h — gateway header that includes all public headers."""
     headers = sorted(csp_dir.rglob('*.h'))
-    gateway = include_dir / 'csp.h'
+    gateway = output if output is not None else include_dir / 'csp.h'
 
     with open(gateway, 'w') as f:
         f.write('/* CSP — gateway header (includes all public headers) */\n')

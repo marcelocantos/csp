@@ -1,13 +1,17 @@
 #!/bin/sh
-# Ensure dist/ files are up to date before committing.
+# Ensure dist/ and the development gateway are up to date before committing.
 
 # Only check if source files that affect dist are being committed.
-if git diff --cached --name-only | grep -qE '^(include/|src/|scripts/amalgamate\.py)'; then
-    make dist >/dev/null 2>&1
-    if ! git diff --quiet dist/; then
-        echo "ERROR: dist/ is out of date. Run 'make dist' and stage the changes."
+changed_paths=$(git diff --cached --name-only) || exit 1
+if printf '%s\n' "$changed_paths" | grep -qE '^(include/|src/|dist/|scripts/amalgamate\.py)'; then
+    if ! make dist >/dev/null; then
+        echo "ERROR: distribution generation failed."
+        exit 1
+    fi
+    if ! git diff --quiet dist/ include/csp.h; then
+        echo "ERROR: generated files are out of date. Run 'make dist' and stage dist/ and include/csp.h."
         echo ""
-        git diff --stat dist/
+        git diff --stat dist/ include/csp.h
         exit 1
     fi
 fi

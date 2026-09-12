@@ -2,18 +2,23 @@
 """Verify bidirectional TLA:Module.Action correspondence tags.
 
 Scans TLA+ specs in formal/ and C++ sources in src/ and include/ for
-TLA:Module.Action tags. Reports:
-  - TLA+ actions with no matching C++ tag
-  - C++ tags with no matching TLA+ action
-  - Summary of all matched tags
+TLA:Module.Action tags. Reports changed anchors and counts of matched,
+missing-C++, and orphaned-C++ tag names.
 
-Exit code: 0 if all tags are bidirectionally matched, 1 otherwise.
+The reviewed inventory in tla_tag_baseline.json freezes both directions,
+including existing correspondence debt. Additions, removals and relocations
+require an explicit baseline review; line-number changes do not. This checks
+anchors, not semantic equivalence or model coverage. See formal/README.md.
+
+Exit code: 0 if the inventory matches the baseline, 1 otherwise.
 """
 
 import glob
+import json
 import os
 import re
 import sys
+from pathlib import Path
 
 TAG_RE = re.compile(r'TLA:(\w+\.\w+)')
 
@@ -61,26 +66,29 @@ def main():
     orphaned_cpp = all_cpp - all_tla
     matched = all_tla & all_cpp
 
+    baseline_path = Path(root) / 'scripts/tla_tag_baseline.json'
+    baseline = json.loads(baseline_path.read_text())
+    if baseline['schema_version'] != 1:
+        raise ValueError('unsupported TLA tag baseline schema')
+
     ok = True
+    for side, tags in [('tla', tla_tags), ('cpp', cpp_tags)]:
+        actual = {tag: sorted(os.path.relpath(path, root) for path, _ in sites)
+                  for tag, sites in tags.items()}
+        expected = baseline[side]
+        for tag in sorted(actual.keys() | expected.keys()):
+            if actual.get(tag) != expected.get(tag):
+                ok = False
+                print(f'{side}: {tag}: expected {expected.get(tag, [])}, '
+                      f'found {actual.get(tag, [])}')
 
-    if missing_cpp:
-        ok = False
-        print("TLA+ actions with no C++ tag:")
-        for tag in sorted(missing_cpp):
-            for path, lineno in tla_tags[tag]:
-                print(f"  {tag}  ({os.path.relpath(path, root)}:{lineno})")
-
-    if orphaned_cpp:
-        ok = False
-        print("C++ tags with no TLA+ action:")
-        for tag in sorted(orphaned_cpp):
-            for path, lineno in cpp_tags[tag]:
-                print(f"  {tag}  ({os.path.relpath(path, root)}:{lineno})")
-
+    print(f'{len(matched)} matched, {len(missing_cpp)} missing C++, '
+          f'{len(orphaned_cpp)} orphaned C++ (correspondence debt).')
     if ok:
-        print(f"All {len(matched)} TLA tags bidirectionally matched.")
+        print('TLA tag inventory matches the reviewed baseline.')
     else:
-        print(f"\n{len(matched)} matched, {len(missing_cpp)} missing C++, {len(orphaned_cpp)} orphaned C++.")
+        print('TLA tag drift: review the affected code/spec correspondence, '
+              'then commit the deliberate baseline change with the fix.')
 
     return 0 if ok else 1
 

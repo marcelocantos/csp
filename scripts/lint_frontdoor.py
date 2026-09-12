@@ -11,7 +11,7 @@ Concretely: no `csp::tls::`, `csp::http::`, `csp::http2::`, `csp::http3::`,
 of the src/*.cc / src/*.cpp files that scripts/amalgamate.py folds into it.
 
 If you need to glue protocol behaviour into shared code, do it through the
-per-protocol enable() factory mechanism (csp_net.h) — the front-door TU
+per-protocol enable() factory mechanism (include/csp/net.h) — the front-door TU
 sees only an opaque protocol_option struct and a function-pointer apply(),
 which leaves no name-level reference for the linker to keep the protocol
 TU alive against.

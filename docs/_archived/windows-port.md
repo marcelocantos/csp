@@ -12,7 +12,7 @@ The vast majority of CSP is pure C++ with no platform dependencies:
 - Imp lifecycle, spawn, join, yield
 - M:N scheduler (std::thread, std::mutex, std::condition_variable)
 - Dynamic scoping, HAMT
-- All stream combinators (52 headers in `include/csp/part/`)
+- Stream combinators under `include/csp/part/` (see the current [catalogue](../reference/parts.md))
 - Cancellation (cancel_guard, done, timed_out)
 - Blocking pool
 - Timer/clock public API (sleep, after, tick, fake_clock)
