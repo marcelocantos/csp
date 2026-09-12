@@ -30,6 +30,21 @@
   let connected = false;
   let pending = false;
   let receivedAt = 0;
+  let stationNow = 0;
+  let renderedAt = 0;
+  let sceneRun = 0;
+  let socket = null;
+  let lastSequence = 0;
+  let retryDelay = 500;
+  const renderDelay = 0.08;
+  const extrapolationLimit = 0.25;
+  const historyLimit = 16;
+  const timelines = new Map();
+  let poses = new Map();
+  let renderedMotions = Object.freeze([]);
+  let renderedPoseMap = Object.freeze({});
+  let cargoHits = [];
+  let selectedCargo = 0;
   let selected = -1;
   let xray = false;
   let width = 0;
@@ -48,7 +63,6 @@
   const mix = (a, b, t) => a + (b - a) * t;
   const ease = t => t * t * (3 - 2 * t);
   const point = (x, y, z = 0) => ({ x, y, z });
-  const between = (a, b, t) => point(mix(a.x, b.x, t), mix(a.y, b.y, t), mix(a.z, b.z, t));
   const project = (x, y, z = 0) => ({ x: (x - y) * 0.82, y: (x + y) * 0.43 - z });
   const timeText = seconds => {
     const n = Math.max(0, Math.floor(seconds));
@@ -66,19 +80,45 @@
   function selectActor(id) {
     if (!Number.isInteger(id) || id < 0 || id >= nodes.length) return;
     selected = id;
+    selectedCargo = 0;
+    updateInspector();
+  }
+
+  function selectCargo(id) {
+    if (!Number.isInteger(id) || id < 1) return;
+    selectedCargo = id;
+    selected = -1;
     updateInspector();
   }
 
   Object.defineProperty(window, 'lifeboat', {
-    value: Object.freeze({ get state() { return state; }, selectActor }),
+    value: Object.freeze({
+      get state() { return state; },
+      get renderedMotions() { return renderedMotions; },
+      get poses() { return renderedPoseMap; },
+      get renderedAt() { return renderedAt; },
+      get run() { return sceneRun; },
+      get selectedCargo() { return selectedCargo; },
+      selectActor, selectCargo
+    }),
     writable: false,
     configurable: false
   });
 
   function updateInspector() {
+    if (selectedCargo) {
+      const motion = poses.get(`cargo:${selectedCargo}`);
+      const item = state?.cargo.find(item => item.id === selectedCargo);
+      $('inspectorTitle').textContent = `Cargo ${String(selectedCargo).padStart(3, '0')}`;
+      $('inspectorDetail').textContent = `${cargoNames[selectedCargo % colors.length]}. Follow this same cargo from its ship, through storage and fabrication, to the habitat. Finished goods keep their color and ID and receive gold shipping bands.`;
+      $('inspectorStatus').textContent = motion ? `${motion.phase.replaceAll('-', ' ')} · ${motion.kind === 'goods' ? 'finished goods' : motion.kind === 'hidden' ? 'inside the building' : 'raw material'} · motion actor cargo:${selectedCargo}`
+        : item ? item.stage : 'Journey completed. Select another cargo to follow it.';
+      $('inspectorStatus').style.color = colors[selectedCargo % colors.length];
+      return;
+    }
     if (selected < 0) {
       $('inspectorStatus').textContent = state
-        ? `${state.activeActors} live actors · typed channels · bounded buffers`
+        ? `${state.activeActors} logistics actors · ${state.animationActors ?? '—'} motion actors · typed channels`
         : 'Awaiting station telemetry';
       return;
     }
@@ -91,6 +131,8 @@
     if (selected === 3) detail += ` · ${stageCount(['warehouse'])} in storage stage`;
     if (selected === 5) detail += ` · ${stageCount(['platform'])} at platform`;
     if (selected === 1 && state?.restarts) detail += ` · ${state.restarts} controller restart${state.restarts === 1 ? '' : 's'}`;
+    const channels = ['', 'crane:1', 'crane:2', 'door:hold-in / door:hold', 'door:fab-in / factory:4 / door:fab-out', 'tram:5'];
+    if (channels[selected]) detail += ` · motion actor ${channels[selected]}`;
     $('inspectorStatus').textContent = detail;
     $('inspectorStatus').style.color = statusColor(actor);
     canvas.setAttribute('aria-label', `${actor?.name || nodes[selected].title}: ${detail}. Use left and right arrows to select other structures.`);
@@ -109,6 +151,8 @@
     $('delivered').textContent = state.delivered.toLocaleString();
     $('inFlight').textContent = state.inFlight;
     $('actorCount').textContent = state.activeActors;
+    if ($('animationActorCount')) $('animationActorCount').textContent = state.animationActors ?? '—';
+    if ($('motionCompleted')) $('motionCompleted').textContent = (state.motionCompleted ?? 0).toLocaleString();
     $('transfers').textContent = state.transfers.toLocaleString();
     $('loadText').textContent = `${state.inFlight} / ${capacity}`;
     $('loadBar').style.width = `${clamp(state.inFlight / capacity, 0, 1) * 100}%`;
@@ -121,8 +165,8 @@
     $('bayButton').classList.toggle('active', state.bayClosed);
     $('factoryButton').classList.toggle('active', state.factoryPaused);
     $('surgeButton').classList.toggle('active', state.surge);
-    const conserved = state.violations === 0 && state.created === state.delivered + state.inFlight;
-    $('integrity').textContent = conserved ? '◇  Every cargo accounted for' : '△  Cargo integrity needs attention';
+    const conserved = state.violations === 0 && (state.motionViolations ?? 0) === 0 && state.created === state.delivered + state.inFlight;
+    $('integrity').textContent = conserved ? '◇  Every cargo and motion accounted for' : '△  Station integrity needs attention';
     $('integrity').style.color = conserved ? colors[0] : '#ff8d83';
     $('sceneStatus').textContent = !connected ? 'Telemetry interrupted. Reconnecting…'
       : state.mode === 'failed' ? `Station failure · ${state.inFlight} cargo remaining · check the station log`
@@ -132,11 +176,11 @@
       : actorAt(1)?.status === 'restarting' ? 'Aster controller recovering. Its cargo is preserved.'
       : state.bayClosed ? 'Aster bay closed. Boreal is receiving arrivals.'
       : state.surge ? 'Traffic surge. The channels keep the port in balance.'
-      : 'Six independent actors. Every handoff is a real channel operation.';
+      : 'Every moving part has its own CSP actor. Follow a cargo to see the full journey.';
     $('evacuated').hidden = state.mode !== 'evacuated';
     $('evacSummary').textContent = conserved
       ? `All ${state.created} accepted cargo delivered. ${state.transfers} handoffs completed. Every actor has stopped safely.`
-      : `The port has stopped with ${state.inFlight} cargo remaining and ${state.violations} recorded integrity violations.`;
+      : `The port has stopped with ${state.inFlight} cargo remaining and ${state.violations + (state.motionViolations ?? 0)} recorded integrity violations.`;
     const eventKey = JSON.stringify(state.events);
     if (lastEvents !== eventKey) {
       lastEvents = eventKey;
@@ -166,8 +210,6 @@
       Object.freeze(value[key]);
     }
     state = Object.freeze(value);
-    receivedAt = performance.now();
-    connected = true;
     updateUI();
   }
 
@@ -188,13 +230,122 @@
     } finally { clearTimeout(timer); }
   }
 
-  async function poll() {
-    try { await request('/api/state'); }
-    catch (error) {
+  function acceptScene(frame) {
+    if (frame?.type !== 'scene' || !Number.isSafeInteger(frame.seq) || frame.seq !== lastSequence + 1
+      || !Number.isSafeInteger(frame.run) || !Number.isFinite(frame.now) || typeof frame.reset !== 'boolean'
+      || !Array.isArray(frame.motions) || !Array.isArray(frame.removed)
+      || frame.motions.length > 256 || frame.removed.length > 256) throw new Error('Invalid scene frame');
+    if ((!sceneRun || frame.run !== sceneRun) && !frame.reset) throw new Error('Scene reset missing');
+    if (frame.reset && !frame.state) throw new Error('Scene snapshot missing');
+    // Validate the complete delta before changing the displayed timeline.
+    for (const motion of frame.motions) {
+      if (typeof motion.key !== 'string' || motion.key.length > 80 || typeof motion.kind !== 'string'
+        || typeof motion.phase !== 'string' || !Number.isSafeInteger(motion.revision)
+        || !Number.isFinite(motion.at) || !Number.isFinite(motion.duration) || motion.duration < 0
+        || !Number.isInteger(motion.cargo) || !Number.isInteger(motion.actor)
+        || !Array.isArray(motion.frames) || !motion.frames.length || motion.frames.length > 128
+        || motion.frames.some((f, i) => !Array.isArray(f) || f.length !== 4 || !f.every(Number.isFinite)
+          || f[0] < 0 || f[0] > 1 || (i && f[0] <= motion.frames[i - 1][0]))) throw new Error('Invalid motion track');
+    }
+    for (const removal of frame.removed) {
+      if (typeof removal.key !== 'string' || !Number.isFinite(removal.at)) throw new Error('Invalid scene removal');
+    }
+    if (frame.reset) {
+      timelines.clear();
+      poses.clear();
+      sceneRun = frame.run;
+      renderedAt = Math.max(0, frame.now - renderDelay);
+      selectedCargo = 0;
+    }
+    for (const motion of frame.motions) {
+      let timeline = timelines.get(motion.key);
+      if (!timeline) { timeline = { tracks: [], removedAt: null }; timelines.set(motion.key, timeline); }
+      if (timeline.tracks.some(track => track.revision >= motion.revision)) continue;
+      motion.frames.forEach(Object.freeze);
+      Object.freeze(motion.frames);
+      timeline.tracks.push(Object.freeze(motion));
+      timeline.tracks.sort((a, b) => a.at - b.at || a.revision - b.revision);
+      timeline.removedAt = null;
+      // Keep the revision containing the delayed render time and its future
+      // successors. A new track never blindly replaces the preceding motion.
+      while (timeline.tracks.length > 1 && timeline.tracks[1].at <= renderedAt - 2) timeline.tracks.shift();
+      while (timeline.tracks.length > historyLimit && timeline.tracks[1].at <= renderedAt) timeline.tracks.shift();
+      if (timeline.tracks.length > historyLimit) throw new Error('Motion history exceeded its bound');
+    }
+    for (const removal of frame.removed) {
+      const timeline = timelines.get(removal.key);
+      if (timeline) timeline.removedAt = removal.at;
+    }
+    if (timelines.size > 512) throw new Error('Scene exceeded its bound');
+    stationNow = frame.now;
+    receivedAt = performance.now();
+    lastSequence = frame.seq;
+    connected = true;
+    retryDelay = 500;
+    if (frame.state) acceptSnapshot(frame.state);
+    else updateUI();
+  }
+
+  function connectScene() {
+    const transport = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/stream`);
+    socket = transport;
+    lastSequence = 0;
+    transport.addEventListener('message', event => {
+      if (socket !== transport) return;
+      try {
+        const frame = JSON.parse(event.data);
+        acceptScene(frame);
+        // Backpressure belongs to this connection. Acknowledge only a fully
+        // accepted frame; the server permits just one outstanding frame.
+        transport.send(String(frame.seq));
+      } catch (error) {
+        $('controlMessage').textContent = 'The scene stream needs a fresh snapshot. Reconnecting…';
+        transport.close(1002, 'Invalid scene frame');
+      }
+    });
+    transport.addEventListener('error', () => transport.close());
+    transport.addEventListener('close', () => {
+      if (socket !== transport) return;
       connected = false;
       updateUI();
-      if (!state) $('sceneStatus').textContent = 'Waiting for the C++ station. Retrying automatically…';
-    } finally { setTimeout(poll, connected ? (document.hidden ? 1000 : 200) : 1000); }
+      setTimeout(connectScene, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 5000);
+    });
+  }
+
+  function interpolate(motion, now) {
+    const t = motion.duration > 0 ? clamp((now - motion.at) / motion.duration, 0, 1) : 1;
+    for (let i = 1; i < motion.frames.length; ++i) {
+      const b = motion.frames[i];
+      if (t <= b[0]) {
+        const a = motion.frames[i - 1];
+        const u = ease((t - a[0]) / (b[0] - a[0]));
+        return point(mix(a[1], b[1], u), mix(a[2], b[2], u), mix(a[3], b[3], u));
+      }
+    }
+    const end = motion.frames.at(-1);
+    return point(end[1], end[2], end[3]);
+  }
+
+  function sampleScene(now) {
+    if (connected) renderedAt = Math.max(renderedAt, stationNow + Math.min(Math.max(0, (now - receivedAt) / 1000), extrapolationLimit) - renderDelay);
+    const sampled = new Map();
+    for (const [key, timeline] of timelines) {
+      if (timeline.removedAt !== null && renderedAt >= timeline.removedAt) {
+        if (renderedAt > timeline.removedAt + 2) timelines.delete(key);
+        continue;
+      }
+      let motion = null;
+      for (const candidate of timeline.tracks) {
+        if (candidate.at > renderedAt) break;
+        motion = candidate;
+      }
+      if (!motion) continue;
+      const position = Object.freeze(interpolate(motion, renderedAt));
+      sampled.set(key, { ...motion, position });
+      while (timeline.tracks.length > 1 && timeline.tracks[1].at <= renderedAt - 2) timeline.tracks.shift();
+    }
+    poses = sampled;
   }
 
   for (const button of document.querySelectorAll('[data-command]')) {
@@ -343,19 +494,47 @@
     for (let i = 0; i < 3; ++i) box(-394 + i * 7, -160, 3, 25, 2, '#527b8b', '#233c49', '#233c49', 10);
   }
 
-  function cranePose(id, logicalTime) {
-    const node = nodes[id];
-    const item = state?.cargo.find(cargo => cargo.stage === (id === 1 ? 'craneA' : 'craneB'));
-    const p = item ? clamp((logicalTime - item.at) / item.duration, 0, 1) : 0.72;
-    const turn = ease(clamp((p - 0.1) / 0.7, 0, 1));
-    const angle = mix(id === 1 ? -2.95 : -2.88, id === 1 ? -0.72 : -1.22, turn);
-    const end = point(node.x + Math.cos(angle) * 128, node.y + Math.sin(angle) * 128, 155);
-    const cargo = point(end.x, end.y, item ? 15 + Math.sin(Math.PI * clamp(p, 0, 1)) * 72 : 12);
-    return { node, item, p, angle, end, cargo };
+  function drawRoutes() {
+    // Physical guideways describe the station's architecture. Only server
+    // Motion tracks move the loads that travel over them.
+    const routes = [
+      { points: [[-225, -2], [-148, 52], [-148, -196], [-50, -180]], color: '#85c9bb' },
+      { points: [[-185, 120], [-148, 52]], color: '#85c9bb' },
+      { points: [[-49, -60], [-49, -12], [-9, 12], [120, 12], [175, -23]], color: '#8fb9d7' },
+      { points: [[285, -26], [284, -10], [330, 30], [330, 165], [260, 205], [260, 228], [111, 228]], color: '#dfc188' }
+    ];
+    for (const route of routes) {
+      for (let i = 1; i < route.points.length; ++i) {
+        const [ax, ay] = route.points[i - 1], [bx, by] = route.points[i];
+        const length = Math.hypot(bx - ax, by - ay);
+        const nx = -(by - ay) / length, ny = (bx - ax) / length;
+        const half = 14;
+        poly3([point(ax - nx * half, ay - ny * half, 3), point(bx - nx * half, by - ny * half, 3), point(bx + nx * half, by + ny * half, 3), point(ax + nx * half, ay + ny * half, 3)], '#102a38', '#4a6572', 0.8);
+        line3([point(ax - nx * half, ay - ny * half, 6), point(bx - nx * half, by - ny * half, 6)], hexAlpha(route.color, 0.8), 1.8);
+        line3([point(ax + nx * half, ay + ny * half, 6), point(bx + nx * half, by + ny * half, 6)], '#557d89', 1.8);
+        for (let d = 6; d < length; d += 13) {
+          const x = mix(ax, bx, d / length), y = mix(ay, by, d / length);
+          line3([point(x - nx * 10, y - ny * 10, 4), point(x + nx * 10, y + ny * 10, 4)], '#6b899875', 1.3);
+          if (Math.floor(d / 13) % 4 === 0) lamp(x - nx * half, y - ny * half, 6, route.color, 1.2);
+        }
+      }
+    }
+    for (const [x, y, number] of [[-225, -2, '01'], [-185, 120, '02']]) {
+      box(x - 10, y - 9, 43, 36, 5, '#36576a', '#213b4b', '#2c4759', 2);
+      line3([point(x - 6, y - 6, 8), point(x + 28, y - 6, 8), point(x + 28, y + 23, 8)], '#e5c98c', 1.7);
+      textAt(number, x - 10, y + 38, 1, 8, '#d6c79e');
+    }
+    textAt('RAW / RECEIVE', -156, -167, 9, 8, '#9cbeb8');
+    textAt('DISPATCH', 40, 29, 7, 8, '#a2c5d3');
+    textAt('FINISHED GOODS', 348, 121, 9, 8, '#dfcba2');
   }
 
-  function drawCrane(id, logicalTime) {
-    const { node, end, cargo, angle, item } = cranePose(id, logicalTime);
+  function drawCrane(id) {
+    const node = nodes[id];
+    const motion = poses.get(`crane:${id}`);
+    const hook = motion?.position || point(node.x - 90, node.y, 110);
+    const end = point(hook.x, hook.y, 155);
+    const angle = Math.atan2(hook.y - node.y, hook.x - node.x);
     const x = node.x, y = node.y;
     const actor = actorAt(id);
     const warning = /restarting|bay closed/.test(actor?.status || '');
@@ -379,16 +558,38 @@
     box(counter.x - 15, counter.y - 14, 28, 28, 20, '#697c75', '#3b5156', '#51686a', 131);
     box(x - 31, y - 18, 22, 26, 23, '#537887', '#243f51', '#375a69', 116);
     box(x - 29, y + 9, 18, 1, 8, '#99d1d3', '#81b7bc', '#6d9ca7', 125);
-    line3([end, point(end.x, end.y, cargo.z + 18)], '#bdcbd1a6', 1.1);
-    line3([point(end.x - 12, end.y, cargo.z + 18), point(end.x + 12, end.y, cargo.z + 18)], '#e2c382', 3);
-    if (item) glow(cargo.x, cargo.y, cargo.z + 10, 34, colors[item.type], 0.11);
+    line3([end, hook], '#bdcbd1a6', 1.1);
+    line3([point(hook.x - 12, hook.y, hook.z), point(hook.x + 12, hook.y, hook.z)], '#e2c382', 3);
     lamp(x, y, 165, statusColor(actor), 2.8);
     textAt(id === 1 ? '01' : '02', x + 16, y + 32, 12, 13, '#cbd4bf');
     if (warning) glow(x, y, 95, 60, colors[1], 0.09);
   }
 
+  function drawDoor(key, x, y, base, w = 36, h = 35) {
+    const openness = clamp(poses.get(key)?.position.x || 0, 0, 1);
+    box(x - w / 2 - 3, y - 1, w + 6, 4, h + 4, '#6b9299', '#375763', '#547c87', base);
+    poly3([point(x - w / 2, y + 4, base), point(x + w / 2, y + 4, base), point(x + w / 2, y + 4, base + h), point(x - w / 2, y + 4, base + h)], '#0a1e2d');
+    if (openness < 1) {
+      const z = base + h * openness;
+      poly3([point(x - w / 2, y + 4.2, z), point(x + w / 2, y + 4.2, z), point(x + w / 2, y + 4.2, base + h), point(x - w / 2, y + 4.2, base + h)], '#567785', '#8ca6ae66', 0.7);
+      for (let i = 1; i < 6; ++i) {
+        const rib = base + h * (openness + (1 - openness) * i / 6);
+        line3([point(x - w / 2 + 1, y + 4.5, rib), point(x + w / 2 - 1, y + 4.5, rib)], '#243f4f', 1);
+      }
+      line3([point(x - w / 2, y + 4.5, z), point(x + w / 2, y + 4.5, z)], '#edc77c', 2);
+    }
+    lamp(x - w / 2 - 4, y + 4, base + h + 5, openness > 0 ? colors[0] : colors[1], 1.5);
+  }
+
   function drawWarehouse() {
     shadow(-113, -169, 181, 126, 0.34);
+    // The rear receiving gate is behind the hold. Its gantry and signal
+    // remain visible above the roof while cargo disappears into the intake.
+    box(-80, -188, 62, 25, 7, '#395661', '#213b49', '#2e4a58');
+    drawDoor('door:hold-in', -50, -184, 8, 42, 36);
+    for (const x of [-78, -22]) box(x, -182, 5, 7, 88, '#6d8990', '#375969', '#507380', 8);
+    line3([point(-76, -178, 96), point(-20, -178, 96)], '#8ea7a7', 4);
+    lamp(-48, -178, 99, (poses.get('door:hold-in')?.position.x || 0) > 0 ? colors[0] : colors[1], 2);
     box(-121, -169, 193, 127, 7, '#47616b', '#233b49', '#2e4955');
     box(-111, -162, 174, 99, 63, '#466370', '#263f51', '#315166', 7);
     // Ribbed sawtooth roof and illuminated receiving doors.
@@ -396,17 +597,18 @@
       box(x, -158, 11, 91, 5, '#5b7782', '#405d69', '#466672', 70);
       line3([point(x + 3, -148, 76), point(x + 3, -77, 76)], '#9cb2b54a', 0.8);
     }
-    for (let x = -94; x < 50; x += 42) {
+    for (const x of [-94, 13]) {
       box(x, -62, 28, 2, 34, '#294957', '#152b3a', '#203e4c', 10);
       for (let z = 17; z < 39; z += 6) line3([point(x + 3, -59, z), point(x + 25, -59, z)], '#56778466', 1);
       lamp(x + 14, -59, 48, statusColor(actorAt(3)), 1.4);
     }
     box(-112, -54, 177, 55, 6, '#34515e', '#203c4a', '#2b4855');
+    drawDoor('door:hold', -49, -64, 7, 37, 36);
     for (let x = -105; x < 62; x += 21) line3([point(x, -4, 6.5), point(x + 10, -14, 6.5)], '#c3b58b66', 2);
     textAt('HOLD / 10', -94, -56, 52, 10, '#adc6c9');
   }
 
-  function drawFactory(now) {
+  function drawFactory() {
     shadow(149, -147, 181, 136, 0.31);
     box(144, -145, 187, 127, 8, '#42616d', '#233e4d', '#2a4859');
     box(157, -133, 159, 104, 52, '#53717c', '#2b495c', '#365c6e', 8);
@@ -416,17 +618,16 @@
       box(211 + i * 15, -112, 8, 49, 2, '#92c9ca', '#5b8c99', '#5b8c99', 98);
       line3([point(213 + i * 15, -107, 101), point(213 + i * 15, -68, 101)], '#b8e7dc77', 1);
     }
-    box(165, -26, 38, 3, 29, '#3c5b68', '#142f40', '#305261', 12);
-    box(247, -26, 52, 3, 18, '#547884', '#416574', '#426c78', 29);
-    for (let i = 0; i < 6; ++i) lamp(252 + i * 8, -21, 38, state?.factoryPaused ? colors[1] : '#8be6d5', 1.3);
-    const active = actorAt(4)?.status === 'fabricating';
-    if (active) {
-      glow(179, -21, 25, 49, '#8debe7', 0.19 + Math.sin(now * 0.018) * 0.035);
-      const item = state.cargo.find(cargo => cargo.stage === 'factory');
-      if (item) {
-        const p = project(181, -23, 27);
-        ctx.strokeStyle = hexAlpha(colors[item.type], 0.75); ctx.lineWidth = 1;
-        for (let i = 0; i < 5; ++i) { const angle = now * 0.006 + i * 1.4; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + Math.cos(angle) * 15, p.y + Math.sin(angle) * 8); ctx.stroke(); }
+    drawDoor('door:fab-in', 175, -30, 8, 36, 35);
+    drawDoor('door:fab-out', 285, -30, 8, 36, 35);
+    box(214, -26, 28, 3, 18, '#547884', '#416574', '#426c78', 29);
+    for (let i = 0; i < 4; ++i) lamp(218 + i * 6, -21, 38, state?.factoryPaused ? colors[1] : '#8be6d5', 1.3);
+    const effect = poses.get('factory:4');
+    const pulse = clamp(effect?.position.x || 0, 0, 1);
+    if (pulse > 0) {
+      glow(235, -56, 83, 66, '#9deeff', pulse * 0.32);
+      for (let i = 0; i < 5; ++i) {
+        line3([point(217 + i * 9, -83, 101), point(217 + i * 9, -64, 101)], hexAlpha('#d0fbff', pulse), 2);
       }
     }
     for (const x of [167, 306]) {
@@ -484,70 +685,70 @@
     textAt('M  /  07', 304, 227, 13, 10, '#d6dec5');
   }
 
-  function drawTram(logicalTime) {
-    const item = state?.cargo.find(cargo => cargo.stage === 'tram');
-    const t = item ? ease(clamp((logicalTime - item.at) / item.duration, 0, 1)) : 0;
-    const x = item ? mix(165, 398, t) : 165;
-    const y = 276;
+  function drawTram(motion) {
+    const { x, y, z } = motion.position;
     shadow(x - 40, y - 2, 97, 20, 0.3);
-    box(x - 46, y - 1, 102, 26, 5, '#344c58', '#102939', '#1b3444', 4);
-    box(x - 43, y, 91, 24, 20, '#b7c9c5', '#527483', '#829ea5', 9);
-    box(x - 35, y + 2, 74, 20, 4, '#d1d9c9', '#8ca49f', '#b2c3b9', 29);
-    for (let i = 0; i < 5; ++i) box(x - 35 + i * 14, y + 24, 10, 1, 9, '#85bdcb', '#558694', '#6897a3', 17);
-    line3([point(x - 41, y + 26, 13), point(x + 46, y + 26, 13)], '#92ecd5', 2);
-    lamp(x + 50, y + 4, 15, '#d4f7e1', 1.8); lamp(x + 50, y + 19, 15, '#d4f7e1', 1.8);
-    if (item) {
-      cargoBox(point(x - 9, y + 7, 33), item.type, 16);
-      glow(x + 18, y, 13, 32, colors[item.type], 0.12);
-    }
+    box(x - 46, y - 1, 102, 26, 5, '#344c58', '#102939', '#1b3444', z + 4);
+    box(x - 43, y, 91, 24, 20, '#b7c9c5', '#527483', '#829ea5', z + 9);
+    box(x - 35, y + 2, 74, 20, 4, '#d1d9c9', '#8ca49f', '#b2c3b9', z + 29);
+    for (let i = 0; i < 5; ++i) box(x - 35 + i * 14, y + 24, 10, 1, 9, '#85bdcb', '#558694', '#6897a3', z + 17);
+    line3([point(x - 41, y + 26, z + 13), point(x + 46, y + 26, z + 13)], '#92ecd5', 2);
+    lamp(x + 50, y + 4, z + 15, '#d4f7e1', 1.8); lamp(x + 50, y + 19, z + 15, '#d4f7e1', 1.8);
   }
 
-  function approachPosition(item) {
-    const slot = (item.id - 1) % 8;
-    return point(-555 - Math.floor(slot / 4) * 120, -168 + (slot % 4) * 111, 18);
-  }
-  function storagePosition(item) {
-    const slot = (item.id - 1) % 12;
-    return point(-108 + (slot % 6) * 27, -29 + Math.floor(slot / 6) * 31, 8);
-  }
-  function platformPosition(item) {
-    return point(111 + ((item.id - 1) % 5) * 30, 228, 12);
-  }
-  function cargoPosition(item, logicalTime) {
-    const p = ease(clamp((logicalTime - item.at) / Math.max(item.duration, 0.01), 0, 1));
-    if (item.stage === 'approach') {
-      const target = approachPosition(item);
-      return between(point(target.x - 190, target.y - 40, 48), target, p);
-    }
-    if (item.stage === 'craneA' || item.stage === 'craneB') {
-      const pose = cranePose(item.stage === 'craneA' ? 1 : 2, logicalTime);
-      const initial = clamp((logicalTime - item.at) / (item.duration * 0.14), 0, 1);
-      return between(approachPosition(item), pose.cargo, ease(initial));
-    }
-    if (item.stage === 'warehouse') {
-      const id = item.from === 'craneB' ? 2 : 1;
-      const node = nodes[id];
-      const angle = id === 1 ? -0.72 : -1.22;
-      const from = point(node.x + Math.cos(angle) * 128, node.y + Math.sin(angle) * 128, 15);
-      return between(from, storagePosition(item), p);
-    }
-    if (item.stage === 'factory') return between(storagePosition(item), point(178, -11, 10), p);
-    if (item.stage === 'platform') return between(point(295, -8, 10), platformPosition(item), p);
-    return null;
-  }
-  function cargoBox(p, type, size = 19) {
+  function cargoBox(p, type, size = 19, finished = false) {
     const color = colors[type] || colors[0];
     shadow(p.x, p.y, size, size * 0.78, 0.15);
     box(p.x, p.y, size, size * 0.78, size * 0.72, color, hexAlpha(color, 0.65), hexAlpha(color, 0.84), p.z);
     line3([point(p.x + size * 0.22, p.y + size * 0.79, p.z + 2), point(p.x + size * 0.22, p.y + size * 0.79, p.z + size * 0.68)], '#102a3a80', 1.6);
     line3([point(p.x + size * 0.7, p.y + size * 0.79, p.z + 2), point(p.x + size * 0.7, p.y + size * 0.79, p.z + size * 0.68)], '#102a3a80', 1.6);
     line3([point(p.x + 2, p.y + size * 0.35, p.z + size * 0.73), point(p.x + size - 2, p.y + size * 0.35, p.z + size * 0.73)], '#e5fff366', 1);
+    if (finished) {
+      box(p.x - 1, p.y - 1, size + 2, size * 0.78 + 2, 2, '#e5d29a', '#9f8f63', '#c5b37f', p.z);
+      for (const at of [0.16, 0.76]) {
+        line3([point(p.x + size * at, p.y, p.z + size * 0.74), point(p.x + size * at, p.y + size * 0.79, p.z + size * 0.74), point(p.x + size * at, p.y + size * 0.79, p.z + 1)], '#ffdf91', 2.4);
+      }
+      box(p.x + size * 0.35, p.y + size * 0.79, size * 0.25, 0.3, 4, '#fcf1d1', '#fcf1d1', '#fcf1d1', p.z + size * 0.35);
+    }
   }
-  function drawShip(item, logicalTime) {
-    const p = cargoPosition(item, logicalTime);
-    const x = p.x, y = p.y, z = p.z;
-    const color = colors[item.type];
-    const moving = logicalTime - item.at < item.duration;
+
+  function cargoVisibility(motion) {
+    if (!['raw', 'goods'].includes(motion.kind)) return { visible: false };
+    const p = motion.position;
+    const buildings = [
+      { x1: -121, x2: 72, back: -169, front: -56, roof: 75, doors: [{ key: 'door:hold', x: -49, y: -60, base: 7, w: 37, h: 36 }], depth: -60 },
+      { x1: 151, x2: 319, back: -141, front: -22, roof: 65, doors: [{ key: 'door:fab-in', x: 175, y: -26, base: 8, w: 36, h: 35 }, { key: 'door:fab-out', x: 285, y: -26, base: 8, w: 36, h: 35 }], depth: 220 }
+    ];
+    for (const building of buildings) {
+      if (p.z >= building.roof || p.x < building.x1 || p.x > building.x2) continue;
+      if (p.y >= building.front && p.y < building.front + 26) return { visible: true, depth: building.depth };
+      if (p.y < building.back || p.y >= building.front) continue;
+      const door = building.doors.find(door => Math.abs(p.x + 9 - door.x) < door.w / 2 + 8 && p.y > building.front - 26);
+      if (!door) return { visible: false };
+      const openness = clamp(poses.get(door.key)?.position.x || 0, 0, 1);
+      if (openness <= 0.01) return { visible: false };
+      return { visible: true, depth: building.depth, clip: [point(door.x - door.w / 2, door.y + 0.1, door.base), point(door.x + door.w / 2, door.y + 0.1, door.base), point(door.x + door.w / 2, door.y + 0.1, door.base + door.h * openness), point(door.x - door.w / 2, door.y + 0.1, door.base + door.h * openness)] };
+    }
+    const inHabitat = p.x > 371 && p.x < 480 && p.y > 164 && p.y < 297 && p.z < 90;
+    return { visible: true, depth: inHabitat ? 684 : undefined };
+  }
+
+  function drawCargo(motion, visibility) {
+    ctx.save();
+    if (visibility.clip) {
+      const shape = visibility.clip.map(p => project(p.x, p.y, p.z));
+      ctx.beginPath(); shape.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); ctx.clip();
+    }
+    cargoBox(motion.position, motion.cargo % colors.length, 19, motion.kind === 'goods');
+    ctx.restore();
+  }
+  function drawShip(motion) {
+    const p = motion.position;
+    // The server anchor is the cargo's deck origin, shared by ship and box.
+    // Shape the empty hull around that origin; never offset the cargo track.
+    const x = p.x + 35, y = p.y - 7, z = p.z - 9;
+    const color = colors[motion.cargo % colors.length];
+    const moving = motion.duration > 0 && renderedAt < motion.at + motion.duration;
     const engine = project(x - 41, y + 15, z + 8);
     if (moving) {
       const exhaust = ctx.createLinearGradient(engine.x, engine.y, engine.x - 52, engine.y - 22);
@@ -562,11 +763,10 @@
     box(x - 35, y + 30, 28, 9, 9, '#587986', '#203c50', '#3e6071', z - 1);
     lamp(x - 37, y - 5, z + 5, moving ? '#a0e6fa' : '#507c94', 2);
     lamp(x - 37, y + 35, z + 5, moving ? '#a0e6fa' : '#507c94', 2);
-    cargoBox(point(x - 22, y + 6, z + 9), item.type, 21);
     lamp(x + 38, y + 13, z + 8, color, 1.5);
   }
 
-  function drawChannelView(logicalTime) {
+  function drawChannelView() {
     if (!xray) return;
     const links = [
       { from: 0, to: 1, points: [[-480, -100], [-330, -100], [-304, -48]], name: 'ARRIVALS / 8', x: -527, y: -19 },
@@ -589,10 +789,10 @@
         ctx.textAlign = 'center'; ctx.fillStyle = color; ctx.fillText(link.name, p.x, p.y + 1);
       }
     }
-    for (const item of state?.cargo || []) {
-      if (item.stage === 'tram') continue;
-      const p = cargoPosition(item, logicalTime);
-      if (p) { glow(p.x, p.y, p.z + 15, 23, colors[item.type], 0.22); lamp(p.x + 8, p.y + 5, p.z + 20, colors[item.type], 2); }
+    for (const motion of poses.values()) {
+      if (!['raw', 'goods'].includes(motion.kind) || !cargoVisibility(motion).visible) continue;
+      const p = motion.position;
+      glow(p.x, p.y, p.z + 15, 23, colors[motion.cargo % colors.length], 0.22);
     }
   }
 
@@ -634,6 +834,36 @@
     }
   }
 
+  function drawCargoLabels() {
+    cargoHits = [];
+    for (const motion of poses.values()) {
+      if (!['raw', 'goods'].includes(motion.kind) || !cargoVisibility(motion).visible) continue;
+      const { x, y, z } = motion.position;
+      const anchor = screenPoint(project(x + 9, y + 7, z + 18));
+      if (anchor.x < 10 || anchor.x > width - 10 || anchor.y < 65 || anchor.y > height - 85) continue;
+      const active = motion.cargo === selectedCargo;
+      const label = `${String(motion.cargo).padStart(3, '0')}${active ? motion.kind === 'goods' ? ' / FINISHED' : ' / RAW' : ''}`;
+      ctx.font = `${active ? 600 : 500} ${active ? 9 : 7}px ui-monospace, monospace`;
+      const w = ctx.measureText(label).width + 9;
+      ctx.fillStyle = active ? '#0b242eed' : '#0a1c27d9';
+      ctx.fillRect(anchor.x - w / 2, anchor.y - 14, w, active ? 17 : 13);
+      ctx.fillStyle = colors[motion.cargo % colors.length]; ctx.textAlign = 'center'; ctx.fillText(label, anchor.x, anchor.y - 4);
+      if (active) {
+        ctx.strokeStyle = colors[motion.cargo % colors.length]; ctx.lineWidth = 1;
+        ctx.strokeRect(anchor.x - w / 2 - 1, anchor.y - 15, w + 2, 19);
+      }
+      cargoHits.push({ id: motion.cargo, x: anchor.x - Math.max(w / 2, 12), y: anchor.y - 18, w: Math.max(w, 24), h: 34 });
+    }
+    if (selectedCargo) {
+      const motion = poses.get(`cargo:${selectedCargo}`);
+      const label = `FOLLOWING ${String(selectedCargo).padStart(3, '0')}  ·  ${motion ? motion.phase.replaceAll('-', ' ').toUpperCase() : 'DELIVERED'}`;
+      ctx.font = '600 9px ui-monospace, monospace';
+      const w = ctx.measureText(label).width + 20;
+      ctx.fillStyle = '#0c2330ee'; ctx.fillRect(16, height - 121, Math.min(w, width - 32), 23);
+      ctx.fillStyle = colors[selectedCargo % colors.length]; ctx.textAlign = 'left'; ctx.fillText(label, 26, height - 106, width - 50);
+    }
+  }
+
   function resizeCanvas() {
     // The viewport owns layout; the absolutely positioned canvas only owns
     // its backing pixels. Measuring intrinsic canvas dimensions here would
@@ -653,13 +883,12 @@
     if (width <= 0 || height <= 0) { requestAnimationFrame(frame); return; }
     ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     drawBackdrop(now);
-    // Interpolate only inside the most recently reported stage. No browser
-    // clock can create cargo, choose a route, complete work, or update counts.
-    const logicalTime = state ? state.now + (connected && ['running', 'draining'].includes(state.mode) ? Math.min((now - receivedAt) / 1000, 0.25) : 0) : 0;
+    sampleScene(now);
     ctx.save(); ctx.translate(width * 0.52 + pan.x, height * 0.52 + pan.y); ctx.scale(scale * zoom, scale * zoom);
     // A soft underside light separates the station from the orbital night.
     glow(35, 145, -50, 480, '#305b72', 0.14);
     drawDeck();
+    drawRoutes();
     drawPlatform();
     if (selected >= 0) {
       const n = nodes[selected];
@@ -668,23 +897,37 @@
     }
     const entities = [
       { depth: -605, draw: drawTower },
-      { depth: -330, draw: () => drawCrane(1, logicalTime) },
+      { depth: -330, draw: () => drawCrane(1) },
       { depth: -70, draw: drawWarehouse },
-      { depth: -12, draw: () => drawCrane(2, logicalTime) },
-      { depth: 200, draw: () => drawFactory(now) },
-      { depth: 685, draw: drawHabitat },
-      { depth: 510, draw: () => drawTram(logicalTime) }
+      { depth: -12, draw: () => drawCrane(2) },
+      { depth: 200, draw: drawFactory },
+      { depth: 685, draw: drawHabitat }
     ];
-    for (const item of state?.cargo || []) {
-      const p = cargoPosition(item, logicalTime);
-      if (!p) continue;
-      if (item.stage === 'approach') entities.push({ depth: p.x + p.y, draw: () => drawShip(item, logicalTime) });
-      else entities.push({ depth: p.x + p.y + (item.stage.startsWith('crane') ? 200 : 30), draw: () => cargoBox(p, item.type) });
+    const observed = [];
+    const observedMap = Object.create(null);
+    for (const motion of poses.values()) {
+      const p = motion.position;
+      let visible = true;
+      if (motion.kind === 'ship') entities.push({ depth: p.x + p.y, draw: () => drawShip(motion) });
+      else if (motion.kind === 'tram') entities.push({ depth: p.x + p.y + 12, draw: () => drawTram(motion) });
+      else if (['raw', 'goods', 'hidden'].includes(motion.kind)) {
+        const visibility = cargoVisibility(motion);
+        visible = visibility.visible;
+        if (visible) entities.push({ depth: visibility.depth ?? p.x + p.y + 30, draw: () => drawCargo(motion, visibility) });
+      }
+      const value = Object.freeze({ ...p, key: motion.key, kind: motion.kind, phase: motion.phase, cargo: motion.cargo, actor: motion.actor, revision: motion.revision, at: motion.at, duration: motion.duration, visible });
+      observedMap[motion.key] = value;
+      observed.push(Object.freeze({ ...value, position: p }));
     }
     entities.sort((a, b) => a.depth - b.depth).forEach(entity => entity.draw());
-    drawChannelView(logicalTime);
+    drawChannelView();
     ctx.restore();
     drawLabels();
+    drawCargoLabels();
+    // These are the exact sampled poses consumed above by this completed
+    // frame, including hidden cargo; no second clock read or resampling.
+    renderedMotions = Object.freeze(observed);
+    renderedPoseMap = Object.freeze(observedMap);
     requestAnimationFrame(frame);
   }
   function frame(now) {
@@ -702,6 +945,7 @@
   function resetView() { zoom = 1; pan = { x: 0, y: 0 }; }
   function localPointer(event) { const rect = canvas.getBoundingClientRect(); return { x: event.clientX - rect.left, y: event.clientY - rect.top }; }
   function hit(point) { return hitAreas.find(area => point.x >= area.x && point.x <= area.x + area.w && point.y >= area.y && point.y <= area.y + area.h)?.id ?? -1; }
+  function hitCargo(point) { return cargoHits.find(area => point.x >= area.x && point.x <= area.x + area.w && point.y >= area.y && point.y <= area.y + area.h)?.id ?? 0; }
   $('zoomIn').addEventListener('click', () => changeZoom(1.16));
   $('zoomOut').addEventListener('click', () => changeZoom(1 / 1.16));
   $('resetView').addEventListener('click', resetView);
@@ -721,12 +965,17 @@
       if (drag.moved) pan = { x: drag.pan.x + dx, y: drag.pan.y + dy };
     } else {
       hover = hit(p);
-      canvas.style.cursor = hover < 0 ? 'grab' : 'pointer';
+      canvas.style.cursor = hover < 0 && !hitCargo(p) ? 'grab' : 'pointer';
     }
   });
   canvas.addEventListener('pointerup', event => {
     if (!drag || drag.id !== event.pointerId) return;
-    if (!drag.moved) { const id = hit(localPointer(event)); if (id >= 0) selectActor(id); }
+    if (!drag.moved) {
+      const p = localPointer(event);
+      const cargo = hitCargo(p);
+      if (cargo) selectCargo(cargo);
+      else { const id = hit(p); if (id >= 0) selectActor(id); }
+    }
     drag = null;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
   });
@@ -746,6 +995,6 @@
   window.addEventListener('resize', resizeCanvas);
   resizeCanvas();
   updateUI();
-  poll();
+  connectScene();
   requestAnimationFrame(frame);
 })();

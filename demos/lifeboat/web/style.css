@@ -267,6 +267,24 @@ h1 span {
   gap:6px;
   align-items:center;
 }
+.cargo-guide {
+  position:absolute;
+  top:61px;
+  left:24px;
+  right:18px;
+  color:#91a5b4;
+  font:7px ui-monospace,monospace;
+  letter-spacing:.3px;
+  pointer-events:none;
+}
+.cargo-guide span {
+  padding:0 4px;
+  color:#5b798a;
+}
+.cargo-guide b {
+  color:#dcc18a;
+  font-weight:500;
+}
 .swatch {
   width:5px;
   height:5px;
@@ -412,6 +430,9 @@ h1 span {
 .small-metrics b {
   color:#cddbe5;
   font-weight:500;
+}
+.motion-metrics {
+  margin-top:8px;
 }
 .integrity {
   border-top:1px solid var(--line);
