@@ -4,6 +4,7 @@
   'use strict';
 
   const canvas = document.getElementById('world');
+  const viewport = canvas.parentElement;
   const ctx = canvas.getContext('2d');
   const $ = id => document.getElementById(id);
   const colors = ['#89ebcb', '#efbc74', '#85acf5'];
@@ -33,6 +34,7 @@
   let xray = false;
   let width = 0;
   let height = 0;
+  let pixelRatio = 1;
   let scale = 1;
   let zoom = 1;
   let pan = { x: 0, y: 0 };
@@ -111,8 +113,8 @@
     $('loadText').textContent = `${state.inFlight} / ${capacity}`;
     $('loadBar').style.width = `${clamp(state.inFlight / capacity, 0, 1) * 100}%`;
     $('loadBar').style.background = state.inFlight >= 20 ? colors[1] : colors[0];
-    $('modeBadge').textContent = state.mode === 'running' ? 'LIVE' : state.mode === 'draining' ? 'DRAINING' : 'COMPLETE';
-    $('modeBadge').style.color = state.mode === 'draining' ? colors[1] : colors[0];
+    $('modeBadge').textContent = state.mode === 'running' ? 'LIVE' : state.mode === 'draining' ? 'DRAINING' : state.mode === 'failed' ? 'FAILED' : 'COMPLETE';
+    $('modeBadge').style.color = ['draining', 'failed'].includes(state.mode) ? colors[1] : colors[0];
     $('bayText').textContent = state.bayClosed ? 'Reopen Aster bay' : 'Close Aster bay';
     $('factoryText').textContent = state.factoryPaused ? 'Resume the fabricator' : 'Pause the fabricator';
     $('surgeText').textContent = state.surge ? 'Return to normal traffic' : 'Call a traffic surge';
@@ -123,6 +125,7 @@
     $('integrity').textContent = conserved ? '◇  Every cargo accounted for' : '△  Cargo integrity needs attention';
     $('integrity').style.color = conserved ? colors[0] : '#ff8d83';
     $('sceneStatus').textContent = !connected ? 'Telemetry interrupted. Reconnecting…'
+      : state.mode === 'failed' ? `Station failure · ${state.inFlight} cargo remaining · check the station log`
       : state.mode === 'evacuated' ? 'All cargo delivered. All actors stopped.'
       : state.mode === 'draining' ? `Draining the dock · ${state.inFlight} cargo remaining`
       : state.factoryPaused ? 'Fabricator paused. Watch storage fill upstream.'
@@ -152,7 +155,7 @@
   }
 
   function acceptSnapshot(value) {
-    if (!value || !['running', 'draining', 'evacuated'].includes(value.mode)
+    if (!value || !['running', 'draining', 'evacuated', 'failed'].includes(value.mode)
       || !['run', 'now', 'created', 'delivered', 'inFlight', 'activeActors', 'transfers', 'restarts', 'violations'].every(key => Number.isFinite(value[key]))
       || !Array.isArray(value.actors) || !Array.isArray(value.cargo) || !Array.isArray(value.events)
       || value.actors.length !== nodes.length || value.cargo.length > 512) throw new Error('Station returned invalid telemetry.');
@@ -631,19 +634,28 @@
     }
   }
 
+  function resizeCanvas() {
+    // The viewport owns layout; the absolutely positioned canvas only owns
+    // its backing pixels. Measuring intrinsic canvas dimensions here would
+    // feed the last backing size into CSS grid's next sizing pass.
+    width = viewport.clientWidth;
+    height = viewport.clientHeight;
+    pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const pixelsWide = Math.max(1, Math.round(width * pixelRatio));
+    const pixelsHigh = Math.max(1, Math.round(height * pixelRatio));
+    if (canvas.width !== pixelsWide) canvas.width = pixelsWide;
+    if (canvas.height !== pixelsHigh) canvas.height = pixelsHigh;
+    scale = Math.min(width / 1380, Math.max(1, height - 125) / 805);
+  }
+
   function draw(now) {
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
-    const rect = canvas.getBoundingClientRect();
-    if (width !== rect.width || height !== rect.height || canvas.width !== Math.round(rect.width * ratio)) {
-      width = rect.width; height = rect.height;
-      canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
-      scale = Math.min(width / 1380, (height - 125) / 805);
-    }
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    if (pixelRatio !== Math.min(window.devicePixelRatio || 1, 2)) resizeCanvas();
+    if (width <= 0 || height <= 0) { requestAnimationFrame(frame); return; }
+    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     drawBackdrop(now);
     // Interpolate only inside the most recently reported stage. No browser
     // clock can create cargo, choose a route, complete work, or update counts.
-    const logicalTime = state ? state.now + (connected && state.mode !== 'evacuated' ? Math.min((now - receivedAt) / 1000, 0.25) : 0) : 0;
+    const logicalTime = state ? state.now + (connected && ['running', 'draining'].includes(state.mode) ? Math.min((now - receivedAt) / 1000, 0.25) : 0) : 0;
     ctx.save(); ctx.translate(width * 0.52 + pan.x, height * 0.52 + pan.y); ctx.scale(scale * zoom, scale * zoom);
     // A soft underside light separates the station from the orbital night.
     glow(35, 145, -50, 480, '#305b72', 0.14);
@@ -729,6 +741,10 @@
     else return;
     event.preventDefault();
   });
+  const resizeObserver = new ResizeObserver(resizeCanvas);
+  resizeObserver.observe(viewport);
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
   updateUI();
   poll();
   requestAnimationFrame(frame);
