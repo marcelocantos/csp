@@ -119,12 +119,15 @@ cancellation(d) / cancellation(tp)       ➤ same as above, plus timer imp
 cancellation() ─┤parent scope exists├─── ➤ cascade imp spawned: watches parent
                                            signal, propagates cancel to child
 
-guard()                                  ➤ cancel_state.cancelled = true;
+guard()                                  ➤ claim cancellation;
+                                           reason = canceled{};
+                                           publish cancelled = true;
                                            trigger writer dropped;
                                            all vultures on signal fire
 
-guard(ep)                                ➤ cancel_state.cancelled = true;
+guard(ep)                                ➤ claim cancellation;
                                            cancel_state.reason = ep;
+                                           publish cancelled = true;
                                            trigger writer dropped
 
 ~guard ─┤not yet cancelled├──────────── ➤ cancel with canceled{}
@@ -188,6 +191,26 @@ std::exception_ptr cancel_reason();
 Returns the `exception_ptr` stored when the scope was cancelled. Returns
 `nullptr` if no cancellation scope is active or if the scope has not been
 cancelled.
+
+Polling is safe concurrently with cancellation on another worker. The first
+caller to claim cancellation chooses the reason; later callers cannot replace
+it. The reason is written before a release store publishes cancellation, and
+`cancel_reason()` uses an acquire load before copying it. A poll overlapping
+that first call may still return `nullptr` until publication. Waiting on
+`done()` observes a completed publication because the signal closes afterward.
+`is_cancel_active()` only reports whether a scope exists; it does not report
+whether cancellation has occurred. Passing a null `exception_ptr` explicitly
+still records a null reason.
+
+The bounded [publication model](../../formal/CancelReasonPublication.tla)
+checks single-writer ownership and safe reads; its
+[bug variant](../../formal/CancelReasonPublication_Bug.tla) reproduces the old
+publication-before-write ordering. The `cancel-reason-polling-publishes-the-first-reason`
+test polls without channel synchronization and runs in the regular test suite.
+Linux TSan CI also runs it against the distribution using libstdc++: its
+inline `exception_ptr` copies are instrumented, whereas libc++ implements
+those copies in an uninstrumented shared library. The old code produces a
+TSan read/write race between `cancel_reason()` and `cancel_state::cancel()`.
 
 ---
 

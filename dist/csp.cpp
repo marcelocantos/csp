@@ -148,6 +148,7 @@ struct cancel_state {
     writer<> trigger;
     reader<> signal;
     std::exception_ptr reason;
+    std::atomic_flag cancel_started = ATOMIC_FLAG_INIT;
     std::atomic<bool> cancelled{false};
 
     cancel_state() {
@@ -157,8 +158,13 @@ struct cancel_state {
     }
 
     void cancel(std::exception_ptr ep) {
-        if (!cancelled.exchange(true)) {
-            reason = ep;
+        // Elect one writer separately from publishing its reason. A poller
+        // must not copy exception_ptr while that winner is still writing it.
+        // TLA:CancelReasonPublication.Claim
+        if (!cancel_started.test_and_set(std::memory_order_relaxed)) {
+            reason = std::move(ep);  // TLA:CancelReasonPublication.WriteReason
+            cancelled.store(true, std::memory_order_release);  // TLA:CancelReasonPublication.Publish
+            // TLA:CancelReasonPublication.Close
             trigger = {};  // drop writer → fires all vultures on signal
         }
     }
@@ -285,8 +291,9 @@ bool is_cancel_active() {
 
 std::exception_ptr cancel_reason() {
     auto state = *g_cancel;
-    if (!state || !state->cancelled) return {};
-    return state->reason;
+    // TLA:CancelReasonPublication.Poll
+    if (!state || !state->cancelled.load(std::memory_order_acquire)) return {};
+    return state->reason;  // TLA:CancelReasonPublication.ReadReason
 }
 
 } // namespace csp

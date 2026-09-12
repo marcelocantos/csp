@@ -334,6 +334,21 @@ jobs:
           # the test watchdog, not TSan's lock graph.
           TSAN_OPTIONS: suppressions=test/tsan_suppressions.txt detect_deadlocks=0
 
+      - name: Check cancellation publication with instrumented exception_ptr
+        if: runner.os == 'Linux' && matrix.sanitize == 'thread'
+        run: |
+          # libc++ keeps exception_ptr copies in its uninstrumented shared
+          # library. libstdc++ exposes those accesses in headers, so TSan can
+          # detect a reason read that races with cancellation publication.
+          make build CSP_INCLUDE=dist CSP_TLS=0 SANITIZE=thread \
+            BUILDDIR=build/cancel-tsan-libstdcxx \
+            CC=clang-18 CXX='clang++-18 -std=c++20 -stdlib=libstdc++' \
+            TEST_SRCS='test/main.cc test/cancel.test.cc'
+          timeout 60 build/cancel-tsan-libstdcxx/csp_tests --no-colors \
+            --test-case=cancel-reason-polling-publishes-the-first-reason,concurrent-cancellers-preserve-one-reason
+        env:
+          TSAN_OPTIONS: halt_on_error=1 detect_deadlocks=0
+
       - name: GDB backtrace on crash
         if: failure() && runner.os == 'Linux'
         run: |

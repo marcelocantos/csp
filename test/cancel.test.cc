@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <stdexcept>
+#include <thread>
 #ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
@@ -602,6 +603,74 @@ TEST_CASE("dynamic-binding-reverts-on-exception-during-cancel") {
 } // TEST_SUITE("cancellation")
 
 TEST_SUITE("cancellation MN") {
+
+TEST_CASE("cancel-reason-polling-publishes-the-first-reason") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
+    constexpr int rounds = 128;
+    constexpr auto poll_timeout = std::chrono::seconds(5);
+    int observed = 0;
+    csp::run([&] {
+        for (int i = 0; i < rounds; ++i) {
+            auto guard = cancellation();
+            auto expected = std::make_exception_ptr(std::runtime_error("first reason"));
+            std::atomic<bool> polling{false};
+            chan<> finished;
+            bool matched = false;
+            spawn([&, fin = std::move(finished.w)] {
+                auto deadline = std::chrono::steady_clock::now() + poll_timeout;
+                polling.store(true, std::memory_order_release);
+                std::exception_ptr reason;
+                // Deliberately do not wait on done(), use a channel, or yield
+                // to CSP here: those paths can synchronize through scheduler
+                // locks and hide a missing publication edge under TSan.
+                do {
+                    reason = cancel_reason();
+                    if (reason) break;
+                    std::this_thread::yield();
+                } while (std::chrono::steady_clock::now() < deadline);
+                matched = reason == expected;
+                // Once observed, the published reason is immutable.
+                if (matched) matched = cancel_reason() == expected;
+            });
+            while (!polling.load(std::memory_order_acquire)) csp::yield();
+            guard(expected);
+            guard(std::make_exception_ptr(std::runtime_error("later reason")));
+            prialt(~finished.r);
+            CHECK(matched);
+            if (!matched) break;
+            ++observed;
+        }
+    });
+    CHECK(observed == rounds);
+    csp::shutdown_runtime();
+}
+
+TEST_CASE("concurrent-cancellers-preserve-one-reason") {
+    csp::shutdown_runtime();
+    csp::set_maxprocs(4);
+    csp::run([&] {
+        auto guard = cancellation();
+        auto first = std::make_exception_ptr(std::runtime_error("first contender"));
+        auto second = std::make_exception_ptr(std::runtime_error("second contender"));
+        std::atomic<bool> start{false};
+        chan<> finished;
+        for (auto reason : {first, second}) {
+            spawn([&, reason, fin = finished.w.copy()] {
+                while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+                guard(reason);
+            });
+        }
+        finished.w = {};
+        start.store(true, std::memory_order_release);
+        prialt(~finished.r);
+        auto winner = cancel_reason();
+        CHECK((winner == first || winner == second));
+        CHECK(cancel_reason() == winner);
+        CHECK(prialt(done()) == ~0);
+    });
+    csp::shutdown_runtime();
+}
 
 TEST_CASE("concurrent-cancel-detection") {
     csp::shutdown_runtime();
