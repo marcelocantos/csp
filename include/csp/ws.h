@@ -8,6 +8,7 @@
 #include <csp/net.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,21 @@ struct message {
 struct conn {
     reader<message> recv;   // inbound messages (text + binary only)
     writer<message> send;   // outbound messages
+
+    // Abort without waiting for a peer Close echo. Idempotent; wakes blocked
+    // socket and channel operations. The I/O imps join before fd release.
+    // Asynchronous: endpoint death observes their subsequent completion.
+    void close() const;
+
+    struct impl;
+    std::shared_ptr<impl> state;  // opaque lifetime control; do not access
+};
+
+struct options {
+    // Maximum assembled inbound data message, including all fragments.
+    // Zero preserves the unlimited default. Control frames stay <=125 bytes.
+    // Exceeding this bound aborts the connection without a Close handshake.
+    size_t max_message_size = 0;
 };
 
 // --- Server-side upgrade ---
@@ -52,6 +68,7 @@ struct conn {
 // sent to the peer, then recv closes after the peer's Close echo).
 
 conn upgrade(http::request& req);
+conn upgrade(http::request& req, options opts);
 
 // --- Client-side connect ---
 //
@@ -61,5 +78,6 @@ conn upgrade(http::request& req);
 // url must use the "ws://" scheme (no wss:// in this release).
 
 conn connect(const std::string& url);
+conn connect(const std::string& url, options opts);
 
 } // namespace csp::ws

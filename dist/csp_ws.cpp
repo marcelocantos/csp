@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -33,6 +34,23 @@
 namespace csp::ws {
 
 using internal::iequals;
+
+struct conn::impl {
+    writer<> stop;
+    reader<> signal;
+    std::atomic_flag closing = ATOMIC_FLAG_INIT;
+
+    impl() {
+        chan<> ch;
+        stop = std::move(ch.w);
+        signal = std::move(ch.r);
+    }
+};
+
+void conn::close() const {
+    if (state && !state->closing.test_and_set(std::memory_order_relaxed))
+        state->stop = {};
+}
 
 namespace {
 
@@ -197,11 +215,13 @@ struct ws_io_read {
     io::fd_t fd;
     bytes    leftover;
     size_t   leftover_pos = 0;
+    bool     eof = false;
 };
 
 static ssize_t ws_recv_cb(uint8_t* buf, size_t len, int /*flags*/,
                           void* user_data) {
     auto* io = static_cast<ws_io_read*>(user_data);
+    if (auto reason = csp::cancel_reason()) std::rethrow_exception(reason);
 
     // Drain leftover bytes from the HTTP parser first.
     if (io->leftover_pos < io->leftover.size()) {
@@ -213,7 +233,7 @@ static ssize_t ws_recv_cb(uint8_t* buf, size_t len, int /*flags*/,
     }
 
     ssize_t n = csp::io::read(io->fd, buf, len);
-    if (n <= 0) return WSLAY_ERR_WANT_READ;
+    if (n <= 0) { io->eof = true; return WSLAY_ERR_WANT_READ; }
     return n;
 }
 
@@ -252,6 +272,7 @@ static ssize_t ws_write_recv_cb(uint8_t* /*buf*/, size_t /*len*/,
 static ssize_t ws_write_send_cb(const uint8_t* buf, size_t len, int /*flags*/,
                                 void* user_data) {
     auto* io = static_cast<ws_io_write*>(user_data);
+    if (auto reason = csp::cancel_reason()) std::rethrow_exception(reason);
     ssize_t n = csp::io::write(io->fd, buf, len);
     if (n <= 0) return WSLAY_ERR_WANT_WRITE;
     return n;
@@ -282,7 +303,7 @@ static bool send_frame(wslay_frame_context_ptr ctx, uint8_t op,
         if (r < 0) return false;  // includes WSLAY_ERR_WANT_WRITE (fatal here)
 
         total_sent        += static_cast<size_t>(r);
-        iocb.data          = data + total_sent;
+        iocb.data          = data ? data + total_sent : nullptr;
         iocb.data_length   = (len > total_sent) ? len - total_sent : 0;
 
         if (total_sent >= len) break;
@@ -300,9 +321,9 @@ static bool send_frame(wslay_frame_context_ptr ctx, uint8_t op,
 // Data frames are forwarded to the user via data_out.
 // ---------------------------------------------------------------------------
 
-static void ws_reader(io::fd_t fd, bytes leftover,
+static bool ws_reader(io::fd_t fd, bytes leftover,
                       writer<message>  data_out,
-                      writer<ctrl_msg> ctrl_out) {
+                      writer<ctrl_msg> ctrl_out, options opts) {
     internal::descr("ws/reader");
 
     wslay_frame_callbacks cbs{};
@@ -316,8 +337,7 @@ static void ws_reader(io::fd_t fd, bytes leftover,
 
     wslay_frame_context_ptr ctx = nullptr;
     if (wslay_frame_context_init(&ctx, &cbs, &io_state) != 0) {
-        io::close(fd);
-        return;
+        return false;
     }
 
     struct ctx_guard {
@@ -331,14 +351,25 @@ static void ws_reader(io::fd_t fd, bytes leftover,
     uint64_t frame_expected = 0;
 
     for (;;) {
+        if (auto reason = csp::cancel_reason()) std::rethrow_exception(reason);
         wslay_frame_iocb iocb{};
         ssize_t r = wslay_frame_recv(ctx, &iocb);
 
-        if (r == WSLAY_ERR_WANT_READ) break;  // EOF or error
+        if (r == WSLAY_ERR_WANT_READ) {
+            if (io_state.eof) break;
+            continue;  // A partial TCP header needs another cooperative read.
+        }
         if (r < 0) break;                     // protocol error
 
         if (frame_buf.empty() && frame_expected == 0) {
             frame_expected = iocb.payload_length;
+            if (!wslay_is_ctrl_frame(iocb.opcode) && opts.max_message_size) {
+                size_t previous = iocb.opcode == WSLAY_CONTINUATION_FRAME ? pending.data.size() : 0;
+                // Check the advertised size before copying any payload. Both
+                // an individual frame and the assembled fragments are bounded.
+                if (previous > opts.max_message_size ||
+                    frame_expected > opts.max_message_size - previous) break;
+            }
         }
 
         if (r > 0) {
@@ -355,15 +386,12 @@ static void ws_reader(io::fd_t fd, bytes leftover,
         if (wslay_is_ctrl_frame(op)) {
             if (op == WSLAY_PING) {
                 // Forward to writer for serialised pong reply.
-                ctrl_out << ctrl_msg{ctrl_pong{frame_buf}};
+                if (prialt(csp::done(), ctrl_out << ctrl_msg{ctrl_pong{frame_buf}}) != 1) break;
             } else if (op == WSLAY_PONG) {
                 // ignore
             } else if (op == WSLAY_CONNECTION_CLOSE) {
                 // Forward close echo to writer, then exit.
-                ctrl_out << ctrl_msg{ctrl_close{frame_buf}};
-                frame_buf.clear();
-                frame_expected = 0;
-                break;
+                return prialt(csp::done(), ctrl_out << ctrl_msg{ctrl_close{frame_buf}}) != ~0;
             }
             frame_buf.clear();
             frame_expected = 0;
@@ -387,14 +415,12 @@ static void ws_reader(io::fd_t fd, bytes leftover,
 
         if (iocb.fin && in_msg) {
             in_msg = false;
-            if (!(data_out << std::move(pending))) break;
+            if (prialt(csp::done(), data_out << std::move(pending)) != 1) break;
             pending = {};
         }
     }
 
-    // Close fd here — we own it.  The writer imp will see a write error
-    // (EPIPE/EBADF) on its next io::write and exit cleanly.
-    io::close(fd);
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,10 +435,10 @@ static void ws_reader(io::fd_t fd, bytes leftover,
 // Lifecycle:
 //   - When ctrl_in delivers ctrl_close → send close echo → exit.
 //   - When user_in dies (send_w dropped by user) → send BLO Close → exit.
-//   - When fd is closed by reader (io::write fails) → exit.
+//   - Cancellation or permanent I/O failure → exit; owner joins both imps.
 // ---------------------------------------------------------------------------
 
-static void ws_writer(io::fd_t fd,
+static bool ws_writer(io::fd_t fd,
                       reader<message>  user_in,
                       reader<ctrl_msg> ctrl_in,
                       bool is_client) {
@@ -428,7 +454,7 @@ static void ws_writer(io::fd_t fd,
 
     wslay_frame_context_ptr ctx = nullptr;
     if (wslay_frame_context_init(&ctx, &cbs, &io_state) != 0) {
-        return;
+        return false;
     }
 
     struct ctx_guard {
@@ -443,90 +469,119 @@ static void ws_writer(io::fd_t fd,
         message  user_msg;
         ctrl_msg ctrl;
 
-        switch (prialt(ctrl_in >> ctrl, user_in >> user_msg)) {
-        case 0: {
+        switch (prialt(csp::done(), ctrl_in >> ctrl, user_in >> user_msg)) {
+        case ~0: return false;
+        case 1: {
             // ctrl_in delivered a control frame.
             if (std::holds_alternative<ctrl_pong>(ctrl)) {
                 auto& p = std::get<ctrl_pong>(ctrl);
-                send_frame(ctx, WSLAY_PONG, is_client,
-                           p.data.data(), p.data.size());
+                if (!send_frame(ctx, WSLAY_PONG, is_client,
+                                p.data.data(), p.data.size())) return false;
             } else {
                 // ctrl_close: echo the close frame and stop.
                 auto& c = std::get<ctrl_close>(ctrl);
                 if (!close_sent) {
-                    send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client,
-                               c.data.data(), c.data.size());
+                    if (!send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client,
+                                    c.data.data(), c.data.size())) return false;
                     close_sent = true;
                 }
-                return;
+                return true;
             }
             break;
         }
-        case 1: {
+        case 2: {
             // user_in delivered a data message.
             uint8_t op = (user_msg.op == opcode::text) ? WSLAY_TEXT_FRAME
                                                        : WSLAY_BINARY_FRAME;
             if (!send_frame(ctx, op, is_client,
                             user_msg.data.data(), user_msg.data.size())) {
-                // Write error (fd closed by reader).
-                return;
+                // Permanent socket error.
+                return false;
             }
             break;
         }
-        case ~0:
+        case ~1:
             // ctrl_in died without delivering ctrl_close.
             // This happens when the reader exits cleanly without receiving
             // a Close frame (e.g., EOF on the socket).  Fall through to
             // handle user_in death below.
             if (!close_sent) {
-                send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client, nullptr, 0);
+                if (!send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client, nullptr, 0)) return false;
                 close_sent = true;
             }
-            return;
-        case ~1:
+            return true;
+        case ~2:
             // user_in died: BLO — send close frame to initiate close handshake.
             if (!close_sent) {
-                send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client, nullptr, 0);
+                if (!send_frame(ctx, WSLAY_CONNECTION_CLOSE, is_client, nullptr, 0)) return false;
                 close_sent = true;
             }
-            return;
+            return true;
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Shared helper: spawn reader + writer imps from an fd.
-//
-// The writer imp owns no fd handle — it uses the same raw fd number as
-// the reader, which owns and closes the fd.  The writer is the SOLE
-// imp that writes to the fd; the reader only reads.  This eliminates
-// the concurrent-write race on the kqueue reactor's write_writers_ map.
+// A lifetime owner cancels and joins both I/O imps before releasing the fd.
+// Shared ownership also keeps the fd alive if spawning a child throws.
+// See formal/WebSocketClose.tla: NoUseAfterClose and CloseCompletes.
 // ---------------------------------------------------------------------------
 
-static conn make_conn(io::fd_t fd, bytes leftover, bool is_client) {
+static conn make_conn(io::fd_t fd, bytes leftover, bool is_client, options opts) {
     auto [send_w, send_r] = chan<message>{};
     auto [recv_w, recv_r] = chan<message>{};
     auto [ctrl_w, ctrl_r] = chan<ctrl_msg>{};
 
-    // Reader imp: owns fd (closes on exit).
-    // Forwards data to recv_w; control frames to ctrl_w.
-    csp::spawn([fd, lv = std::move(leftover),
-                dw = std::move(recv_w),
-                cw = std::move(ctrl_w)]() mutable {
-        ws_reader(fd, std::move(lv), std::move(dw), std::move(cw));
+    struct socket_owner {
+        io::fd_t fd;
+        bool reader_graceful = false, writer_graceful = false;
+        explicit socket_owner(io::fd_t value) : fd(value) {}
+        ~socket_owner() { io::close(fd); }
+    };
+    auto owner = std::make_shared<socket_owner>(fd);
+    auto state = std::make_shared<conn::impl>();
+    csp::spawn([owner, state, lv = std::move(leftover), opts, is_client,
+                dw = std::move(recv_w), cw = std::move(ctrl_w),
+                ur = std::move(send_r), cr = std::move(ctrl_r)]() mutable {
+        internal::descr("ws/lifetime");
+        auto guard = cancellation();
+        auto reading = csp::spawn([owner, opts, lv = std::move(lv),
+                                   dw = std::move(dw), cw = std::move(cw)]() mutable {
+            owner->reader_graceful = ws_reader(owner->fd, std::move(lv), std::move(dw), std::move(cw), opts);
+        });
+        auto writing = csp::spawn([owner, is_client,
+                                   ur = std::move(ur), cr = std::move(cr)]() mutable {
+            owner->writer_graceful = ws_writer(owner->fd, std::move(ur), std::move(cr), is_client);
+        });
+        bool reader_done = false, writer_done = false;
+        while (!reader_done || !writer_done) {
+            std::exception_ptr failure;
+            int choice = prialt(csp::done(), ~state->signal,
+                                reader_done ? chan_op<std::exception_ptr>{} : reading >> failure,
+                                writer_done ? chan_op<std::exception_ptr>{} : writing >> failure);
+            if (choice == ~2) reader_done = true;
+            if (choice == ~3) writer_done = true;
+            if (choice == ~0 || choice == ~1 || choice == 2 || choice == 3 ||
+                (reader_done && !owner->reader_graceful) || (writer_done && !owner->writer_graceful)) {
+                guard();
+                // Shutdown preserves the descriptor number until both imps
+                // have left I/O and unregistered their readiness signals.
+#ifdef _WIN32
+                ::shutdown(owner->fd.raw(), SD_BOTH);
+#else
+                ::shutdown(owner->fd.raw(), SHUT_RDWR);
+#endif
+                // spawn reports exceptions by sending before endpoint death.
+                // Drain cancellation/transport failures as part of joining;
+                // merely waiting for death would strand that exception send.
+                while (reading >> nullptr) {}
+                while (writing >> nullptr) {}
+                return;
+            }
+        }
     });
 
-    // Writer imp: borrows the raw fd value (does NOT close it on exit).
-    // Receives user messages from send_r; control frames from ctrl_r.
-    csp::spawn([fd_raw = fd.raw(),
-                ur = std::move(send_r),
-                cr = std::move(ctrl_r),
-                is_client]() mutable {
-        io::fd_t view(fd_raw);  // non-owning view
-        ws_writer(view, std::move(ur), std::move(cr), is_client);
-    });
-
-    return conn{std::move(recv_r), std::move(send_w)};
+    return conn{std::move(recv_r), std::move(send_w), std::move(state)};
 }
 
 } // anonymous namespace
@@ -536,6 +591,10 @@ static conn make_conn(io::fd_t fd, bytes leftover, bool is_client) {
 // ---------------------------------------------------------------------------
 
 conn upgrade(http::request& req) {
+    return upgrade(req, {});
+}
+
+conn upgrade(http::request& req, options opts) {
     auto upgrade_hdr    = req.header("Upgrade");
     auto connection_hdr = req.header("Connection");
     auto ws_key         = req.header("Sec-WebSocket-Key");
@@ -583,7 +642,7 @@ conn upgrade(http::request& req) {
         throw csp::error("ws::upgrade: failed to hijack HTTP connection");
     }
 
-    return make_conn(hr.fd, std::move(hr.leftover), /*is_client=*/false);
+    return make_conn(hr.fd, std::move(hr.leftover), /*is_client=*/false, opts);
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +680,10 @@ static io::fd_t raw_dial(const std::string& host, uint16_t port) {
 // ---------------------------------------------------------------------------
 
 conn connect(const std::string& url) {
+    return connect(url, {});
+}
+
+conn connect(const std::string& url, options opts) {
     // Expected: ws://host[:port][/path] — the authority grammar is shared
     // with http::parse_url (🎯T48).
     auto parsed = net::parse_authority(url, "ws://", 80);
@@ -700,7 +763,7 @@ conn connect(const std::string& url) {
         reinterpret_cast<const uint8_t*>(resp_buf.data() + header_end + 4),
         reinterpret_cast<const uint8_t*>(resp_buf.data() + resp_buf.size()));
 
-    return make_conn(fd, std::move(leftover), /*is_client=*/true);
+    return make_conn(fd, std::move(leftover), /*is_client=*/true, opts);
 }
 
 } // namespace csp::ws

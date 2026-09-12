@@ -28,7 +28,140 @@ static uint16_t serve_once(Handler h) {
     return port;
 }
 
+// A real TCP peer with no WebSocket worker reading ahead or echoing Close.
+// It remains connected until each test observes both server endpoints die.
+struct raw_ws_peer {
+    io::fd_t fd;
+    explicit raw_ws_peer(uint16_t port) {
+        fd = io::fd_t(::socket(AF_INET, SOCK_STREAM, 0));
+        if (!fd) throw csp::error("test socket failed");
+        io::set_nonblock(fd);
+        int receive_buffer = 1024;
+        ::setsockopt(fd.raw(), SOL_SOCKET, SO_RCVBUF,
+                     reinterpret_cast<const char*>(&receive_buffer), sizeof(receive_buffer));
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port);
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (io::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0)
+            throw csp::error("test connect failed");
+        std::string request = "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+                              "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
+                              "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
+        if (io::write(fd, request.data(), request.size()) < 0) throw csp::error("test handshake write failed");
+        std::string response;
+        while (!response.ends_with("\r\n\r\n") && response.size() < 8192) {
+            char byte;
+            if (io::read(fd, &byte, 1) != 1) throw csp::error("test handshake read failed");
+            response += byte;
+        }
+        CHECK(response.starts_with("HTTP/1.1 101"));
+    }
+    ~raw_ws_peer() { io::close(fd); }
+    raw_ws_peer(raw_ws_peer const&) = delete;
+    raw_ws_peer& operator=(raw_ws_peer const&) = delete;
+};
+
 TEST_SUITE("ws") {
+
+TEST_CASE("ws---hard-close-releases-blocked-io-and-channel-waits") {
+    for (int blocked = 0; blocked < 3; ++blocked) {
+        CAPTURE(blocked);
+        csp::shutdown_runtime();
+        csp::set_maxprocs(2);
+        spawn([blocked] {
+            chan<> finished;
+            chan<> sent;
+            uint16_t port = serve_once([blocked, done_w = std::move(finished.w),
+                                        sent_r = std::move(sent.r)](http::endpoint& ep) mutable {
+                http::request req;
+                REQUIRE(bool(ep.requests >> req));
+                auto conn = ws::upgrade(req);
+                if (blocked == 1) {
+                    // A peer with a 1KiB receive window never reads this frame.
+                    constexpr size_t blocked_payload = 16 * 1024 * 1024;
+                    ws::message big{ws::opcode::binary, bytes(blocked_payload, 42)};
+                    REQUIRE(bool(conn.send << std::move(big)));
+                    ws::message next{ws::opcode::text, {'2'}};
+                    CHECK(prialt(conn.send << next, after(std::chrono::milliseconds(50)) >> nullptr) == 1);
+                } else if (blocked == 2) {
+                    prialt(~sent_r);
+                    csp::sleep(std::chrono::milliseconds(20));
+                    // Do not receive the peer's message: the reader imp is parked
+                    // forwarding it into the unbuffered user channel.
+                } else {
+                    csp::sleep(std::chrono::milliseconds(20));
+                }
+                conn.close();
+                conn.close();  // idempotent
+                CHECK(prialt(~conn.recv, after(std::chrono::seconds(2)) >> nullptr) == ~0);
+                CHECK(prialt(~conn.send, after(std::chrono::seconds(2)) >> nullptr) == ~0);
+                done_w = {};  // the peer still has not closed or echoed anything
+            });
+            spawn([port, blocked, done_r = std::move(finished.r), sent_w = std::move(sent.w)]() mutable {
+                raw_ws_peer peer(port);
+                if (blocked == 2) {
+                    const uint8_t text[] = {0x81, 0x81, 0, 0, 0, 0, '1'};
+                    CHECK(io::write(peer.fd, text, sizeof(text)) == sizeof(text));
+                }
+                sent_w = {};
+                prialt(~done_r);
+            });
+        });
+        await_completion();
+        csp::shutdown_runtime();
+    }
+}
+
+TEST_CASE("ws---receive-limit-covers-fragments-before-whole-payload-arrives") {
+    for (int shape = 0; shape < 3; ++shape) {
+        CAPTURE(shape);
+        csp::shutdown_runtime();
+        csp::set_maxprocs(2);
+        spawn([shape] {
+            chan<> finished;
+            uint16_t port = serve_once([shape, done_w = std::move(finished.w)](http::endpoint& ep) mutable {
+                http::request req;
+                REQUIRE(bool(ep.requests >> req));
+                auto conn = ws::upgrade(req, {.max_message_size = 4});
+                ws::message msg;
+                int received = prialt(conn.recv >> msg, after(std::chrono::seconds(2)) >> nullptr);
+                if (shape == 0) {
+                    CHECK(received == 0);
+                    CHECK(msg.data == bytes{'1', '2', '3', '4'});
+                    conn.close();
+                } else {
+                    CHECK(received == ~0);
+                }
+                CHECK(prialt(~conn.send, after(std::chrono::seconds(2)) >> nullptr) == ~0);
+                done_w = {};
+            });
+            spawn([port, shape, done_r = std::move(finished.r)] {
+                raw_ws_peer peer(port);
+                if (shape == 0) {
+                    // A TCP split inside the frame header must not look like EOF.
+                    const uint8_t first[] = {0x81};
+                    CHECK(io::write(peer.fd, first, sizeof(first)) == sizeof(first));
+                    csp::sleep(std::chrono::milliseconds(20));
+                    const uint8_t rest[] = {0x84, 0, 0, 0, 0, '1', '2', '3', '4'};
+                    CHECK(io::write(peer.fd, rest, sizeof(rest)) == sizeof(rest));
+                } else if (shape == 1) {
+                    // Advertise five bytes but send only one. Waiting for the
+                    // complete frame before enforcing the limit would hang.
+                    const uint8_t frame[] = {0x81, 0x85, 0, 0, 0, 0, '1'};
+                    CHECK(io::write(peer.fd, frame, sizeof(frame)) == sizeof(frame));
+                } else {
+                    const uint8_t frames[] = {0x01, 0x83, 0, 0, 0, 0, '1', '2', '3',
+                                              0x80, 0x82, 0, 0, 0, 0, '4'};
+                    CHECK(io::write(peer.fd, frames, sizeof(frames)) == sizeof(frames));
+                }
+                prialt(~done_r);
+            });
+        });
+        await_completion();
+        csp::shutdown_runtime();
+    }
+}
 
 // --- Basic text echo ---
 TEST_CASE("ws---text-echo") {

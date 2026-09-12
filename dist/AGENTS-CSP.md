@@ -560,18 +560,31 @@ struct message {
 struct conn {
     reader<message> recv;   // inbound text/binary messages
     writer<message> send;   // outbound messages; drop to initiate Close
+    void close() const;    // idempotent async abort; no peer echo required
 };
+
+struct options { size_t max_message_size = 0; }; // 0 = unlimited inbound
 
 // Server-side: call inside an HTTP handler when Upgrade: websocket.
 // Validates headers, sends 101, hijacks fd. Throws csp::error on bad headers.
 conn upgrade(http::request& req);
+conn upgrade(http::request& req, options opts);
 
 // Client-side: ws://host[:port]/path only (no wss://).
 // Throws csp::error on failure.
 conn connect(const std::string& url);
+conn connect(const std::string& url, options opts);
 
 } // namespace csp::ws
 ```
+
+`max_message_size` bounds the assembled inbound data message, including
+fragments. Oversize aborts before appending payload; the internal channels
+are unbuffered. Use `close()` on application timeout to wake blocked socket
+and channel operations. Both I/O imps finish before the descriptor is
+released; observe endpoint death for completion. Ordinary endpoint drop
+retains the Close handshake and can wait indefinitely for an uncooperative
+peer's echo.
 
 WebSocket upgrade (server):
 ```cpp

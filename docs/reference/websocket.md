@@ -5,9 +5,10 @@ connections. Lives in `namespace csp::ws`.
 
 Header: `#include "csp.h"`
 
-WebSocket support requires compiling `src/ws.cc` and the wslay library
-(`vendor/github.com/tatsuhiro-t/wslay/lib/`). It is not included in the
-dist amalgamation.
+WebSocket support requires the optional `dist/csp_ws.cpp` drop-in (or
+`src/ws.cc` for an in-tree build), plus the vendored wslay library
+(`vendor/github.com/tatsuhiro-t/wslay/lib/`). Server upgrades also need the
+HTTP drop-in and llhttp.
 
 ---
 
@@ -64,12 +65,39 @@ frames; this is the caller's responsibility.
 struct conn {
     reader<message> recv;   // inbound messages (text and binary only)
     writer<message> send;   // outbound messages
+    void close() const;    // abort without waiting for a Close echo
 };
 ```
 
 Returned by `upgrade` and `connect`. Both endpoints are independent:
 dropping `send` initiates a Close handshake (see below); dropping `recv`
 signals the reader imp to stop forwarding inbound data.
+
+`close()` is idempotent and asynchronous. It cancels socket readiness and
+channel waits in both I/O imps, shuts down the socket, and releases its
+descriptor only after both imps finish. Observe endpoint death to wait for
+those imps. Dropping the endpoints continues to use the normal Close
+handshake; use `close()` to enforce an application deadline against a peer
+that does not cooperate.
+
+### csp::ws::options
+
+```cpp
+struct options {
+    size_t max_message_size = 0;
+};
+```
+
+The limit applies to the assembled inbound data message across all
+fragments. Zero preserves the unlimited default. An oversized advertised
+frame or accumulated fragmented message aborts the connection before its
+payload is appended. Control frames remain limited to 125 bytes by the
+WebSocket framing rules. The receive path has no message queue: its
+unbuffered channel holds at most one assembled message, plus the current
+frame and wslay's fixed parser buffer. With a finite limit, each message
+and frame buffer is bounded by that limit (with vector capacity overhead).
+This does not impose a receive deadline or an outbound size
+limit; applications should use `close()` on their own deadline.
 
 ---
 
@@ -81,6 +109,7 @@ Performs the HTTP→WebSocket upgrade handshake on a server-side request.
 
 ```cpp
 conn upgrade(http::request& req);
+conn upgrade(http::request& req, options opts);
 ```
 
 ### Description
@@ -139,6 +168,7 @@ Connects to a WebSocket server and performs the opening handshake.
 
 ```cpp
 conn connect(const std::string& url);
+conn connect(const std::string& url, options opts);
 ```
 
 ### Parameters
@@ -210,12 +240,19 @@ frame, the reader imp exits and `conn.recv` closes.
 the Close frame, forwards an echo request to the writer imp, and exits.
 `conn.recv` closes first; `conn.send` closes shortly after the echo is sent.
 
+**Aborting:** Call `conn.close()` when an application deadline expires or
+an inbound message is invalid. This does not wait for a WebSocket Close
+echo and may discard an in-progress send. For example, an ACK-only server
+can use `ws::upgrade(req, {.max_message_size = 20})` and race its receive
+against `after(5s)`, then call `close()` if the timeout wins.
+
 **Ping/pong:** Incoming Ping frames are answered automatically with Pong.
 Pong frames are silently discarded. Applications do not see Ping or Pong
 in the `recv` channel.
 
-**Concurrency safety:** The reader and writer imps are the only imps that
-ever touch the socket fd. The reader imp only reads; the writer imp only
-writes. Pong and close-echo frames are forwarded from the reader to the
-writer via an internal control channel, ensuring serialised writes with no
-concurrent-write races on the socket.
+**Concurrency safety:** The reader imp only reads; the writer imp only
+writes. Pong and close-echo frames pass through an unbuffered internal
+control channel, ensuring serialised writes. A third lifetime imp owns
+their cancellation scope and the socket. It joins both I/O imps before
+releasing the descriptor, including after cancellation, so a resumed writer
+cannot access a descriptor already reused by another connection.
