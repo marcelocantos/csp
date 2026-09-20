@@ -31,6 +31,7 @@
 #include <cassert>
 #include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -159,6 +160,21 @@ static void free_cptls(ngtcp2_crypto_picotls_ctx* cptls) {
     ngtcp2_crypto_picotls_deconfigure_session(cptls);
     delete[] exts;
     delete cptls;
+}
+
+// PicoTLS allocates certificates.list / list[i].base (ptls_load_certificates)
+// and sign_certificate (ptls_minicrypto_load_private_key) with malloc and
+// never frees them.  Match tls::context::~context so listen teardown does
+// not leak the PEM buffers.  Safe to call twice: pointers are nulled.
+static void free_ptls_context_owned(ptls_context_t* ctx) {
+    if (!ctx) return;
+    free(ctx->sign_certificate);
+    ctx->sign_certificate = nullptr;
+    for (size_t i = 0; i < ctx->certificates.count; ++i)
+        free(ctx->certificates.list[i].base);
+    free(ctx->certificates.list);
+    ctx->certificates.list = nullptr;
+    ctx->certificates.count = 0;
 }
 
 } // anonymous namespace
@@ -951,6 +967,13 @@ listener listen(uint16_t port, listen_options opts) {
         tls_ctx.cipher_suites = s_ciphers;
         tls_ctx.key_exchanges = s_kexs;
         tls_ctx.get_time      = &ptls_get_time;
+        // Frees PEM cert/key material after every ptls_t is gone.  Declared
+        // before the connection table so it runs after the manual ptls_free
+        // cleanup below (and on exception unwind).
+        struct PtlsContextOwned {
+            ptls_context_t* ctx;
+            ~PtlsContextOwned() { free_ptls_context_owned(ctx); }
+        } tls_owned{&tls_ctx};
 
         // Load certificate and key if provided.
         if (!opts.cert_pem.empty()) {
