@@ -908,6 +908,41 @@ template <> struct is_chan_op<none_t> : std::true_type {};
 }
 
 
+// Deferred ownership transfer for alt/prialt send arms.
+//
+//   prialt(control >> signal, out << csp::from(cargo));
+//
+// `out << cargo` and `out << std::move(cargo)` capture the value **eagerly**:
+// the chan_op constructor copies or moves it into the op's inline storage
+// while the argument list is being built, i.e. before prialt_begin decides
+// which arm fires.  For a move-only payload that is fatal — if `control`
+// wins, `cargo` has already been moved-from, the unchosen operand destroys
+// what it took, and a retry sends a hollow value.
+//
+// `out << csp::from(cargo)` **borrows** instead: the chan_op holds a
+// non-owning pointer to `cargo`, and the move happens only when this arm is
+// the one alt/prialt commits to.  If another arm wins, `cargo` is untouched
+// and can be offered again.  Ownership therefore transfers exactly once, and
+// only on the selected arm.
+//
+// The borrow means the value must outlive the alt, so `from` accepts lvalues
+// only; the rvalue overload is deleted rather than left to dangle.
+template <typename T>
+struct deferred_send {
+    T & value;
+};
+
+// Non-const only: the whole point of the borrow is that the selected arm
+// moves out of it.
+template <typename T>
+    requires (!std::is_const_v<T>)
+[[nodiscard]] constexpr deferred_send<T> from(T & value) { return {value}; }
+
+// A temporary would be destroyed at the end of the full expression, before
+// alt/prialt could commit to the borrow.  Use `w << std::move(tmp)` if eager
+// capture is what you want.
+template <typename T> void from(T const &&) = delete;
+
 // Forward declarations for request/response support.
 template <typename Req, typename Resp> struct request;
 template <typename> struct is_request;
@@ -941,6 +976,18 @@ public:
 
     chan_op<T> operator<<(T const & t) const { return {w_, t}; }
     chan_op<T> operator<<(T && t) const { return {w_, std::move(t)}; }
+
+    // Deferred send: borrow `d.value` and move it into the channel only if
+    // alt/prialt commits to this operation.  See csp::from above.
+    chan_op<T> operator<<(deferred_send<T> d) const {
+        static_assert(
+            alignof(T) >= 2,
+            "csp::from requires alignof(T) >= 2: the low bit of the borrowed "
+            "address carries the value/exception tag. Wrap the payload in a "
+            "struct with a suitably aligned member, or capture it eagerly "
+            "with `w << std::move(value)`.");
+        return chan_op<T>(w_, d.value, typename chan_op<T>::ref_tag{});
+    }
 
     // Send an exception in place of a value on the next rendezvous.
     // The reader observes the exception as if thrown at its `r >> val`
@@ -1904,9 +1951,7 @@ inline auto write_op_for(writer<T>& out, buffered_slot<T>& slot) {
     // chan_op's internal buf_ at construction time — before prialt_begin
     // determines which arm fires.  If the other arm wins, slot.value is
     // left moved-from in the ring buffer, causing silent data loss.
-    return slot.exc ? out._throw(slot.exc)
-                    : chan_op<T>(out.internal_writer(), slot.value,
-                                 typename chan_op<T>::ref_tag{});
+    return slot.exc ? out._throw(slot.exc) : (out << from(slot.value));
 }
 
 }

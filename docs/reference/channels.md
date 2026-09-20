@@ -105,8 +105,9 @@ public:
 
     explicit operator bool() const;                  // non-null test
 
-    chan_op<T> operator<<(T const& t) const;          // write (copy)
-    chan_op<T> operator<<(T&& t) const;               // write (move)
+    chan_op<T> operator<<(T const& t) const;          // write (eager copy)
+    chan_op<T> operator<<(T&& t) const;               // write (eager move)
+    chan_op<T> operator<<(deferred_send<T> d) const;  // write (deferred move)
 
     chan_op<T> operator~() const;                     // death-watch
 
@@ -154,6 +155,8 @@ writer). It does **not** distinguish live from dead.
 live.operator<<(v)  ─┤reader ready├──➤ move(v, reader.dest); true
 live.operator<<(v)  ─┤no readers├────➤ false
 live.operator<<(v)  ─┤waiting├───────➤ suspend until reader ready v no readers
+live.operator<<(from(v)) ─┤selected├─➤ move(v, reader.dest); v moved-from; true
+live.operator<<(from(v)) ─┤not selected├➤ v unchanged; operand discarded
 live.operator~()    ─────────────────➤ chan_op that matches when all readers die
 live.copy()         ─────────────────➤ new writer sharing same channel; refcount++
 live.~writer()      ─┤refcount > 1├──➤ refcount--
@@ -167,6 +170,13 @@ null.~writer()      ─────────────────➤ (no-o
 executes the actual transfer. As a statement, `w << val;` blocks until a
 reader is ready or all readers have been destroyed. When used inside
 `alt`/`prialt`, the `chan_op` participates as one arm of the select.
+
+**Deferred send.** `w << csp::from(val)` builds the same kind of write
+operation, but borrows `val` instead of capturing it. The move out of `val`
+happens only if `alt`/`prialt` commits to this operation; a losing arm leaves
+`val` untouched and re-sendable. This is what move-only payloads need — see
+[`csp::from`](multiplexing.md#cspfrom) and the guide's
+[eager capture vs deferred ownership transfer](../guide/03-multiplexing.md#eager-capture-vs-deferred-ownership-transfer).
 
 **Death-watch.** `~w` produces a `chan_op` that matches when all readers for
 the channel have been destroyed. This is used in `alt`/`prialt` to detect

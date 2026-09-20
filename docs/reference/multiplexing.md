@@ -28,9 +28,10 @@ death -> [*] : return ~index
 4. [csp::closer\<EP\>](#cspcloserep) -- vulture-only endpoint wrapper
 5. [csp::chan_op\<T\>](#cspchan_opt) -- channel operation descriptors
 6. [chan_op RAII](#chan_op-raii) -- standalone blocking via destructor
-7. [csp::none](#cspnone) -- non-blocking guard (preferred)
-8. [csp::skip](#cspskip) -- non-blocking guard (legacy)
-9. [Interactions](#interactions)
+7. [csp::from](#cspfrom) -- deferred ownership transfer on a send arm
+8. [csp::none](#cspnone) -- non-blocking guard (preferred)
+9. [csp::skip](#cspskip) -- non-blocking guard (legacy)
+10. [Interactions](#interactions)
 
 ---
 
@@ -302,8 +303,8 @@ template <typename T>
 class chan_op {
 public:
     chan_op();                                       // empty (disabled slot)
-    chan_op(internal::WriterRef w, T const & t);     // write (copy)
-    chan_op(internal::WriterRef w, T && t);          // write (move)
+    chan_op(internal::WriterRef w, T const & t);     // write (eager copy)
+    chan_op(internal::WriterRef w, T && t);          // write (eager move)
     chan_op(internal::ReaderRef r, U & dest);        // read
     explicit chan_op(internal::ChanOp op);           // death-watch
 
@@ -322,6 +323,7 @@ public:
 | Expression   | Operation    | Description                              |
 |-------------|-------------|------------------------------------------|
 | `w << val`  | write        | Create a write operation carrying `val`  |
+| `w << csp::from(val)` | write | Write operation *borrowing* `val` ([deferred send](#cspfrom)) |
 | `r >> dest` | read         | Create a read operation targeting `dest` |
 | `~w`        | death-watch  | Fires when all readers die               |
 | `~r`        | death-watch  | Fires when all writers die               |
@@ -412,6 +414,87 @@ if (w << 42) {
     // all readers dead
 }
 ```
+
+---
+
+## csp::from
+
+Deferred ownership transfer for a send arm of `alt`/`prialt`.
+
+### Signature
+
+```cpp
+template <typename T>
+struct deferred_send { T & value; };
+
+template <typename T>
+    requires (!std::is_const_v<T>)
+[[nodiscard]] constexpr deferred_send<T> from(T & value);
+
+template <typename T> void from(T const &&) = delete;   // no temporaries
+```
+
+**Header:** `#include "csp.h"`
+
+### Description
+
+Operands are constructed before the select runs, so `w << val` captures the
+value **eagerly** — the `chan_op<T>` copies or moves it into its own inline
+storage while the argument list is evaluated, before `prialt_begin` decides
+which arm fires. A losing write arm then destroys what it took. With
+`std::move` that silently destroys the caller's value:
+
+```cpp
+// The move happens here, not when the arm is selected.
+prialt(control >> signal, out << std::move(cargo));
+// If control won, `cargo` is now moved-from.
+```
+
+`w << csp::from(val)` produces a write operation that **borrows** `val`: the
+operation holds a non-owning pointer, and the move out of `val` happens only
+when this operation is the one the select commits to.
+
+| Outcome | Effect on `val` |
+|---|---|
+| this arm is selected | moved into the peer exactly once |
+| another arm is selected | untouched; can be offered again |
+| the arm is discarded unmatched | untouched |
+
+Because the value is borrowed, it must outlive the `alt`/`prialt` call. `from`
+therefore accepts named, non-`const` lvalues only: the rvalue overload is
+deleted, and the `requires (!std::is_const_v<T>)` clause rejects a `const`
+borrow, which the selected arm could not move out of.
+
+`T` must have `alignof(T) >= 2`: the low bit of the borrowed address carries
+the value/exception tag on `ChanOp::message` (see
+[chan_op](#cspchan_opt)). A stricter alignment is diagnosed by a
+`static_assert` in `writer<T>::operator<<`.
+
+### Transition rules ([syntax](transition-rules.md))
+
+```
+w << from(v) ──────────➤ chan_op<T>{write-ref, &v}
+(selected) ────────────➤ move(v, peer.dest); v moved-from
+(not selected) ────────➤ v unchanged
+```
+
+### Example
+
+```cpp
+// Retry loop: a control signal may pre-empt the send any number of times,
+// and the move-only cargo survives every losing round.
+bool send(csp::writer<Cargo> & out, Cargo & cargo) {
+    for (;;) {
+        Signal signal;
+        int choice = csp::prialt(control >> signal, out << csp::from(cargo));
+        if (choice == 0) handle(signal);
+        else return choice == 1;
+    }
+}
+```
+
+See also the guide:
+[eager capture vs deferred ownership transfer](../guide/03-multiplexing.md#eager-capture-vs-deferred-ownership-transfer).
 
 ---
 

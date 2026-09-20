@@ -106,6 +106,7 @@ writer<int> w = ++r;   // r must be unattached
 // Write (blocks until reader accepts or channel dies).
 w << 42;                     // statement: blocks via chan_op destructor
 if (w << 42) { /* sent */ }  // expression: blocks, tests success
+w << csp::from(v);           // deferred: moves v only if the op is selected
 
 // Read (blocks until writer sends or channel dies).
 int v;
@@ -253,6 +254,25 @@ switch (prialt(r >> v, csp::none)) {
 // Vector overload with none.
 int result = alt(ops, csp::none);  // or prialt(ops, csp::none)
 ```
+
+**Deferred send (`csp::from`)**: operands are built before the select runs,
+so `w << std::move(v)` moves `v` immediately — a losing arm then destroys it.
+`w << csp::from(v)` borrows `v` instead and moves only on the arm that is
+selected. Mandatory for move-only payloads that own live endpoints.
+
+```cpp
+for (;;) {                             // retry loop; cargo survives losses
+    Signal signal;
+    int choice = prialt(control >> signal, out << csp::from(cargo));
+    if (choice == 0) handle(signal);   // cargo untouched
+    else return choice == 1;           // cargo moved exactly once
+}
+```
+
+`from` borrows, so it takes a named non-`const` lvalue that outlives the
+select; temporaries and `const` lvalues are rejected at compile time, and
+`alignof(T) >= 2` is required (the low address bit is the value/exception
+tag).
 
 **Vultures as control signals:** Destroying an endpoint deliberately fires
 `~ep` in any imp watching it, giving you a composable interrupt. The signaller
@@ -1011,6 +1031,11 @@ All in `namespace csp::part` (included via `csp.h`).
 4. **chan_op blocks in destructor**: `w << val;` as a statement blocks
    because `chan_op`'s destructor calls `prialt`. To avoid blocking, capture
    the return: `auto op = w << val; op.disarm();`.
+
+4a. **Alt operands capture eagerly**: `prialt(c >> s, w << std::move(v))`
+   moves `v` while building the argument list, not when the arm fires. If the
+   other arm wins, `v` is left moved-from. Use `w << csp::from(v)` for
+   move-only payloads.
 
 5. **`spawn(f)` takes f by value**: The callable is moved into the
    imp. Ensure captured state is either moved or intentionally

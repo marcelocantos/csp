@@ -4,6 +4,7 @@
    while constructing that operand. If control wins, destroying the unchosen
    operand loses the cargo's endpoints. The fixed variant borrows the local
    Cargo until the send commits, then moves it exactly once into the channel.
+   In C++ that borrow is `out << csp::from(cargo)` (csp::deferred_send).
 
    Bounds: one cargo, one control selection, one queue slot, one receiver.
    This is an ownership/selection abstraction, not a proof of chan_op's C++
