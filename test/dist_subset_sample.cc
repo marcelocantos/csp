@@ -38,7 +38,12 @@ int main() {
 #endif
 
 #ifdef SUBSET_WS
-    sink = reinterpret_cast<void*>(&csp::ws::upgrade);
+    // `upgrade` is overloaded (with and without `options`), so the
+    // address has to be disambiguated exactly like the other protocols
+    // above — a bare `&csp::ws::upgrade` is an unresolved overload set.
+    sink = reinterpret_cast<void*>(
+        static_cast<csp::ws::conn (*)(csp::http::request&, csp::ws::options)>(
+            &csp::ws::upgrade));
 #endif
 
 #ifdef SUBSET_QUIC
