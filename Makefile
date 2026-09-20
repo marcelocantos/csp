@@ -568,14 +568,14 @@ PERF_TARGET  := $(BUILDDIR)/csp_ratchet
 # --- Rules ---
 
 .PHONY: test build bench perf test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci stack-metric dist iwyu clean \
-       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor lint-source-lists libs downstream-test check-dist-test-parity check-public-metadata check-vendor-metadata
+       docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor lint-source-lists libs downstream-test check-dist-test-parity check-public-metadata check-vendor-metadata check-notice-coverage
 
 # Explicit default — keep `make` (no args) running the full test suite.
 # Without this, the `bullseye` rule below would become the default target
 # by virtue of appearing first.
 .DEFAULT_GOAL := test
 
-test: $(TARGET) check-md-links lint-frontdoor lint-source-lists check-part-headers check-tla-tags check-public-metadata check-vendor-metadata
+test: $(TARGET) check-md-links lint-frontdoor lint-source-lists check-part-headers check-tla-tags check-public-metadata check-vendor-metadata check-notice-coverage
 	$(TEST_RUN)
 
 # --- Front-door TU lint (🎯T23.4) ---
@@ -600,6 +600,21 @@ check-public-metadata:
 check-vendor-metadata:
 	@python3 scripts/check_vendor_metadata.py
 
+# --- NOTICE attribution oracle (🎯T60) ---
+# check-vendor-metadata guards the version pins; this guards the
+# attribution. Vendoring a new dependency (or a separately-copyrighted
+# bundled source like sfparse.c) without a NOTICE stanza fails here.
+check-notice-coverage:
+	@python3 scripts/check_notice_coverage.py
+
+# The build is the authority on which third-party sources are compiled, so
+# the NOTICE oracle reads the inventory from here rather than duplicating
+# it. Every `%_SRCS` list the build defines, filtered to vendor/.
+.PHONY: print-vendor-sources
+print-vendor-sources:
+	@printf '%s\n' $(sort $(filter vendor/%,\
+	    $(foreach v,$(filter %_SRCS,$(.VARIABLES)),$($(v)))))
+
 # --- Standing invariants (consumed by `bullseye_convergence`) ---
 # Exit 0 if all green, non-zero on first violation. Stdout is relayed
 # verbatim to the agent. Tests are bounded with a portable timeout so a
@@ -622,7 +637,7 @@ bullseye:
 	 (echo "✗ source-lists"; python3 scripts/lint_source_lists.py; exit 1)
 	@python3 scripts/check_part_headers.py >/dev/null && echo "✓ part-headers" || \
 	 (echo "✗ part-headers"; python3 scripts/check_part_headers.py; exit 1)
-	@$(MAKE) --no-print-directory check-tla-tags check-public-metadata check-vendor-metadata
+	@$(MAKE) --no-print-directory check-tla-tags check-public-metadata check-vendor-metadata check-notice-coverage
 	@$(MAKE) --no-print-directory perf || (echo "✗ perf ratchet"; exit 1)
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
 	if [ -z "$$dirty" ]; then echo "✓ working tree clean"; \
