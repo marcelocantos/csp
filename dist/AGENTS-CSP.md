@@ -933,6 +933,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `batch<T>(n)` | filter | Collect n elements into `vector<T>` |
 | `bernoulli(p)` | producer | Random bools with configurable probability |
 | `blackhole<T>()` | consumer | Discard all values |
+| `io::byte_reader(fd,n)` | producer | fd → `reader<vector<uint8_t>>`; owns the fd, closes it on exit |
+| `io::byte_writer(fd)` | consumer | `vector<uint8_t>` stream → fd; owns the fd, closes it on exit |
 | `chain<T>(readers...)` | producer | Concatenate readers sequentially |
 | `choice(container)` | producer | Random picks from a container |
 | `chunk_by<T>(f)` | filter | Group consecutive elements where `f(prev,curr)` is true |
@@ -942,6 +944,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `conflate<T>(f)` | filter | Merge pending values when downstream is slow |
 | `count<T>(start,stop,step)` | producer | Numeric sequence [start,stop) |
 | `count_forever<T>(start,step)` | producer | Unbounded numeric sequence |
+| `cycle<T>(container)` | producer | Stream container elements, repeating forever |
 | `deaf<T>()` | consumer | Never-accepting endpoint |
 | `debounce<T>(dur,cfg)` | filter | Emit after quiet period, suppress rapid fire |
 | `diff<T>` | filter | Successive differences: emit `curr - prev` for each adjacent pair |
@@ -954,6 +957,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
 | `first<T>(n)` | filter | Take first n elements |
 | `frame<T>(n,timeout)` | filter | Collect into frames of up to n elements; flush partial on timeout or input close |
+| `io::fixed_frames(n)` | filter | Byte stream → fixed-size `vector<uint8_t>` frames |
 | `first_wins<T>(readers...)` | blocking | Read from whichever source responds first, discard the rest; blocks and returns `T` |
 | `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
 | `foreach_emit<T,S,U>(init,update,extract)` | filter | Generalized scan: separate state update and extraction |
@@ -981,6 +985,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `partition<T>(n,f)` | function | Route to N outputs by classifier |
 | `quantize<T>(f)` | callable | Variable-size batching; returns a bare callable (`spawn_quantize` variants return endpoints) |
 | `race<T>(readers)` | function | Priority-biased merge: earlier sources win on simultaneous ready; returns `reader<T>` |
+| `random_bytes(n)` | producer | Endless n-byte random chunks (`rand::`; not cryptographic) |
 | `reduce<T,A>(init,f)` | filter | Fold to single value |
 | `reorder<T,Key>(key_fn,initial)` | filter | Resequence out-of-order stream by key (contiguous ascending keys) |
 | `round_robin<T>(n)` | function | Distribute across N outputs |
@@ -991,10 +996,12 @@ All in `namespace csp::part` (included via `csp.h`).
 | `share<T>(n)` | function | Multicast with latch semantics; returns `reader<reader<T>>` |
 | `shuffle<T>(n)` | filter | Reservoir shuffle through a bounded buffer |
 | `sink<T>(f)` | consumer | Consume with side-effect function |
+| `sinkhole<T>(var)` | consumer | Assign each value to a variable |
 | `skip_first<T>(n)` | filter | Drop first n elements |
 | `skip_last<T>(n)` | filter | Emit all but last n |
 | `skip_while<T>(pred)` | filter | Drop while predicate true |
 | `slide<T>(params)` | function | Sliding window with expiry |
+| `io::split_lines` | filter | Byte stream → LF-delimited `string`s |
 | `stride<T>(n)` | filter | Every Nth element |
 | `sort_merge<T>(readers,cmp)` | producer | Merge N pre-sorted streams into one sorted output |
 | `switch_all<T>` | filter | Flatten sub-streams with latest-wins cancellation |

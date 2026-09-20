@@ -58,6 +58,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [bernoulli](parts/random.md#bernoulli) | producer | Random bools with configurable probability |
 | [normal](parts/random.md#normal) | producer | Normally distributed values |
 | [choice](parts/random.md#choice) | producer | Random picks from a container |
+| [random_bytes](parts/random_bytes.md) | producer | Endless fixed-size chunks of random bytes |
 | [shuffle](parts/random.md#shuffle) | filter | Reservoir shuffle through a bounded buffer |
 
 ## Basic Transforms
@@ -169,7 +170,7 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | Part | Type | Description |
 |---|---|---|
 | [collect](parts/collect.md) | consumer | Consume all values into an output iterator |
-| [sink](parts/sink.md) | consumer | Consume all values by applying a side-effect function |
+| [sink](parts/sink.md) | consumer | Consume all values by applying a side-effect function; also `sinkhole`, which assigns each value to a variable |
 | [blackhole](parts/blackhole.md) | consumer | Consume and discard all values |
 | [deaf](parts/deaf.md) | consumer | Never reads; provides a permanently blocked writer |
 | [mute](parts/mute.md) | producer | Never writes; provides a permanently blocked reader |
@@ -182,9 +183,10 @@ semantics (backpressure, exit conditions, edge cases), and a minimal example.
 | [byte_writer](parts/byte_writer.md) | consumer | Write byte chunks to a file descriptor |
 | [split_lines](parts/split_lines.md) | filter | Split a byte stream into newline-delimited strings |
 | [fixed_frames](parts/fixed_frames.md) | filter | Split a byte stream into fixed-size frames |
+| [lines](parts/split_lines.md#lines) | function | Read newline-delimited strings straight from an fd; returns `reader<std::string>` |
 
 ## RPC
 
 | Part | Type | Description |
 |---|---|---|
-| [rpc](parts/rpc.md) | special | Request-response over channels (channel-pair and reply-in-request variants) |
+| [rpc](parts/rpc.md) | special | Request-response over channels: `rpc_client` / `rpc_server`, in channel-pair and reply-in-request variants |

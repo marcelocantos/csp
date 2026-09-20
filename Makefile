@@ -567,7 +567,7 @@ PERF_TARGET  := $(BUILDDIR)/csp_ratchet
 
 # --- Rules ---
 
-.PHONY: test build bench perf test-dist check check-tla-tags check-md-links check-part-headers diagrams examples run-examples run-examples-ci stack-metric dist iwyu clean \
+.PHONY: test build bench perf test-dist check check-tla-tags check-md-links check-part-headers check-part-docs diagrams examples run-examples run-examples-ci stack-metric dist iwyu clean \
        docker-test docker-test-arm64 docker-test-x86 docker-image docker-clean bullseye lint-frontdoor lint-source-lists libs downstream-test check-dist-test-parity check-public-metadata check-vendor-metadata check-notice-coverage
 
 # Explicit default — keep `make` (no args) running the full test suite.
@@ -575,7 +575,7 @@ PERF_TARGET  := $(BUILDDIR)/csp_ratchet
 # by virtue of appearing first.
 .DEFAULT_GOAL := test
 
-test: $(TARGET) check-md-links lint-frontdoor lint-source-lists check-part-headers check-tla-tags check-public-metadata check-vendor-metadata check-notice-coverage
+test: $(TARGET) check-md-links lint-frontdoor lint-source-lists check-part-headers check-part-docs check-tla-tags check-public-metadata check-vendor-metadata check-notice-coverage
 	$(TEST_RUN)
 
 # --- Front-door TU lint (🎯T23.4) ---
@@ -637,6 +637,8 @@ bullseye:
 	 (echo "✗ source-lists"; python3 scripts/lint_source_lists.py; exit 1)
 	@python3 scripts/check_part_headers.py >/dev/null && echo "✓ part-headers" || \
 	 (echo "✗ part-headers"; python3 scripts/check_part_headers.py; exit 1)
+	@python3 scripts/check_part_docs.py >/dev/null && echo "✓ part-docs" || \
+	 (echo "✗ part-docs"; python3 scripts/check_part_docs.py; exit 1)
 	@$(MAKE) --no-print-directory check-tla-tags check-public-metadata check-vendor-metadata check-notice-coverage
 	@$(MAKE) --no-print-directory perf || (echo "✗ perf ratchet"; exit 1)
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
@@ -667,6 +669,15 @@ check-md-links: diagrams
 # for the caller. See the script's docstring.
 check-part-headers:
 	@python3 scripts/check_part_headers.py
+
+# --- Part documentation coverage (🎯T61) ---
+# CLAUDE.md requires a detail page, a catalog row and an AGENTS-CSP
+# row for every part. check-part-headers proves the headers compile,
+# not that anyone can find out what they do: rand::random_bytes
+# shipped tested and wholly undocumented. The inventory comes from the
+# headers, so there is no parallel list to drift.
+check-part-docs:
+	@python3 scripts/check_part_docs.py
 
 # --- Diagram generation ---
 # Scans docs/**/*.md for <!-- csp-flow ... --> blocks and emits SVGs.
