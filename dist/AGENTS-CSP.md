@@ -1,11 +1,17 @@
 # CSP Agent Guide
 
+CSP is a C++20 concurrency library: lightweight imps (coroutine-like
+processes) communicating over typed, synchronous channels, multiplexed M:N
+over OS threads. All public API lives in `namespace csp`.
+
 Token-efficient reference for coding agents. Covers the full API surface,
-common idioms, and critical gotchas. For narrative explanations see `guide/`.
+common idioms, and critical gotchas. For narrative explanations see the
+[guide](https://github.com/marcelocantos/csp/tree/master/docs/guide).
 
 ## Files
 
-CSP is distributed as three files:
+CSP is distributed as a core trio plus one optional `.cpp` per network
+protocol — see [Integration](#integration). User code includes only `csp.h`.
 
 | File | Content |
 |---|---|
@@ -346,7 +352,9 @@ Single-threaded only. `sleep`, `after`, `tick` all respect the override.
 
 ## I/O
 
-Uses kqueue reactor (macOS), epoll (Linux), IOCP (Windows).
+Uses a kqueue reactor (macOS), epoll (Linux), and WSAEventSelect +
+`RegisterWaitForSingleObject` (Windows). Listening sockets register
+`FD_ACCEPT`.
 
 ```cpp
 namespace csp::io {
@@ -723,8 +731,8 @@ switch (prialt(std::move(cop), r >> v)) {
 }
 
 // Query cancel state.
-bool active = is_cancel_active();
-std::exception_ptr reason = cancel_reason();
+bool active = is_cancel_active();   // a cancel scope EXISTS — not "cancelled"
+std::exception_ptr reason = cancel_reason();  // first claimant's reason, or null
 ```
 
 Sleep, I/O, and `after()` are cancel-aware — they throw `canceled` or
@@ -1009,7 +1017,8 @@ All in `namespace csp::part` (included via `csp.h`).
    shared (via `shared_ptr` or `.copy()`).
 
 6. **Reader range-for copies**: `for (T v : reader)` copies each value.
-   Use `for (T& v : reader)` only for const access (iterator stores T).
+   Use `for (T const& v : reader)` to avoid the copy — the iterator stores
+   a `T` and yields `T const&`. `for (T& v : reader)` does not compile.
 
 7. **M:N runtime is the default**: The runtime auto-initializes with
    hardware concurrency. Use `set_maxprocs(1)` or `CSP_MAXPROCS=1` for
@@ -1037,6 +1046,22 @@ All in `namespace csp::part` (included via `csp.h`).
     elsewhere, the imp sleeps forever (deadlock). Give such an alt an
     escape arm (`~die` on a channel someone else drops), or ensure a
     peer is guaranteed to arrive.
+
+13. **`is_cancel_active()` is not "cancelled"**: it reports only that a
+    cancel scope exists. `cancel_reason()` returns the reason of the first
+    caller to claim cancellation; later cancellers cannot replace it, and it
+    is null until someone claims. The reason is written before the release
+    store that publishes cancellation, so any thread that observes the
+    cancellation also observes the reason — but a poll racing the first
+    `guard()` may legitimately see null. Waiting on `done()` always observes
+    a completed publication.
+
+14. **WebSocket close can hang on an uncooperative peer**: dropping
+    `conn.send` runs the full Close handshake and waits for the peer's echo.
+    Use `conn.close()` (idempotent, no echo required) to abort on an
+    application timeout, and `ws::options::max_message_size` to bound
+    inbound assembly. Both I/O imps join before the fd is released; watch
+    endpoint death for completion.
 
 ## Integration
 
@@ -1200,6 +1225,16 @@ x86_64/arm64, with a separate `csp.h` header archive. Same cherry-pick model:
 libstdc++ application must take the source drop-in above. Full per-platform
 link incantations, the library list per use case, and the ABI policy are in
 [`docs/design/prebuilt-libs.md`](https://github.com/marcelocantos/csp/blob/master/docs/design/prebuilt-libs.md).
+
+## Licence and attribution
+
+CSP is Apache-2.0 (`LICENSE`, shipped alongside these drop-ins). The
+third-party libraries `vendor-deps.sh` fetches are MIT (picotls, llhttp,
+wslay, nghttp2, nghttp3, ngtcp2, sfparse), BSD-2 (micro-ecc) and CC0
+(cifra); the fcontext assembly inlined into `csp.cpp` is BSL-1.0. MIT and
+BSD-2 both require their notices to travel with the code you ship, so
+redistribute `NOTICE` (next to this file) with any binary or source that
+embeds them.
 
 Reference this file from your project's `CLAUDE.md` or `AGENTS.md` to
 give coding agents CSP expertise.

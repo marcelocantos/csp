@@ -81,6 +81,11 @@ jobs:
           mkdir -p "stage/$libdir"
           cp build/libs/*.a build/libs/*.${{ matrix.shlib_ext }} "stage/$libdir/"
           cp dist/AGENTS-CSP.md "stage/$libdir/" 2>/dev/null || true
+          # The libraries statically embed picotls, llhttp, wslay, nghttp2,
+          # nghttp3, ngtcp2 (MIT), micro-ecc (BSD-2) and cifra (CC0). MIT
+          # requires the notice in all copies; BSD-2 requires it in binary
+          # redistributions. Ship both files with every archive.
+          cp LICENSE NOTICE "stage/$libdir/"
           tar -C stage -czf "${libdir}.tar.gz" "$libdir"
           echo "lib_tarball=${libdir}.tar.gz" >> "$GITHUB_OUTPUT"
           # Headers archive is platform-independent; only the macOS job emits
@@ -89,6 +94,7 @@ jobs:
             incdir="csp-${ver}-include"
             mkdir -p "stage/$incdir"
             cp dist/csp.h "stage/$incdir/"
+            cp LICENSE NOTICE "stage/$incdir/"
             tar -C stage -czf "${incdir}.tar.gz" "$incdir"
             echo "inc_tarball=${incdir}.tar.gz" >> "$GITHUB_OUTPUT"
           fi

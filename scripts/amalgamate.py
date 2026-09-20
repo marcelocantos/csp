@@ -513,6 +513,16 @@ def main():
         quic_adapter_dst.write_text(quic_adapter_src.read_text())
         print(f'  {quic_adapter_dst}  (copied verbatim, C99 TU)')
 
+    # --- Copy LICENSE and NOTICE alongside the drop-ins ---
+    # Vendor drop-in consumers link picotls, llhttp, wslay, nghttp2, nghttp3
+    # and ngtcp2 (fetched by scripts/vendor-deps.sh). MIT and BSD-2 both
+    # require their notices to travel with the code, so dist/ carries them.
+    for licence_name in ('LICENSE', 'NOTICE'):
+        licence_src = root / licence_name
+        if licence_src.exists():
+            (out_dir / licence_name).write_text(licence_src.read_text())
+            print(f'  {out_dir / licence_name}  (copied verbatim)')
+
     # --- Append fcontext inline assembly to csp.cpp ---
     fcontext_dir = root / 'vendor' / 'github.com' / 'boostorg' / 'context' / 'src' / 'asm'
     if fcontext_dir.exists():

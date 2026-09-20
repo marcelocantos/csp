@@ -17,3 +17,4 @@ formal/states/
 states/
 sqlite_mcp_server.db
 bullseye.yaml.lock
+.claudia-mcp-home/

@@ -30,7 +30,7 @@ A C++ imp-based concurrency library with typed, synchronous channels inspired by
   non-blocking RPC and callable writer endpoints
 - **Imp-local storage** — per-imp variables (not inherited)
 - **Imp exit / supervision** — restart policies, worker groups, supervised execution
-- **Cross-platform** — macOS, Linux (x86_64/arm64), Windows (x86_64;
+- **Cross-platform** — macOS, Linux (x86_64/arm64), Windows (x86_64/arm64;
   HTTP/1.1 only — see the protocol note above)
 
 ## Quick start
@@ -68,7 +68,10 @@ Prefer not to compile CSP yourself? Each release also ships **pre-built static
 and shared libraries** for macOS arm64 and Linux x86_64/arm64 — link
 `-lcsp` (plus `-lcsp_<proto>` for any network protocols) against the published
 archives. See [pre-built library artefacts](docs/design/prebuilt-libs.md) for
-the per-platform link incantations and the libc++ ABI policy.
+the per-platform link incantations and the libc++ ABI policy. `make libs`
+builds the same archives locally, and [`examples/downstream/`](examples/downstream/)
+is a minimal sample that links against them with no CSP sources present
+(`make downstream-test`).
 
 ### Hello, channels
 
@@ -122,13 +125,18 @@ imps to completion.
   [Supervision](docs/guide/13-supervision.md) ·
   [Cancellation](docs/guide/14-cancellation.md) ·
   [TLS](docs/guide/15-tls.md)
-- **Reference** — [Parts Catalog](docs/reference/parts.md) (70+ stream combinators) ·
+- **Reference** — [Index](docs/reference/README.md) ·
+  [Parts Catalog](docs/reference/parts.md) (70+ stream combinators) ·
   [Transition Rules](docs/reference/transition-rules.md) (notation guide)
+- **Stability** — [STABILITY.md](STABILITY.md) (semantic-versioning policy
+  and per-symbol maturity)
 - **Architecture** — [Internal Design](docs/architecture.md)
 - **Papers** — [The Engineering of CSP](docs/papers/) (TLS bugs,
   formal verification, zero-overhead channels, and more)
 - **Examples** — [`examples/`](examples/) (Fibonacci, prime sieve, pipelines,
   fan-out/fan-in, chat room, dining philosophers, and more)
+- **Demos** — [`demos/`](demos/README.md) (single-idea programs, plus the
+  interactive [Lifeboat](demos/lifeboat/) orbital dock)
 
 ## Development
 
@@ -148,6 +156,10 @@ make build  # compile only
 make bench  # build and run benchmarks
 make dist   # regenerate distribution files from source
 make check  # run TLA+ model checker
+make libs   # build the pre-built static/shared libraries
+make examples   # build examples/; `make run-examples` runs them
+make test-dist  # run the suite against the dist/ amalgamation
+make iwyu   # remove unused includes (clang-tidy misc-include-cleaner)
 make clean  # remove build artifacts
 ```
 
@@ -160,6 +172,19 @@ that roughly halves switch cost. The flag self-disables where it doesn't
 apply (other architectures, Windows, sanitizer builds), so it is always
 safe to pass.
 
+### Diagnostics
+
+The shipped code reads a few opt-in environment variables, all default-off:
+
+| Variable | Effect |
+|---|---|
+| `CSP_MAXPROCS` | Worker-thread count when `set_maxprocs()` is never called (`0` = hardware concurrency, `1` = single-threaded) |
+| `CSP_PROC_STATS` | Print per-processor scheduler counters at exit |
+| `CSP_STACK_STATS` | Print stack-pool / slot-sizing counters at exit |
+| `CSP_ALT_STATS` | Print alt fast-path hit/miss counters at exit |
+| `CSP_DEBUG_DEATH` | Trace endpoint-death propagation |
+| `BB_LOG` | Regex over `Logger` component names; matching components log to stderr |
+
 ## For coding agents
 
 If you use an agentic coding tool, include [`dist/AGENTS-CSP.md`](dist/AGENTS-CSP.md)
@@ -168,3 +193,8 @@ in your project context for a token-efficient API reference.
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
+
+The vendored third-party libraries carry their own (MIT, BSD-2, CC0 and
+BSL-1.0) licences; [NOTICE](NOTICE) reproduces them. MIT and BSD-2 both
+require those notices to accompany redistribution, so `dist/` and the
+published library archives ship `LICENSE` and `NOTICE` alongside the code.
