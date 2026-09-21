@@ -89,6 +89,45 @@ for (std::string line; lr >> line;) {
 // result: {"alpha", "beta", "gamma"}
 ```
 
+## lines
+
+`io::lines` is the convenience spelling of the composition above: it spawns
+`byte_reader | split_lines` over an fd and hands back the string reader.
+
+### Signature
+
+```cpp
+inline reader<std::string> lines(csp::io::fd_t fd,
+                                 size_t chunk_size = 4096);
+```
+
+Eager, like every function part: the imps are running by the time it
+returns, so it does not compose with `|`.
+
+### Semantics
+
+- Equivalent to `split_lines.spawn(byte_reader(fd, chunk_size).spawn())`.
+- Inherits [byte_reader](byte_reader.md)'s contract: the fd must already be
+  non-blocking, `lines` owns it, and it is closed when the reader imp exits.
+- `chunk_size` sizes the read buffer only; it has no bearing on line
+  boundaries.
+- Closing behaviour is `split_lines`': EOF flushes any unterminated trailing
+  line, then the returned reader dies.
+
+### Example
+
+```cpp
+#include "csp.h"
+
+using namespace csp::part;
+
+// One string per line read from the socket.
+auto r = io::lines(std::move(fd));
+for (std::string line; r >> line;) {
+    // process line
+}
+```
+
 ## See Also
 
 - [fixed_frames](fixed_frames.md) -- split byte stream into fixed-size frames

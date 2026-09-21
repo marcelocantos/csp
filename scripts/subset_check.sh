@@ -20,6 +20,16 @@
 
 set -euo pipefail
 
+# bash 3.2 compatibility (🎯T62). This script is distributed to external
+# users and runs on macOS, whose stock /bin/bash is 3.2.57. Before bash
+# 4.4, `"${arr[@]}"` on an *empty* array is an unbound-variable error
+# under `set -u`, which aborts the run. Every array below that can be
+# empty for some subset — DROPIN_PROTO, DEFINES, INCLUDES, C_SRCS,
+# c_objs, EXPECTED_PRESENT (channels), EXPECTED_ABSENT (full) — is
+# therefore expanded as `${arr[@]+"${arr[@]}"}`, which yields nothing
+# when the array is unset/empty and the normally-quoted elements
+# otherwise. Do not "simplify" these back to plain `"${arr[@]}"`.
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 SUBSET="${1:-}"
@@ -256,14 +266,14 @@ cxx_flags=(-std=c++20 -stdlib=libc++ -O2
            -ffunction-sections -fdata-sections
            -Wno-unused-function -Wno-deprecated-declarations
            -I dist
-           "${DEFINES[@]}"
-           "${INCLUDES[@]}")
+           ${DEFINES[@]+"${DEFINES[@]}"}
+           ${INCLUDES[@]+"${INCLUDES[@]}"})
 cc_flags=(-O2 -ffunction-sections -fdata-sections
-          "${DEFINES[@]}"
-          "${INCLUDES[@]}")
+          ${DEFINES[@]+"${DEFINES[@]}"}
+          ${INCLUDES[@]+"${INCLUDES[@]}"})
 
 cpp_objs=()
-for src in "${DROPIN_CORE[@]}" "${DROPIN_PROTO[@]}"; do
+for src in "${DROPIN_CORE[@]}" ${DROPIN_PROTO[@]+"${DROPIN_PROTO[@]}"}; do
     out="${src%.cpp}.o"
     echo "  cxx $src"
     "$CXX_BIN" "${cxx_flags[@]}" -c "dist/$src" -o "$out"
@@ -276,7 +286,7 @@ echo "  cxx test/dist_subset_sample.cc"
 echo "  (${#C_SRCS[@]} vendored .c files to compile)"
 c_objs=()
 i=0
-for src in "${C_SRCS[@]}"; do
+for src in ${C_SRCS[@]+"${C_SRCS[@]}"}; do
     out="vlib_${i}.o"
     if ! "$CC_BIN" "${cc_flags[@]}" -c "$src" -o "$out" 2> "vlib_${i}.log"; then
         echo "  FAIL compiling $src" >&2
@@ -289,7 +299,7 @@ done
 
 echo "  link"
 "$CXX_BIN" -std=c++20 -stdlib=libc++ "$DEAD_STRIP_FLAG" \
-    sample.o "${cpp_objs[@]}" "${c_objs[@]}" -o sample
+    sample.o "${cpp_objs[@]}" ${c_objs[@]+"${c_objs[@]}"} -o sample
 
 # --- verify symbol presence/absence --------------------------------
 
@@ -308,7 +318,7 @@ SYMS=$(nm -P sample 2>/dev/null | awk '$2 != "U" { print $1 }')
 # pipeline failure, making the if-condition spuriously NO-match.
 
 fail=0
-for prefix in "${EXPECTED_PRESENT[@]}"; do
+for prefix in ${EXPECTED_PRESENT[@]+"${EXPECTED_PRESENT[@]}"}; do
     if grep -qE "$prefix" <<< "$SYMS"; then
         echo "  ✓ present: $prefix"
     else
@@ -316,7 +326,7 @@ for prefix in "${EXPECTED_PRESENT[@]}"; do
         fail=1
     fi
 done
-for prefix in "${EXPECTED_ABSENT[@]}"; do
+for prefix in ${EXPECTED_ABSENT[@]+"${EXPECTED_ABSENT[@]}"}; do
     if grep -qE "$prefix" <<< "$SYMS"; then
         offenders=$(grep -E "$prefix" <<< "$SYMS" | head -5)
         echo "  ✗ LEAKED (should be absent): $prefix" >&2

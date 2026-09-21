@@ -209,10 +209,9 @@ struct Actor {
         state("backpressure", cargo.id);
         for (;;) {
             Signal signal;
-            // Retain the imp endpoints if a control signal wins this alt.
-            auto transfer = chan_op<Cargo>(output.internal_writer(), cargo,
-                                           chan_op<Cargo>::ref_tag{});
-            int choice = prialt(control >> signal, std::move(transfer));
+            // csp::from defers the move: a winning control signal leaves the
+            // cargo (and the live entity endpoints it owns) intact for retry.
+            int choice = prialt(control >> signal, output << csp::from(cargo));
             if (choice == 0) handle(signal);
             else return choice == 1;
         }

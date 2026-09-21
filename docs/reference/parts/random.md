@@ -216,6 +216,14 @@ auto r2 = rand::choice<std::string>(words).spawn();
 
 ---
 
+## random_bytes
+
+Infinite stream of random byte chunks of a fixed size. The only
+member of this family that is not a distribution draw, and the only
+one with a page of its own: [random_bytes](random_bytes.md).
+
+---
+
 ## shuffle
 
 Reservoir shuffle filter. Buffers up to n elements, then for each new input

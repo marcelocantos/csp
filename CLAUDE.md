@@ -254,7 +254,10 @@ When making code changes, keep the following documentation in sync:
 `make` runs `scripts/check_md_links.py` which verifies all markdown
 cross-references resolve. Broken links fail the build. The default test path
 also checks the [formal correspondence baseline](formal/README.md), public
-version metadata, gateway freshness, and vendored metadata agreement.
+version metadata, gateway freshness, vendored metadata agreement, and
+NOTICE attribution coverage (`scripts/check_notice_coverage.py` — every
+vendored component and every copyright holder in a compiled third-party
+source must have a `NOTICE` stanza; 🎯T60).
 
 ## Debugging hard concurrency bugs
 

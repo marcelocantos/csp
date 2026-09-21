@@ -282,7 +282,12 @@ items:
     cadence: once-must-hold
     enforce: blocking
     tier: 1
-    evidence: {file: {path: LICENSE, matches: 'Apache License'}}
+    # 🎯T60: the NOTICE half of this item used to be asserted by the desc
+    # and nothing else (v0.30.0 shipped without an sfparse stanza). The
+    # check asserts both halves: LICENSE is Apache-2.0, and every vendored
+    # component and compiled-in copyright holder has a NOTICE stanza. It
+    # also runs on the default `make` path and in CI.
+    evidence: {command: 'python3 scripts/check_notice_coverage.py'}
 
   - id: governance.readme
     dim: governance

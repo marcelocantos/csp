@@ -106,6 +106,7 @@ writer<int> w = ++r;   // r must be unattached
 // Write (blocks until reader accepts or channel dies).
 w << 42;                     // statement: blocks via chan_op destructor
 if (w << 42) { /* sent */ }  // expression: blocks, tests success
+w << csp::from(v);           // deferred: moves v only if the op is selected
 
 // Read (blocks until writer sends or channel dies).
 int v;
@@ -253,6 +254,25 @@ switch (prialt(r >> v, csp::none)) {
 // Vector overload with none.
 int result = alt(ops, csp::none);  // or prialt(ops, csp::none)
 ```
+
+**Deferred send (`csp::from`)**: operands are built before the select runs,
+so `w << std::move(v)` moves `v` immediately — a losing arm then destroys it.
+`w << csp::from(v)` borrows `v` instead and moves only on the arm that is
+selected. Mandatory for move-only payloads that own live endpoints.
+
+```cpp
+for (;;) {                             // retry loop; cargo survives losses
+    Signal signal;
+    int choice = prialt(control >> signal, out << csp::from(cargo));
+    if (choice == 0) handle(signal);   // cargo untouched
+    else return choice == 1;           // cargo moved exactly once
+}
+```
+
+`from` borrows, so it takes a named non-`const` lvalue that outlives the
+select; temporaries and `const` lvalues are rejected at compile time, and
+`alignof(T) >= 2` is required (the low address bit is the value/exception
+tag).
 
 **Vultures as control signals:** Destroying an endpoint deliberately fires
 `~ep` in any imp watching it, giving you a composable interrupt. The signaller
@@ -913,6 +933,8 @@ All in `namespace csp::part` (included via `csp.h`).
 | `batch<T>(n)` | filter | Collect n elements into `vector<T>` |
 | `bernoulli(p)` | producer | Random bools with configurable probability |
 | `blackhole<T>()` | consumer | Discard all values |
+| `io::byte_reader(fd,n)` | producer | fd → `reader<vector<uint8_t>>`; owns the fd, closes it on exit |
+| `io::byte_writer(fd)` | consumer | `vector<uint8_t>` stream → fd; owns the fd, closes it on exit |
 | `chain<T>(readers...)` | producer | Concatenate readers sequentially |
 | `choice(container)` | producer | Random picks from a container |
 | `chunk_by<T>(f)` | filter | Group consecutive elements where `f(prev,curr)` is true |
@@ -922,6 +944,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `conflate<T>(f)` | filter | Merge pending values when downstream is slow |
 | `count<T>(start,stop,step)` | producer | Numeric sequence [start,stop) |
 | `count_forever<T>(start,step)` | producer | Unbounded numeric sequence |
+| `cycle<T>(container)` | producer | Stream container elements, repeating forever |
 | `deaf<T>()` | consumer | Never-accepting endpoint |
 | `debounce<T>(dur,cfg)` | filter | Emit after quiet period, suppress rapid fire |
 | `diff<T>` | filter | Successive differences: emit `curr - prev` for each adjacent pair |
@@ -934,6 +957,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `fanout<T>(n)` | filter | Broadcast to dynamic subscriber set |
 | `first<T>(n)` | filter | Take first n elements |
 | `frame<T>(n,timeout)` | filter | Collect into frames of up to n elements; flush partial on timeout or input close |
+| `io::fixed_frames(n)` | filter | Byte stream → fixed-size `vector<uint8_t>` frames |
 | `first_wins<T>(readers...)` | blocking | Read from whichever source responds first, discard the rest; blocks and returns `T` |
 | `flat_map<In,Out>(f)` | filter | Map to sub-streams, merge results |
 | `foreach_emit<T,S,U>(init,update,extract)` | filter | Generalized scan: separate state update and extraction |
@@ -961,6 +985,7 @@ All in `namespace csp::part` (included via `csp.h`).
 | `partition<T>(n,f)` | function | Route to N outputs by classifier |
 | `quantize<T>(f)` | callable | Variable-size batching; returns a bare callable (`spawn_quantize` variants return endpoints) |
 | `race<T>(readers)` | function | Priority-biased merge: earlier sources win on simultaneous ready; returns `reader<T>` |
+| `random_bytes(n)` | producer | Endless n-byte random chunks (`rand::`; not cryptographic) |
 | `reduce<T,A>(init,f)` | filter | Fold to single value |
 | `reorder<T,Key>(key_fn,initial)` | filter | Resequence out-of-order stream by key (contiguous ascending keys) |
 | `round_robin<T>(n)` | function | Distribute across N outputs |
@@ -971,10 +996,12 @@ All in `namespace csp::part` (included via `csp.h`).
 | `share<T>(n)` | function | Multicast with latch semantics; returns `reader<reader<T>>` |
 | `shuffle<T>(n)` | filter | Reservoir shuffle through a bounded buffer |
 | `sink<T>(f)` | consumer | Consume with side-effect function |
+| `sinkhole<T>(var)` | consumer | Assign each value to a variable |
 | `skip_first<T>(n)` | filter | Drop first n elements |
 | `skip_last<T>(n)` | filter | Emit all but last n |
 | `skip_while<T>(pred)` | filter | Drop while predicate true |
 | `slide<T>(params)` | function | Sliding window with expiry |
+| `io::split_lines` | filter | Byte stream → LF-delimited `string`s |
 | `stride<T>(n)` | filter | Every Nth element |
 | `sort_merge<T>(readers,cmp)` | producer | Merge N pre-sorted streams into one sorted output |
 | `switch_all<T>` | filter | Flatten sub-streams with latest-wins cancellation |
@@ -1011,6 +1038,11 @@ All in `namespace csp::part` (included via `csp.h`).
 4. **chan_op blocks in destructor**: `w << val;` as a statement blocks
    because `chan_op`'s destructor calls `prialt`. To avoid blocking, capture
    the return: `auto op = w << val; op.disarm();`.
+
+4a. **Alt operands capture eagerly**: `prialt(c >> s, w << std::move(v))`
+   moves `v` while building the argument list, not when the arm fires. If the
+   other arm wins, `v` is left moved-from. Use `w << csp::from(v)` for
+   move-only payloads.
 
 5. **`spawn(f)` takes f by value**: The callable is moved into the
    imp. Ensure captured state is either moved or intentionally

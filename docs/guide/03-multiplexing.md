@@ -49,6 +49,60 @@ transfer, and returns the **0-based index** of the matched operation.
 For example, with three operations, the possible returns are `0`, `1`, `2`,
 `~0`, `~1`, `~2`.
 
+## Eager capture vs deferred ownership transfer
+
+Every operand of an `alt`/`prialt` is constructed **before** the select runs.
+For a write operand that matters: `w << val` builds a `chan_op<T>` that has
+already taken the value into its own inline storage. The value is captured
+*eagerly*, whether or not this arm is the one that ends up firing.
+
+For copyable payloads that is invisible — the losing arm just destroys a copy.
+For a **move-only** payload it is destructive:
+
+```cpp
+// WRONG for a move-only Cargo that owns live channel endpoints.
+int choice = prialt(control >> signal, out << std::move(cargo));
+```
+
+`std::move(cargo)` happens while the argument list is evaluated. If `control`
+wins, the unchosen write operand is destroyed — taking the cargo's endpoints
+with it — and `cargo` is left hollow. A retry then sends an empty value.
+
+`csp::from` defers the transfer. It borrows the value rather than taking it:
+the operand holds a non-owning pointer, and the move happens only on the arm
+that the select commits to.
+
+```cpp
+// RIGHT: ownership moves only if this arm wins.
+for (;;) {
+    Signal signal;
+    int choice = prialt(control >> signal, out << csp::from(cargo));
+    if (choice == 0) handle(signal);   // cargo untouched; loop and retry
+    else return choice == 1;           // cargo moved exactly once
+}
+```
+
+| Form | Capture | If another arm wins |
+|---|---|---|
+| `w << val` | eager copy | copy discarded; `val` intact |
+| `w << std::move(val)` | eager move | **`val` left moved-from** |
+| `w << csp::from(val)` | deferred borrow | `val` intact and re-sendable |
+
+Because `csp::from` borrows, the value must outlive the select. It therefore
+accepts named, non-`const` lvalues only — temporaries and `const` references
+are rejected at compile time:
+
+```cpp
+out << csp::from(make_cargo());   // error: the borrow would dangle
+out << csp::from(const_cargo);    // error: the winning arm must move out
+```
+
+The same rule applies when the operand is stored in a vector: the borrowed
+value must outlive the `alt` call, not merely the `push_back`.
+
+Reads need no equivalent — `r >> dest` already only writes to `dest` when its
+arm fires.
+
 ## Vultures: detecting dead endpoints
 
 A **vulture** watches for the death of a channel's peer endpoint. The syntax

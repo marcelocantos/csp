@@ -12,8 +12,6 @@ on:
       - 'README.md'
       - 'CLAUDE.md'
       - 'STABILITY.md'
-      - 'NOTICE'
-      - 'LICENSE'
   pull_request:
     paths-ignore:
       - 'docs/guide/**'
@@ -24,8 +22,6 @@ on:
       - 'README.md'
       - 'CLAUDE.md'
       - 'STABILITY.md'
-      - 'NOTICE'
-      - 'LICENSE'
   workflow_dispatch:
 
 concurrency:
@@ -410,10 +406,23 @@ jobs:
       fail-fast: false
       matrix:
         subset: [channels, http, http+ws, quic, full]
+        # `platform` MUST be a base axis, not an include-only key. GitHub
+        # merges each `include:` entry into every base combination whose
+        # *shared* keys match; an entry that shares no key with any base
+        # axis therefore matches all of them. With `subset` as the only
+        # base axis, the two entries below were both applied to all five
+        # rows in order and the Linux one overwrote the macOS one: five
+        # jobs, all `on Linux x86_64`, zero macOS (run 32548872740), so
+        # the Darwin `ld64 -dead_strip` arm of subset_check.sh was never
+        # exercised. Keying each entry on `platform` pins it to its own
+        # five rows: 5 subsets × 2 platforms = 10 jobs (🎯T62).
+        platform: [macos, linux]
         include:
-          - os: macos-14
+          - platform: macos
+            os: macos-14
             name: macOS arm64
-          - os: ubuntu-24.04
+          - platform: linux
+            os: ubuntu-24.04
             name: Linux x86_64
             packages: clang-18 libc++-18-dev libc++abi-18-dev
             cc_override: 'CXX=clang++-18 CC=clang-18'
@@ -423,6 +432,32 @@ jobs:
         # Deliberately no `submodules` and no `lfs` — the whole point of
         # this job is to simulate an external user who took only the dist
         # drop-in plus scripts/vendor-deps.sh.
+
+      # Standing oracle for the bash-3.2 class of failure. macOS ships
+      # bash 3.2.57 as /bin/bash, but the runner image also has Homebrew
+      # bash 5 first on PATH, so `#!/usr/bin/env bash` in the shipped
+      # scripts would silently resolve to 5.x and prove nothing. Assert
+      # the stock shell really is 3.x (a 4+ /bin/bash would make this job
+      # green while testing the wrong thing), syntax-check the scripts an
+      # external user runs, then shim 3.2 to the front of PATH for every
+      # later step.
+      - name: Pin and verify stock bash 3.2 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          ver=$(/bin/bash -c 'printf "%s" "$BASH_VERSION"')
+          echo "/bin/bash reports ${ver}"
+          case "$ver" in
+            3.*) ;;
+            *) echo "::error::expected stock /bin/bash 3.x on this runner, got ${ver}"; exit 1 ;;
+          esac
+          for s in scripts/subset_check.sh scripts/vendor-deps.sh; do
+            /bin/bash -n "$s"
+            echo "  ✓ bash 3.2 syntax: $s"
+          done
+          mkdir -p "$RUNNER_TEMP/bash32"
+          ln -sf /bin/bash "$RUNNER_TEMP/bash32/bash"
+          echo "$RUNNER_TEMP/bash32" >> "$GITHUB_PATH"
 
       - name: Install Linux dependencies
         if: matrix.packages
@@ -434,7 +469,9 @@ jobs:
           echo "CXX=clang++-18" >> "$GITHUB_ENV"
 
       - name: Run subset_check.sh
-        run: scripts/subset_check.sh "${{ matrix.subset }}"
+        run: |
+          echo "env bash -> $(command -v bash) ($(bash --version | head -1))"
+          scripts/subset_check.sh "${{ matrix.subset }}"
 
   # --- Windows: CMake build + abbreviated smoke (not full suite) ---
   # Full csp_tests on Windows hangs under 🎯T39 (Random / scheduler thrash);
