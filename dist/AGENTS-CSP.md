@@ -1236,14 +1236,24 @@ land as needed.
 
 The contract is enforced in CI by
 [`scripts/subset_check.sh`](https://github.com/marcelocantos/csp/blob/master/scripts/subset_check.sh)
-(🎯T23.3), which builds subset configurations (channels-only, http-only,
-http+ws, quic-only, full) on macOS arm64 and Linux x86_64. Each job runs
-`vendor-deps.sh` for that subset's libraries, compiles the drop-in plus a
-small sample, links with `-dead_strip` / `--gc-sections`, and uses `nm` to
-assert that libraries belonging to unselected protocols (`llhttp_`,
-`nghttp2_`, `nghttp3_`, `ngtcp2_`, `wslay_`, `ptls_`) are absent from the
-final binary. A regression that pulls an unselected protocol's symbols into
-the front-door TU trips a clear, named CI failure.
+(🎯T23.3, 🎯T63), which builds subset configurations (channels-only,
+http-only, http+ws, quic-only, full, unreferenced) on macOS arm64 and Linux
+x86_64. Each job runs `vendor-deps.sh` for that subset's libraries, compiles
+the drop-in plus a small sample, links with `-dead_strip` / `--gc-sections`,
+and uses `nm` to check every vendored library (`llhttp_`, `nghttp2_`,
+`nghttp3_`, `ngtcp2_`, `wslay_`, `ptls_`) as either present or absent in
+the final binary.
+
+Only two subsets actually exercise the linker. The narrow ones never compile
+an unselected protocol's library at all, so their absent-checks hold with or
+without dead-stripping. `unreferenced` compiles every drop-in and every
+library into the link while the sample references none of them, so every
+library must be stripped — a static registration in a protocol TU (Rule 3)
+or a protocol reference from the front door (Rule 5) keeps one alive and
+fails the job. `full` checks that nghttp3, compiled in but unreferenced while
+`http3::serve` is a stub, is stripped. A negative control re-links those two
+without dead-stripping and requires the leak, so the checks cannot silently
+stop depending on the linker.
 
 ### Pre-built libraries
 
