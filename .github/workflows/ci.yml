@@ -43,7 +43,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             name: macOS arm64
           - os: ubuntu-24.04
             name: Linux x86_64
@@ -254,7 +254,7 @@ jobs:
           # the dist suite on Linux arm64 TSan (2026-06-30) AND on plain
           # macOS arm64 (2026-07-07), so the watchdog is on all rows,
           # both jobs.
-          - os: macos-14
+          - os: macos-15
             name: macOS ASan+UBSan
             sanitize: address,undefined
             test_timeout: 1200
@@ -419,7 +419,7 @@ jobs:
         platform: [macos, linux]
         include:
           - platform: macos
-            os: macos-14
+            os: macos-15
             name: macOS arm64
           - platform: linux
             os: ubuntu-24.04
@@ -510,7 +510,7 @@ jobs:
   # --- TLA+ model checking (macOS only) ---
   tla:
     name: TLA+ specs
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - uses: actions/checkout@v6
