@@ -405,7 +405,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        subset: [channels, http, http+ws, quic, full]
+        subset: [channels, http, http+ws, quic, full, unreferenced]
         # `platform` MUST be a base axis, not an include-only key. GitHub
         # merges each `include:` entry into every base combination whose
         # *shared* keys match; an entry that shares no key with any base
@@ -415,7 +415,7 @@ jobs:
         # jobs, all `on Linux x86_64`, zero macOS (run 32548872740), so
         # the Darwin `ld64 -dead_strip` arm of subset_check.sh was never
         # exercised. Keying each entry on `platform` pins it to its own
-        # five rows: 5 subsets × 2 platforms = 10 jobs (🎯T62).
+        # own rows: 6 subsets × 2 platforms = 12 jobs (🎯T62, 🎯T63).
         platform: [macos, linux]
         include:
           - platform: macos
@@ -472,6 +472,19 @@ jobs:
         run: |
           echo "env bash -> $(command -v bash) ($(bash --version | head -1))"
           scripts/subset_check.sh "${{ matrix.subset }}"
+
+      # Non-vacuity control (🎯T63). Only `full` and `unreferenced` compile
+      # an asserted-absent library into the link; every other subset's
+      # absent-assertions hold with or without dead-stripping. Re-link these
+      # two WITHOUT dead-stripping and require a leak: the script exits 0
+      # only if an absent library leaks, 4 if nothing does (the assertions
+      # would not depend on the linker), and non-zero on any build failure,
+      # so a broken build can never pass as a working control.
+      - name: Negative control — no dead-strip must leak
+        if: matrix.subset == 'full' || matrix.subset == 'unreferenced'
+        env:
+          SUBSET_CHECK_NEGATIVE_CONTROL: '1'
+        run: scripts/subset_check.sh "${{ matrix.subset }}"
 
   # --- Windows: CMake build + abbreviated smoke (not full suite) ---
   # Full csp_tests on Windows hangs under 🎯T39 (Random / scheduler thrash);

@@ -14,18 +14,47 @@
 #                upgrade flow).
 #   quic       — + csp_quic.cpp + csp_tls.cpp + ngtcp2 + picotls.
 #   full       — every drop-in + every library.
+#   unreferenced — every drop-in + every library compiled into the link,
+#                but the sample references none of them. The only subset
+#                whose absent-assertions the linker alone can satisfy: see
+#                "What proves DCE" below (🎯T63).
 #
 # work-dir defaults to a fresh tempdir; CI passes one to keep ccache warm
 # across matrix jobs.
+#
+# What proves DCE (🎯T63). An absent-assertion only tests the linker if the
+# library it names was compiled INTO the link. For channels/http/http+ws/
+# quic every absent library is simply never compiled, so those assertions
+# hold with or without dead-stripping — they test build separation, not
+# DCE. Replacing the dead-strip flag with a no-op once passed all five
+# original subsets, 29/29. `full` (nghttp3, compiled but unreferenced) and
+# `unreferenced` (everything compiled, nothing referenced) are the subsets
+# that fail when dead-stripping is removed, and the negative control below
+# keeps that true.
+#
+# Negative control: SUBSET_CHECK_NEGATIVE_CONTROL=1 links WITHOUT dead-
+# stripping and inverts the absent-check: it succeeds only if at least one
+# asserted-absent library leaks into the binary, and exits EXIT_VACUOUS
+# otherwise. A build failure still exits non-zero, so a broken build can
+# never be mistaken for a passing control.
+#
+# Exit codes: 0 ok; EXIT_USAGE (2) bad subset or misclassified library;
+# EXIT_SYMBOLS (3) a symbol expectation failed; EXIT_VACUOUS (4) the
+# negative control found nothing that depends on the linker.
 
 set -euo pipefail
+
+EXIT_USAGE=2
+EXIT_SYMBOLS=3
+EXIT_VACUOUS=4
 
 # bash 3.2 compatibility (🎯T62). This script is distributed to external
 # users and runs on macOS, whose stock /bin/bash is 3.2.57. Before bash
 # 4.4, `"${arr[@]}"` on an *empty* array is an unbound-variable error
 # under `set -u`, which aborts the run. Every array below that can be
 # empty for some subset — DROPIN_PROTO, DEFINES, INCLUDES, C_SRCS,
-# c_objs, EXPECTED_PRESENT (channels), EXPECTED_ABSENT (full) — is
+# c_objs, EXPECTED_PRESENT (channels, unreferenced), LINK_DCE_FLAGS
+# (negative control) — is
 # therefore expanded as `${arr[@]+"${arr[@]}"}`, which yields nothing
 # when the array is unset/empty and the normally-quoted elements
 # otherwise. Do not "simplify" these back to plain `"${arr[@]}"`.
@@ -43,8 +72,16 @@ CC_BIN="${CC:-cc}"
 case "$(uname -s)" in
     Darwin) DEAD_STRIP_FLAG="-Wl,-dead_strip" ;;
     Linux)  DEAD_STRIP_FLAG="-Wl,--gc-sections" ;;
-    *)      echo "subset_check: unsupported OS $(uname -s)" >&2; exit 2 ;;
+    *)      echo "subset_check: unsupported OS $(uname -s)" >&2; exit "$EXIT_USAGE" ;;
 esac
+
+# An array, not a string: an empty "$DEAD_STRIP_FLAG" passed to the
+# compiler driver is an empty-filename argument, not "no flag".
+NEGATIVE_CONTROL="${SUBSET_CHECK_NEGATIVE_CONTROL:-0}"
+LINK_DCE_FLAGS=("$DEAD_STRIP_FLAG")
+if [[ "$NEGATIVE_CONTROL" == 1 ]]; then
+    LINK_DCE_FLAGS=()
+fi
 
 # Symbol prefixes by library. Each matches an optional leading underscore
 # so the same regex works on macOS (Mach-O prefixes C symbols with `_`)
@@ -159,19 +196,16 @@ case "$SUBSET" in
         EXPECTED_PRESENT=("$SYM_NGTCP2" "$SYM_PICOTLS")
         EXPECTED_ABSENT=("$SYM_LLHTTP" "$SYM_NGHTTP2" "$SYM_NGHTTP3" "$SYM_WSLAY")
         ;;
-    full)
+    full|unreferenced)
         DROPIN_PROTO+=(csp_tls.cpp csp_http.cpp csp_http2.cpp csp_ws.cpp csp_quic.cpp csp_http3.cpp)
         VENDOR_FLAGS+=(--all)
-        # NB: SUBSET_HTTP3 *would* keep nghttp3 alive via &csp::http3::serve,
-        # except http3::serve is currently a stub (T3.9, blocked on T3.8
-        # QUIC transport). nghttp3 still gets compiled into the build, but
-        # dead-strip removes it — correctly — because nothing live references
-        # nghttp3 symbols. When T3.9 lands, the SUBSET_HTTP3 reference plus
-        # nghttp3 to EXPECTED_PRESENT below.
-        DEFINES+=(-DCSP_TLS -DSUBSET_HTTP -DSUBSET_HTTP2 -DSUBSET_HTTP3
-                  -DSUBSET_WS -DSUBSET_QUIC
+        DEFINES+=(-DCSP_TLS
                   -DHAVE_ARPA_INET_H -DHAVE_NETINET_IN_H
                   -DBUILDING_NGHTTP2 -DBUILDING_NGHTTP3)
+        if [[ "$SUBSET" == full ]]; then
+            DEFINES+=(-DSUBSET_HTTP -DSUBSET_HTTP2 -DSUBSET_HTTP3
+                      -DSUBSET_WS -DSUBSET_QUIC)
+        fi
         INCLUDES+=(
             -I "$WORK_DIR/vendor/llhttp/include"
             -I "$WORK_DIR/vendor/picotls/include"
@@ -188,16 +222,50 @@ case "$SUBSET" in
             -I "$WORK_DIR/vendor/wslay/lib/includes"
             -I "$WORK_DIR/vendor/wslay/lib"
         )
-        EXPECTED_PRESENT=("$SYM_LLHTTP" "$SYM_NGHTTP2" "$SYM_NGTCP2" "$SYM_WSLAY" "$SYM_PICOTLS")
+        if [[ "$SUBSET" == full ]]; then
+            # SUBSET_HTTP3 takes &csp::http3::serve, but http3::serve is a
+            # stub (T3.9, blocked on T3.8 QUIC transport) that references
+            # no nghttp3 symbol. nghttp3 is compiled into this link and
+            # dead-stripping must remove it — a real DCE assertion. When
+            # T3.9 lands, move nghttp3 to EXPECTED_PRESENT.
+            EXPECTED_PRESENT=("$SYM_LLHTTP" "$SYM_NGHTTP2" "$SYM_NGTCP2" "$SYM_WSLAY" "$SYM_PICOTLS")
+            EXPECTED_ABSENT=("$SYM_NGHTTP3")
+        else
+            # Everything is compiled in and nothing is referenced, so every
+            # library must be stripped. This is DCE rules 3 and 5 of
+            # docs/design/per-protocol-dist.md made executable: static
+            # registration in a protocol TU, or a protocol reference from
+            # the front door, would keep a library alive here.
+            EXPECTED_ABSENT=("$SYM_LLHTTP" "$SYM_NGHTTP2" "$SYM_NGHTTP3" "$SYM_NGTCP2" "$SYM_WSLAY" "$SYM_PICOTLS")
+        fi
         ;;
     *)
         echo "subset_check: unknown subset '$SUBSET'" >&2
-        echo "  expected one of: channels, http, http+ws, quic, full" >&2
-        exit 2
+        echo "  expected one of: channels, http, http+ws, quic, full, unreferenced" >&2
+        exit "$EXIT_USAGE"
         ;;
 esac
 
+# Every library must be classified exactly once per subset — present or
+# absent (🎯T63). An unclassified library is asserted by nothing, which is
+# how `full` once left nghttp3's dead-stripping unchecked.
+for lib in "$SYM_LLHTTP" "$SYM_NGHTTP2" "$SYM_NGHTTP3" "$SYM_NGTCP2" "$SYM_WSLAY" "$SYM_PICOTLS"; do
+    n=0
+    for p in ${EXPECTED_PRESENT[@]+"${EXPECTED_PRESENT[@]}"} ${EXPECTED_ABSENT[@]+"${EXPECTED_ABSENT[@]}"}; do
+        if [[ "$p" == "$lib" ]]; then
+            n=$((n+1))
+        fi
+    done
+    if (( n != 1 )); then
+        echo "subset_check: subset=$SUBSET classifies $lib $n time(s); each library must be exactly one of present/absent" >&2
+        exit "$EXIT_USAGE"
+    fi
+done
+
 echo "=== subset_check: subset=$SUBSET, work_dir=$WORK_DIR ==="
+if [[ "$NEGATIVE_CONTROL" == 1 ]]; then
+    echo "=== NEGATIVE CONTROL: linking WITHOUT dead-stripping; an absent library must leak ==="
+fi
 
 # --- stage the dist drop-in into the work dir -----------------------
 
@@ -241,7 +309,7 @@ case "$SUBSET" in
         done
         C_SRCS+=("$WORK_DIR/dist/ngtcp2_crypto_picotls_minicrypto.c")
         ;;
-    full)
+    full|unreferenced)
         add_srcs < <(llhttp_srcs "$WORK_DIR/vendor")
         add_srcs < <(picotls_srcs "$WORK_DIR/vendor")
         add_srcs < <(wslay_srcs "$WORK_DIR/vendor")
@@ -298,7 +366,7 @@ for src in ${C_SRCS[@]+"${C_SRCS[@]}"}; do
 done
 
 echo "  link"
-"$CXX_BIN" -std=c++20 -stdlib=libc++ "$DEAD_STRIP_FLAG" \
+"$CXX_BIN" -std=c++20 -stdlib=libc++ ${LINK_DCE_FLAGS[@]+"${LINK_DCE_FLAGS[@]}"} \
     sample.o "${cpp_objs[@]}" ${c_objs[@]+"${c_objs[@]}"} -o sample
 
 # --- verify symbol presence/absence --------------------------------
@@ -318,6 +386,7 @@ SYMS=$(nm -P sample 2>/dev/null | awk '$2 != "U" { print $1 }')
 # pipeline failure, making the if-condition spuriously NO-match.
 
 fail=0
+leaked=0
 for prefix in ${EXPECTED_PRESENT[@]+"${EXPECTED_PRESENT[@]}"}; do
     if grep -qE "$prefix" <<< "$SYMS"; then
         echo "  ✓ present: $prefix"
@@ -328,10 +397,19 @@ for prefix in ${EXPECTED_PRESENT[@]+"${EXPECTED_PRESENT[@]}"}; do
 done
 for prefix in ${EXPECTED_ABSENT[@]+"${EXPECTED_ABSENT[@]}"}; do
     if grep -qE "$prefix" <<< "$SYMS"; then
-        offenders=$(grep -E "$prefix" <<< "$SYMS" | head -5)
-        echo "  ✗ LEAKED (should be absent): $prefix" >&2
-        sed 's/^/      /' <<< "$offenders" >&2
-        fail=1
+        leaked=$((leaked+1))
+        if [[ "$NEGATIVE_CONTROL" == 1 ]]; then
+            echo "  ✓ leaked without dead-strip: $prefix"
+        else
+            # `grep -m`, not `grep | head`: head closing the pipe early
+            # SIGPIPEs grep, pipefail fails the assignment, and set -e then
+            # killed the script (exit 141) before this report printed. It
+            # went unnoticed because no leak had ever reached this branch.
+            offenders=$(grep -m 5 -E "$prefix" <<< "$SYMS")
+            echo "  ✗ LEAKED (should be absent): $prefix" >&2
+            sed 's/^/      /' <<< "$offenders" >&2
+            fail=1
+        fi
     else
         echo "  ✓ absent:  $prefix"
     fi
@@ -340,7 +418,18 @@ done
 if (( fail )); then
     echo
     echo "subset_check FAILED for subset=$SUBSET" >&2
-    exit 1
+    exit "$EXIT_SYMBOLS"
+fi
+
+if [[ "$NEGATIVE_CONTROL" == 1 ]]; then
+    echo
+    if (( leaked == 0 )); then
+        echo "subset_check: NEGATIVE CONTROL VACUOUS for subset=$SUBSET — no absent library leaked" >&2
+        echo "  without dead-stripping, so these assertions do not depend on the linker." >&2
+        exit "$EXIT_VACUOUS"
+    fi
+    echo "subset_check: negative control for subset=$SUBSET — $leaked absent library prefix(es) leak without dead-stripping, so the absent-assertions depend on the linker."
+    exit 0
 fi
 
 echo
